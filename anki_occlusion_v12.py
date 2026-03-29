@@ -435,9 +435,12 @@ C_SUBTEXT = "#A6ADC8"
 C_BORDER  = "#45475A"
 C_MASK    = "#F7916A"
 
-SS = f"""
+BASE_FONT_SIZE = 11   # pt — user can change via A+ / A− buttons, saved to data file
+
+def _build_ss(font_size: int = BASE_FONT_SIZE) -> str:
+    return f"""
 QMainWindow,QDialog{{background:{C_BG};color:{C_TEXT};}}
-QWidget{{background:{C_BG};color:{C_TEXT};font-family:'Segoe UI';font-size:11px;}}
+QWidget{{background:{C_BG};color:{C_TEXT};font-family:'Segoe UI';font-size:{font_size}px;}}
 QFrame{{background:{C_SURFACE};border-radius:8px;}}
 QLabel{{background:transparent;color:{C_TEXT};}}
 QPushButton{{background:{C_ACCENT};color:white;border:none;border-radius:8px;padding:8px 18px;font-weight:bold;}}
@@ -468,6 +471,8 @@ QStatusBar{{background:{C_SURFACE};color:{C_SUBTEXT};}}
 QMenu{{background:{C_SURFACE};color:{C_TEXT};border:1px solid {C_BORDER};border-radius:6px;}}
 QMenu::item:selected{{background:{C_ACCENT};}}
 """
+
+SS = _build_ss()   # default — replaced at runtime by MainWindow when user changes size
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  OCCLUSION CANVAS
@@ -2031,6 +2036,330 @@ class DeckView(QWidget):
 #  HOME SCREEN
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  APP ICON  — generated programmatically, no external file needed
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def make_app_icon() -> QIcon:
+    """
+    Draw a 256×256 icon:
+      • Dark rounded square background
+      • White card shape
+      • Two orange occlusion rectangles
+      • Small green tick at bottom-right
+    Returns a QIcon usable for the window and taskbar.
+    """
+    SIZE = 256
+    px = QPixmap(SIZE, SIZE)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing)
+
+    # Background — rounded dark square
+    p.setBrush(QBrush(QColor(C_SURFACE)))
+    p.setPen(Qt.NoPen)
+    p.drawRoundedRect(0, 0, SIZE, SIZE, 48, 48)
+
+    # White card body
+    card_rect = QRect(36, 44, 184, 148)
+    p.setBrush(QBrush(QColor("#FFFFFF")))
+    p.setPen(QPen(QColor(C_BORDER), 3))
+    p.drawRoundedRect(card_rect, 10, 10)
+
+    # Faint ruled lines on the card (like a note)
+    p.setPen(QPen(QColor("#E0E0E0"), 1))
+    for y in range(card_rect.top() + 24, card_rect.bottom() - 10, 18):
+        p.drawLine(card_rect.left() + 12, y, card_rect.right() - 12, y)
+
+    # Orange occlusion mask 1 (top-left area)
+    p.setBrush(QBrush(QColor(C_MASK)))
+    p.setPen(Qt.NoPen)
+    p.drawRoundedRect(52, 62, 80, 36, 5, 5)
+
+    # Orange occlusion mask 2 (mid-right area)
+    p.drawRoundedRect(148, 104, 60, 30, 5, 5)
+
+    # Green checkmark circle at bottom-right
+    p.setBrush(QBrush(QColor(C_GREEN)))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(168, 168, 60, 60)
+
+    # Checkmark tick
+    p.setPen(QPen(QColor("#1E1E2E"), 7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.drawLine(182, 199, 192, 211)
+    p.drawLine(192, 211, 214, 185)
+
+    p.end()
+    return QIcon(px)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ABOUT DIALOG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AboutDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("About Anki Occlusion")
+        self.setFixedSize(480, 560)
+        self.setStyleSheet(f"QDialog{{background:{C_BG};}}")
+        L = QVBoxLayout(self)
+        L.setContentsMargins(0, 0, 0, 0)
+        L.setSpacing(0)
+
+        # ── Coloured header band ───────────────────────────────────────────────
+        header = QFrame()
+        header.setFixedHeight(140)
+        header.setStyleSheet(f"QFrame{{background:{C_SURFACE};border-radius:0px;}}")
+        hl = QVBoxLayout(header)
+        hl.setAlignment(Qt.AlignCenter)
+
+        # Draw mini icon
+        icon_lbl = QLabel()
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_px = make_app_icon().pixmap(72, 72)
+        icon_lbl.setPixmap(icon_px)
+        hl.addWidget(icon_lbl)
+
+        name_lbl = QLabel("Anki Occlusion")
+        name_lbl.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        name_lbl.setStyleSheet(f"color:{C_ACCENT};background:transparent;")
+        name_lbl.setAlignment(Qt.AlignCenter)
+        hl.addWidget(name_lbl)
+
+        ver_lbl = QLabel("Version 1.0  •  Desktop Edition")
+        ver_lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;background:transparent;")
+        ver_lbl.setAlignment(Qt.AlignCenter)
+        hl.addWidget(ver_lbl)
+        L.addWidget(header)
+
+        # ── Body ──────────────────────────────────────────────────────────────
+        body = QWidget()
+        body.setStyleSheet(f"background:{C_BG};")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(32, 24, 32, 24)
+        bl.setSpacing(16)
+
+        def _section(title, text):
+            t = QLabel(title)
+            t.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            t.setStyleSheet(f"color:{C_TEXT};")
+            d = QLabel(text)
+            d.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+            d.setWordWrap(True)
+            bl.addWidget(t)
+            bl.addWidget(d)
+
+        _section("What it does",
+            "Draw rectangular masks over your PDF notes and images, "
+            "then study them with a full Anki-style spaced repetition "
+            "scheduler — learning steps, review intervals, ease factors.")
+
+        _section("Keyboard shortcuts",
+            "F11 — fullscreen        Ctrl+Z / Y — undo / redo\n"
+            "Space — reveal answer   1/2/3/4 — rate Again/Hard/Good/Easy\n"
+            "Ctrl+A — select all masks       Del — delete selected\n"
+            "Ctrl+Scroll — zoom      C — center on active mask")
+
+        _section("Data location",
+            f"{DATA_FILE}")
+
+        bl.addStretch()
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(
+            f"background:{C_ACCENT};color:white;border:none;border-radius:8px;"
+            f"padding:8px 32px;font-weight:bold;font-size:13px;")
+        close_btn.clicked.connect(self.accept)
+        bl.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+        L.addWidget(body)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ONBOARDING SCREEN  — shown only on first launch
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class OnboardingDialog(QDialog):
+    """
+    A 4-step welcome wizard shown exactly once on first launch.
+    After the user clicks Get Started the flag is written to DATA_FILE
+    so it never appears again.
+    """
+    STEPS = [
+        {
+            "icon":  "🃏",
+            "title": "Welcome to Anki Occlusion",
+            "body":  (
+                "The fastest way to turn your PDF notes and images "
+                "into Anki-style flashcards — without typing a single word.\n\n"
+                "This quick tour takes about 30 seconds."
+            ),
+        },
+        {
+            "icon":  "📂",
+            "title": "Step 1 — Create a Deck",
+            "body":  (
+                "Click  ＋ Deck  in the left sidebar to create your first deck.\n\n"
+                "You can nest decks inside each other — for example:\n"
+                "  Biology  ›  Chapter 3  ›  Cell Division\n\n"
+                "Drag and drop to reorganise them any time."
+            ),
+        },
+        {
+            "icon":  "🖼",
+            "title": "Step 2 — Add a Card",
+            "body":  (
+                "Select a deck, then click  ＋ Add Card.\n\n"
+                "Load a PDF or image (or paste a screenshot with Ctrl+V), "
+                "then drag rectangles over the parts you want to hide.\n\n"
+                "Each rectangle becomes one flashcard question automatically."
+            ),
+        },
+        {
+            "icon":  "🧠",
+            "title": "Step 3 — Review",
+            "body":  (
+                "Click  🔴 Review Due  to start your session.\n\n"
+                "The app shows each hidden mask one at a time. "
+                "Press Space to reveal the answer, then rate yourself:\n\n"
+                "  1 = Again   2 = Hard   3 = Good   4 = Easy\n\n"
+                "The scheduler decides when you'll see each card next — "
+                "minutes for new cards, days or weeks for well-known ones."
+            ),
+        },
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Welcome")
+        self.setFixedSize(540, 440)
+        self.setStyleSheet(f"QDialog{{background:{C_BG};}}")
+        self._step = 0
+        self._setup_ui()
+        self._show_step(0)
+
+    def _setup_ui(self):
+        L = QVBoxLayout(self)
+        L.setContentsMargins(0, 0, 0, 0)
+        L.setSpacing(0)
+
+        # ── Progress dots ─────────────────────────────────────────────────────
+        dot_bar = QWidget()
+        dot_bar.setFixedHeight(32)
+        dot_bar.setStyleSheet(f"background:{C_SURFACE};")
+        dl = QHBoxLayout(dot_bar)
+        dl.setAlignment(Qt.AlignCenter)
+        dl.setSpacing(8)
+        self._dots = []
+        for _ in self.STEPS:
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color:{C_BORDER};font-size:10px;background:transparent;")
+            dl.addWidget(dot)
+            self._dots.append(dot)
+        L.addWidget(dot_bar)
+
+        # ── Content area ──────────────────────────────────────────────────────
+        content = QWidget()
+        content.setStyleSheet(f"background:{C_BG};")
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(48, 32, 48, 24)
+        cl.setSpacing(16)
+
+        self._icon_lbl = QLabel()
+        self._icon_lbl.setFont(QFont("Segoe UI", 48))
+        self._icon_lbl.setAlignment(Qt.AlignCenter)
+        self._icon_lbl.setStyleSheet("background:transparent;")
+
+        self._title_lbl = QLabel()
+        self._title_lbl.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        self._title_lbl.setStyleSheet(f"color:{C_TEXT};background:transparent;")
+        self._title_lbl.setAlignment(Qt.AlignCenter)
+        self._title_lbl.setWordWrap(True)
+
+        self._body_lbl = QLabel()
+        self._body_lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;background:transparent;")
+        self._body_lbl.setWordWrap(True)
+        self._body_lbl.setAlignment(Qt.AlignCenter)
+
+        cl.addStretch()
+        cl.addWidget(self._icon_lbl)
+        cl.addWidget(self._title_lbl)
+        cl.addWidget(self._body_lbl)
+        cl.addStretch()
+        L.addWidget(content, stretch=1)
+
+        # ── Bottom buttons ─────────────────────────────────────────────────────
+        btn_bar = QFrame()
+        btn_bar.setFixedHeight(64)
+        btn_bar.setStyleSheet(
+            f"QFrame{{background:{C_SURFACE};"
+            f"border-top:1px solid {C_BORDER};border-radius:0px;}}")
+        bl = QHBoxLayout(btn_bar)
+        bl.setContentsMargins(24, 0, 24, 0)
+
+        self._skip_btn = QPushButton("Skip")
+        self._skip_btn.setStyleSheet(
+            f"background:transparent;color:{C_SUBTEXT};border:none;"
+            f"font-size:12px;padding:6px 16px;")
+        self._skip_btn.clicked.connect(self.accept)
+
+        self._back_btn = QPushButton("← Back")
+        self._back_btn.setStyleSheet(
+            f"background:{C_CARD};color:{C_TEXT};border:1px solid {C_BORDER};"
+            f"border-radius:8px;padding:8px 20px;font-size:12px;")
+        self._back_btn.clicked.connect(self._prev)
+
+        self._next_btn = QPushButton("Next →")
+        self._next_btn.setStyleSheet(
+            f"background:{C_ACCENT};color:white;border:none;"
+            f"border-radius:8px;padding:8px 24px;font-weight:bold;font-size:13px;")
+        self._next_btn.clicked.connect(self._next)
+
+        bl.addWidget(self._skip_btn)
+        bl.addStretch()
+        bl.addWidget(self._back_btn)
+        bl.addWidget(self._next_btn)
+        L.addWidget(btn_bar)
+
+    def _show_step(self, idx):
+        step = self.STEPS[idx]
+        self._icon_lbl.setText(step["icon"])
+        self._title_lbl.setText(step["title"])
+        self._body_lbl.setText(step["body"])
+
+        # Update dots
+        for i, dot in enumerate(self._dots):
+            dot.setStyleSheet(
+                f"color:{C_ACCENT if i == idx else C_BORDER};"
+                f"font-size:10px;background:transparent;")
+
+        is_last = (idx == len(self.STEPS) - 1)
+        is_first = (idx == 0)
+
+        self._back_btn.setVisible(not is_first)
+        self._skip_btn.setVisible(not is_last)
+        self._next_btn.setText("🚀  Get Started!" if is_last else "Next →")
+        self._next_btn.setStyleSheet(
+            f"background:{C_GREEN if is_last else C_ACCENT};"
+            f"color:{'#1E1E2E' if is_last else 'white'};"
+            f"border:none;border-radius:8px;padding:8px 24px;"
+            f"font-weight:bold;font-size:13px;")
+
+    def _next(self):
+        if self._step < len(self.STEPS) - 1:
+            self._step += 1
+            self._show_step(self._step)
+        else:
+            self.accept()
+
+    def _prev(self):
+        if self._step > 0:
+            self._step -= 1
+            self._show_step(self._step)
+
+
 class HomeScreen(QWidget):
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
@@ -2058,6 +2387,50 @@ class HomeScreen(QWidget):
         tl.addSpacing(16)
         tl.addWidget(sub)
         tl.addStretch()
+
+        # Help / About buttons in top bar
+        def _topbtn(text, tip):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{C_SUBTEXT};"
+                f"border:1px solid {C_BORDER};border-radius:6px;"
+                f"padding:4px 14px;font-size:12px;}}"
+                f"QPushButton:hover{{background:{C_CARD};color:{C_TEXT};}}")
+            return b
+
+        btn_help  = _topbtn("❓ Help",  "Show quick-start guide")
+        btn_about = _topbtn("ℹ About", "About Anki Occlusion")
+        btn_help.clicked.connect(self._show_help)
+        btn_about.clicked.connect(self._show_about)
+
+        # Font size controls — A− / A / A+
+        def _fontbtn(text, tip):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setFixedWidth(30)
+            b.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{C_SUBTEXT};"
+                f"border:1px solid {C_BORDER};border-radius:6px;"
+                f"padding:2px 4px;font-size:12px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:{C_CARD};color:{C_TEXT};}}")
+            return b
+
+        btn_fa = _fontbtn("A−", "Decrease font size  (Ctrl+−)")
+        btn_fr = _fontbtn("A",  "Reset font size  (Ctrl+0)")
+        btn_fi = _fontbtn("A+", "Increase font size  (Ctrl++)")
+        btn_fr.setFixedWidth(24)
+        btn_fa.clicked.connect(lambda: self._emit_font(-1))
+        btn_fr.clicked.connect(lambda: self._emit_font(0))
+        btn_fi.clicked.connect(lambda: self._emit_font(+1))
+
+        tl.addSpacing(8)
+        tl.addWidget(btn_fa)
+        tl.addWidget(btn_fr)
+        tl.addWidget(btn_fi)
+        tl.addSpacing(4)
+        tl.addWidget(btn_help)
+        tl.addWidget(btn_about)
         L.addWidget(top)
 
         split = QSplitter(Qt.Horizontal)
@@ -2074,6 +2447,18 @@ class HomeScreen(QWidget):
     def _on_deck_selected(self, deck):
         self.deck_view.load_deck(deck, self._data)
 
+    def _show_about(self):
+        AboutDialog(self).exec_()
+
+    def _show_help(self):
+        OnboardingDialog(self).exec_()
+
+    def _emit_font(self, direction: int):
+        """Ask the MainWindow to change font size (+1 / -1 / 0=reset)."""
+        win = self.window()
+        if isinstance(win, MainWindow):
+            win.change_font_size(direction)
+
     def refresh(self):
         self.deck_tree.refresh()
         sel = self.deck_tree.get_selected_deck()
@@ -2089,8 +2474,13 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._data = load_data()
-        self.setWindowTitle("Anki Occlusion — SM-2 Spaced Repetition")
+        self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
+        self.setWindowIcon(make_app_icon())
+
+        # Load saved font size preference
+        self._font_size = int(self._data.get("_font_size", BASE_FONT_SIZE))
+
         self.showMaximized()
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
@@ -2099,6 +2489,39 @@ class MainWindow(QMainWindow):
             "PyMuPDF loaded — PDF support active"
             if PDF_SUPPORT else "⚠ pip install pymupdf  for PDF support"))
         self.setStatusBar(sb)
+
+        # Apply saved font size on launch
+        if self._font_size != BASE_FONT_SIZE:
+            self._apply_font_size(self._font_size)
+
+        # Show onboarding only on first ever launch
+        if not self._data.get("_onboarding_done"):
+            QTimer.singleShot(200, self._run_onboarding)
+
+    def change_font_size(self, direction: int):
+        """
+        direction: +1 = larger, -1 = smaller, 0 = reset to default.
+        Rebuilds the global QSS so every widget updates instantly.
+        Saves the preference to data file.
+        """
+        if direction == 0:
+            self._font_size = BASE_FONT_SIZE
+        else:
+            self._font_size = max(8, min(20, self._font_size + direction))
+        self._apply_font_size(self._font_size)
+        self._data["_font_size"] = self._font_size
+        save_data(self._data)
+
+    def _apply_font_size(self, size: int):
+        """Rebuild and reapply the global stylesheet with the new font size."""
+        QApplication.instance().setStyleSheet(_build_ss(size))
+
+    def _run_onboarding(self):
+        dlg = OnboardingDialog(self)
+        dlg.exec_()
+        # Mark as done so it never shows again
+        self._data["_onboarding_done"] = True
+        save_data(self._data)
 
     def keyPressEvent(self, e):
         key  = e.key()
@@ -2109,27 +2532,13 @@ class MainWindow(QMainWindow):
             else:
                 self.showFullScreen()
         elif mods & Qt.ControlModifier and key in (Qt.Key_Equal, Qt.Key_Plus):
-            # Ctrl++ zoom in on home screen deck tree font (visual feedback)
-            self._zoom_home(+1)
+            self.change_font_size(+1)
         elif mods & Qt.ControlModifier and key == Qt.Key_Minus:
-            self._zoom_home(-1)
+            self.change_font_size(-1)
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
-            self._zoom_home(0)
+            self.change_font_size(0)
         else:
             super().keyPressEvent(e)
-
-    def _zoom_home(self, direction):
-        """Scale the home screen font size for readability."""
-        sizes = self.findChildren(QLabel)
-        # Just resize the central widget's font
-        cur = self.centralWidget().font().pointSize()
-        if direction == 0:
-            new = 13
-        else:
-            new = max(9, min(20, cur + direction))
-        f = self.centralWidget().font()
-        f.setPointSize(new)
-        self.centralWidget().setFont(f)
 
     def closeEvent(self, e):
         save_data(self._data)
@@ -2151,6 +2560,11 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     app.setStyleSheet(SS)
+    app.setApplicationName("Anki Occlusion")
+    app.setApplicationVersion("1.0")
+    # Set icon early so it appears in taskbar before window opens
+    _icon = make_app_icon()
+    app.setWindowIcon(_icon)
     win = MainWindow()
     win.show()
     ret = app.exec_()
