@@ -42,7 +42,8 @@ from PyQt5.QtWidgets import (
     QFrame, QScrollArea, QInputDialog, QMessageBox,
     QSplitter, QStatusBar, QProgressBar, QDialog, QFormLayout,
     QLineEdit, QTextEdit, QSizePolicy, QTreeWidget,
-    QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle
+    QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
+    QHeaderView
 )
 from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QLockFile, QTimer, QModelIndex
 from PyQt5.QtGui import QGuiApplication as _QGA
@@ -436,7 +437,7 @@ C_MASK    = "#F7916A"
 
 SS = f"""
 QMainWindow,QDialog{{background:{C_BG};color:{C_TEXT};}}
-QWidget{{background:{C_BG};color:{C_TEXT};font-family:'Segoe UI';font-size:32px;}}
+QWidget{{background:{C_BG};color:{C_TEXT};font-family:'Segoe UI';font-size:11px;}}
 QFrame{{background:{C_SURFACE};border-radius:8px;}}
 QLabel{{background:transparent;color:{C_TEXT};}}
 QPushButton{{background:{C_ACCENT};color:white;border:none;border-radius:8px;padding:8px 18px;font-weight:bold;}}
@@ -600,7 +601,35 @@ class OcclusionCanvas(QLabel):
             self._boxes[idx]["label"] = text
             self._redraw()
 
-    # ── internal ─────────────────────────────────────────────────────────────
+    # ── zoom ─────────────────────────────────────────────────────────────────
+
+    def zoom_in(self):
+        self._scale = min(self._scale * 1.25, 8.0)
+        self._redraw()
+
+    def zoom_out(self):
+        self._scale = max(self._scale / 1.25, 0.05)
+        self._redraw()
+
+    def zoom_fit(self, viewport_w, viewport_h):
+        if not self._px or self._px.isNull(): return
+        sx = viewport_w  / max(self._px.width(),  1)
+        sy = viewport_h  / max(self._px.height(), 1)
+        self._scale = min(sx, sy)
+        self._redraw()
+
+    def wheelEvent(self, e):
+        """Two-finger pinch-to-zoom on trackpad (Ctrl+scroll) and plain scroll."""
+        if e.modifiers() & Qt.ControlModifier:
+            # pixelDelta is non-zero for trackpad pinch; angleDelta for mouse wheel
+            delta = e.pixelDelta().y() if not e.pixelDelta().isNull() else e.angleDelta().y() / 8
+            factor = 1.0 + delta * 0.01
+            factor = max(0.8, min(factor, 1.25))   # clamp per-event step
+            self._scale = max(0.05, min(8.0, self._scale * factor))
+            self._redraw()
+            e.accept()
+        else:
+            super().wheelEvent(e)
 
     def _spx(self):
         if not self._px:
@@ -632,12 +661,12 @@ class OcclusionCanvas(QLabel):
                 if i == self._target_idx:
                     p.fillRect(sr, QColor(C_GREEN))
                     p.setPen(QPen(QColor("#1E1E2E"), 3))
-                    p.setFont(QFont("Segoe UI", 20, QFont.Bold))
+                    p.setFont(QFont("Segoe UI", 10, QFont.Bold))
                     p.drawText(sr, Qt.AlignCenter, lbl)
                 else:
                     p.fillRect(sr, QColor(C_MASK))
                     p.setPen(QPen(QColor("#FFF"), 2))
-                    p.setFont(QFont("Segoe UI", 20, QFont.Bold))
+                    p.setFont(QFont("Segoe UI", 10, QFont.Bold))
                     p.drawText(sr, Qt.AlignCenter, lbl)
             elif self._mode == "review" and b["revealed"]:
                 p.setPen(QPen(QColor(C_GREEN), 2))
@@ -652,7 +681,7 @@ class OcclusionCanvas(QLabel):
                 p.setPen(QPen(border_col, 2, Qt.DashLine))
                 p.drawRect(sr)
                 p.setPen(QPen(border_col, 1))
-                p.setFont(QFont("Segoe UI", 18))
+                p.setFont(QFont("Segoe UI", 9))
                 p.drawText(sr, Qt.AlignCenter, lbl)
 
         if self._drawing and not self._live.isNull():
@@ -741,7 +770,7 @@ class MaskPanel(QWidget):
         L.setSpacing(6)
 
         hdr = QLabel("🔲  Occlusion Masks")
-        hdr.setFont(QFont("Segoe UI", 22, QFont.Bold))
+        hdr.setFont(QFont("Segoe UI", 11, QFont.Bold))
         L.addWidget(hdr)
 
         self.list_w = QListWidget()
@@ -749,7 +778,7 @@ class MaskPanel(QWidget):
         L.addWidget(self.list_w, stretch=1)
 
         lbl_e = QLabel("Label for selected mask:")
-        lbl_e.setStyleSheet(f"color:{C_SUBTEXT};font-size:22px;")
+        lbl_e.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
         L.addWidget(lbl_e)
         self.inp_label = QLineEdit()
         self.inp_label.setPlaceholderText("e.g. Mitochondria")
@@ -832,7 +861,7 @@ class CardEditorDialog(QDialog):
         # ── toolbar ───────────────────────────────────────────────────────────
         top = QHBoxLayout()
         ttl = QLabel("✏️  Anki-Style Occlusion Editor")
-        ttl.setFont(QFont("Segoe UI", 28, QFont.Bold))
+        ttl.setFont(QFont("Segoe UI", 14, QFont.Bold))
         top.addWidget(ttl)
         top.addStretch()
 
@@ -891,13 +920,14 @@ class CardEditorDialog(QDialog):
         canvas_w = QWidget()
         cl = QVBoxLayout(canvas_w)
         cl.setContentsMargins(0, 0, 0, 0)
-        sc = QScrollArea()
+        sc = _ZoomableScrollArea()
         sc.setWidgetResizable(True)
         self.canvas = OcclusionCanvas()
         sc.setWidget(self.canvas)
+        sc._canvas = self.canvas
         cl.addWidget(sc)
-        hint = QLabel("🖱 Drag to draw mask  •  Click to select  •  Ctrl+A select all  •  Del delete selected  •  G group all masks")
-        hint.setStyleSheet(f"color:{C_SUBTEXT};font-size:20px;")
+        hint = QLabel("🖱 Drag to draw  •  Click to select  •  Ctrl+A all  •  Del delete  •  Ctrl+Scroll or pinch to zoom  •  G group")
+        hint.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
         hint.setAlignment(Qt.AlignCenter)
         cl.addWidget(hint)
         main_split.addWidget(canvas_w)
@@ -1134,6 +1164,24 @@ class QueueDelegate(QStyledItemDelegate):
         return QSize(0, 34)
 
 
+class _ZoomableScrollArea(QScrollArea):
+    """
+    A QScrollArea that intercepts Ctrl+wheel (two-finger pinch on trackpad)
+    and forwards it to the embedded OcclusionCanvas for zoom instead of scrolling.
+    Plain scroll (no Ctrl) works normally.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._canvas = None   # set after canvas is created
+
+    def wheelEvent(self, e):
+        if (e.modifiers() & Qt.ControlModifier) and self._canvas:
+            # Forward to canvas which handles pinch/zoom
+            self._canvas.wheelEvent(e)
+        else:
+            super().wheelEvent(e)
+
+
 class ReviewScreen(QWidget):
     """
     Review mode.
@@ -1243,7 +1291,7 @@ class ReviewScreen(QWidget):
         hdr.setContentsMargins(14, 0, 14, 0); hdr.setSpacing(10)
 
         self.lbl_prog = QLabel("Card 1/1")
-        self.lbl_prog.setFont(QFont("Segoe UI", 22, QFont.Bold))
+        self.lbl_prog.setFont(QFont("Segoe UI", 12, QFont.Bold))
         hdr.addWidget(self.lbl_prog)
 
         self.prog = QProgressBar()
@@ -1257,7 +1305,7 @@ class ReviewScreen(QWidget):
         self.lbl_sm2 = QLabel("")
         self.lbl_sm2.setStyleSheet(
             f"background:{C_CARD};color:{C_SUBTEXT};"
-            f"border-radius:6px;padding:3px 10px;font-size:22px;")
+            f"border-radius:6px;padding:3px 10px;font-size:11px;")
         hdr.addWidget(self.lbl_sm2)
 
         # Zoom buttons
@@ -1266,7 +1314,7 @@ class ReviewScreen(QWidget):
             b.setFixedSize(28, 28)
             b.setStyleSheet(
                 f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
-                f"border:1px solid {C_BORDER};border-radius:5px;font-size:26px;}}"
+                f"border:1px solid {C_BORDER};border-radius:5px;font-size:13px;}}"
                 f"QPushButton:hover{{background:{C_SURFACE};}}")
             return b
         b_zin  = _zb("+", "Zoom In  Ctrl++")
@@ -1283,7 +1331,7 @@ class ReviewScreen(QWidget):
         b_exit = QPushButton("✕ Exit")
         b_exit.setStyleSheet(
             f"background:{C_CARD};color:{C_TEXT};border:1px solid {C_BORDER};"
-            f"border-radius:6px;padding:4px 14px;font-size:24px;")
+            f"border-radius:6px;padding:4px 14px;font-size:12px;")
         b_exit.clicked.connect(self.finished.emit)
         hdr.addWidget(b_exit)
         L.addWidget(hdr_w)
@@ -1291,15 +1339,15 @@ class ReviewScreen(QWidget):
 
         # Title strip
         self.lbl_title = QLabel("")
-        self.lbl_title.setFont(QFont("Segoe UI", 24, QFont.Bold))
+        self.lbl_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
         self.lbl_title.setStyleSheet(
             f"color:{C_ACCENT};background:{C_BG};"
             f"padding:4px 16px;border-bottom:1px solid {C_BORDER};")
         self.lbl_title.setFixedHeight(30)
         L.addWidget(self.lbl_title)
 
-        # ══ CANVAS (takes ~80% of screen width) ══════════════════════════════
-        self._canvas_scroll = QScrollArea()
+        # ══ CANVAS (takes full available width) ══════════════════════════════
+        self._canvas_scroll = _ZoomableScrollArea()
         self._canvas_scroll.setWidgetResizable(True)
         self._canvas_scroll.setStyleSheet(
             f"QScrollArea{{border:none;background:{C_BG};}}"
@@ -1310,6 +1358,7 @@ class ReviewScreen(QWidget):
         self.canvas = OcclusionCanvas()
         self.canvas.set_mode("review")
         self._canvas_scroll.setWidget(self.canvas)
+        self._canvas_scroll._canvas = self.canvas   # ref for event filter
         L.addWidget(self._canvas_scroll, stretch=1)
 
         # ══ BOTTOM AREA: hint + reveal/rating panel ═══════════════════════════
@@ -1325,7 +1374,7 @@ class ReviewScreen(QWidget):
         hint.setAlignment(Qt.AlignCenter)
         hint.setFixedHeight(22)
         hint.setStyleSheet(
-            f"color:{C_SUBTEXT};font-size:20px;"
+            f"color:{C_SUBTEXT};font-size:11px;"
             f"border-top:1px solid {C_BORDER};padding:2px;")
         bl.addWidget(hint)
         self._hint_label = hint
@@ -1339,7 +1388,7 @@ class ReviewScreen(QWidget):
         b_rev.setStyleSheet(
             f"background:{C_SURFACE};color:{C_TEXT};"
             f"border:1px solid {C_BORDER};border-radius:8px;"
-            f"padding:10px 60px;font-size:28px;font-weight:bold;")
+            f"padding:10px 60px;font-size:14px;font-weight:bold;")
         b_rev.clicked.connect(self._reveal_current)
         rb_l.addStretch(); rb_l.addWidget(b_rev); rb_l.addStretch()
         bl.addWidget(self._reveal_bar)
@@ -1352,17 +1401,17 @@ class ReviewScreen(QWidget):
         rfl.setContentsMargins(12, 8, 12, 12); rfl.setSpacing(4)
 
         lq = QLabel("🧠 How well did you remember?")
-        lq.setFont(QFont("Segoe UI", 20, QFont.Bold))
+        lq.setFont(QFont("Segoe UI", 10, QFont.Bold))
         lq.setAlignment(Qt.AlignCenter)
         lq.setStyleSheet(f"color:{C_SUBTEXT};")
         rfl.addWidget(lq)
 
         br = QHBoxLayout(); br.setSpacing(6)
         RATING_STYLES = {
-            "danger":  f"background:{C_RED};color:white;border:none;border-radius:8px;padding:10px 0;font-size:26px;font-weight:bold;",
-            "hard":    "background:#E08030;color:white;border:none;border-radius:8px;padding:10px 0;font-size:26px;font-weight:bold;",
-            "success": f"background:{C_GREEN};color:#1E1E2E;border:none;border-radius:8px;padding:10px 0;font-size:26px;font-weight:bold;",
-            "warning": f"background:{C_YELLOW};color:#1E1E2E;border:none;border-radius:8px;padding:10px 0;font-size:26px;font-weight:bold;",
+            "danger":  f"background:{C_RED};color:white;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "hard":    "background:#E08030;color:white;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "success": f"background:{C_GREEN};color:#1E1E2E;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "warning": f"background:{C_YELLOW};color:#1E1E2E;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
         }
         self._rating_btns = []
         for lbl, obj, q in self.RATINGS:
@@ -1380,7 +1429,7 @@ class ReviewScreen(QWidget):
         for _, _, q in self.RATINGS:
             pl = QLabel("→?")
             pl.setAlignment(Qt.AlignCenter)
-            pl.setStyleSheet(f"color:{C_SUBTEXT};font-size:22px;")
+            pl.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
             prev_row.addWidget(pl)
             self._prev_lbls.append((pl, q))
         rfl.addLayout(prev_row)
@@ -1452,14 +1501,6 @@ class ReviewScreen(QWidget):
         if px and not px.isNull():
             self._current_pixmap = px
             self.canvas.load_pixmap(px)
-            # Auto-scale image so it fills ~80% of screen width
-            screen = _QGA.primaryScreen()
-            if screen and not px.isNull():
-                sw = int(screen.availableGeometry().width() * 0.80)
-                sh = int(screen.availableGeometry().height() * 0.65)
-                sx = sw / max(px.width(), 1)
-                sy = sh / max(px.height(), 1)
-                self.canvas._scale = min(sx, sy, 2.0)
             if box_idx is None:
                 self.canvas.set_boxes(boxes)
             else:
@@ -1472,6 +1513,18 @@ class ReviewScreen(QWidget):
                 self.canvas.set_boxes_with_state(display_boxes)
             self.canvas.set_mode("review")
             self.canvas.set_target_box(box_idx if box_idx is not None else -1)
+
+            # Auto-scale: fit image WIDTH to viewport (like a PDF viewer / real Anki).
+            # Do it after a short delay so the viewport has its final size.
+            def _apply_zoom(p=px):
+                vp = self._canvas_scroll.viewport()
+                vw = max(vp.width(), 100)
+                # Scale so image fills the full viewport width
+                new_scale = vw / max(p.width(), 1)
+                # Never shrink below 15% or blow up beyond 300%
+                self.canvas._scale = max(0.15, min(new_scale, 3.0))
+                self.canvas._redraw()
+            QTimer.singleShot(30, _apply_zoom)
 
             def _scroll_to_mask(bi=box_idx):
                 r = self.canvas.get_target_scaled_rect()
@@ -1565,11 +1618,14 @@ class DeckTree(QWidget):
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(6)
         hdr = QLabel("📚  Decks")
-        hdr.setFont(QFont("Segoe UI", 26, QFont.Bold))
+        hdr.setFont(QFont("Segoe UI", 13, QFont.Bold))
         L.addWidget(hdr)
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.header().setSectionResizeMode(0, self.tree.header().ResizeToContents)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._ctx_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
@@ -1590,7 +1646,7 @@ class DeckTree(QWidget):
         btn_row.addWidget(b_del)
         L.addLayout(btn_row)
         hint = QLabel("Double-click to open  •  Right-click for menu")
-        hint.setStyleSheet(f"color:{C_SUBTEXT};font-size:20px;")
+        hint.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
         hint.setAlignment(Qt.AlignCenter)
         L.addWidget(hint)
 
@@ -1608,7 +1664,7 @@ class DeckTree(QWidget):
         # [OPT-5] count due boxes across all non-grouped cards
         due   = sum(1 for c in deck.get("cards", []) if is_due_today(c))
         badge = f"🔴{due}" if due else "✅"
-        item  = QTreeWidgetItem([f"  📂  {deck['name']}   [{nc} cards  {badge}]"])
+        item  = QTreeWidgetItem([f"  📂  {deck['name']}  {badge}"])
         item.setData(0, Qt.UserRole, deck.get("_id"))
         for child in deck.get("children", []):
             item.addChild(self._make_item(child))
@@ -1753,7 +1809,7 @@ class DeckView(QWidget):
 
         hdr = QHBoxLayout()
         self.lbl_deck = QLabel("← Select a deck")
-        self.lbl_deck.setFont(QFont("Segoe UI", 30, QFont.Bold))
+        self.lbl_deck.setFont(QFont("Segoe UI", 15, QFont.Bold))
         hdr.addWidget(self.lbl_deck)
         hdr.addStretch()
         self.btn_add = QPushButton("＋ Add Card")
@@ -1994,10 +2050,10 @@ class HomeScreen(QWidget):
         tl = QHBoxLayout(top)
         tl.setContentsMargins(20, 0, 20, 0)
         ttl = QLabel("🃏  Anki Occlusion")
-        ttl.setFont(QFont("Segoe UI", 32, QFont.Bold))
+        ttl.setFont(QFont("Segoe UI", 16, QFont.Bold))
         ttl.setStyleSheet(f"color:{C_ACCENT};")
         sub = QLabel("SM-2 Spaced Repetition  •  PDF & Image Occlusion")
-        sub.setStyleSheet(f"color:{C_SUBTEXT};font-size:22px;")
+        sub.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
         tl.addWidget(ttl)
         tl.addSpacing(16)
         tl.addWidget(sub)
@@ -2006,13 +2062,13 @@ class HomeScreen(QWidget):
 
         split = QSplitter(Qt.Horizontal)
         self.deck_tree = DeckTree(self._data)
-        self.deck_tree.setMinimumWidth(240)
-        self.deck_tree.setMaximumWidth(320)
+        self.deck_tree.setMinimumWidth(260)
+        self.deck_tree.setMaximumWidth(420)
         self.deck_tree.deck_selected.connect(self._on_deck_selected)
         split.addWidget(self.deck_tree)
         self.deck_view = DeckView()
         split.addWidget(self.deck_view)
-        split.setSizes([280, 820])
+        split.setSizes([340, 860])
         L.addWidget(split, stretch=1)
 
     def _on_deck_selected(self, deck):
