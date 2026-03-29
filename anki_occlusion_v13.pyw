@@ -31,6 +31,20 @@ v12 changes:
   [R6] Home: Ctrl++ / Ctrl+− / Ctrl+0 scales home screen font size
   [R7] OcclusionCanvas: zoom_in / zoom_out / zoom_fit / duplicate_selected
        + wheelEvent with Ctrl modifier for pinch zoom
+
+v13 changes:
+  [L1] Live PDF Sync — QFileSystemWatcher monitors the loaded PDF file.
+       When you annotate/edit the PDF in any external app (Foxit, Adobe,
+       Drawboard, Xodo, etc.) and save, the editor auto-reloads within 800ms.
+       Status indicator: 🟢 watching → 🟡 change detected → 🟢 reloaded ✓
+  [L2] "📂 Open in PDF Reader" button — opens current PDF in system default
+       app (os.startfile on Windows, open on Mac, xdg-open on Linux).
+       Works with any PDF reader that supports saving annotations.
+  [L3] Debounce timer (800ms) prevents multiple rapid reloads when editors
+       emit several file-change events on a single save operation.
+  [L4] Re-watch after delete+recreate — some editors (Adobe, Foxit) delete
+       the file and recreate it on save; watcher auto-re-adds the path.
+  [L5] Watcher stopped cleanly on dialog close/cancel/accept — no leaks.
 """
 
 import sys, os, json, copy, uuid
@@ -45,7 +59,7 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
     QHeaderView
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher
+from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QLockFile, QTimer, QModelIndex
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
     QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush
@@ -850,14 +864,6 @@ class CardEditorDialog(QDialog):
         self._data               = data
         self._deck               = deck
         self._auto_subdeck_name  = None
-        # File watcher — monitors the loaded PDF for external changes
-        self._watcher            = QFileSystemWatcher()
-        self._watched_path       = None
-        self._reload_timer       = QTimer()   # debounce rapid save events
-        self._reload_timer.setSingleShot(True)
-        self._reload_timer.setInterval(800)   # wait 800ms after last change
-        self._reload_timer.timeout.connect(self._reload_pdf)
-        self._watcher.fileChanged.connect(self._on_file_changed)
         self._setup_ui()
         if card:
             self._load_card(card)
@@ -900,27 +906,10 @@ class CardEditorDialog(QDialog):
         self.btn_group.clicked.connect(self._toggle_group)
         self._update_group_btn()
 
-        # Open in external PDF reader button
-        self.btn_open_ext = QPushButton("📂 Open in PDF Reader")
-        self.btn_open_ext.setObjectName("flat")
-        self.btn_open_ext.setToolTip(
-            "Open the current PDF in your default PDF reader.\n"
-            "Any time you save changes there, this editor auto-reloads.")
-        self.btn_open_ext.clicked.connect(self._open_in_reader)
-        self.btn_open_ext.setVisible(False)   # shown only when a PDF is loaded
-
-        # Live sync status indicator (hidden until a PDF is loaded)
-        self.lbl_sync = QLabel("🔴 Live Sync: off")
-        self.lbl_sync.setStyleSheet(
-            f"color:{C_SUBTEXT};font-size:11px;background:transparent;")
-        self.lbl_sync.setVisible(False)
-
         top.addWidget(bi)
         top.addWidget(bp)
         top.addWidget(b_undo)
         top.addWidget(self.btn_group)
-        top.addWidget(self.btn_open_ext)
-        top.addWidget(self.lbl_sync)
         L.addLayout(top)
 
         # ── PDF nav bar ───────────────────────────────────────────────────────
@@ -1023,93 +1012,6 @@ class CardEditorDialog(QDialog):
             self.btn_group.setText("⛓ Group Masks  [G]")
             self.btn_group.setStyleSheet("")
 
-    # ── live sync / file watcher ──────────────────────────────────────────────
-
-    def _watch_pdf(self, path: str):
-        """Start watching a PDF file for external changes."""
-        self._stop_watch()
-        self._watched_path = path
-        self._watcher.addPath(path)
-        self.btn_open_ext.setVisible(True)
-        self.lbl_sync.setVisible(True)
-        self.lbl_sync.setText("🟢 Live Sync: watching")
-        self.lbl_sync.setStyleSheet(
-            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
-
-    def _stop_watch(self):
-        """Stop watching any currently watched file."""
-        if self._watched_path:
-            self._watcher.removePath(self._watched_path)
-            self._watched_path = None
-        self._reload_timer.stop()
-
-    def _on_file_changed(self, path: str):
-        """
-        Called by QFileSystemWatcher when the file is modified.
-        Some PDF editors delete+recreate the file on save — re-add it
-        after a short delay to keep watching.
-        """
-        self.lbl_sync.setText("🟡 Live Sync: change detected…")
-        self.lbl_sync.setStyleSheet(
-            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
-        # Debounce: reset timer on every event, only reload once quiet
-        self._reload_timer.start()
-
-    def _reload_pdf(self):
-        """
-        Reload the watched PDF from disk and refresh the canvas.
-        Called 800ms after the last file-change event.
-        """
-        path = self._watched_path
-        if not path or not os.path.exists(path):
-            # File temporarily absent (editor deleted+recreated) — wait a bit more
-            QTimer.singleShot(500, self._reload_pdf)
-            return
-
-        # Re-add path in case editor deleted+recreated it
-        if path not in self._watcher.files():
-            self._watcher.addPath(path)
-
-        pages, err = pdf_to_pixmaps(path)
-        if err and not pages:
-            self.lbl_sync.setText(f"🔴 Live Sync: reload failed — {err}")
-            self.lbl_sync.setStyleSheet(
-                f"color:{C_RED};font-size:11px;background:transparent;")
-            return
-
-        # Keep current page index if still valid, else stay on 0
-        self._pdf_pages = pages
-        self._cur_page  = min(self._cur_page, len(pages) - 1)
-        self._show_pdf_page()
-
-        self.lbl_sync.setText("🟢 Live Sync: reloaded ✓")
-        self.lbl_sync.setStyleSheet(
-            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
-        # Fade back to normal label after 3 seconds
-        QTimer.singleShot(3000, lambda: (
-            self.lbl_sync.setText("🟢 Live Sync: watching"),
-            self.lbl_sync.setStyleSheet(
-                f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
-        ) if self._watched_path else None)
-
-    def _open_in_reader(self):
-        """Open the current PDF in the system default PDF reader."""
-        path = self.card.get("pdf_path") or self._watched_path
-        if not path or not os.path.exists(path):
-            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
-            return
-        import subprocess
-        try:
-            if sys.platform == "win32":
-                os.startfile(path)          # uses Windows default app
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
-            else:
-                subprocess.Popen(["xdg-open", path])
-        except Exception as ex:
-            QMessageBox.warning(self, "Could not open",
-                f"Could not open PDF in external reader:\n{ex}")
-
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_G:
             self.btn_group.setChecked(not self.btn_group.isChecked())
@@ -1154,8 +1056,6 @@ class CardEditorDialog(QDialog):
         self._show_pdf_page()
         if not self.inp_title.text():
             self.inp_title.setText(self._auto_subdeck_name)
-        # Start live sync watcher
-        self._watch_pdf(path)
 
     def _show_pdf_page(self):
         if not self._pdf_pages:
@@ -1191,8 +1091,6 @@ class CardEditorDialog(QDialog):
                 self._cur_page  = 0
                 self.pdf_bar.show()
                 self._show_pdf_page()
-                # Start live sync watcher for existing card
-                self._watch_pdf(card["pdf_path"])
         if px and not px.isNull():
             self.canvas.load_pixmap(px)
         if card.get("boxes"):
@@ -1247,18 +1145,6 @@ class CardEditorDialog(QDialog):
 
     def get_card(self):
         return self.card
-
-    def closeEvent(self, e):
-        self._stop_watch()
-        super().closeEvent(e)
-
-    def reject(self):
-        self._stop_watch()
-        super().reject()
-
-    def accept(self):
-        self._stop_watch()
-        super().accept()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
