@@ -1,5 +1,5 @@
 """
-Anki Occlusion — PDF & Image Flashcard App  v12
+Anki Occlusion — PDF & Image Flashcard App  v14
 ================================================
 Changes from v9:
   [OPT-1]  Removed unused imports: QStackedWidget, QGroupBox, QImage
@@ -45,9 +45,22 @@ v13 changes:
   [L4] Re-watch after delete+recreate — some editors (Adobe, Foxit) delete
        the file and recreate it on save; watcher auto-re-adds the path.
   [L5] Watcher stopped cleanly on dialog close/cancel/accept — no leaks.
+
+v14 changes:
+  [T1] Tool Toolbar — vertical Anki-style toolbar on left of canvas:
+         Select (V), Rectangle (R), Ellipse (E), Text-Label (T)
+  [T2] Select Tool — click to select, drag to move, 8-handle resize
+  [T3] Ellipse Tool — draw oval/circle masks, stored & reviewed as ellipses
+  [T4] Text-Label Tool — click inside any mask to edit its label inline
+  [T5] Rotation — drag handle (circle above selected shape) to rotate
+       both rect and ellipse masks; angle stored per-box
+  [T6] Full Undo/Redo stack (Ctrl+Z / Ctrl+Y) in editor
+  [T7] Del key fix — always works when canvas has focus
+  [R8] Hide One, Guess One review mode — only the target mask hidden,
+       all other masks visible; toggle button in review header
 """
 
-import sys, os, json, copy, uuid
+import sys, os, json, copy, uuid, math
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
@@ -59,10 +72,10 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
     QHeaderView
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QLockFile, QTimer, QModelIndex
+from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush
+    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath
 )
 
 try:
@@ -492,25 +505,96 @@ SS = _build_ss()   # default — replaced at runtime by MainWindow when user cha
 #  OCCLUSION CANVAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ── Canvas helpers ────────────────────────────────────────────────────────────
+
+def _rotated_corners(cx, cy, w, h, angle_deg):
+    """Return the 4 corners of a rect rotated around its centre."""
+    rad = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    hw, hh = w / 2, h / 2
+    corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+    result = []
+    for dx, dy in corners:
+        rx = cx + dx * cos_a - dy * sin_a
+        ry = cy + dx * sin_a + dy * cos_a
+        result.append(QPointF(rx, ry))
+    return result
+
+def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
+    """Hit-test: is point (px,py) inside rotated rect?"""
+    rad = math.radians(-angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    dx, dy = px - cx, py - cy
+    lx =  dx * cos_a - dy * sin_a
+    ly =  dx * sin_a + dy * cos_a
+    return abs(lx) <= w / 2 and abs(ly) <= h / 2
+
+def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
+    """Hit-test: is point (px,py) inside rotated ellipse?"""
+    rad = math.radians(-angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    dx, dy = px - cx, py - cy
+    lx =  dx * cos_a - dy * sin_a
+    ly =  dx * sin_a + dy * cos_a
+    if rx < 1 or ry < 1:
+        return False
+    return (lx / rx) ** 2 + (ly / ry) ** 2 <= 1.0
+
+
 class OcclusionCanvas(QLabel):
     boxes_changed = pyqtSignal(list)
+
+    # draw_tool: "rect" | "ellipse" | "select" | "text"
+    TOOLS = ("select", "rect", "ellipse", "text")
+
+    # resize handle indices: 0=TL 1=TC 2=TR 3=ML 4=MR 5=BL 6=BC 7=BR
+    _HANDLE_R = 6    # handle radius in screen pixels
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self._px             : QPixmap = None
-        self._boxes          : list    = []
-        self._drawing                  = False
-        self._start                    = QPoint()
-        self._live                     = QRect()
-        self._mode                     = "edit"
-        self._scale                    = 1.0
-        self._selected_idx             = -1
-        self._selected_indices         = set()
-        self._target_idx               = -1
-        self.setMouseTracking(True)
+        self._px               : QPixmap = None
+        self._boxes            : list    = []
+        self._mode                       = "edit"   # "edit" | "review"
+        self._tool                       = "rect"   # current draw tool
+        self._scale                      = 1.0
+        self._selected_idx               = -1
+        self._selected_indices           = set()
+        self._target_idx                 = -1
+        self._review_mode_style          = "hide_all"  # "hide_all" | "hide_one"
 
-    # ── public ───────────────────────────────────────────────────────────────
+        # drawing state
+        self._drawing        = False
+        self._start          = QPointF()
+        self._live_rect      = QRectF()
+
+        # select/move/resize/rotate state
+        self._drag_op        = None   # None|"move"|"resize"|"rotate"
+        self._drag_handle    = -1
+        self._drag_start_pos = QPointF()
+        self._drag_orig_box  = None
+
+        # undo/redo stacks  (list of deep-copied box lists)
+        self._undo_stack : list = []
+        self._redo_stack : list = []
+
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  PUBLIC API
+    # ═════════════════════════════════════════════════════════════════════════
+
+    def set_tool(self, tool: str):
+        self._tool = tool
+        cursors = {
+            "select":  Qt.ArrowCursor,
+            "rect":    Qt.CrossCursor,
+            "ellipse": Qt.CrossCursor,
+            "text":    Qt.IBeamCursor,
+        }
+        self.setCursor(QCursor(cursors.get(tool, Qt.CrossCursor)))
+        self._redraw()
 
     def load_pixmap(self, px: QPixmap):
         if px is None or px.isNull():
@@ -520,23 +604,16 @@ class OcclusionCanvas(QLabel):
         self._px    = px
         self._boxes = []
         self._scale = 1.0
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self._redraw()
 
     def set_boxes(self, boxes):
-        self._boxes = [{"rect": QRect(b["rect"][0], b["rect"][1],
-                                      b["rect"][2], b["rect"][3]),
-                        "revealed": False,
-                        "label":    b.get("label", ""),
-                        "box_id":   b.get("box_id", "")}
-                       for b in boxes]
+        self._boxes = [self._deserialise_box(b, revealed=False) for b in boxes]
         self._redraw()
 
     def set_boxes_with_state(self, boxes):
-        self._boxes = [{"rect": QRect(b["rect"][0], b["rect"][1],
-                                      b["rect"][2], b["rect"][3]),
-                        "revealed": b.get("revealed", False),
-                        "label":    b.get("label", ""),
-                        "box_id":   b.get("box_id", "")}
+        self._boxes = [self._deserialise_box(b, revealed=b.get("revealed", False))
                        for b in boxes]
         self._redraw()
 
@@ -545,9 +622,13 @@ class OcclusionCanvas(QLabel):
                     "sm2_due", "sm2_last_quality", "box_id")
         result = []
         for b in self._boxes:
-            d = {"rect":  [b["rect"].x(), b["rect"].y(),
-                           b["rect"].width(), b["rect"].height()],
-                 "label": b.get("label", "")}
+            r = b["rect"]
+            d = {
+                "rect":  [r.x(), r.y(), r.width(), r.height()],
+                "label": b.get("label", ""),
+                "shape": b.get("shape", "rect"),
+                "angle": b.get("angle", 0.0),
+            }
             for k in SM2_KEYS:
                 if k in b:
                     d[k] = b[k]
@@ -561,6 +642,11 @@ class OcclusionCanvas(QLabel):
         self.setCursor(QCursor(Qt.PointingHandCursor if mode == "review" else Qt.CrossCursor))
         self._redraw()
 
+    def set_review_style(self, style: str):
+        """style: 'hide_all' | 'hide_one'"""
+        self._review_mode_style = style
+        self._redraw()
+
     def reveal_all(self):
         for b in self._boxes:
             b["revealed"] = True
@@ -572,7 +658,9 @@ class OcclusionCanvas(QLabel):
 
     def get_target_scaled_rect(self):
         if 0 <= self._target_idx < len(self._boxes):
-            return self._sr(self._boxes[self._target_idx]["rect"])
+            b  = self._boxes[self._target_idx]
+            sr = self._sr(b["rect"])
+            return sr
         return None
 
     def select_all(self):
@@ -583,6 +671,7 @@ class OcclusionCanvas(QLabel):
         self._redraw()
 
     def delete_selected_boxes(self):
+        self._push_undo()
         if self._selected_indices:
             for i in sorted(self._selected_indices, reverse=True):
                 if 0 <= i < len(self._boxes):
@@ -590,13 +679,14 @@ class OcclusionCanvas(QLabel):
             self._selected_indices = set()
             self._selected_idx     = -1
         elif self._selected_idx >= 0:
-            self.delete_box(self._selected_idx)
-            return
+            self._boxes.pop(self._selected_idx)
+            self._selected_idx = -1
         self._redraw()
         self.boxes_changed.emit(self.get_boxes())
 
     def delete_box(self, idx):
         if 0 <= idx < len(self._boxes):
+            self._push_undo()
             self._boxes.pop(idx)
             self._selected_idx = -1
             self._redraw()
@@ -606,6 +696,7 @@ class OcclusionCanvas(QLabel):
         self.delete_box(len(self._boxes) - 1)
 
     def clear_all(self):
+        self._push_undo()
         self._boxes        = []
         self._selected_idx = -1
         self._redraw()
@@ -619,6 +710,34 @@ class OcclusionCanvas(QLabel):
         if 0 <= idx < len(self._boxes):
             self._boxes[idx]["label"] = text
             self._redraw()
+
+    # ── undo / redo ──────────────────────────────────────────────────────────
+
+    def _push_undo(self):
+        self._undo_stack.append(copy.deepcopy(self._boxes))
+        self._redo_stack.clear()
+        if len(self._undo_stack) > 100:
+            self._undo_stack.pop(0)
+
+    def undo(self):
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(copy.deepcopy(self._boxes))
+        self._boxes = self._undo_stack.pop()
+        self._selected_idx = -1
+        self._selected_indices = set()
+        self._redraw()
+        self.boxes_changed.emit(self.get_boxes())
+
+    def redo(self):
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(copy.deepcopy(self._boxes))
+        self._boxes = self._redo_stack.pop()
+        self._selected_idx = -1
+        self._selected_indices = set()
+        self._redraw()
+        self.boxes_changed.emit(self.get_boxes())
 
     # ── zoom ─────────────────────────────────────────────────────────────────
 
@@ -638,17 +757,41 @@ class OcclusionCanvas(QLabel):
         self._redraw()
 
     def wheelEvent(self, e):
-        """Two-finger pinch-to-zoom on trackpad (Ctrl+scroll) and plain scroll."""
         if e.modifiers() & Qt.ControlModifier:
-            # pixelDelta is non-zero for trackpad pinch; angleDelta for mouse wheel
             delta = e.pixelDelta().y() if not e.pixelDelta().isNull() else e.angleDelta().y() / 8
-            factor = 1.0 + delta * 0.01
-            factor = max(0.8, min(factor, 1.25))   # clamp per-event step
+            factor = max(0.8, min(1.0 + delta * 0.01, 1.25))
             self._scale = max(0.05, min(8.0, self._scale * factor))
             self._redraw()
             e.accept()
         else:
             super().wheelEvent(e)
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  INTERNAL HELPERS
+    # ═════════════════════════════════════════════════════════════════════════
+
+    def _deserialise_box(self, b, revealed=False):
+        r = b["rect"]
+        return {
+            "rect":     QRectF(r[0], r[1], r[2], r[3]),
+            "shape":    b.get("shape", "rect"),
+            "angle":    float(b.get("angle", 0.0)),
+            "revealed": revealed,
+            "label":    b.get("label", ""),
+            "box_id":   b.get("box_id", ""),
+            **{k: b[k] for k in ("sm2_interval","sm2_repetitions","sm2_ease",
+                                  "sm2_due","sm2_last_quality")
+               if k in b}
+        }
+
+    def _ip(self, pos):
+        """Screen pos → image-space QPointF."""
+        return QPointF(pos.x() / self._scale, pos.y() / self._scale)
+
+    def _sr(self, r: QRectF) -> QRectF:
+        """Image-space QRectF → screen-space QRectF."""
+        return QRectF(r.x() * self._scale, r.y() * self._scale,
+                      r.width() * self._scale, r.height() * self._scale)
 
     def _spx(self):
         if not self._px:
@@ -657,9 +800,71 @@ class OcclusionCanvas(QLabel):
                                int(self._px.height() * self._scale),
                                Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-    def _sr(self, r):
-        return QRect(int(r.x()      * self._scale), int(r.y()      * self._scale),
-                     int(r.width()  * self._scale), int(r.height() * self._scale))
+    # ── handle positions (screen coords, for selected box) ───────────────────
+
+    def _handle_positions(self, idx):
+        """Return dict: 'resize' → list of 8 QPointF, 'rotate' → QPointF"""
+        if not (0 <= idx < len(self._boxes)):
+            return None
+        b  = self._boxes[idx]
+        sr = self._sr(b["rect"])
+        cx = sr.center().x()
+        cy = sr.center().y()
+        hw = sr.width()  / 2
+        hh = sr.height() / 2
+        ang = b.get("angle", 0.0)
+        rad = math.radians(ang)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+
+        def rot(dx, dy):
+            return QPointF(cx + dx * cos_a - dy * sin_a,
+                           cy + dx * sin_a + dy * cos_a)
+
+        handles = [
+            rot(-hw, -hh), rot(0, -hh), rot(hw, -hh),
+            rot(-hw,  0),               rot(hw,  0),
+            rot(-hw,  hh), rot(0,  hh), rot(hw,  hh),
+        ]
+        rotate_pt = rot(0, -hh - 24)
+        return {"resize": handles, "rotate": rotate_pt}
+
+    def _hit_handle(self, screen_pos, idx):
+        """
+        Returns ('rotate', -1) | ('resize', handle_idx) | ('box', -1) | None
+        """
+        hps = self._handle_positions(idx)
+        if not hps:
+            return None
+        sp = QPointF(screen_pos)
+        r  = self._HANDLE_R + 2
+        # rotate handle first (higher priority)
+        rpt = hps["rotate"]
+        if (sp - rpt).manhattanLength() <= r:
+            return ("rotate", -1)
+        for hi, hpt in enumerate(hps["resize"]):
+            if (sp - hpt).manhattanLength() <= r:
+                return ("resize", hi)
+        return None
+
+    def _hit_box(self, ip: QPointF):
+        """Return index of topmost box hit at image-space point, or -1."""
+        for i in range(len(self._boxes) - 1, -1, -1):
+            b  = self._boxes[i]
+            r  = b["rect"]
+            cx, cy = r.center().x(), r.center().y()
+            ang = b.get("angle", 0.0)
+            if b.get("shape") == "ellipse":
+                if _point_in_rotated_ellipse(ip.x(), ip.y(),
+                                             cx, cy,
+                                             r.width()/2, r.height()/2, ang):
+                    return i
+            else:
+                if _point_in_rotated_box(ip.x(), ip.y(),
+                                         cx, cy, r.width(), r.height(), ang):
+                    return i
+        return -1
+
+    # ── drawing ───────────────────────────────────────────────────────────────
 
     def _redraw(self):
         if not self._px or self._px.isNull():
@@ -672,104 +877,370 @@ class OcclusionCanvas(QLabel):
         p.setRenderHint(QPainter.Antialiasing)
 
         for i, b in enumerate(self._boxes):
-            sr  = self._sr(b["rect"])
-            lbl = b.get("label") or f"#{i+1}"
-            sel = (i == self._selected_idx)
+            self._draw_box(p, i, b)
 
-            if self._mode == "review" and not b["revealed"]:
-                if i == self._target_idx:
-                    p.fillRect(sr, QColor(C_GREEN))
-                    p.setPen(QPen(QColor("#1E1E2E"), 3))
-                    p.setFont(QFont("Segoe UI", 10, QFont.Bold))
-                    p.drawText(sr, Qt.AlignCenter, lbl)
-                else:
-                    p.fillRect(sr, QColor(C_MASK))
-                    p.setPen(QPen(QColor("#FFF"), 2))
-                    p.setFont(QFont("Segoe UI", 10, QFont.Bold))
-                    p.drawText(sr, Qt.AlignCenter, lbl)
-            elif self._mode == "review" and b["revealed"]:
-                p.setPen(QPen(QColor(C_GREEN), 2))
-                p.drawRect(sr)
-            else:
-                multi_sel = i in self._selected_indices
-                is_sel    = sel or multi_sel
-                fill      = QColor(C_MASK if not is_sel else "#50FA7B")
-                fill.setAlpha(155)
-                p.fillRect(sr, fill)
-                border_col = QColor("#FFF") if not is_sel else QColor(C_GREEN)
-                p.setPen(QPen(border_col, 2, Qt.DashLine))
-                p.drawRect(sr)
-                p.setPen(QPen(border_col, 1))
-                p.setFont(QFont("Segoe UI", 9))
-                p.drawText(sr, Qt.AlignCenter, lbl)
-
-        if self._drawing and not self._live.isNull():
-            sr = self._sr(self._live)
-            c  = QColor(C_ACCENT)
-            c.setAlpha(110)
-            p.fillRect(sr, c)
-            p.setPen(QPen(QColor(C_ACCENT), 2))
-            p.drawRect(sr)
+        # live preview while drawing
+        if self._drawing and not self._live_rect.isEmpty():
+            self._draw_live(p)
 
         p.end()
         self.setPixmap(canvas)
         self.resize(canvas.size())
 
-    def _ip(self, pos):
-        return QPoint(int(pos.x() / self._scale), int(pos.y() / self._scale))
+    def _draw_box(self, p: QPainter, i: int, b: dict):
+        sr    = self._sr(b["rect"])
+        cx    = sr.center().x()
+        cy    = sr.center().y()
+        ang   = b.get("angle", 0.0)
+        lbl   = b.get("label") or f"#{i+1}"
+        shape = b.get("shape", "rect")
+        sel   = (i == self._selected_idx) or (i in self._selected_indices)
 
-    # ── mouse ────────────────────────────────────────────────────────────────
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(ang)
+        local = QRectF(-sr.width()/2, -sr.height()/2, sr.width(), sr.height())
+
+        if self._mode == "review":
+            revealed  = b.get("revealed", False)
+            is_target = (i == self._target_idx)
+            hide_one  = (self._review_mode_style == "hide_one")
+
+            # hide_one: only target is hidden; others are fully transparent
+            if hide_one and not is_target:
+                # draw a subtle green outline — box is "visible / already known"
+                if not revealed:
+                    p.setPen(QPen(QColor(C_GREEN), 1, Qt.DotLine))
+                    p.setBrush(Qt.NoBrush)
+                    if shape == "ellipse":
+                        p.drawEllipse(local)
+                    else:
+                        p.drawRect(local)
+                p.restore()
+                return
+
+            if not revealed:
+                color = QColor(C_GREEN if is_target else C_MASK)
+                p.setBrush(QBrush(color))
+                p.setPen(QPen(QColor("#1E1E2E" if is_target else "#FFF"), 2))
+                if shape == "ellipse":
+                    p.drawEllipse(local)
+                else:
+                    p.drawRect(local)
+                p.setPen(QPen(QColor("#1E1E2E" if is_target else "#FFF"), 1))
+                p.setFont(QFont("Segoe UI", 10, QFont.Bold))
+                p.drawText(local, Qt.AlignCenter, lbl)
+            else:
+                p.setPen(QPen(QColor(C_GREEN), 2))
+                p.setBrush(Qt.NoBrush)
+                if shape == "ellipse":
+                    p.drawEllipse(local)
+                else:
+                    p.drawRect(local)
+        else:
+            # edit mode
+            fill = QColor("#50FA7B" if sel else C_MASK)
+            fill.setAlpha(155)
+            p.setBrush(QBrush(fill))
+            border_col = QColor(C_GREEN if sel else "#FFF")
+            p.setPen(QPen(border_col, 2, Qt.DashLine))
+            if shape == "ellipse":
+                p.drawEllipse(local)
+            else:
+                p.drawRect(local)
+            p.setPen(QPen(border_col, 1))
+            p.setFont(QFont("Segoe UI", 9))
+            p.drawText(local, Qt.AlignCenter, lbl)
+
+        p.restore()
+
+        # draw resize + rotate handles for selected box in edit mode
+        if self._mode == "edit" and i == self._selected_idx:
+            self._draw_handles(p, i)
+
+    def _draw_handles(self, p: QPainter, idx: int):
+        hps = self._handle_positions(idx)
+        if not hps:
+            return
+        # resize handles
+        p.setPen(QPen(QColor(C_GREEN), 1))
+        p.setBrush(QBrush(QColor("#1E1E2E")))
+        hr = self._HANDLE_R
+        for hpt in hps["resize"]:
+            p.drawEllipse(hpt, hr, hr)
+        # rotate handle
+        rpt = hps["rotate"]
+        # stem from top-centre handle to rotate handle
+        top_c = hps["resize"][1]
+        p.setPen(QPen(QColor(C_ACCENT), 1))
+        p.drawLine(top_c, rpt)
+        p.setBrush(QBrush(QColor(C_ACCENT)))
+        p.setPen(QPen(QColor("#FFF"), 1))
+        p.drawEllipse(rpt, hr + 1, hr + 1)
+        # little arrow symbol inside rotate handle
+        p.setFont(QFont("Segoe UI", 7))
+        p.setPen(QPen(QColor("#FFF"), 1))
+        p.drawText(QRectF(rpt.x() - 6, rpt.y() - 6, 12, 12), Qt.AlignCenter, "↻")
+
+    def _draw_live(self, p: QPainter):
+        sr = self._sr(self._live_rect)
+        c  = QColor(C_ACCENT)
+        c.setAlpha(110)
+        p.setBrush(QBrush(c))
+        p.setPen(QPen(QColor(C_ACCENT), 2))
+        if self._tool == "ellipse":
+            p.drawEllipse(sr)
+        else:
+            p.drawRect(sr)
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  MOUSE EVENTS
+    # ═════════════════════════════════════════════════════════════════════════
 
     def mousePressEvent(self, e):
         if not self._px:
             return
+        self.setFocus()
+        sp = QPointF(e.pos())
         ip = self._ip(e.pos())
-        if self._mode == "edit" and e.button() == Qt.LeftButton:
-            for i, b in enumerate(self._boxes):
-                if b["rect"].contains(ip):
-                    self._selected_idx     = i
-                    self._selected_indices = set()
-                    self._redraw()
-                    self.boxes_changed.emit(self.get_boxes())
+
+        if self._mode == "review" and e.button() == Qt.LeftButton:
+            hit = self._hit_box(ip)
+            if hit >= 0 and not self._boxes[hit]["revealed"]:
+                self._boxes[hit]["revealed"] = True
+                self._redraw()
+            return
+
+        if self._mode != "edit" or e.button() != Qt.LeftButton:
+            return
+
+        # ── select tool ──────────────────────────────────────────────────────
+        if self._tool == "select":
+            # check handles of currently selected box first
+            if self._selected_idx >= 0:
+                hit_h = self._hit_handle(sp, self._selected_idx)
+                if hit_h:
+                    op, hi = hit_h
+                    self._drag_op        = op
+                    self._drag_handle    = hi
+                    self._drag_start_pos = sp
+                    self._drag_orig_box  = copy.deepcopy(self._boxes[self._selected_idx])
+                    self._push_undo()
                     return
-            self._selected_indices = set()
-            self._drawing = True
-            self._start   = ip
-            self._live    = QRect()
-        elif self._mode == "review" and e.button() == Qt.LeftButton:
-            for b in self._boxes:
-                if b["rect"].contains(ip) and not b["revealed"]:
-                    b["revealed"] = True
-                    self._redraw()
-                    break
+            # hit-test boxes
+            hit = self._hit_box(ip)
+            if hit >= 0:
+                self._selected_idx     = hit
+                self._selected_indices = set()
+                self._drag_op          = "move"
+                self._drag_start_pos   = sp
+                self._drag_orig_box    = copy.deepcopy(self._boxes[hit])
+                self._push_undo()
+                self._redraw()
+                self.boxes_changed.emit(self.get_boxes())
+            else:
+                self._selected_idx     = -1
+                self._selected_indices = set()
+                self._redraw()
+            return
+
+        # ── text tool ────────────────────────────────────────────────────────
+        if self._tool == "text":
+            hit = self._hit_box(ip)
+            if hit >= 0:
+                self._selected_idx = hit
+                self._redraw()
+                self.boxes_changed.emit(self.get_boxes())
+            return
+
+        # ── rect / ellipse draw ───────────────────────────────────────────────
+        self._selected_indices = set()
+        self._drawing  = True
+        self._start    = ip
+        self._live_rect = QRectF()
 
     def mouseMoveEvent(self, e):
+        sp = QPointF(e.pos())
+        ip = self._ip(e.pos())
+
         if self._drawing:
-            self._live = QRect(self._start, self._ip(e.pos())).normalized()
+            x0, y0 = self._start.x(), self._start.y()
+            x1, y1 = ip.x(), ip.y()
+            self._live_rect = QRectF(
+                min(x0, x1), min(y0, y1),
+                abs(x1 - x0), abs(y1 - y0))
             self._redraw()
+            return
+
+        if self._drag_op == "move" and self._selected_idx >= 0:
+            delta = (sp - self._drag_start_pos) / self._scale
+            orig  = self._drag_orig_box["rect"]
+            self._boxes[self._selected_idx]["rect"] = QRectF(
+                orig.x() + delta.x(), orig.y() + delta.y(),
+                orig.width(), orig.height())
+            self._redraw()
+            return
+
+        if self._drag_op == "resize" and self._selected_idx >= 0:
+            self._do_resize(sp)
+            return
+
+        if self._drag_op == "rotate" and self._selected_idx >= 0:
+            b  = self._boxes[self._selected_idx]
+            sr = self._sr(b["rect"])
+            cx, cy = sr.center().x(), sr.center().y()
+            angle = math.degrees(math.atan2(sp.y() - cy, sp.x() - cx)) + 90
+            b["angle"] = round(angle, 1)
+            self._redraw()
+            return
+
+        # cursor feedback in select mode
+        if self._tool == "select" and self._mode == "edit":
+            if self._selected_idx >= 0:
+                hh = self._hit_handle(sp, self._selected_idx)
+                if hh:
+                    self.setCursor(QCursor(Qt.SizeAllCursor if hh[0] == "rotate"
+                                          else Qt.SizeFDiagCursor))
+                    return
+            self.setCursor(QCursor(Qt.ArrowCursor))
 
     def mouseReleaseEvent(self, e):
         if self._drawing and e.button() == Qt.LeftButton:
             self._drawing = False
-            rect = QRect(self._start, self._ip(e.pos())).normalized()
-            if rect.width() > 8 and rect.height() > 8:
-                self._boxes.append({"rect": rect, "revealed": False, "label": ""})
+            r = self._live_rect
+            if r.width() > 6 and r.height() > 6:
+                self._push_undo()
+                self._boxes.append({
+                    "rect":     r,
+                    "shape":    self._tool if self._tool in ("rect", "ellipse") else "rect",
+                    "angle":    0.0,
+                    "revealed": False,
+                    "label":    "",
+                })
                 self._selected_idx = len(self._boxes) - 1
                 self._redraw()
                 self.boxes_changed.emit(self.get_boxes())
-            self._live = QRect()
+            self._live_rect = QRectF()
             self._redraw()
+
+        if self._drag_op:
+            self._drag_op     = None
+            self._drag_handle = -1
+            self._drag_orig_box = None
+            self.boxes_changed.emit(self.get_boxes())
+            self._redraw()
+
+    def _do_resize(self, sp: QPointF):
+        """Resize selected box by moving one of 8 handles, respecting rotation."""
+        idx  = self._selected_idx
+        b    = self._boxes[idx]
+        orig = self._drag_orig_box
+        hi   = self._drag_handle
+
+        # Work in image space
+        delta = (sp - self._drag_start_pos) / self._scale
+        ang   = orig.get("angle", 0.0)
+        rad   = math.radians(-ang)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        # Rotate delta into box-local space
+        ldx =  delta.x() * cos_a - delta.y() * sin_a
+        ldy =  delta.x() * sin_a + delta.y() * cos_a
+
+        r   = orig["rect"]
+        x, y, w, h = r.x(), r.y(), r.width(), r.height()
+        cx, cy = x + w/2, y + h/2
+
+        # Handle index → which edges to move
+        # 0=TL 1=TC 2=TR 3=ML 4=MR 5=BL 6=BC 7=BR
+        move_left  = hi in (0, 3, 5)
+        move_right = hi in (2, 4, 7)
+        move_top   = hi in (0, 1, 2)
+        move_bot   = hi in (5, 6, 7)
+
+        new_x, new_y, new_w, new_h = x, y, w, h
+        if move_left:
+            new_x = x + ldx;  new_w = max(10, w - ldx)
+        if move_right:
+            new_w = max(10, w + ldx)
+        if move_top:
+            new_y = y + ldy;  new_h = max(10, h - ldy)
+        if move_bot:
+            new_h = max(10, h + ldy)
+
+        b["rect"]  = QRectF(new_x, new_y, new_w, new_h)
+        b["angle"] = ang
+        self._redraw()
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  KEYBOARD
+    # ═════════════════════════════════════════════════════════════════════════
+
+    def keyPressEvent(self, e):
+        mods = e.modifiers()
+        key  = e.key()
+        if key == Qt.Key_Delete:
+            self.delete_selected_boxes()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
+            self.undo()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Y:
+            self.redo()
+        elif mods & Qt.ControlModifier and key == Qt.Key_A:
+            self.select_all()
+        else:
+            super().keyPressEvent(e)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
 
-    def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Delete:
-            self.delete_selected_boxes()
-        elif e.key() == Qt.Key_A and e.modifiers() & Qt.ControlModifier:
-            self.select_all()
-        else:
-            super().keyPressEvent(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TOOL BAR  — vertical Anki-style tool selector
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ToolBar(QWidget):
+    """Vertical left toolbar — Anki-style icon-only tool buttons."""
+    tool_changed = pyqtSignal(str)
+
+    _TOOLS = [
+        ("select",  "⬡", "Select / Move / Resize / Rotate  [V]"),
+        ("rect",    "□",  "Rectangle mask  [R]"),
+        ("ellipse", "○",  "Ellipse / Circle mask  [E]"),
+        ("text",    "T",  "Edit label of clicked mask  [T]"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(40)
+        self.setStyleSheet(
+            f"QWidget{{background:#F5F5F5;border-right:1px solid #D0D0D0;}}")
+        L = QVBoxLayout(self)
+        L.setContentsMargins(4, 6, 4, 6)
+        L.setSpacing(2)
+        self._btns = {}
+        for tool, icon, tip in self._TOOLS:
+            b = QPushButton(icon)
+            b.setToolTip(tip)
+            b.setCheckable(True)
+            b.setFixedSize(32, 32)
+            b.setStyleSheet(
+                "QPushButton{background:transparent;color:#333;"
+                "border:none;border-radius:4px;font-size:18px;font-weight:bold;}"
+                "QPushButton:checked{background:#4A90D9;color:white;}"
+                "QPushButton:hover:!checked{background:#E0E0E0;}")
+            b.clicked.connect(lambda _, t=tool: self._select(t))
+            L.addWidget(b)
+            self._btns[tool] = b
+        L.addStretch()
+        self._select("rect")
+
+    def _select(self, tool: str):
+        for t, b in self._btns.items():
+            b.setChecked(t == tool)
+        self.tool_changed.emit(tool)
+
+    def select_tool(self, tool: str):
+        self._select(tool)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -785,31 +1256,29 @@ class MaskPanel(QWidget):
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
-        L.setContentsMargins(0, 0, 0, 0)
-        L.setSpacing(6)
-
-        hdr = QLabel("🔲  Occlusion Masks")
-        hdr.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        L.addWidget(hdr)
+        L.setContentsMargins(6, 6, 6, 6)
+        L.setSpacing(4)
 
         self.list_w = QListWidget()
         self.list_w.currentRowChanged.connect(self._on_select)
         L.addWidget(self.list_w, stretch=1)
 
-        lbl_e = QLabel("Label for selected mask:")
-        lbl_e.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
+        lbl_e = QLabel("Label:")
+        lbl_e.setStyleSheet("color:#555;font-size:11px;background:transparent;")
         L.addWidget(lbl_e)
         self.inp_label = QLineEdit()
         self.inp_label.setPlaceholderText("e.g. Mitochondria")
         self.inp_label.textChanged.connect(self._on_label_change)
         L.addWidget(self.inp_label)
 
-        btn_row  = QHBoxLayout()
-        b_del    = QPushButton("🗑 Delete")
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+        b_del   = QPushButton("🗑 Delete")
         b_del.setObjectName("danger")
+        b_del.setFixedHeight(26)
         b_del.clicked.connect(self._delete_selected)
-        b_clear  = QPushButton("✕ Clear All")
-        b_clear.setObjectName("flat")
+        b_clear = QPushButton("✕ Clear All")
+        b_clear.setFixedHeight(26)
         b_clear.clicked.connect(self._canvas.clear_all)
         btn_row.addWidget(b_del)
         btn_row.addWidget(b_clear)
@@ -861,9 +1330,18 @@ class CardEditorDialog(QDialog):
         self.card                = card or {}
         self._pdf_pages          = []
         self._cur_page           = 0
+        self._combined_px        = QPixmap()   # combined PDF pixmap
         self._data               = data
         self._deck               = deck
         self._auto_subdeck_name  = None
+        # File watcher — monitors loaded PDF for external changes
+        self._watcher            = QFileSystemWatcher()
+        self._watched_path       = None
+        self._reload_timer       = QTimer()
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(800)
+        self._reload_timer.timeout.connect(self._reload_pdf)
+        self._watcher.fileChanged.connect(self._on_file_changed)
         self._setup_ui()
         if card:
             self._load_card(card)
@@ -873,128 +1351,275 @@ class CardEditorDialog(QDialog):
         return super().exec_()
 
     def _setup_ui(self):
+        # ── Anki-style: light background for the editor dialog ────────────────
+        self.setStyleSheet("""
+            QDialog { background: #ECECEC; }
+            QWidget { background: #ECECEC; color: #222; font-family: 'Segoe UI'; font-size: 12px; }
+            QFrame  { background: #ECECEC; border: none; border-radius: 0; }
+            QLabel  { background: transparent; color: #333; }
+            QLineEdit, QTextEdit {
+                background: white; color: #111;
+                border: 1px solid #CCC; border-radius: 4px; padding: 4px;
+            }
+            QListWidget {
+                background: white; color: #111;
+                border: 1px solid #CCC; border-radius: 4px;
+            }
+            QListWidget::item:selected { background: #4A90D9; color: white; }
+            QPushButton {
+                background: #E8E8E8; color: #333;
+                border: 1px solid #BBB; border-radius: 4px;
+                padding: 4px 10px; font-size: 12px;
+            }
+            QPushButton:hover  { background: #D8D8D8; }
+            QPushButton:pressed{ background: #C8C8C8; }
+            QPushButton#accent { background: #4A90D9; color: white; border: 1px solid #3A7FC9; }
+            QPushButton#accent:hover { background: #3A7FC9; }
+            QPushButton#danger { background: #E05555; color: white; border: 1px solid #C04040; }
+            QPushButton#danger:hover { background: #C04040; }
+            QPushButton#success{ background: #4CAF50; color: white; border: 1px solid #3A9040; }
+            QPushButton#success:hover{ background: #3A9040; }
+            QScrollArea { border: none; background: #888; }
+            QScrollBar:vertical   { background:#CCC; width:10px; border-radius:5px; }
+            QScrollBar::handle:vertical { background:#999; border-radius:5px; }
+            QScrollBar:horizontal { background:#CCC; height:10px; border-radius:5px; }
+            QScrollBar::handle:horizontal { background:#999; border-radius:5px; }
+            QSplitter::handle { background: #D0D0D0; width: 1px; }
+        """)
+
         L = QVBoxLayout(self)
-        L.setContentsMargins(12, 12, 12, 12)
-        L.setSpacing(8)
+        L.setContentsMargins(0, 0, 0, 0)
+        L.setSpacing(0)
 
-        # ── toolbar ───────────────────────────────────────────────────────────
-        top = QHBoxLayout()
-        ttl = QLabel("✏️  Anki-Style Occlusion Editor")
-        ttl.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        top.addWidget(ttl)
-        top.addStretch()
+        # ══ TOP MENUBAR-STYLE TOOLBAR ════════════════════════════════════════
+        top_bar = QFrame()
+        top_bar.setFixedHeight(38)
+        top_bar.setStyleSheet(
+            "QFrame{background:#F0F0F0;border-bottom:1px solid #C8C8C8;border-radius:0;}"
+            "QPushButton{background:transparent;border:none;border-radius:3px;"
+            "padding:3px 8px;font-size:12px;color:#333;}"
+            "QPushButton:hover{background:#DDD;}"
+            "QPushButton:pressed{background:#CCC;}"
+            "QPushButton:checked{background:#C8D8EE;color:#1a5ca8;}"
+        )
+        tl = QHBoxLayout(top_bar)
+        tl.setContentsMargins(6, 2, 6, 2)
+        tl.setSpacing(1)
 
-        bi = QPushButton("🖼 Load Image")
-        bi.clicked.connect(self._load_image)
-        bp = QPushButton("📄 Load PDF")
-        bp.clicked.connect(self._load_pdf)
-        bp.setEnabled(PDF_SUPPORT)
+        def _tbtn(label, tip, checkable=False):
+            b = QPushButton(label)
+            b.setToolTip(tip)
+            b.setCheckable(checkable)
+            b.setFixedHeight(28)
+            return b
+
+        # File ops
+        btn_img  = _tbtn("🖼 Image", "Load Image")
+        btn_pdf  = _tbtn("📄 PDF",   "Load PDF")
+        btn_pdf.setEnabled(PDF_SUPPORT)
         if not PDF_SUPPORT:
-            bp.setToolTip("pip install pymupdf")
+            btn_pdf.setToolTip("pip install pymupdf")
+        btn_img.clicked.connect(self._load_image)
+        btn_pdf.clicked.connect(self._load_pdf)
 
-        b_undo = QPushButton("↩ Undo Last")
-        b_undo.setObjectName("flat")
-        b_undo.clicked.connect(lambda: self.canvas.delete_last())
+        sep1 = QFrame(); sep1.setFrameShape(QFrame.VLine)
+        sep1.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
+        sep1.setFixedWidth(1)
 
-        self.btn_group = QPushButton("⛓ Group Masks  [G]")
-        self.btn_group.setObjectName("flat")
-        self.btn_group.setToolTip(
-            "OFF (default): each mask is its own review card\n"
-            "ON: all masks on this card are reviewed together")
-        self.btn_group.setCheckable(True)
+        # Undo / Redo
+        btn_undo = _tbtn("↩", "Undo  Ctrl+Z")
+        btn_redo = _tbtn("↪", "Redo  Ctrl+Y")
+        btn_undo.setFixedWidth(32)
+        btn_redo.setFixedWidth(32)
+        btn_undo.clicked.connect(lambda: self.canvas.undo())
+        btn_redo.clicked.connect(lambda: self.canvas.redo())
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine)
+        sep2.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
+        sep2.setFixedWidth(1)
+
+        # Zoom
+        btn_zi  = _tbtn("🔍+", "Zoom In  Ctrl++")
+        btn_zo  = _tbtn("🔍−", "Zoom Out  Ctrl+−")
+        btn_zf  = _tbtn("⊡",   "Zoom Fit  Ctrl+0")
+        btn_zi.setFixedWidth(40); btn_zo.setFixedWidth(40); btn_zf.setFixedWidth(28)
+
+        sep3 = QFrame(); sep3.setFrameShape(QFrame.VLine)
+        sep3.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
+        sep3.setFixedWidth(1)
+
+        # Delete / Clear
+        btn_del   = _tbtn("🗑", "Delete selected  Del")
+        btn_clear = _tbtn("✕ All", "Clear all masks")
+        btn_del.setFixedWidth(32)
+
+        sep4 = QFrame(); sep4.setFrameShape(QFrame.VLine)
+        sep4.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
+        sep4.setFixedWidth(1)
+
+        # Group toggle
+        self.btn_group = _tbtn("⛓ Group", "Each mask = one card  /  All masks together", checkable=True)
         self.btn_group.setChecked(self.card.get("grouped", False))
         self.btn_group.clicked.connect(self._toggle_group)
-        self._update_group_btn()
 
-        top.addWidget(bi)
-        top.addWidget(bp)
-        top.addWidget(b_undo)
-        top.addWidget(self.btn_group)
-        L.addLayout(top)
+        sep5 = QFrame(); sep5.setFrameShape(QFrame.VLine)
+        sep5.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
+        sep5.setFixedWidth(1)
 
-        # ── PDF nav bar ───────────────────────────────────────────────────────
+        # PDF reader / live sync
+        self.btn_open_ext = _tbtn("📂 Open PDF", "Open in system PDF reader")
+        self.btn_open_ext.clicked.connect(self._open_in_reader)
+        self.btn_open_ext.setVisible(False)
+        self.lbl_sync = QLabel("")
+        self.lbl_sync.setStyleSheet("background:transparent;font-size:11px;color:#666;")
+        self.lbl_sync.setVisible(False)
+
+        for w in [btn_img, btn_pdf, sep1,
+                  btn_undo, btn_redo, sep2,
+                  btn_zi, btn_zo, btn_zf, sep3,
+                  btn_del, btn_clear, sep4,
+                  self.btn_group, sep5,
+                  self.btn_open_ext, self.lbl_sync]:
+            tl.addWidget(w)
+        tl.addStretch()
+
+        # Save / Cancel on the right
+        btn_cancel = _tbtn("Cancel", "Discard changes")
+        btn_save   = QPushButton("💾  Save Card")
+        btn_save.setObjectName("success")
+        btn_save.setFixedHeight(28)
+        btn_save.setToolTip("Save  Ctrl+S")
+        btn_cancel.clicked.connect(self.reject)
+        btn_save.clicked.connect(self._save)
+        tl.addWidget(btn_cancel)
+        tl.addSpacing(4)
+        tl.addWidget(btn_save)
+
+        L.addWidget(top_bar)
+
+        # ══ PDF INFO BAR (hidden until PDF loaded) ═══════════════════════════
         self.pdf_bar = QWidget()
+        self.pdf_bar.setStyleSheet("background:#E8E8E8;border-bottom:1px solid #CCC;")
         pb = QHBoxLayout(self.pdf_bar)
-        pb.setContentsMargins(0, 0, 0, 0)
-        self.btn_pp = QPushButton("◀ Prev")
-        self.btn_pp.setObjectName("flat")
-        self.btn_pp.setFixedWidth(80)
-        self.lbl_pg = QLabel("Page 1/1")
-        self.lbl_pg.setAlignment(Qt.AlignCenter)
-        self.btn_np = QPushButton("Next ▶")
-        self.btn_np.setObjectName("flat")
-        self.btn_np.setFixedWidth(80)
-        self.btn_pp.clicked.connect(self._prev_page)
-        self.btn_np.clicked.connect(self._next_page)
-        pb.addWidget(self.btn_pp)
+        pb.setContentsMargins(10, 2, 10, 2)
+        self.lbl_pg = QLabel("")
+        self.lbl_pg.setStyleSheet("color:#555;font-size:11px;background:transparent;")
         pb.addWidget(self.lbl_pg)
-        pb.addWidget(self.btn_np)
         pb.addStretch()
+        self.pdf_bar.setFixedHeight(22)
         self.pdf_bar.hide()
         L.addWidget(self.pdf_bar)
 
-        # ── main 3-panel split ────────────────────────────────────────────────
-        main_split = QSplitter(Qt.Horizontal)
+        # ══ MAIN AREA: left toolbar | canvas | right panel ═══════════════════
+        main_row = QHBoxLayout()
+        main_row.setContentsMargins(0, 0, 0, 0)
+        main_row.setSpacing(0)
 
-        canvas_w = QWidget()
-        cl = QVBoxLayout(canvas_w)
-        cl.setContentsMargins(0, 0, 0, 0)
+        # Left vertical tool sidebar
+        self.toolbar = ToolBar()
+        main_row.addWidget(self.toolbar)
+
+        # Canvas scroll area — grey background like Anki
         sc = _ZoomableScrollArea()
         sc.setWidgetResizable(True)
+        sc.setStyleSheet("QScrollArea{background:#787878;border:none;}")
         self.canvas = OcclusionCanvas()
+        self.canvas.setStyleSheet("background:transparent;")
         sc.setWidget(self.canvas)
         sc._canvas = self.canvas
-        cl.addWidget(sc)
-        hint = QLabel("🖱 Drag to draw  •  Click to select  •  Ctrl+A all  •  Del delete  •  Ctrl+Scroll or pinch to zoom  •  G group")
-        hint.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
-        hint.setAlignment(Qt.AlignCenter)
-        cl.addWidget(hint)
-        main_split.addWidget(canvas_w)
+        self.toolbar.tool_changed.connect(self.canvas.set_tool)
+        main_row.addWidget(sc, stretch=1)
+
+        # Right panel — mask list + card metadata (collapsible splitter)
+        right_panel = QWidget()
+        right_panel.setFixedWidth(240)
+        right_panel.setStyleSheet(
+            "QWidget{background:#F5F5F5;}"
+            "QFrame{background:#F5F5F5;border:none;}"
+        )
+        rp = QVBoxLayout(right_panel)
+        rp.setContentsMargins(0, 0, 0, 0)
+        rp.setSpacing(0)
+
+        # ── Mask list section ────────────────────────────────────────────────
+        ml_hdr = QFrame()
+        ml_hdr.setFixedHeight(28)
+        ml_hdr.setStyleSheet(
+            "QFrame{background:#E0E0E0;border-bottom:1px solid #CCC;}"
+            "QLabel{color:#444;font-size:11px;font-weight:bold;background:transparent;}")
+        ml_hl = QHBoxLayout(ml_hdr)
+        ml_hl.setContentsMargins(8, 0, 8, 0)
+        ml_hl.addWidget(QLabel("Masks"))
+        ml_hl.addStretch()
+        rp.addWidget(ml_hdr)
 
         self.mask_panel = MaskPanel(self.canvas)
-        self.mask_panel.setMinimumWidth(200)
-        self.mask_panel.setMaximumWidth(260)
-        main_split.addWidget(self.mask_panel)
+        rp.addWidget(self.mask_panel, stretch=1)
 
-        meta_w = QWidget()
-        ml = QVBoxLayout(meta_w)
-        ml.setContentsMargins(8, 0, 0, 0)
-        fr = QFrame()
-        fl = QFormLayout(fr)
-        fl.setContentsMargins(12, 12, 12, 12)
-        fl.setSpacing(10)
+        # ── Card info section ────────────────────────────────────────────────
+        ci_hdr = QFrame()
+        ci_hdr.setFixedHeight(28)
+        ci_hdr.setStyleSheet(
+            "QFrame{background:#E0E0E0;border-top:1px solid #CCC;"
+            "border-bottom:1px solid #CCC;}"
+            "QLabel{color:#444;font-size:11px;font-weight:bold;background:transparent;}")
+        ci_hl = QHBoxLayout(ci_hdr)
+        ci_hl.setContentsMargins(8, 0, 8, 0)
+        ci_hl.addWidget(QLabel("Card Info"))
+        rp.addWidget(ci_hdr)
+
+        ci_body = QWidget()
+        ci_body.setStyleSheet("QWidget{background:#F5F5F5;}")
+        cib = QFormLayout(ci_body)
+        cib.setContentsMargins(8, 8, 8, 8)
+        cib.setSpacing(6)
         self.inp_title = QLineEdit()
         self.inp_title.setPlaceholderText("Card title…")
         self.inp_tags  = QLineEdit()
         self.inp_tags.setPlaceholderText("tag1, tag2…")
         self.inp_notes = QTextEdit()
         self.inp_notes.setPlaceholderText("Hints / notes…")
-        self.inp_notes.setMaximumHeight(80)
-        fl.addRow("Title:", self.inp_title)
-        fl.addRow("Tags:",  self.inp_tags)
-        fl.addRow("Notes:", self.inp_notes)
-        ml.addWidget(QLabel("📝 Card Info"))
-        ml.addWidget(fr)
-        ml.addStretch()
-        meta_w.setMinimumWidth(200)
-        meta_w.setMaximumWidth(260)
-        main_split.addWidget(meta_w)
+        self.inp_notes.setMaximumHeight(64)
+        cib.addRow("Title:", self.inp_title)
+        cib.addRow("Tags:",  self.inp_tags)
+        cib.addRow("Notes:", self.inp_notes)
+        rp.addWidget(ci_body)
 
-        main_split.setSizes([620, 220, 220])
-        L.addWidget(main_split, stretch=1)
+        main_row.addWidget(right_panel)
 
-        # ── bottom buttons ────────────────────────────────────────────────────
-        bot = QHBoxLayout()
-        bot.addStretch()
-        bc = QPushButton("Cancel")
-        bc.setObjectName("flat")
-        bc.clicked.connect(self.reject)
-        bs = QPushButton("💾 Save Card")
-        bs.setObjectName("success")
-        bs.clicked.connect(self._save)
-        bot.addWidget(bc)
-        bot.addWidget(bs)
-        L.addLayout(bot)
+        body_w = QWidget()
+        body_w.setLayout(main_row)
+        L.addWidget(body_w, stretch=1)
+
+        # ══ BOTTOM HINT BAR ══════════════════════════════════════════════════
+        hint_bar = QFrame()
+        hint_bar.setFixedHeight(20)
+        hint_bar.setStyleSheet(
+            "QFrame{background:#E8E8E8;border-top:1px solid #CCC;border-radius:0;}"
+            "QLabel{background:transparent;color:#777;font-size:10px;}")
+        hl = QHBoxLayout(hint_bar)
+        hl.setContentsMargins(10, 0, 10, 0)
+        hl.addWidget(QLabel(
+            "V=Select  R=Rect  E=Ellipse  T=Label  |  "
+            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo  |  "
+            "Ctrl+Scroll=zoom  G=group"))
+        hl.addStretch()
+        L.addWidget(hint_bar)
+
+        # wire zoom buttons
+        btn_zi.clicked.connect(lambda: self.canvas.zoom_in())
+        btn_zo.clicked.connect(lambda: self.canvas.zoom_out())
+        btn_zf.clicked.connect(self._zoom_fit)
+        btn_del.clicked.connect(lambda: self.canvas.delete_selected_boxes())
+        btn_clear.clicked.connect(self.canvas.clear_all)
+
+        # store scroll area ref for zoom fit
+        self._sc = sc
+
+    def _zoom_fit(self):
+        vp = self._sc.viewport()
+        self.canvas.zoom_fit(vp.width(), vp.height())
+
 
     # ── loaders ───────────────────────────────────────────────────────────────
 
@@ -1004,18 +1629,30 @@ class CardEditorDialog(QDialog):
 
     def _update_group_btn(self):
         if self.btn_group.isChecked():
-            self.btn_group.setText("⛓ Grouped  [G]")
             self.btn_group.setStyleSheet(
-                f"background:#50FA7B;color:#1E1E2E;border-radius:8px;"
-                f"padding:8px 18px;font-weight:bold;")
+                "background:#4CAF50;color:white;border:1px solid #3A9040;"
+                "border-radius:4px;padding:3px 8px;font-size:12px;")
         else:
-            self.btn_group.setText("⛓ Group Masks  [G]")
             self.btn_group.setStyleSheet("")
 
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key_G:
+        key  = e.key()
+        mods = e.modifiers()
+        if key == Qt.Key_G:
             self.btn_group.setChecked(not self.btn_group.isChecked())
             self._toggle_group()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
+            self.canvas.undo()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Y:
+            self.canvas.redo()
+        elif key == Qt.Key_V:
+            self.toolbar.select_tool("select")
+        elif key == Qt.Key_R:
+            self.toolbar.select_tool("rect")
+        elif key == Qt.Key_E:
+            self.toolbar.select_tool("ellipse")
+        elif key == Qt.Key_T:
+            self.toolbar.select_tool("text")
         else:
             super().keyPressEvent(e)
 
@@ -1032,6 +1669,9 @@ class CardEditorDialog(QDialog):
         self.card.pop("pdf_path", None)
         self._pdf_pages = []
         self.pdf_bar.hide()
+        self.btn_open_ext.setVisible(False)
+        self.lbl_sync.setVisible(False)
+        self._stop_watch()
         self.canvas.load_pixmap(px)
         if not self.inp_title.text():
             self.inp_title.setText(os.path.splitext(os.path.basename(path))[0])
@@ -1043,37 +1683,38 @@ class CardEditorDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Load PDF", "", "PDF (*.pdf)")
         if not path:
             return
-        pages, err = pdf_to_pixmaps(path)
-        if err and not pages:
-            QMessageBox.warning(self, "PDF Error", err)
+        combined, err, _ = pdf_to_combined_pixmap(path)
+        if combined.isNull():
+            QMessageBox.warning(self, "PDF Error", err or "Could not render PDF.")
             return
-        self._pdf_pages = pages
-        self._cur_page  = 0
+        self._combined_px = combined   # keep ref so Qt does not GC it
         self.card["pdf_path"] = path
         self.card.pop("image_path", None)
         self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
+        # Show file name + page count in info bar
+        try:
+            _doc = fitz.open(path); n = len(_doc); _doc.close()
+        except Exception:
+            n = 0
+        self.lbl_pg.setText(
+            f"📄  {os.path.basename(path)}  —  {n} page{'s' if n != 1 else ''}"
+            f"  •  scroll to navigate")
         self.pdf_bar.show()
-        self._show_pdf_page()
+        self.canvas.load_pixmap(self._combined_px)
         if not self.inp_title.text():
             self.inp_title.setText(self._auto_subdeck_name)
+        # Start live sync watcher
+        self._watch_pdf(path)
 
     def _show_pdf_page(self):
-        if not self._pdf_pages:
-            return
-        self.canvas.load_pixmap(self._pdf_pages[self._cur_page])
-        self.lbl_pg.setText(f"Page {self._cur_page+1}/{len(self._pdf_pages)}")
-        self.btn_pp.setEnabled(self._cur_page > 0)
-        self.btn_np.setEnabled(self._cur_page < len(self._pdf_pages) - 1)
+        """Legacy stub — PDF is now displayed as one combined scrollable pixmap."""
+        pass
 
     def _prev_page(self):
-        if self._cur_page > 0:
-            self._cur_page -= 1
-            self._show_pdf_page()
+        pass
 
     def _next_page(self):
-        if self._cur_page < len(self._pdf_pages) - 1:
-            self._cur_page += 1
-            self._show_pdf_page()
+        pass
 
     def _load_card(self, card):
         self.inp_title.setText(card.get("title", ""))
@@ -1085,17 +1726,111 @@ class CardEditorDialog(QDialog):
         if card.get("image_path") and os.path.exists(card["image_path"]):
             px = QPixmap(card["image_path"])
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
-            pages, _ = pdf_to_pixmaps(card["pdf_path"])
-            if pages:
-                self._pdf_pages = pages
-                self._cur_page  = 0
+            path = card["pdf_path"]
+            combined, _, _ = pdf_to_combined_pixmap(path)
+            if not combined.isNull():
+                self._combined_px = combined
+                try:
+                    _doc = fitz.open(path); n = len(_doc); _doc.close()
+                except Exception:
+                    n = 0
+                self.lbl_pg.setText(
+                    f"📄  {os.path.basename(path)}  —  {n} page{'s' if n != 1 else ''}"
+                    f"  •  scroll to navigate")
                 self.pdf_bar.show()
-                self._show_pdf_page()
+                px = self._combined_px
+                self._watch_pdf(path)
         if px and not px.isNull():
             self.canvas.load_pixmap(px)
         if card.get("boxes"):
             self.canvas.set_boxes(card["boxes"])
             self.mask_panel._refresh(card["boxes"])
+
+    # ── live sync / file watcher ──────────────────────────────────────────────
+
+    def _watch_pdf(self, path: str):
+        """Start watching a PDF file for external changes."""
+        self._stop_watch()
+        self._watched_path = path
+        self._watcher.addPath(path)
+        self.btn_open_ext.setVisible(True)
+        self.lbl_sync.setVisible(True)
+        self.lbl_sync.setText("🟢 Live Sync: watching")
+        self.lbl_sync.setStyleSheet(
+            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+
+    def _stop_watch(self):
+        """Stop watching any currently watched file."""
+        if self._watched_path:
+            self._watcher.removePath(self._watched_path)
+            self._watched_path = None
+        self._reload_timer.stop()
+
+    def _on_file_changed(self, path: str):
+        """Called by QFileSystemWatcher when the file is modified."""
+        self.lbl_sync.setText("🟡 Live Sync: change detected…")
+        self.lbl_sync.setStyleSheet(
+            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+        self._reload_timer.start()   # debounce
+
+    def _reload_pdf(self):
+        """Reload the watched PDF — called 800ms after last file-change event."""
+        path = self._watched_path
+        if not path or not os.path.exists(path):
+            QTimer.singleShot(500, self._reload_pdf)
+            return
+        if path not in self._watcher.files():
+            self._watcher.addPath(path)
+        combined, err, _ = pdf_to_combined_pixmap(path)
+        if combined.isNull():
+            self.lbl_sync.setText(f"🔴 Live Sync: reload failed — {err or 'null pixmap'}")
+            self.lbl_sync.setStyleSheet(
+                f"color:{C_RED};font-size:11px;background:transparent;")
+            return
+        # Save current boxes before reloading pixmap
+        saved_boxes = self.canvas.get_boxes()
+        self._combined_px = combined
+        self.canvas.load_pixmap(self._combined_px)
+        # Restore masks after reload
+        if saved_boxes:
+            self.canvas.set_boxes(saved_boxes)
+            self.mask_panel._refresh(saved_boxes)
+        self.lbl_sync.setText("🟢 Live Sync: reloaded ✓")
+        self.lbl_sync.setStyleSheet(
+            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+        QTimer.singleShot(3000, lambda: (
+            self.lbl_sync.setText("🟢 Live Sync: watching"),
+        ) if self._watched_path else None)
+
+    def _open_in_reader(self):
+        """Open the current PDF in the system default reader."""
+        path = self.card.get("pdf_path") or self._watched_path
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
+            return
+        import subprocess
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as ex:
+            QMessageBox.warning(self, "Could not open",
+                f"Could not open PDF in external reader:\n{ex}")
+
+    def closeEvent(self, e):
+        self._stop_watch()
+        super().closeEvent(e)
+
+    def reject(self):
+        self._stop_watch()
+        super().reject()
+
+    def accept(self):
+        self._stop_watch()
+        super().accept()
 
     # ── save ──────────────────────────────────────────────────────────────────
 
@@ -1272,6 +2007,8 @@ class ReviewScreen(QWidget):
             self._zoom_fit()
         elif key == Qt.Key_C:
             self._center_on_target()
+        elif key == Qt.Key_E:
+            self._edit_current_card()
         else:
             super().keyPressEvent(e)
 
@@ -1346,6 +2083,35 @@ class ReviewScreen(QWidget):
         b_center.clicked.connect(self._center_on_target)
         hdr.addWidget(b_zin); hdr.addWidget(b_zout)
         hdr.addWidget(b_zfit); hdr.addWidget(b_center)
+
+        b_edit = QPushButton("✏ Edit Card")
+        b_edit.setToolTip(
+            "Open card editor mid-review.\n"
+            "Edit masks or open PDF in external reader, then return here.")
+        b_edit.setStyleSheet(
+            f"QPushButton{{background:{C_ACCENT};color:white;border:none;"
+            f"border-radius:6px;padding:4px 14px;font-size:12px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:#6A58E0;}}")
+        b_edit.clicked.connect(self._edit_current_card)
+        hdr.addWidget(b_edit)
+
+        # Hide All / Hide One toggle  [T8]
+        self._btn_mode = QPushButton("🟧 Hide All, Guess One")
+        self._btn_mode.setCheckable(True)
+        self._btn_mode.setChecked(False)
+        self._btn_mode.setToolTip(
+            "Toggle review mode:\n"
+            "OFF = Hide All, Guess One (all masks hidden)\n"
+            "ON  = Hide One, Guess One (only target mask hidden)")
+        self._btn_mode.setStyleSheet(
+            f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
+            f"border:1px solid {C_BORDER};border-radius:6px;"
+            f"padding:4px 14px;font-size:12px;}}"
+            f"QPushButton:checked{{background:#6A3FBF;color:white;"
+            f"border:1px solid {C_ACCENT};}}"
+            f"QPushButton:hover{{background:{C_SURFACE};}}")
+        self._btn_mode.clicked.connect(self._toggle_review_mode)
+        hdr.addWidget(self._btn_mode)
 
         b_exit = QPushButton("✕ Exit")
         b_exit.setStyleSheet(
@@ -1463,6 +2229,15 @@ class ReviewScreen(QWidget):
 
     # ── zoom / center helpers ─────────────────────────────────────────────────
 
+    def _toggle_review_mode(self):
+        """Switch between Hide All / Hide One review styles."""
+        if self._btn_mode.isChecked():
+            self._btn_mode.setText("👁 Hide One, Guess One")
+            self.canvas.set_review_style("hide_one")
+        else:
+            self._btn_mode.setText("🟧 Hide All, Guess One")
+            self.canvas.set_review_style("hide_all")
+
     def _zoom_fit(self):
         vp = self._canvas_scroll.viewport()
         self.canvas.zoom_fit(vp.width(), vp.height())
@@ -1475,6 +2250,65 @@ class ReviewScreen(QWidget):
             hbar = self._canvas_scroll.horizontalScrollBar()
             hbar.setValue(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2))
             vbar.setValue(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2))
+
+    def _edit_current_card(self):
+        """
+        Open CardEditorDialog for the current card mid-review.
+        After the editor closes (saved or cancelled), reload the canvas
+        so any changes — new masks, updated PDF annotations — show immediately.
+        """
+        if not (0 <= self._idx < len(self._items)):
+            return
+
+        card, box_idx, sm2_obj = self._items[self._idx]
+
+        # Re-find the live card dict from _data so edits persist to storage
+        # (self._items holds references to the original dicts, so edits are live)
+        dlg = CardEditorDialog(None, card=dict(card), data=self._data)
+        result = dlg.exec_()
+
+        if result == QDialog.Accepted:
+            # Merge edited card back — update in place so SM-2 refs stay valid
+            edited = dlg.get_card()
+            card.update(edited)
+            if self._data:
+                save_data(self._data)
+
+        # Reload canvas regardless of save/cancel — user may have changed PDF externally
+        self._reload_current_canvas()
+
+    def _reload_current_canvas(self):
+        """Reload the canvas pixmap for the current card (after edit or PDF change)."""
+        if not (0 <= self._idx < len(self._items)):
+            return
+        card, box_idx, _ = self._items[self._idx]
+
+        px = None
+        if card.get("image_path") and os.path.exists(card["image_path"]):
+            px = QPixmap(card["image_path"])
+        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
+            key = card["pdf_path"] + "_combined"
+            combined, _, _ = pdf_to_combined_pixmap(card["pdf_path"])
+            if not combined.isNull():
+                self._pdf_cache[key] = combined
+                px = combined
+
+        if px and not px.isNull():
+            self._current_pixmap = px
+            boxes = card.get("boxes", [])
+            self.canvas.load_pixmap(px)
+            if box_idx is None:
+                self.canvas.set_boxes(boxes)
+            else:
+                display_boxes = [
+                    {"rect":     b["rect"],
+                     "label":    b.get("label", ""),
+                     "revealed": (i != box_idx)}
+                    for i, b in enumerate(boxes)
+                ]
+                self.canvas.set_boxes_with_state(display_boxes)
+            self.canvas.set_mode("review")
+            self.canvas.set_target_box(box_idx if box_idx is not None else -1)
 
     def _load_item(self):
         if self._idx >= len(self._items):
@@ -2172,8 +3006,9 @@ class AboutDialog(QDialog):
         _section("Keyboard shortcuts",
             "F11 — fullscreen        Ctrl+Z / Y — undo / redo\n"
             "Space — reveal answer   1/2/3/4 — rate Again/Hard/Good/Easy\n"
-            "Ctrl+A — select all masks       Del — delete selected\n"
-            "Ctrl+Scroll — zoom      C — center on active mask")
+            "V=Select  R=Rect  E=Ellipse  T=Label  Del=delete selected\n"
+            "Ctrl+A — select all     Ctrl+Scroll — zoom\n"
+            "C — center on mask      Drag ↻ handle — rotate shape")
 
         _section("Data location",
             f"{DATA_FILE}")
@@ -2226,9 +3061,12 @@ class OnboardingDialog(QDialog):
             "title": "Step 2 — Add a Card",
             "body":  (
                 "Select a deck, then click  ＋ Add Card.\n\n"
-                "Load a PDF or image (or paste a screenshot with Ctrl+V), "
-                "then drag rectangles over the parts you want to hide.\n\n"
-                "Each rectangle becomes one flashcard question automatically."
+                "Load a PDF or image, then use the toolbar:\n"
+                "  ▶ Select — move, resize, rotate shapes\n"
+                "  ▭ Rectangle — draw rectangular masks\n"
+                "  ⬭ Ellipse — draw oval masks\n"
+                "  T Text — click a mask to edit its label\n\n"
+                "Each mask becomes one flashcard question automatically."
             ),
         },
         {
@@ -2236,11 +3074,12 @@ class OnboardingDialog(QDialog):
             "title": "Step 3 — Review",
             "body":  (
                 "Click  🔴 Review Due  to start your session.\n\n"
-                "The app shows each hidden mask one at a time. "
-                "Press Space to reveal the answer, then rate yourself:\n\n"
+                "Two review modes (toggle in review header):\n"
+                "  🟧 Hide All, Guess One — all masks hidden one by one\n"
+                "  👁 Hide One, Guess One — only the target mask hidden\n\n"
+                "Press Space to reveal, then rate yourself:\n"
                 "  1 = Again   2 = Hard   3 = Good   4 = Easy\n\n"
-                "The scheduler decides when you'll see each card next — "
-                "minutes for new cards, days or weeks for well-known ones."
+                "The scheduler decides when you'll see each card next."
             ),
         },
     ]
