@@ -1,0 +1,24 @@
+# Python bytecode and cache
+__pycache__/
+*.pyc
+
+# Virtual Environment folders
+/venv/
+/.venv/
+/env/
+/.env/
+
+# Test files and artifacts
+# This will ignore test_anki_occlusion_v14.py
+test_*.py
+.pytest_cache/
+.coverage
+
+# Application-generated files (user data, locks, temp files)
+anki_occlusion_data.json
+*.lock
+*.tmp
+
+# IDE configuration
+.vscode/
+.idea/
