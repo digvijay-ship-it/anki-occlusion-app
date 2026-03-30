@@ -1022,7 +1022,10 @@ class OcclusionCanvas(QLabel):
 
         if self._mode == "review":
             revealed  = b.get("revealed", False)
-            is_target = (i == self._target_idx)
+            # is_target: true for the single target box OR any box in the target group
+            in_target_group = (bool(self._target_group_id) and
+                               b.get("group_id", "") == self._target_group_id)
+            is_target = (i == self._target_idx) or in_target_group
             hide_one  = (self._review_mode_style == "hide_one")
 
             # hide_one: only target is hidden; others are fully transparent
@@ -1039,14 +1042,9 @@ class OcclusionCanvas(QLabel):
                 return
 
             if not revealed:
-                in_target_group = (bool(self._target_group_id) and
-                                   b.get("group_id", "") == self._target_group_id)
                 if is_target:
                     color    = QColor(C_GREEN)
                     text_col = "#1E1E2E"
-                elif in_target_group:
-                    color    = QColor(C_GROUP)
-                    text_col = "#FFF"
                 else:
                     color    = QColor(C_MASK)
                     text_col = "#FFF"
@@ -2491,10 +2489,12 @@ class ReviewScreen(QWidget):
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(-1)
-                self.canvas.set_target_group(gid)
+                self.canvas.set_mode("review")
+                self.canvas.set_target_group(gid)   # AFTER set_mode so it is not cleared
             elif box_idx is None:
                 self.canvas.set_boxes(boxes)
                 self.canvas.set_target_box(-1)
+                self.canvas.set_mode("review")
             else:
                 display_boxes = [
                     {"rect": b["rect"], "label": b.get("label",""),
@@ -2504,7 +2504,7 @@ class ReviewScreen(QWidget):
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(box_idx)
-            self.canvas.set_mode("review")
+                self.canvas.set_mode("review")
 
     def _load_item(self):
         if self._idx >= len(self._items):
@@ -2571,10 +2571,12 @@ class ReviewScreen(QWidget):
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(-1)
-                self.canvas.set_target_group(gid)
+                self.canvas.set_mode("review")
+                self.canvas.set_target_group(gid)   # AFTER set_mode so it is not cleared
             elif box_idx is None:
                 self.canvas.set_boxes(boxes)
                 self.canvas.set_target_box(-1)
+                self.canvas.set_mode("review")
             else:
                 display_boxes = [
                     {"rect":     b["rect"],
@@ -2587,8 +2589,7 @@ class ReviewScreen(QWidget):
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(box_idx)
-
-            self.canvas.set_mode("review")
+                self.canvas.set_mode("review")
 
             # Auto-scale: fit image WIDTH to viewport (like a PDF viewer / real Anki).
             # Do it after a short delay so the viewport has its final size.
