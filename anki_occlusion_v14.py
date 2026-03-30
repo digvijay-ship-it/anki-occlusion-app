@@ -110,7 +110,7 @@ DATA_FILE = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
 #  schedule to-the-minute during learning.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-LEARNING_STEPS  = [1, 6, 10, 15]   # minutes — configurable
+LEARNING_STEPS  = [1, 10]           # minutes — matches real Anki default (1m → 10m → graduate)
 GRADUATING_IV   = 1                 # days after completing all learning steps
 EASY_IV         = 4                 # days for Easy on a new/learning card
 RELEARN_STEPS   = [10]              # minutes — after failing a review card
@@ -173,12 +173,19 @@ def sched_update(c, quality):
         due       = _due_in_minutes(steps[0])
 
     elif quality == 3:
-        # Hard → repeat current step (don't advance)
+        # Hard → real Anki behaviour:
+        #   on step 0: average of step[0] and step[1]  (e.g. (1+10)/2 = 5m)
+        #   on any other step: repeat current step
         if state in ("learning", "relearn"):
             steps     = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
             new_state = state
             new_step  = step
-            due       = _due_in_minutes(steps[min(step, len(steps) - 1)])
+            if step == 0 and len(steps) > 1:
+                # Average of first two steps, capped at 1 day more than step[0]
+                hard_mins = (steps[0] + steps[1]) // 2
+            else:
+                hard_mins = steps[min(step, len(steps) - 1)]
+            due = _due_in_minutes(hard_mins)
         else:
             # Hard in review → slightly shorter interval
             new_state = "review"
@@ -796,11 +803,11 @@ class OcclusionCanvas(QLabel):
     # ── zoom ─────────────────────────────────────────────────────────────────
 
     def zoom_in(self):
-        self._scale = min(self._scale * 1.25, 8.0)
+        self._scale = min(self._scale * 1.10, 8.0)
         self._redraw()
 
     def zoom_out(self):
-        self._scale = max(self._scale / 1.25, 0.05)
+        self._scale = max(self._scale / 1.10, 0.05)
         self._redraw()
 
     def zoom_fit(self, viewport_w, viewport_h):
@@ -812,8 +819,15 @@ class OcclusionCanvas(QLabel):
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
-            delta = e.pixelDelta().y() if not e.pixelDelta().isNull() else e.angleDelta().y() / 8
-            factor = max(0.8, min(1.0 + delta * 0.01, 1.25))
+            # Always use angleDelta (standardised: 120 units per scroll notch).
+            # pixelDelta can be huge on trackpads, causing jumpy zoom.
+            angle = e.angleDelta().y()
+            if angle == 0:
+                e.accept()
+                return
+            # Each full notch (120 units) → 10% zoom step
+            factor = 1.0 + (angle / 120.0) * 0.10
+            factor = max(0.90, min(factor, 1.11))   # clamp: max ~11% per notch
             self._scale = max(0.05, min(8.0, self._scale * factor))
             self._redraw()
             e.accept()
@@ -1696,6 +1710,7 @@ class CardEditorDialog(QDialog):
         self.mask_panel = MaskPanel(self.canvas)
         rp.addWidget(self.mask_panel, stretch=1)
 
+        self.mask_panel.list_w.currentRowChanged.connect(self._center_on_mask)
         # ── Card info section ────────────────────────────────────────────────
         ci_hdr = QFrame()
         ci_hdr.setFixedHeight(28)
@@ -1761,7 +1776,20 @@ class CardEditorDialog(QDialog):
         vp = self._sc.viewport()
         self.canvas.zoom_fit(vp.width(), vp.height())
 
-
+    def _center_on_mask(self, row):
+        # अगर कोई गलत क्लिक हो जाए तो इग्नोर करो
+        if not (0 <= row < len(self.canvas._boxes)):
+            return
+            
+        # उस मास्क की स्क्रीन पर असली लोकेशन निकालो
+        r = self.canvas._sr(self.canvas._boxes[row]["rect"])
+        
+        # स्क्रॉलबार्स को पकड़ो और स्क्रीन को एकदम सेंटर में फेंक दो!
+        vbar = self._sc.verticalScrollBar()
+        hbar = self._sc.horizontalScrollBar()
+        hbar.setValue(int(max(0, r.center().x() - self._sc.viewport().width()  // 2)))
+        vbar.setValue(int(max(0, r.center().y() - self._sc.viewport().height() // 2)))
+        
     # ── loaders ───────────────────────────────────────────────────────────────
 
     def _toggle_group(self):
@@ -2342,12 +2370,17 @@ class ReviewScreen(QWidget):
         lq.setStyleSheet(f"color:{C_SUBTEXT};")
         rfl.addWidget(lq)
 
-        br = QHBoxLayout(); br.setSpacing(6)
+        br = QHBoxLayout(); br.setSpacing(8)
         RATING_STYLES = {
-            "danger":  f"background:{C_RED};color:white;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
-            "hard":    "background:#E08030;color:white;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
-            "success": f"background:{C_GREEN};color:#1E1E2E;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
-            "warning": f"background:{C_YELLOW};color:#1E1E2E;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            # Muted, Anki-inspired tones — readable but not glaring
+            "danger":  "background:#5C2A2A;color:#FFB3B3;border:1px solid #7A3535;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "hard":    "background:#5C3D1A;color:#FFCC88;border:1px solid #7A5225;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "success": "background:#1E4A2A;color:#88DDAA;border:1px solid #2A6B3C;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "warning": "background:#4A4A1A;color:#E8E888;border:1px solid #66661F;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
         }
         self._rating_btns = []
         for lbl, obj, q in self.RATINGS:
