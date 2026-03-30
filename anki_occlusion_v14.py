@@ -461,6 +461,7 @@ C_TEXT    = "#CDD6F4"
 C_SUBTEXT = "#A6ADC8"
 C_BORDER  = "#45475A"
 C_MASK    = "#F7916A"
+C_GROUP   = "#BD93F9"
 
 BASE_FONT_SIZE = 11   # pt — user can change via A+ / A− buttons, saved to data file
 
@@ -561,6 +562,7 @@ class OcclusionCanvas(QLabel):
         self._selected_idx               = -1
         self._selected_indices           = set()
         self._target_idx                 = -1
+        self._target_group_id            = ""
         self._review_mode_style          = "hide_all"  # "hide_all" | "hide_one"
 
         # drawing state
@@ -624,10 +626,11 @@ class OcclusionCanvas(QLabel):
         for b in self._boxes:
             r = b["rect"]
             d = {
-                "rect":  [r.x(), r.y(), r.width(), r.height()],
-                "label": b.get("label", ""),
-                "shape": b.get("shape", "rect"),
-                "angle": b.get("angle", 0.0),
+                "rect":     [r.x(), r.y(), r.width(), r.height()],
+                "label":    b.get("label", ""),
+                "shape":    b.get("shape", "rect"),
+                "angle":    b.get("angle", 0.0),
+                "group_id": b.get("group_id", ""),   # "" = ungrouped
             }
             for k in SM2_KEYS:
                 if k in b:
@@ -637,9 +640,15 @@ class OcclusionCanvas(QLabel):
 
     def set_mode(self, mode):
         self._mode = mode
+        self._target_group_id = ""
         for b in self._boxes:
             b["revealed"] = False
-        self.setCursor(QCursor(Qt.PointingHandCursor if mode == "review" else Qt.CrossCursor))
+        if mode == "review":
+            self.setFocusPolicy(Qt.NoFocus)   # never steal Space in review
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+        else:
+            self.setFocusPolicy(Qt.StrongFocus)
+            self.setCursor(QCursor(Qt.CrossCursor))
         self._redraw()
 
     def set_review_style(self, style: str):
@@ -656,11 +665,23 @@ class OcclusionCanvas(QLabel):
         self._target_idx = idx
         self._redraw()
 
+    def set_target_group(self, gid: str):
+        self._target_group_id = gid
+        self._redraw()
+
     def get_target_scaled_rect(self):
+        if self._target_group_id:
+            rects = [self._sr(b["rect"]) for b in self._boxes
+                     if b.get("group_id", "") == self._target_group_id]
+            if rects:
+                from PyQt5.QtCore import QRectF as _QRF
+                x1 = min(r.left()   for r in rects)
+                y1 = min(r.top()    for r in rects)
+                x2 = max(r.right()  for r in rects)
+                y2 = max(r.bottom() for r in rects)
+                return _QRF(x1, y1, x2 - x1, y2 - y1)
         if 0 <= self._target_idx < len(self._boxes):
-            b  = self._boxes[self._target_idx]
-            sr = self._sr(b["rect"])
-            return sr
+            return self._sr(self._boxes[self._target_idx]["rect"])
         return None
 
     def select_all(self):
@@ -710,6 +731,39 @@ class OcclusionCanvas(QLabel):
         if 0 <= idx < len(self._boxes):
             self._boxes[idx]["label"] = text
             self._redraw()
+
+    def group_selected(self):
+        """Assign a shared group_id to all currently selected boxes."""
+        indices = self._get_all_selected()
+        if len(indices) < 2:
+            self._show_toast("⚠ Select 2+ masks to group")
+            return
+        gid = str(uuid.uuid4())[:8]   # short id, visible in mask panel
+        self._push_undo()
+        for i in indices:
+            self._boxes[i]["group_id"] = gid
+        self._redraw()
+        self.boxes_changed.emit(self.get_boxes())
+        self._show_toast(f"⛓ {len(indices)} masks grouped")
+
+    def ungroup_selected(self):
+        """Remove group_id from selected boxes."""
+        indices = self._get_all_selected()
+        if not indices:
+            return
+        self._push_undo()
+        for i in indices:
+            self._boxes[i]["group_id"] = ""
+        self._redraw()
+        self.boxes_changed.emit(self.get_boxes())
+        self._show_toast(f"✂ {len(indices)} masks ungrouped")
+
+    def _get_all_selected(self):
+        """Return sorted list of all selected indices."""
+        result = set(self._selected_indices)
+        if self._selected_idx >= 0:
+            result.add(self._selected_idx)
+        return sorted(result)
 
     # ── undo / redo ──────────────────────────────────────────────────────────
 
@@ -779,6 +833,7 @@ class OcclusionCanvas(QLabel):
             "revealed": revealed,
             "label":    b.get("label", ""),
             "box_id":   b.get("box_id", ""),
+            "group_id": b.get("group_id", ""),   # "" = ungrouped
             **{k: b[k] for k in ("sm2_interval","sm2_repetitions","sm2_ease",
                                   "sm2_due","sm2_last_quality")
                if k in b}
@@ -845,6 +900,56 @@ class OcclusionCanvas(QLabel):
             if (sp - hpt).manhattanLength() <= r:
                 return ("resize", hi)
         return None
+
+
+    def _show_toast(self, msg: str):
+        """Show a brief floating notice on the canvas."""
+        if not hasattr(self, "_toast_label"):
+            from PyQt5.QtWidgets import QLabel
+            self._toast_label = QLabel(self)
+            self._toast_label.setStyleSheet(
+                "QLabel{background:rgba(30,30,46,210);color:#BD93F9;"
+                "border:1px solid #BD93F9;border-radius:6px;"
+                "padding:4px 12px;font-size:12px;font-weight:bold;}")
+            self._toast_label.hide()
+        if not hasattr(self, "_toast_timer"):
+            from PyQt5.QtCore import QTimer
+            self._toast_timer = QTimer(self)
+            self._toast_timer.setSingleShot(True)
+            self._toast_timer.timeout.connect(self._toast_label.hide)
+        self._toast_label.setText(msg)
+        self._toast_label.adjustSize()
+        # centre it near top of canvas
+        x = (self.width()  - self._toast_label.width())  // 2
+        y = 18
+        self._toast_label.move(x, y)
+        self._toast_label.show()
+        self._toast_label.raise_()
+        self._toast_timer.start(1800)
+
+    def _select_box(self, hit: int, add_to_selection: bool = False):
+        """Select a box; if it belongs to a group, select the whole group."""
+        if hit < 0:
+            self._selected_idx     = -1
+            self._selected_indices = set()
+            self._redraw()
+            return
+        gid = self._boxes[hit].get("group_id", "")
+        if gid:
+            members = {i for i, b in enumerate(self._boxes)
+                       if b.get("group_id", "") == gid}
+            if add_to_selection:
+                self._selected_indices |= members
+            else:
+                self._selected_indices = members
+        else:
+            if add_to_selection:
+                self._selected_indices.add(hit)
+            else:
+                self._selected_indices = set()
+        self._selected_idx = hit
+        self._redraw()
+        self.boxes_changed.emit(self.get_boxes())
 
     def _hit_box(self, ip: QPointF):
         """Return index of topmost box hit at image-space point, or -1."""
@@ -920,14 +1025,24 @@ class OcclusionCanvas(QLabel):
                 return
 
             if not revealed:
-                color = QColor(C_GREEN if is_target else C_MASK)
+                in_target_group = (bool(self._target_group_id) and
+                                   b.get("group_id", "") == self._target_group_id)
+                if is_target:
+                    color    = QColor(C_GREEN)
+                    text_col = "#1E1E2E"
+                elif in_target_group:
+                    color    = QColor(C_GROUP)
+                    text_col = "#FFF"
+                else:
+                    color    = QColor(C_MASK)
+                    text_col = "#FFF"
                 p.setBrush(QBrush(color))
-                p.setPen(QPen(QColor("#1E1E2E" if is_target else "#FFF"), 2))
+                p.setPen(QPen(QColor(text_col), 2))
                 if shape == "ellipse":
                     p.drawEllipse(local)
                 else:
                     p.drawRect(local)
-                p.setPen(QPen(QColor("#1E1E2E" if is_target else "#FFF"), 1))
+                p.setPen(QPen(QColor(text_col), 1))
                 p.setFont(QFont("Segoe UI", 10, QFont.Bold))
                 p.drawText(local, Qt.AlignCenter, lbl)
             else:
@@ -939,18 +1054,26 @@ class OcclusionCanvas(QLabel):
                     p.drawRect(local)
         else:
             # edit mode
-            fill = QColor("#50FA7B" if sel else C_MASK)
+            gid    = b.get("group_id", "")
+            grouped = bool(gid)
+            fill = QColor("#50FA7B" if sel else
+                          "#6EB5FF" if grouped else C_MASK)
             fill.setAlpha(155)
             p.setBrush(QBrush(fill))
-            border_col = QColor(C_GREEN if sel else "#FFF")
-            p.setPen(QPen(border_col, 2, Qt.DashLine))
+            border_col = QColor(C_GREEN if sel else
+                                "#2288FF" if grouped else "#FFF")
+            p.setPen(QPen(border_col, 2, Qt.DashLine if not grouped else Qt.SolidLine))
             if shape == "ellipse":
                 p.drawEllipse(local)
             else:
                 p.drawRect(local)
             p.setPen(QPen(border_col, 1))
             p.setFont(QFont("Segoe UI", 9))
-            p.drawText(local, Qt.AlignCenter, lbl)
+            # show group badge
+            display_lbl = lbl
+            if grouped:
+                display_lbl = f"[{gid[:4]}] {lbl}" if lbl else f"[{gid[:4]}]"
+            p.drawText(local, Qt.AlignCenter, display_lbl)
 
         p.restore()
 
@@ -1003,6 +1126,7 @@ class OcclusionCanvas(QLabel):
         self.setFocus()
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
+        mods = e.modifiers()
 
         if self._mode == "review" and e.button() == Qt.LeftButton:
             hit = self._hit_box(ip)
@@ -1014,8 +1138,13 @@ class OcclusionCanvas(QLabel):
         if self._mode != "edit" or e.button() != Qt.LeftButton:
             return
 
+        # Ctrl held = temporarily act as select tool
+        effective_tool = self._tool
+        if mods & Qt.ControlModifier and self._tool != "select":
+            effective_tool = "select"
+
         # ── select tool ──────────────────────────────────────────────────────
-        if self._tool == "select":
+        if effective_tool == "select":
             # check handles of currently selected box first
             if self._selected_idx >= 0:
                 hit_h = self._hit_handle(sp, self._selected_idx)
@@ -1027,33 +1156,35 @@ class OcclusionCanvas(QLabel):
                     self._drag_orig_box  = copy.deepcopy(self._boxes[self._selected_idx])
                     self._push_undo()
                     return
-            # hit-test boxes
             hit = self._hit_box(ip)
             if hit >= 0:
-                self._selected_idx     = hit
-                self._selected_indices = set()
-                self._drag_op          = "move"
-                self._drag_start_pos   = sp
-                self._drag_orig_box    = copy.deepcopy(self._boxes[hit])
-                self._push_undo()
-                self._redraw()
-                self.boxes_changed.emit(self.get_boxes())
+                add = bool(mods & (Qt.ShiftModifier | Qt.ControlModifier))
+                self._select_box(hit, add_to_selection=add)
+                if not add:
+                    self._drag_op        = "move"
+                    self._drag_start_pos = sp
+                    self._drag_orig_box  = copy.deepcopy(self._boxes[hit])
+                    self._push_undo()
             else:
-                self._selected_idx     = -1
-                self._selected_indices = set()
-                self._redraw()
+                if not (mods & (Qt.ShiftModifier | Qt.ControlModifier)):
+                    self._select_box(-1)
             return
 
         # ── text tool ────────────────────────────────────────────────────────
-        if self._tool == "text":
+        if effective_tool == "text":
             hit = self._hit_box(ip)
             if hit >= 0:
-                self._selected_idx = hit
-                self._redraw()
-                self.boxes_changed.emit(self.get_boxes())
+                self._select_box(hit)
+            else:
+                self._select_box(-1)
             return
 
         # ── rect / ellipse draw ───────────────────────────────────────────────
+        # clicking an existing box selects it instead of starting a draw
+        hit = self._hit_box(ip)
+        if hit >= 0:
+            self._select_box(hit, add_to_selection=bool(mods & Qt.ShiftModifier))
+            return
         self._selected_indices = set()
         self._drawing  = True
         self._start    = ip
@@ -1178,6 +1309,10 @@ class OcclusionCanvas(QLabel):
     def keyPressEvent(self, e):
         mods = e.modifiers()
         key  = e.key()
+        # In review mode, pass Space and rating keys up to ReviewScreen
+        if self._mode == "review":
+            super().keyPressEvent(e)
+            return
         if key == Qt.Key_Delete:
             self.delete_selected_boxes()
         elif mods & Qt.ControlModifier and key == Qt.Key_Z:
@@ -1186,6 +1321,11 @@ class OcclusionCanvas(QLabel):
             self.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_A:
             self.select_all()
+        elif key == Qt.Key_G and not (mods & Qt.ControlModifier):
+            if mods & Qt.ShiftModifier:
+                self.ungroup_selected()
+            else:
+                self.group_selected()
         else:
             super().keyPressEvent(e)
 
@@ -1203,7 +1343,7 @@ class ToolBar(QWidget):
     tool_changed = pyqtSignal(str)
 
     _TOOLS = [
-        ("select",  "⬡", "Select / Move / Resize / Rotate  [V]"),
+        ("select",  "⬡", "Select / Move / Resize / Rotate  [V]\nHold Ctrl = temp select"),
         ("rect",    "□",  "Rectangle mask  [R]"),
         ("ellipse", "○",  "Ellipse / Circle mask  [E]"),
         ("text",    "T",  "Edit label of clicked mask  [T]"),
@@ -1211,21 +1351,21 @@ class ToolBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(40)
+        self.setFixedWidth(50)   # 1.3x of 40
         self.setStyleSheet(
-            f"QWidget{{background:#F5F5F5;border-right:1px solid #D0D0D0;}}")
+            "QWidget{background:#F0F0F0;border-right:1px solid #C8C8C8;}")
         L = QVBoxLayout(self)
-        L.setContentsMargins(4, 6, 4, 6)
-        L.setSpacing(2)
+        L.setContentsMargins(5, 8, 5, 8)
+        L.setSpacing(3)
         self._btns = {}
         for tool, icon, tip in self._TOOLS:
             b = QPushButton(icon)
             b.setToolTip(tip)
             b.setCheckable(True)
-            b.setFixedSize(32, 32)
+            b.setFixedSize(40, 40)   # 1.3x of 32
             b.setStyleSheet(
                 "QPushButton{background:transparent;color:#333;"
-                "border:none;border-radius:4px;font-size:18px;font-weight:bold;}"
+                "border:none;border-radius:5px;font-size:20px;font-weight:bold;}"
                 "QPushButton:checked{background:#4A90D9;color:white;}"
                 "QPushButton:hover:!checked{background:#E0E0E0;}")
             b.clicked.connect(lambda _, t=tool: self._select(t))
@@ -1288,8 +1428,11 @@ class MaskPanel(QWidget):
         self.list_w.blockSignals(True)
         self.list_w.clear()
         for i, b in enumerate(boxes):
-            lbl = b.get("label") or f"Mask #{i+1}"
-            self.list_w.addItem(f"  🟧 {lbl}")
+            lbl   = b.get("label") or f"Mask #{i+1}"
+            gid   = b.get("group_id", "")
+            icon  = "🔵" if gid else "🟧"
+            badge = f" [{gid[:4]}]" if gid else ""
+            self.list_w.addItem(f"  {icon} {lbl}{badge}")
         self.list_w.blockSignals(False)
         sel = self._canvas._selected_idx
         if 0 <= sel < self.list_w.count():
@@ -1393,78 +1536,71 @@ class CardEditorDialog(QDialog):
 
         # ══ TOP MENUBAR-STYLE TOOLBAR ════════════════════════════════════════
         top_bar = QFrame()
-        top_bar.setFixedHeight(38)
+        top_bar.setFixedHeight(46)   # 1.3x of 38
         top_bar.setStyleSheet(
             "QFrame{background:#F0F0F0;border-bottom:1px solid #C8C8C8;border-radius:0;}"
-            "QPushButton{background:transparent;border:none;border-radius:3px;"
-            "padding:3px 8px;font-size:12px;color:#333;}"
+            "QPushButton{background:transparent;border:none;border-radius:4px;"
+            "padding:4px 10px;font-size:13px;color:#333;min-height:32px;}"
             "QPushButton:hover{background:#DDD;}"
             "QPushButton:pressed{background:#CCC;}"
             "QPushButton:checked{background:#C8D8EE;color:#1a5ca8;}"
         )
         tl = QHBoxLayout(top_bar)
-        tl.setContentsMargins(6, 2, 6, 2)
-        tl.setSpacing(1)
+        tl.setContentsMargins(6, 4, 6, 4)
+        tl.setSpacing(2)
 
-        def _tbtn(label, tip, checkable=False):
+        def _tbtn(label, tip, checkable=False, w=None):
             b = QPushButton(label)
             b.setToolTip(tip)
             b.setCheckable(checkable)
-            b.setFixedHeight(28)
+            b.setFixedHeight(34)   # 1.3x
+            if w:
+                b.setFixedWidth(w)
             return b
 
         # File ops
-        btn_img  = _tbtn("🖼 Image", "Load Image")
-        btn_pdf  = _tbtn("📄 PDF",   "Load PDF")
+        btn_img = _tbtn("🖼 Image", "Load Image")
+        btn_pdf = _tbtn("📄 PDF",   "Load PDF")
         btn_pdf.setEnabled(PDF_SUPPORT)
         if not PDF_SUPPORT:
             btn_pdf.setToolTip("pip install pymupdf")
         btn_img.clicked.connect(self._load_image)
         btn_pdf.clicked.connect(self._load_pdf)
 
-        sep1 = QFrame(); sep1.setFrameShape(QFrame.VLine)
-        sep1.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
-        sep1.setFixedWidth(1)
+        def _sep():
+            s = QFrame(); s.setFrameShape(QFrame.VLine)
+            s.setStyleSheet("QFrame{background:#C0C0C0;margin:5px 4px;}")
+            s.setFixedWidth(1)
+            return s
 
         # Undo / Redo
-        btn_undo = _tbtn("↩", "Undo  Ctrl+Z")
-        btn_redo = _tbtn("↪", "Redo  Ctrl+Y")
-        btn_undo.setFixedWidth(32)
-        btn_redo.setFixedWidth(32)
+        btn_undo = _tbtn("↩", "Undo  Ctrl+Z", w=36)
+        btn_redo = _tbtn("↪", "Redo  Ctrl+Y", w=36)
         btn_undo.clicked.connect(lambda: self.canvas.undo())
         btn_redo.clicked.connect(lambda: self.canvas.redo())
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine)
-        sep2.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
-        sep2.setFixedWidth(1)
-
         # Zoom
-        btn_zi  = _tbtn("🔍+", "Zoom In  Ctrl++")
-        btn_zo  = _tbtn("🔍−", "Zoom Out  Ctrl+−")
-        btn_zf  = _tbtn("⊡",   "Zoom Fit  Ctrl+0")
-        btn_zi.setFixedWidth(40); btn_zo.setFixedWidth(40); btn_zf.setFixedWidth(28)
-
-        sep3 = QFrame(); sep3.setFrameShape(QFrame.VLine)
-        sep3.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
-        sep3.setFixedWidth(1)
+        btn_zi = _tbtn("🔍+", "Zoom In  Ctrl++",  w=46)
+        btn_zo = _tbtn("🔍−", "Zoom Out  Ctrl+−", w=46)
+        btn_zf = _tbtn("⊡",   "Zoom Fit  Ctrl+0", w=32)
 
         # Delete / Clear
-        btn_del   = _tbtn("🗑", "Delete selected  Del")
+        btn_del   = _tbtn("🗑",    "Delete selected  Del", w=32)
         btn_clear = _tbtn("✕ All", "Clear all masks")
-        btn_del.setFixedWidth(32)
 
-        sep4 = QFrame(); sep4.setFrameShape(QFrame.VLine)
-        sep4.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
-        sep4.setFixedWidth(1)
-
-        # Group toggle
-        self.btn_group = _tbtn("⛓ Group", "Each mask = one card  /  All masks together", checkable=True)
-        self.btn_group.setChecked(self.card.get("grouped", False))
-        self.btn_group.clicked.connect(self._toggle_group)
-
-        sep5 = QFrame(); sep5.setFrameShape(QFrame.VLine)
-        sep5.setStyleSheet("QFrame{background:#C0C0C0;width:1px;margin:4px 4px;}")
-        sep5.setFixedWidth(1)
+        # Group / Ungroup — action buttons, NOT toggle
+        btn_grp   = _tbtn("⛓ Group",   "Group selected masks  [G]\nSelected masks → tested as ONE card")
+        btn_ungrp = _tbtn("⛓ Ungroup", "Ungroup selected masks  [Shift+G]\nMakes each mask its own card again")
+        btn_grp.setStyleSheet(
+            "QPushButton{background:transparent;border:none;border-radius:4px;"
+            "padding:4px 10px;font-size:13px;color:#1a5ca8;min-height:32px;}"
+            "QPushButton:hover{background:#D0E4FF;}")
+        btn_ungrp.setStyleSheet(
+            "QPushButton{background:transparent;border:none;border-radius:4px;"
+            "padding:4px 10px;font-size:13px;color:#888;min-height:32px;}"
+            "QPushButton:hover{background:#EEE;}")
+        btn_grp.clicked.connect(lambda: self.canvas.group_selected())
+        btn_ungrp.clicked.connect(lambda: self.canvas.ungroup_selected())
 
         # PDF reader / live sync
         self.btn_open_ext = _tbtn("📂 Open PDF", "Open in system PDF reader")
@@ -1474,11 +1610,11 @@ class CardEditorDialog(QDialog):
         self.lbl_sync.setStyleSheet("background:transparent;font-size:11px;color:#666;")
         self.lbl_sync.setVisible(False)
 
-        for w in [btn_img, btn_pdf, sep1,
-                  btn_undo, btn_redo, sep2,
-                  btn_zi, btn_zo, btn_zf, sep3,
-                  btn_del, btn_clear, sep4,
-                  self.btn_group, sep5,
+        for w in [btn_img, btn_pdf, _sep(),
+                  btn_undo, btn_redo, _sep(),
+                  btn_zi, btn_zo, btn_zf, _sep(),
+                  btn_del, btn_clear, _sep(),
+                  btn_grp, btn_ungrp, _sep(),
                   self.btn_open_ext, self.lbl_sync]:
             tl.addWidget(w)
         tl.addStretch()
@@ -1486,9 +1622,12 @@ class CardEditorDialog(QDialog):
         # Save / Cancel on the right
         btn_cancel = _tbtn("Cancel", "Discard changes")
         btn_save   = QPushButton("💾  Save Card")
-        btn_save.setObjectName("success")
-        btn_save.setFixedHeight(28)
+        btn_save.setFixedHeight(34)
         btn_save.setToolTip("Save  Ctrl+S")
+        btn_save.setStyleSheet(
+            "QPushButton{background:#4CAF50;color:white;border:1px solid #3A9040;"
+            "border-radius:4px;padding:4px 16px;font-size:13px;min-height:32px;}"
+            "QPushButton:hover{background:#3A9040;}")
         btn_cancel.clicked.connect(self.reject)
         btn_save.clicked.connect(self._save)
         tl.addWidget(btn_cancel)
@@ -1601,8 +1740,9 @@ class CardEditorDialog(QDialog):
         hl.setContentsMargins(10, 0, 10, 0)
         hl.addWidget(QLabel(
             "V=Select  R=Rect  E=Ellipse  T=Label  |  "
-            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo  |  "
-            "Ctrl+Scroll=zoom  G=group"))
+            "Hold Ctrl=temp select  Shift+Click=multi-select  |  "
+            "G=group selected  Shift+G=ungroup  |  "
+            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo"))
         hl.addStretch()
         L.addWidget(hint_bar)
 
@@ -1624,27 +1764,20 @@ class CardEditorDialog(QDialog):
     # ── loaders ───────────────────────────────────────────────────────────────
 
     def _toggle_group(self):
-        self.card["grouped"] = self.btn_group.isChecked()
-        self._update_group_btn()
+        pass  # no longer used — group is per-shape via canvas.group_selected()
 
     def _update_group_btn(self):
-        if self.btn_group.isChecked():
-            self.btn_group.setStyleSheet(
-                "background:#4CAF50;color:white;border:1px solid #3A9040;"
-                "border-radius:4px;padding:3px 8px;font-size:12px;")
-        else:
-            self.btn_group.setStyleSheet("")
+        pass  # no longer a toggle button
 
     def keyPressEvent(self, e):
         key  = e.key()
         mods = e.modifiers()
-        if key == Qt.Key_G:
-            self.btn_group.setChecked(not self.btn_group.isChecked())
-            self._toggle_group()
-        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
+        if mods & Qt.ControlModifier and key == Qt.Key_Z:
             self.canvas.undo()
         elif mods & Qt.ControlModifier and key == Qt.Key_Y:
             self.canvas.redo()
+        elif mods & Qt.ControlModifier and key == Qt.Key_S:
+            self._save()
         elif key == Qt.Key_V:
             self.toolbar.select_tool("select")
         elif key == Qt.Key_R:
@@ -1720,8 +1853,6 @@ class CardEditorDialog(QDialog):
         self.inp_title.setText(card.get("title", ""))
         self.inp_tags.setText(", ".join(card.get("tags", [])))
         self.inp_notes.setPlainText(card.get("notes", ""))
-        self.btn_group.setChecked(card.get("grouped", False))
-        self._update_group_btn()
         px = None
         if card.get("image_path") and os.path.exists(card["image_path"]):
             px = QPixmap(card["image_path"])
@@ -1867,7 +1998,6 @@ class CardEditorDialog(QDialog):
             "tags":    [t.strip() for t in self.inp_tags.text().split(",") if t.strip()],
             "notes":   self.inp_notes.toPlainText(),
             "boxes":   merged,
-            "grouped": self.btn_group.isChecked(),
             "created": self.card.get("created", datetime.now().isoformat()),
             "reviews": self.card.get("reviews", 0),
         })
@@ -1959,15 +2089,26 @@ class ReviewScreen(QWidget):
         self._current_pixmap = None
 
         for card in cards:
-            boxes   = card.get("boxes", [])
-            grouped = card.get("grouped", False)
-            if grouped or len(boxes) == 0:
+            boxes = card.get("boxes", [])
+            if len(boxes) == 0:
                 sm2_init(card)
                 self._items.append((card, None, card))
-            else:
-                for i, box in enumerate(boxes):
-                    sm2_init(box)
-                    if is_due_today(box):           # [OPT-4] use shared helper
+                continue
+
+            # Collect unique group_ids and ungrouped boxes
+            seen_groups = {}   # group_id -> first box index (SM2 tracked on first box)
+            for i, box in enumerate(boxes):
+                sm2_init(box)
+                gid = box.get("group_id", "")
+                if gid:
+                    if gid not in seen_groups:
+                        seen_groups[gid] = i
+                        # Group = all boxes with this gid tested together
+                        if is_due_today(box):
+                            self._items.append((card, ("group", gid), box))
+                else:
+                    # Ungrouped = individual card per box
+                    if is_due_today(box):
                         self._items.append((card, i, box))
 
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
@@ -2014,17 +2155,26 @@ class ReviewScreen(QWidget):
 
     def _reveal_current(self):
         """Reveal target mask, then show rating buttons (Anki-style)."""
-        if 0 <= self._idx < len(self._items):
-            _, box_idx, _ = self._items[self._idx]
-            if box_idx is None:
-                self.canvas.reveal_all()
-            else:
-                if 0 <= box_idx < len(self.canvas._boxes):
-                    self.canvas._boxes[box_idx]["revealed"] = True
-                    self.canvas._redraw()
-            # Show rating panel, hide reveal button
-            self._reveal_bar.hide()
-            self._rating_frame.show()
+        if not (0 <= self._idx < len(self._items)):
+            return
+        _, box_idx, _ = self._items[self._idx]
+        if box_idx is None:
+            # Whole card — reveal all
+            self.canvas.reveal_all()
+        elif isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            for b in self.canvas._boxes:
+                if b.get("group_id", "") == gid:
+                    b["revealed"] = True
+            self.canvas._redraw()
+        else:
+            # Single box
+            if 0 <= box_idx < len(self.canvas._boxes):
+                self.canvas._boxes[box_idx]["revealed"] = True
+                self.canvas._redraw()
+        # Show rating panel, hide reveal button
+        self._reveal_bar.hide()
+        self._rating_frame.show()
 
     def _set_fullscreen_ui(self, fullscreen: bool):
         """Fullscreen: hide header bar, title strip, hint. Keep canvas + bottom panel."""
@@ -2248,8 +2398,8 @@ class ReviewScreen(QWidget):
         if r:
             vbar = self._canvas_scroll.verticalScrollBar()
             hbar = self._canvas_scroll.horizontalScrollBar()
-            hbar.setValue(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2))
-            vbar.setValue(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2))
+            hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2)))
+            vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
 
     def _edit_current_card(self):
         """
@@ -2297,18 +2447,30 @@ class ReviewScreen(QWidget):
             self._current_pixmap = px
             boxes = card.get("boxes", [])
             self.canvas.load_pixmap(px)
-            if box_idx is None:
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                display_boxes = [
+                    {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
+                     "rect": b["rect"], "label": b.get("label",""),
+                     "revealed": b.get("group_id","") != gid}
+                    for b in boxes
+                ]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(-1)
+                self.canvas.set_target_group(gid)
+            elif box_idx is None:
                 self.canvas.set_boxes(boxes)
+                self.canvas.set_target_box(-1)
             else:
                 display_boxes = [
-                    {"rect":     b["rect"],
-                     "label":    b.get("label", ""),
-                     "revealed": (i != box_idx)}
+                    {"rect": b["rect"], "label": b.get("label",""),
+                     "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
+                     "group_id": b.get("group_id",""), "revealed": (i != box_idx)}
                     for i, b in enumerate(boxes)
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(box_idx)
             self.canvas.set_mode("review")
-            self.canvas.set_target_box(box_idx if box_idx is not None else -1)
 
     def _load_item(self):
         if self._idx >= len(self._items):
@@ -2325,7 +2487,14 @@ class ReviewScreen(QWidget):
 
         boxes = card.get("boxes", [])
         title = card.get("title", "")
-        if box_idx is not None and boxes:
+
+        # box_idx can be: None (whole card), int (single box), ("group", gid)
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            grp_labels = [b.get("label","") for b in boxes if b.get("group_id","") == gid]
+            lbl = ", ".join(l for l in grp_labels if l) or f"Group [{gid[:4]}]"
+            self.lbl_title.setText(f"{title}  —  {lbl}")
+        elif box_idx is not None and boxes:
             lbl = boxes[box_idx].get("label") or f"Mask #{box_idx+1}"
             self.lbl_title.setText(f"{title}  —  {lbl}")
         else:
@@ -2354,18 +2523,38 @@ class ReviewScreen(QWidget):
         if px and not px.isNull():
             self._current_pixmap = px
             self.canvas.load_pixmap(px)
-            if box_idx is None:
+
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                # Group review: hide only boxes in this group, rest visible
+                gid = box_idx[1]
+                display_boxes = [
+                    {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id")
+                        if k in b},
+                     "rect":     b["rect"],
+                     "label":    b.get("label",""),
+                     "revealed": b.get("group_id","") != gid}
+                    for b in boxes
+                ]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(-1)
+                self.canvas.set_target_group(gid)
+            elif box_idx is None:
                 self.canvas.set_boxes(boxes)
+                self.canvas.set_target_box(-1)
             else:
                 display_boxes = [
                     {"rect":     b["rect"],
                      "label":    b.get("label", ""),
+                     "shape":    b.get("shape", "rect"),
+                     "angle":    b.get("angle", 0.0),
+                     "group_id": b.get("group_id", ""),
                      "revealed": (i != box_idx)}
                     for i, b in enumerate(boxes)
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(box_idx)
+
             self.canvas.set_mode("review")
-            self.canvas.set_target_box(box_idx if box_idx is not None else -1)
 
             # Auto-scale: fit image WIDTH to viewport (like a PDF viewer / real Anki).
             # Do it after a short delay so the viewport has its final size.
@@ -2384,8 +2573,8 @@ class ReviewScreen(QWidget):
                 if r and bi is not None:
                     vbar = self._canvas_scroll.verticalScrollBar()
                     hbar = self._canvas_scroll.horizontalScrollBar()
-                    hbar.setValue(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2))
-                    vbar.setValue(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2))
+                    hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2)))
+                    vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
             QTimer.singleShot(80, _scroll_to_mask)
         else:
             self.canvas.load_pixmap(QPixmap())
@@ -2393,6 +2582,8 @@ class ReviewScreen(QWidget):
         # Reset to "before reveal" state for each new card
         self._reveal_bar.show()
         self._rating_frame.hide()
+        # Grab focus so Space/1/2/3/4 keys go to ReviewScreen not canvas
+        self.setFocus()
 
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
@@ -2513,9 +2704,22 @@ class DeckTree(QWidget):
             self._select_by_id(sel_id)
 
     def _make_item(self, deck):
-        nc    = len(deck.get("cards", []))
-        # [OPT-5] count due boxes across all non-grouped cards
-        due   = sum(1 for c in deck.get("cards", []) if is_due_today(c))
+        def _card_due(c):
+            boxes = c.get("boxes", [])
+            if not boxes:
+                return is_due_today(c)
+            seen = set()
+            for b in boxes:
+                gid = b.get("group_id", "")
+                if gid:
+                    if gid not in seen:
+                        seen.add(gid)
+                        if is_due_today(b): return True
+                else:
+                    if is_due_today(b): return True
+            return False
+
+        due   = sum(1 for c in deck.get("cards", []) if _card_due(c))
         badge = f"🔴{due}" if due else "✅"
         item  = QTreeWidgetItem([f"  📂  {deck['name']}  {badge}"])
         item.setData(0, Qt.UserRole, deck.get("_id"))
@@ -2726,11 +2930,22 @@ class DeckView(QWidget):
             sm2_init(c)
             # [OPT-5] count due boxes for non-grouped cards
             boxes   = c.get("boxes", [])
-            grouped = c.get("grouped", False)
-            if grouped or not boxes:
+            # Due = any ungrouped box due, OR first box of each group due
+            if not boxes:
                 card_due = is_due_today(c)
             else:
-                card_due = any(is_due_today(b) for b in boxes)
+                seen_gids = set()
+                card_due = False
+                for b in boxes:
+                    gid = b.get("group_id", "")
+                    if gid:
+                        if gid not in seen_gids:
+                            seen_gids.add(gid)
+                            if is_due_today(b):
+                                card_due = True
+                    else:
+                        if is_due_today(b):
+                            card_due = True
             due_c += card_due
 
             badge = "🔴 Due" if card_due else f"✅ {sm2_days_left(c)}d"
@@ -2833,13 +3048,23 @@ class DeckView(QWidget):
             return
 
         def _card_has_due_today(card):
-            boxes   = card.get("boxes", [])
-            grouped = card.get("grouped", False)
-            if grouped or not boxes:
+            boxes = card.get("boxes", [])
+            if not boxes:
                 sm2_init(card)
                 return is_due_today(card)
-            return any(is_due_today(sm2_init(b)) for b in boxes)
-
+            seen_gids = set()
+            for b in boxes:
+                sm2_init(b)
+                gid = b.get("group_id", "")
+                if gid:
+                    if gid not in seen_gids:
+                        seen_gids.add(gid)
+                        if is_due_today(b):
+                            return True
+                else:
+                    if is_due_today(b):
+                        return True
+            return False
         due = [c for c in self.deck.get("cards", []) if _card_has_due_today(c)]
         if not due:
             QMessageBox.information(self, "✅ All clear!",

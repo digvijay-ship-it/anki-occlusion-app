@@ -12,6 +12,7 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 - **PDF & Image Occlusion** — Load any PDF or image, drag masks over what you want to hide, and each mask becomes its own flashcard question automatically.
 - **SM-2 Spaced Repetition** — Full Anki-style scheduler with intraday learning steps (1m → 6m → 10m → 15m) and graduated review intervals (days/weeks). Cards move through `new → learning → review → relearn` states exactly like real Anki.
 - **Anki-Style Review Flow** — Cards show with all masks hidden. Press `Space` to reveal, then rate yourself: **Again / Hard / Good / Easy**. Rating buttons only appear after you reveal — just like Anki.
+- **Hide One, Guess One** *(v14)* — Toggle between "Hide All, Guess One" (all masks hidden) and "Hide One, Guess One" (only target mask hidden) modes during your review sessions.
 - **Nested Decks** — Create decks and sub-decks to organise your subjects (e.g. `Biology › Chapter 3 › Cell Division`). Right-click for deck options.
 - **Grouped Masks** — Link multiple masks together so they are reviewed as a single card (all masks hidden at once).
 
@@ -21,9 +22,11 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 - **Multi-page PDFs** — Navigate pages with Prev / Next buttons inside the editor.
 
 ### Editor
+- **New Toolbar** *(v14)* — Anki-style vertical toolbar to switch between Select (V), Rectangle (R), Ellipse (E), and Text (T) tools.
+- **Ellipse & Text Tools** *(v14)* — Draw oval/circular masks and quickly label them inline.
 - **Pinch-to-Zoom** — Ctrl+Scroll (or two-finger trackpad pinch) zooms the canvas. Works in both the editor and review mode.
 - **Undo / Redo** — Full undo stack in the editor (Ctrl+Z / Ctrl+Y).
-- **Select, Move & Duplicate** — Click to select masks, Ctrl+D to duplicate, Del to delete, Ctrl+A to select all.
+- **Select, Move, Resize & Rotate** *(v14)* — Click to select, drag to move, use 8 handles to resize, and drag the top circular handle to rotate shapes at any angle.
 - **Dynamic Font Size** — A− / A / A+ buttons in the top bar scale the entire app font. Preference is saved and restored on next launch.
 
 ### Other
@@ -47,7 +50,7 @@ pip install PyQt5 pymupdf
 **Run:**
 
 ```bash
-python anki_occlusion_v13.py
+python anki_occlusion_v14.py
 ```
 
 On Windows PowerShell with spaces in the path:
