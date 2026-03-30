@@ -1130,8 +1130,9 @@ class OcclusionCanvas(QLabel):
 
         if self._mode == "review" and e.button() == Qt.LeftButton:
             hit = self._hit_box(ip)
-            if hit >= 0 and not self._boxes[hit]["revealed"]:
-                self._boxes[hit]["revealed"] = True
+            if hit >= 0:
+                # Toggle Magic: जो भी करंट स्टेट है, उसे उल्टा कर दो!
+                self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
                 self._redraw()
             return
 
