@@ -1053,7 +1053,7 @@ class OcclusionCanvas(QLabel):
         
         # --- [LAG FIX] बॉक्स खींचने से ठीक पहले बैकग्राउंड का स्क्रीनशॉट ले लो ---
         self._live_draw_cache = self.pixmap().copy() if self.pixmap() else None
-        
+
     def mouseMoveEvent(self, e):
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
