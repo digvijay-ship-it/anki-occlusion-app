@@ -1,32 +1,14 @@
 """
-Anki Occlusion — PDF & Image Flashcard App  v15
+Anki Occlusion — PDF & Image Flashcard App  v15 (Ultimate Lag-Free Edition)
 ================================================
 v15 Bug Fixes:
-  [FIX-1]  ReviewScreen.__init__ — duplicate item prevention:
-             Previously, if a card had mixed grouped+ungrouped boxes, or if
-             seen_groups was not correctly scoped per-card, same box could
-             appear twice in self._items. Now uses a per-card seen_groups dict
-             that resets for each card, and uses a robust (card_id, box_key)
-             dedup set to guarantee no item appears twice.
-
-  [FIX-2]  _rate() — "reviews" double-increment fixed:
-             sched_update() already increments c["reviews"] on the sm2_obj
-             (box dict). _rate() was ALSO doing card["reviews"] += 1
-             redundantly. Now card-level review count is only incremented
-             when sm2_obj IS the card (no-box cards), not on every box rating.
-
-  [FIX-3]  _start_review() — win.closeEvent double-save fixed:
-             Review QMainWindow closeEvent was calling save_data again after
-             finished signal already triggered save_data. Added a flag to
-             prevent double-save on review window close.
-
-  [FIX-4]  is_due_today() called on un-initialised boxes in ReviewScreen:
-             sm2_init(box) is now always called before is_due_today(box) check
-             in _card_has_due_today() inside _review_due() as well.
-
-  [FIX-5]  Group dedup across cards: seen_groups is now reset per-card
-             inside the ReviewScreen.__init__ loop, preventing group bleed
-             between cards that share the same group_id string by coincidence.
+  [FIX-1]  ReviewScreen.__init__ — duplicate item prevention
+  [FIX-2]  _rate() — "reviews" double-increment fixed
+  [FIX-3]  _start_review() — win.closeEvent double-save fixed
+  [FIX-4]  is_due_today() called on un-initialised boxes in ReviewScreen
+  [FIX-5]  Group dedup across cards
+  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas 
+            to eliminate mouseMoveEvent lag completely.
 """
 
 import sys, os, json, copy, uuid, math
@@ -85,7 +67,7 @@ def sched_init(c):
     c.setdefault("sm2_due",       _now_iso())
     c.setdefault("sm2_repetitions", 0)
     c.setdefault("sm2_last_quality", -1)
-    c.setdefault("reviews", 0)          # [FIX-2] ensure field always exists
+    c.setdefault("reviews", 0)
     return c
 
 def sm2_init(c):
@@ -459,16 +441,16 @@ class OcclusionCanvas(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self._px               : QPixmap = None
-        self._boxes            : list    = []
-        self._mode                       = "edit"
-        self._tool                       = "rect"
-        self._scale                      = 1.0
-        self._selected_idx               = -1
-        self._selected_indices           = set()
-        self._target_idx                 = -1
-        self._target_group_id            = ""
-        self._review_mode_style          = "hide_all"
+        self._px               = None
+        self._boxes            = []
+        self._mode             = "edit"
+        self._tool             = "rect"
+        self._scale            = 1.0
+        self._selected_idx     = -1
+        self._selected_indices = set()
+        self._target_idx       = -1
+        self._target_group_id  = ""
+        self._review_mode_style= "hide_all"
 
         self._drawing        = False
         self._start          = QPointF()
@@ -494,14 +476,16 @@ class OcclusionCanvas(QLabel):
             "text":    Qt.IBeamCursor,
         }
         self.setCursor(QCursor(cursors.get(tool, Qt.CrossCursor)))
-        self._redraw()
+        self.update()
 
     def load_pixmap(self, px: QPixmap):
         if px is None or px.isNull():
             self._px = None
+            self._cached_spx = None  # Cache Clear
             self.clear()
             return
         self._px    = px
+        self._cached_spx = None      # Cache Clear
         self._boxes = []
         self._scale = 1.0
         self._undo_stack.clear()
@@ -510,12 +494,12 @@ class OcclusionCanvas(QLabel):
 
     def set_boxes(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=False) for b in boxes]
-        self._redraw()
+        self.update()
 
     def set_boxes_with_state(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=b.get("revealed", False))
                        for b in boxes]
-        self._redraw()
+        self.update()
 
     def get_boxes(self):
         SM2_KEYS = ("sm2_interval", "sm2_repetitions", "sm2_ease",
@@ -547,24 +531,24 @@ class OcclusionCanvas(QLabel):
         else:
             self.setFocusPolicy(Qt.StrongFocus)
             self.setCursor(QCursor(Qt.CrossCursor))
-        self._redraw()
+        self.update()
 
     def set_review_style(self, style: str):
         self._review_mode_style = style
-        self._redraw()
+        self.update()
 
     def reveal_all(self):
         for b in self._boxes:
             b["revealed"] = True
-        self._redraw()
+        self.update()
 
     def set_target_box(self, idx):
         self._target_idx = idx
-        self._redraw()
+        self.update()
 
     def set_target_group(self, gid: str):
         self._target_group_id = gid
-        self._redraw()
+        self.update()
 
     def get_target_scaled_rect(self):
         if self._target_group_id:
@@ -586,7 +570,7 @@ class OcclusionCanvas(QLabel):
             return
         self._selected_indices = set(range(len(self._boxes)))
         self._selected_idx     = len(self._boxes) - 1
-        self._redraw()
+        self.update()
 
     def delete_selected_boxes(self):
         self._push_undo()
@@ -599,7 +583,7 @@ class OcclusionCanvas(QLabel):
         elif self._selected_idx >= 0:
             self._boxes.pop(self._selected_idx)
             self._selected_idx = -1
-        self._redraw()
+        self.update()
         self.boxes_changed.emit(self.get_boxes())
 
     def delete_box(self, idx):
@@ -607,7 +591,7 @@ class OcclusionCanvas(QLabel):
             self._push_undo()
             self._boxes.pop(idx)
             self._selected_idx = -1
-            self._redraw()
+            self.update()
             self.boxes_changed.emit(self.get_boxes())
 
     def delete_last(self):
@@ -617,17 +601,17 @@ class OcclusionCanvas(QLabel):
         self._push_undo()
         self._boxes        = []
         self._selected_idx = -1
-        self._redraw()
+        self.update()
         self.boxes_changed.emit([])
 
     def highlight(self, idx):
         self._selected_idx = idx
-        self._redraw()
+        self.update()
 
     def update_label(self, idx, text):
         if 0 <= idx < len(self._boxes):
             self._boxes[idx]["label"] = text
-            self._redraw()
+            self.update()
 
     def group_selected(self):
         indices = self._get_all_selected()
@@ -638,7 +622,7 @@ class OcclusionCanvas(QLabel):
         self._push_undo()
         for i in indices:
             self._boxes[i]["group_id"] = gid
-        self._redraw()
+        self.update()
         self.boxes_changed.emit(self.get_boxes())
         self._show_toast(f"⛓ {len(indices)} masks grouped")
 
@@ -649,7 +633,7 @@ class OcclusionCanvas(QLabel):
         self._push_undo()
         for i in indices:
             self._boxes[i]["group_id"] = ""
-        self._redraw()
+        self.update()
         self.boxes_changed.emit(self.get_boxes())
         self._show_toast(f"✂ {len(indices)} masks ungrouped")
 
@@ -672,7 +656,7 @@ class OcclusionCanvas(QLabel):
         self._boxes = self._undo_stack.pop()
         self._selected_idx = -1
         self._selected_indices = set()
-        self._redraw()
+        self.update()
         self.boxes_changed.emit(self.get_boxes())
 
     def redo(self):
@@ -682,7 +666,7 @@ class OcclusionCanvas(QLabel):
         self._boxes = self._redo_stack.pop()
         self._selected_idx = -1
         self._selected_indices = set()
-        self._redraw()
+        self.update()
         self.boxes_changed.emit(self.get_boxes())
 
     def zoom_in(self):
@@ -739,9 +723,19 @@ class OcclusionCanvas(QLabel):
     def _spx(self):
         if not self._px:
             return QPixmap()
-        return self._px.scaled(int(self._px.width()  * self._scale),
-                               int(self._px.height() * self._scale),
-                               Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            
+        # --- [LAG FIX] Cache System ---
+        if hasattr(self, '_cached_scale') and hasattr(self, '_cached_spx'):
+            if self._cached_scale == self._scale and self._cached_spx is not None:
+                return self._cached_spx
+                
+        self._cached_scale = self._scale
+        self._cached_spx = self._px.scaled(
+            int(self._px.width()  * self._scale),
+            int(self._px.height() * self._scale),
+            Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            
+        return self._cached_spx
 
     def _handle_positions(self, idx):
         if not (0 <= idx < len(self._boxes)):
@@ -809,7 +803,7 @@ class OcclusionCanvas(QLabel):
         if hit < 0:
             self._selected_idx     = -1
             self._selected_indices = set()
-            self._redraw()
+            self.update()
             return
         gid = self._boxes[hit].get("group_id", "")
         if gid:
@@ -825,7 +819,7 @@ class OcclusionCanvas(QLabel):
             else:
                 self._selected_indices = set()
         self._selected_idx = hit
-        self._redraw()
+        self.update()
         self.boxes_changed.emit(self.get_boxes())
 
     def _hit_box(self, ip: QPointF):
@@ -851,8 +845,23 @@ class OcclusionCanvas(QLabel):
         spx = self._spx()
         if spx.isNull():
             return
-        canvas = QPixmap(spx)
-        p = QPainter(canvas)
+
+        # सिर्फ बैकग्राउंड सेट करो
+        self.setPixmap(spx)
+        self.resize(spx.size())
+        
+        # Qt को हार्डवेयर पेंटिंग के लिए सिग्नल दो
+        self.update()
+
+    def paintEvent(self, event):
+        # पहले बैकग्राउंड इमेज रेंडर होने दो
+        super().paintEvent(event)
+        
+        if not self.pixmap():
+            return
+            
+        # अब उसके ऊपर Native तरीके से बॉक्सेस ड्रॉ करो! (Zero Lag)
+        p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
 
         for i, b in enumerate(self._boxes):
@@ -862,8 +871,6 @@ class OcclusionCanvas(QLabel):
             self._draw_live(p)
 
         p.end()
-        self.setPixmap(canvas)
-        self.resize(canvas.size())
 
     def _draw_box(self, p: QPainter, i: int, b: dict):
         sr    = self._sr(b["rect"])
@@ -989,7 +996,7 @@ class OcclusionCanvas(QLabel):
             hit = self._hit_box(ip)
             if hit >= 0:
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
-                self._redraw()
+                self.update()
             return
 
         if self._mode != "edit" or e.button() != Qt.LeftButton:
@@ -1036,11 +1043,17 @@ class OcclusionCanvas(QLabel):
         if hit >= 0:
             self._select_box(hit, add_to_selection=bool(mods & Qt.ShiftModifier))
             return
-        self._selected_indices = set()
+            
+        # --- [NEW FIX] खाली जगह पर क्लिक करते ही पुराने बॉक्स का सिलेक्शन धराशायी करो ---
+        self._select_box(-1)
+        
         self._drawing  = True
         self._start    = ip
         self._live_rect = QRectF()
-
+        
+        # --- [LAG FIX] बॉक्स खींचने से ठीक पहले बैकग्राउंड का स्क्रीनशॉट ले लो ---
+        self._live_draw_cache = self.pixmap().copy() if self.pixmap() else None
+        
     def mouseMoveEvent(self, e):
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
@@ -1051,7 +1064,7 @@ class OcclusionCanvas(QLabel):
             self._live_rect = QRectF(
                 min(x0, x1), min(y0, y1),
                 abs(x1 - x0), abs(y1 - y0))
-            self._redraw()
+            self.update()  # --- [LAG FIX] Native Update ---
             return
 
         if self._drag_op == "move" and self._selected_idx >= 0:
@@ -1060,7 +1073,7 @@ class OcclusionCanvas(QLabel):
             self._boxes[self._selected_idx]["rect"] = QRectF(
                 orig.x() + delta.x(), orig.y() + delta.y(),
                 orig.width(), orig.height())
-            self._redraw()
+            self.update()  # --- [LAG FIX] Native Update ---
             return
 
         if self._drag_op == "resize" and self._selected_idx >= 0:
@@ -1073,7 +1086,7 @@ class OcclusionCanvas(QLabel):
             cx, cy = sr.center().x(), sr.center().y()
             angle = math.degrees(math.atan2(sp.y() - cy, sp.x() - cx)) + 90
             b["angle"] = round(angle, 1)
-            self._redraw()
+            self.update()  # --- [LAG FIX] Native Update ---
             return
 
         if self._tool == "select" and self._mode == "edit":
@@ -1099,17 +1112,17 @@ class OcclusionCanvas(QLabel):
                     "label":    "",
                 })
                 self._selected_idx = len(self._boxes) - 1
-                self._redraw()
+                self.update()
                 self.boxes_changed.emit(self.get_boxes())
             self._live_rect = QRectF()
-            self._redraw()
+            self.update()
 
         if self._drag_op:
             self._drag_op     = None
             self._drag_handle = -1
             self._drag_orig_box = None
             self.boxes_changed.emit(self.get_boxes())
-            self._redraw()
+            self.update()
 
     def _do_resize(self, sp: QPointF):
         idx  = self._selected_idx
@@ -1144,7 +1157,7 @@ class OcclusionCanvas(QLabel):
 
         b["rect"]  = QRectF(new_x, new_y, new_w, new_h)
         b["angle"] = ang
-        self._redraw()
+        self.update()  # --- [LAG FIX] Native Update ---
 
     def keyPressEvent(self, e):
         mods = e.modifiers()
@@ -1393,7 +1406,7 @@ class CardEditorDialog(QDialog):
             return b
 
         btn_img = _tbtn("🖼 Image", "Load Image")
-        btn_pdf = _tbtn("📄 PDF",   "Load PDF")
+        btn_pdf = _tbtn("📄 PDF",  "Load PDF")
         btn_pdf.setEnabled(PDF_SUPPORT)
         if not PDF_SUPPORT:
             btn_pdf.setToolTip("pip install pymupdf")
@@ -1418,7 +1431,7 @@ class CardEditorDialog(QDialog):
         btn_del   = _tbtn("🗑",    "Delete selected  Del", w=32)
         btn_clear = _tbtn("✕ All", "Clear all masks")
 
-        btn_grp   = _tbtn("⛓ Group",   "Group selected masks  [G]")
+        btn_grp   = _tbtn("⛓ Group",  "Group selected masks  [G]")
         btn_ungrp = _tbtn("⛓ Ungroup", "Ungroup selected masks  [Shift+G]")
         btn_grp.setStyleSheet(
             "QPushButton{background:transparent;border:none;border-radius:4px;"
@@ -1676,9 +1689,9 @@ class CardEditorDialog(QDialog):
         self.inp_tags.setText(", ".join(card.get("tags", [])))
         self.inp_notes.setPlainText(card.get("notes", ""))
         px = None
-        if card.get("image_path") and os.path.exists(card["image_path"]):
+        if card.get("image_path") and os.path.exists(card.get("image_path")):
             px = QPixmap(card["image_path"])
-        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
+        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card.get("pdf_path")):
             path = card["pdf_path"]
             combined, _, _ = pdf_to_combined_pixmap(path)
             if not combined.isNull():
@@ -1886,19 +1899,13 @@ class ReviewScreen(QWidget):
         self._pdf_cache      = {}
         self._current_pixmap = None
 
-        # ── [FIX-1] Build items with robust per-card dedup ─────────────────
-        # Use a set to guarantee no (card_id, box_key) pair appears twice.
-        # box_key = box_id (str) for ungrouped, or ("group", gid) for grouped.
         seen_item_keys = set()
 
         for card in cards:
             boxes = card.get("boxes", [])
-
-            # Unique card identifier for dedup key
-            card_key = id(card)   # memory id — unique per live dict object
+            card_key = id(card)
 
             if len(boxes) == 0:
-                # Whole-card item (no boxes)
                 item_key = (card_key, None)
                 if item_key not in seen_item_keys:
                     seen_item_keys.add(item_key)
@@ -1906,15 +1913,13 @@ class ReviewScreen(QWidget):
                     self._items.append((card, None, card))
                 continue
 
-            # ── [FIX-5] Reset seen_groups PER CARD so groups don't bleed ──
-            seen_groups = set()   # group_ids seen in THIS card only
+            seen_groups = set()
 
             for i, box in enumerate(boxes):
-                sm2_init(box)   # [FIX-4] always init before is_due_today
+                sm2_init(box)
                 gid = box.get("group_id", "")
 
                 if gid:
-                    # Grouped box — one item per unique group_id per card
                     if gid not in seen_groups:
                         seen_groups.add(gid)
                         item_key = (card_key, ("group", gid))
@@ -1923,7 +1928,6 @@ class ReviewScreen(QWidget):
                             if is_due_today(box):
                                 self._items.append((card, ("group", gid), box))
                 else:
-                    # Ungrouped box — one item per box
                     box_id = box.get("box_id", f"__idx_{i}")
                     item_key = (card_key, box_id)
                     if item_key not in seen_item_keys:
@@ -2256,87 +2260,6 @@ class ReviewScreen(QWidget):
                 self.canvas.set_target_box(box_idx)
                 self.canvas.set_mode("review")
 
-    def _load_item(self):
-        if self._idx >= len(self._items):
-            self._finish()
-            return
-
-        card, box_idx, sm2_obj = self._items[self._idx]
-        total     = len(self._items)
-        remaining = total - self._idx
-        self.lbl_prog.setText(
-            f"Done:{self._done}  Remaining:{remaining}  Total:{total}")
-        self.prog.setMaximum(max(total, 1))
-        self.prog.setValue(self._done)
-
-        boxes = card.get("boxes", [])
-        title = card.get("title", "")
-
-        if isinstance(box_idx, tuple) and box_idx[0] == "group":
-            gid = box_idx[1]
-            grp_labels = [b.get("label","") for b in boxes if b.get("group_id","") == gid]
-            lbl = ", ".join(l for l in grp_labels if l) or f"Group [{gid[:4]}]"
-            self.lbl_title.setText(f"{title}  —  {lbl}")
-        elif box_idx is not None and boxes:
-            lbl = boxes[box_idx].get("label") or f"Mask #{box_idx+1}"
-            self.lbl_title.setText(f"{title}  —  {lbl}")
-        else:
-            self.lbl_title.setText(title)
-
-        self.lbl_sm2.setText(sm2_badge(sm2_obj))
-        previews = _fmt_due_interval(sm2_obj)
-        for pl, q in self._prev_lbls:
-            pl.setText(f"→{previews.get(q, '?')}")
-
-        px = None
-        if card.get("image_path") and os.path.exists(card["image_path"]):
-            tmp = QPixmap(card["image_path"])
-            if not tmp.isNull():
-                px = tmp
-        elif card.get("pdf_path") and PDF_SUPPORT:
-            key = card["pdf_path"]
-            if key not in self._pdf_cache:
-                combined, _, _ = pdf_to_combined_pixmap(card["pdf_path"])
-                if not combined.isNull():
-                    self._pdf_cache[key] = combined
-            px = self._pdf_cache.get(key)
-
-        if px and not px.isNull():
-            self._current_pixmap = px
-            self.canvas.load_pixmap(px)
-
-            if isinstance(box_idx, tuple) and box_idx[0] == "group":
-                gid = box_idx[1]
-                display_boxes = [
-                    {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id")
-                        if k in b},
-                     "rect":     b["rect"],
-                     "label":    b.get("label",""),
-                     "revealed": b.get("group_id","") != gid}
-                    for b in boxes
-                ]
-                self.canvas.set_boxes_with_state(display_boxes)
-                self.canvas.set_target_box(-1)
-                self.canvas.set_mode("review")
-                self.canvas.set_target_group(gid)
-            elif box_idx is None:
-                self.canvas.set_boxes(boxes)
-                self.canvas.set_target_box(-1)
-                self.canvas.set_mode("review")
-            else:
-                display_boxes = [
-                    {"rect":     b["rect"],
-                     "label":    b.get("label", ""),
-                     "shape":    b.get("shape", "rect"),
-                     "angle":    b.get("angle", 0.0),
-                     "group_id": b.get("group_id", ""),
-                     "revealed": (i != box_idx)}
-                    for i, b in enumerate(boxes)
-                ]
-                self.canvas.set_boxes_with_state(display_boxes)
-                self.canvas.set_target_box(box_idx)
-                self.canvas.set_mode("review")
-
             def _apply_zoom(p=px):
                 vp = self._canvas_scroll.viewport()
                 vw = max(vp.width(), 100)
@@ -2361,17 +2284,10 @@ class ReviewScreen(QWidget):
         self.setFocus()
 
     def _rate(self, quality):
-        # ── [FIX-2] Correct review counting ───────────────────────────────
-        # sched_update() already increments sm2_obj["reviews"] internally.
-        # We only update card-level "reviews" when the sm2_obj IS the card
-        # (i.e., no-box cards). For box-based cards, box["reviews"] is
-        # updated by sched_update. Do NOT also increment card["reviews"]
-        # to avoid the double-count that caused the "reviewed twice" display.
         card, box_idx, sm2_obj = self._items[self._idx]
 
-        sched_update(sm2_obj, quality)   # updates sm2_obj["reviews"] internally
+        sched_update(sm2_obj, quality)
 
-        # Only update card-level reviews for whole-card (no-box) mode
         if box_idx is None:
             card["reviews"] = sm2_obj.get("reviews", 0)
 
@@ -2827,7 +2743,7 @@ class DeckView(QWidget):
                 return is_due_today(card)
             seen_gids = set()
             for b in boxes:
-                sm2_init(b)   # [FIX-4] always init before check
+                sm2_init(b)
                 gid = b.get("group_id", "")
                 if gid:
                     if gid not in seen_gids:
@@ -2867,9 +2783,6 @@ class DeckView(QWidget):
         self._start_review(sub)
 
     def _start_review(self, cards):
-        # ── [FIX-3] Prevent double-save on review window close ─────────────
-        # win.closeEvent on QMainWindow would fire save_data AGAIN after
-        # the finished signal already called save_data. We use a simple flag.
         _save_done = [False]
 
         win = QMainWindow(self)
@@ -2884,10 +2797,9 @@ class DeckView(QWidget):
             self._refresh()
             win.close()
 
-        # Override closeEvent to skip redundant save
         original_close = win.closeEvent
         def _safe_close(e):
-            _save_done[0] = True   # mark so any further save is skipped
+            _save_done[0] = True
             original_close(e)
         win.closeEvent = _safe_close
 
