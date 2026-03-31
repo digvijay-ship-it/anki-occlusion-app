@@ -53,7 +53,7 @@ pip install PyQt5 pymupdf
 **Run:**
 
 ```bash
-python anki_occlusion_v14.py
+python anki_occlusion_v17.py
 ```
 
 On Windows PowerShell with spaces in the path:

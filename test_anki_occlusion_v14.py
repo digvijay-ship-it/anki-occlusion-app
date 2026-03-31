@@ -7,7 +7,7 @@ from PyQt5.QtCore import QPointF, QRectF
 
 # Import the functions and classes from your main app script
 # Make sure your original file is named 'anki_occlusion.py'
-import anki_occlusion_v14 as ao
+import anki_occlusion_v17 as ao
 
 # Create a global QApplication instance needed for testing PyQt widgets
 app = QApplication(sys.argv)

@@ -674,6 +674,38 @@ class OcclusionCanvas(QLabel):
         self._selected_idx     = len(self._boxes) - 1
         self.update()
 
+    def select_visible_only(self):
+        if not self._boxes:
+            return
+
+        # 1. Screen par jo canvas ka hissa dikh raha hai, uska Bounding Rect nikalenge
+        visible_rect = self.visibleRegion().boundingRect()
+
+        # 2. Canvas zoom (scaled) hota hai, toh usko original (unscaled) coordinates mein convert karenge
+        inv_scale = 1.0 / self._scale
+        vx = visible_rect.x() * inv_scale
+        vy = visible_rect.y() * inv_scale
+        vw = visible_rect.width() * inv_scale
+        vh = visible_rect.height() * inv_scale
+        v_rectf = QRectF(vx, vy, vw, vh)
+
+        # 3. Naya selection set banayenge
+        self._selected_indices = set()
+
+        for i, b in enumerate(self._boxes):
+            # Agar mask ka rect hamare visible screen area ke sath intersect ho raha hai
+            if v_rectf.intersects(b["rect"]):
+                self._selected_indices.add(i)
+
+        if self._selected_indices:
+            # Kisi ek box ko primary selected index bana do taaki uske handles dikh sakein
+            self._selected_idx = max(self._selected_indices)
+        else:
+            self._selected_idx = -1
+
+        self.update()
+        self.boxes_changed.emit(self.get_boxes())
+
     def delete_selected_boxes(self):
         self._push_undo()
         if self._selected_indices:
@@ -1094,6 +1126,7 @@ class OcclusionCanvas(QLabel):
         ip = self._ip(e.pos())
         mods = e.modifiers()
 
+        # Review Mode Logic (No Change)
         if self._mode == "review" and e.button() == Qt.LeftButton:
             hit = self._hit_box(ip)
             if hit >= 0:
@@ -1104,57 +1137,43 @@ class OcclusionCanvas(QLabel):
         if self._mode != "edit" or e.button() != Qt.LeftButton:
             return
 
-        effective_tool = self._tool
-        if mods & Qt.AltModifier and self._tool != "select":
-            effective_tool = "select"
+        # --- [MOTIVATION: No Alt Needed Anymore!] ---
+        # हम हमेशा चेक करेंगे कि क्या यूजर किसी पुराने बॉक्स या हैंडल को पकड़ रहा है
+        
+        # 1. पहले चेक करें: क्या किसी Resize/Rotate हैंडल पर क्लिक किया है?
+        if self._selected_idx >= 0:
+            hit_h = self._hit_handle(sp, self._selected_idx)
+            if hit_h:
+                op, hi = hit_h
+                self._drag_op        = op
+                self._drag_handle    = hi
+                self._drag_start_pos = sp
+                self._drag_orig_box  = copy.deepcopy(self._boxes[self._selected_idx])
+                self._push_undo()
+                return
 
-        if effective_tool == "select":
-            if self._selected_idx >= 0:
-                hit_h = self._hit_handle(sp, self._selected_idx)
-                if hit_h:
-                    op, hi = hit_h
-                    self._drag_op        = op
-                    self._drag_handle    = hi
-                    self._drag_start_pos = sp
-                    self._drag_orig_box  = copy.deepcopy(self._boxes[self._selected_idx])
-                    self._push_undo()
-                    return
-            hit = self._hit_box(ip)
-            if hit >= 0:
-                add = bool(mods & (Qt.ShiftModifier | Qt.AltModifier))
-                self._select_box(hit, add_to_selection=add)
-                if not add:
-                    self._drag_op        = "move"
-                    self._drag_start_pos = sp
-                    self._drag_orig_box  = copy.deepcopy(self._boxes[hit])
-                    self._push_undo()
-            else:
-                if not (mods & (Qt.ShiftModifier | Qt.AltModifier)):
-                    self._select_box(-1)
-            return
-
-        if effective_tool == "text":
-            hit = self._hit_box(ip)
-            if hit >= 0:
-                self._select_box(hit)
-            else:
-                self._select_box(-1)
-            return
-
+        # 2. चेक करें: क्या किसी बॉक्स (Mask) के ऊपर क्लिक किया है?
         hit = self._hit_box(ip)
         if hit >= 0:
-            self._select_box(hit, add_to_selection=bool(mods & Qt.ShiftModifier))
-            return
+            # [FIX: Ctrl for Multiple Selection]
+            # यहाँ हमने Shift की जगह Ctrl (ControlModifier) लगा दिया है
+            is_multi = bool(mods & Qt.ControlModifier)
+            self._select_box(hit, add_to_selection=is_multi)
             
-        # --- [NEW FIX] खाली जगह पर क्लिक करते ही पुराने बॉक्स का सिलेक्शन धराशायी करो ---
-        self._select_box(-1)
-        
-        self._drawing  = True
-        self._start    = ip
-        self._live_rect = QRectF()
-        
-        # --- [LAG FIX] बॉक्स खींचने से ठीक पहले बैकग्राउंड का स्क्रीनशॉट ले लो ---
-        self._live_draw_cache = self.pixmap().copy() if self.pixmap() else None
+            # Dragging Command (बिना किसी Alt के)
+            self._drag_op        = "move"
+            self._drag_start_pos = sp
+            self._drag_orig_box  = copy.deepcopy(self._boxes[hit])
+            self._push_undo()
+            return # ताकि नीचे नया बॉक्स ड्रा न होने लगे
+
+        # 3. अगर किसी बॉक्स पर क्लिक नहीं किया, तो नया बॉक्स ड्रा करें (Rect/Ellipse)
+        if self._tool != "select":
+            self._select_box(-1) # पुराना सिलेक्शन खत्म
+            self._drawing  = True
+            self._start    = ip
+            self._live_rect = QRectF()
+            self.update()
 
     def mouseMoveEvent(self, e):
         sp = QPointF(e.pos())
@@ -1274,7 +1293,12 @@ class OcclusionCanvas(QLabel):
         elif mods & Qt.ControlModifier and key == Qt.Key_Y:
             self.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_A:
-            self.select_all()
+            if mods & Qt.ShiftModifier:
+                # [Ctrl + Shift + A] -> Pura PDF ke saare masks ek sath select karega
+                self.select_all()
+            else:
+                # [Ctrl + A] -> Sirf Current Screen/Page par dikhne wale masks ko segregate [अलग करना] karke select karega
+                self.select_visible_only()
         elif key == Qt.Key_G and not (mods & Qt.ControlModifier):
             if mods & Qt.ShiftModifier:
                 self.ungroup_selected()
@@ -1377,23 +1401,29 @@ class MaskPanel(QWidget):
         L.addLayout(btn_row)
 
     def _refresh(self, boxes):
-        self.list_w.blockSignals(True)
+        self.list_w.blockSignals(True) # 🛑 List ke events block kardo
         self.list_w.clear()
+        
         for i, b in enumerate(boxes):
-            lbl   = b.get("label") or f"Mask #{i+1}"
-            gid   = b.get("group_id", "")
-            icon  = "🔵" if gid else "🟧"
+            lbl  = b.get("label") or f"Mask #{i+1}"
+            gid  = b.get("group_id", "")
+            icon = "🔵" if gid else "🟧"
             badge = f" [{gid[:4]}]" if gid else ""
             self.list_w.addItem(f"  {icon} {lbl}{badge}")
-        self.list_w.blockSignals(False)
+            
+        # ❌ Purane code mein yahan `self.list_w.blockSignals(False)` likha tha, usko yahan se HATA do!
+
         sel = self._canvas._selected_idx
         if 0 <= sel < self.list_w.count():
-            self.list_w.setCurrentRow(sel)
+            self.list_w.setCurrentRow(sel) # Ab ye line auto-center ko trigger nahi karegi
             box = self._canvas._boxes[sel]
             self.inp_label.blockSignals(True)
             self.inp_label.setText(box.get("label", ""))
             self.inp_label.blockSignals(False)
-
+            
+        # ✅ NAYA CODE: Signals ko sabse last mein unblock karo, jab saara background kaam ho jaye
+        self.list_w.blockSignals(False)
+        
     def _on_select(self, row):
         self._canvas.highlight(row)
         if 0 <= row < len(self._canvas._boxes):
