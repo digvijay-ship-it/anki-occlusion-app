@@ -1151,9 +1151,9 @@ class OcclusionCanvas(QLabel):
         if self._mode != "edit" or e.button() != Qt.LeftButton:
             return
 
-        # Ctrl held = temporarily act as select tool
+        # Alt held = temporarily act as select tool
         effective_tool = self._tool
-        if mods & Qt.ControlModifier and self._tool != "select":
+        if mods & Qt.AltModifier and self._tool != "select":
             effective_tool = "select"
 
         # ── select tool ──────────────────────────────────────────────────────
@@ -1171,7 +1171,7 @@ class OcclusionCanvas(QLabel):
                     return
             hit = self._hit_box(ip)
             if hit >= 0:
-                add = bool(mods & (Qt.ShiftModifier | Qt.ControlModifier))
+                add = bool(mods & (Qt.ShiftModifier | Qt.AltModifier))
                 self._select_box(hit, add_to_selection=add)
                 if not add:
                     self._drag_op        = "move"
@@ -1179,7 +1179,7 @@ class OcclusionCanvas(QLabel):
                     self._drag_orig_box  = copy.deepcopy(self._boxes[hit])
                     self._push_undo()
             else:
-                if not (mods & (Qt.ShiftModifier | Qt.ControlModifier)):
+                if not (mods & (Qt.ShiftModifier | Qt.AltModifier)):
                     self._select_box(-1)
             return
 
@@ -1356,7 +1356,7 @@ class ToolBar(QWidget):
     tool_changed = pyqtSignal(str)
 
     _TOOLS = [
-        ("select",  "⬡", "Select / Move / Resize / Rotate  [V]\nHold Ctrl = temp select"),
+        ("select",  "⬡", "Select / Move / Resize / Rotate  [V]\nHold Alt = temp select"),
         ("rect",    "□",  "Rectangle mask  [R]"),
         ("ellipse", "○",  "Ellipse / Circle mask  [E]"),
         ("text",    "T",  "Edit label of clicked mask  [T]"),
@@ -1754,7 +1754,7 @@ class CardEditorDialog(QDialog):
         hl.setContentsMargins(10, 0, 10, 0)
         hl.addWidget(QLabel(
             "V=Select  R=Rect  E=Ellipse  T=Label  |  "
-            "Hold Ctrl=temp select  Shift+Click=multi-select  |  "
+            "Hold Alt=temp select  Alt+Click=multi-select  |  "
             "G=group selected  Shift+G=ungroup  |  "
             "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo"))
         hl.addStretch()
@@ -3268,6 +3268,7 @@ class AboutDialog(QDialog):
             "Space — reveal answer   1/2/3/4 — rate Again/Hard/Good/Easy\n"
             "V=Select  R=Rect  E=Ellipse  T=Label  Del=delete selected\n"
             "Ctrl+A — select all     Ctrl+Scroll — zoom\n"
+            "Alt+Click — multi-select   Hold Alt — temp select tool\n"
             "C — center on mask      Drag ↻ handle — rotate shape")
 
         _section("Data location",
