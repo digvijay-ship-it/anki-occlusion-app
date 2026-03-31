@@ -15,10 +15,12 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 - **Hide One, Guess One** *(v14)* — Toggle between "Hide All, Guess One" (all masks hidden) and "Hide One, Guess One" (only target mask hidden) modes during your review sessions.
 - **Nested Decks** — Create decks and sub-decks to organise your subjects (e.g. `Biology › Chapter 3 › Cell Division`). Right-click for deck options.
 - **Grouped Masks** — Link multiple masks together so they are reviewed as a single card (all masks hidden at once).
+- **Ultra Fast Cache** *(v17)* — PDFs are cached in RAM upon first load, resulting in instant (zero-delay) switching between Edit and Review modes.
 
 ### PDF Features
 - **Live PDF Sync** *(v13)* — When a PDF is loaded in the editor, the app watches the file for changes. Annotate your PDF in **any external app** (Foxit, Adobe Acrobat, Drawboard, Xodo, etc.), save it there, and the editor **auto-reloads within 800ms** — your masks stay in place.
 - **Open in PDF Reader** *(v13)* — One-click button opens the current PDF in your system default reader so you can annotate and switch back seamlessly.
+- **Progressive Background Loading** *(v16 & v17)* — Large PDFs load in a background thread in chunks of 10 pages. The UI never freezes ("Not Responding"), and you can start working on the first pages immediately while the rest load silently.
 - **Multi-page PDFs** — Navigate pages with Prev / Next buttons inside the editor.
 
 ### Editor
@@ -27,6 +29,7 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 - **Pinch-to-Zoom** — Ctrl+Scroll (or two-finger trackpad pinch) zooms the canvas. Works in both the editor and review mode.
 - **Undo / Redo** — Full undo stack in the editor (Ctrl+Z / Ctrl+Y).
 - **Select, Move, Resize & Rotate** *(v14)* — Click to select, drag to move, use 8 handles to resize, and drag the top circular handle to rotate shapes at any angle.
+- **Zero-Lag Drawing** *(v15)* — Native hardware painting applied to the canvas to completely eliminate mouse lag when drawing, moving, or resizing masks.
 - **Dynamic Font Size** — A− / A / A+ buttons in the top bar scale the entire app font. Preference is saved and restored on next launch.
 
 ### Other
@@ -156,6 +159,10 @@ Your font size preference is also saved here under the `_font_size` key.
 
 | Version | Highlights |
 |---------|-----------|
+| v17 | Progressive chunk loading (start working instantly), Ultra-fast RAM caching |
+| v16 | PDF background loading in QThread (fixes UI "Not Responding" freezes) |
+| v15 | Native hardware painting (Zero-lag drawing), SM-2 queue/duplicate bug fixes |
+| v14 | Hide One Guess One mode, Ellipse & Text tools, Object move/resize/rotate |
 | v13 | Live PDF Sync, Open in PDF Reader button, debounce reload, clean watcher teardown |
 | v12 | Anki-style reveal flow, pinch zoom, center-on-mask button, dynamic font size, onboarding wizard, app icon, About dialog |
 | v11 | Anki-style SM-2 scheduler (learning steps, relearn), improved review UX |
