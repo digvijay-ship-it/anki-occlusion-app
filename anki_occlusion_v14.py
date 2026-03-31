@@ -1,63 +1,32 @@
 """
-Anki Occlusion — PDF & Image Flashcard App  v14
+Anki Occlusion — PDF & Image Flashcard App  v15
 ================================================
-Changes from v9:
-  [OPT-1]  Removed unused imports: QStackedWidget, QGroupBox, QImage
-  [OPT-2]  uuid4-based box_id — guaranteed unique, no timestamp collision risk
-  [OPT-3]  _find_by_id extracted to module-level helper — no more duplication
-             between DeckTree and DeckView
-  [OPT-4]  is_due_today() — single module-level helper used everywhere;
-             eliminates the 3 copies of the same inline logic
-  [OPT-5]  DeckView._refresh — card-level due badge now counts due *boxes*
-             correctly (not just card-level sm2_due)
-  [OPT-6]  PDF thumbnail cache in DeckView — pixmaps not re-loaded on every
-             _refresh call
-  [OPT-7]  save_data uses atomic write (temp file + rename) — no data loss on
-             crash mid-write
-  [OPT-8]  sm2_simulate uses sm2_init copy safely — no mutation of live data
-  [OPT-9]  _find_home uses a cleaner loop without the hasattr guard
-  [OPT-10] QPixmap thumbnail cache in DeckView — avoids repeated disk reads
+v15 Bug Fixes:
+  [FIX-1]  ReviewScreen.__init__ — duplicate item prevention:
+             Previously, if a card had mixed grouped+ungrouped boxes, or if
+             seen_groups was not correctly scoped per-card, same box could
+             appear twice in self._items. Now uses a per-card seen_groups dict
+             that resets for each card, and uses a robust (card_id, box_key)
+             dedup set to guarantee no item appears twice.
 
-v12 changes:
-  [R1] Review: rating buttons hidden until card is revealed (Space / Show Answer)
-       Mirrors Anki's "Show Answer → rate" flow exactly
-  [R2] Review: canvas now uses full available width (~80%+ of screen)
-       Queue list panel removed — cleaner, more like real Anki
-  [R3] Review: "⊕ Center" button scrolls viewport back to active mask
-       Keyboard shortcut: C key
-  [R4] Review: Ctrl+Scroll (two-finger pinch) zooms canvas in/out
-       Keyboard: Ctrl++, Ctrl+−, Ctrl+0 (fit)
-  [R5] Review: header bar slimmed down, progress bar inline with header
-  [R6] Home: Ctrl++ / Ctrl+− / Ctrl+0 scales home screen font size
-  [R7] OcclusionCanvas: zoom_in / zoom_out / zoom_fit / duplicate_selected
-       + wheelEvent with Ctrl modifier for pinch zoom
+  [FIX-2]  _rate() — "reviews" double-increment fixed:
+             sched_update() already increments c["reviews"] on the sm2_obj
+             (box dict). _rate() was ALSO doing card["reviews"] += 1
+             redundantly. Now card-level review count is only incremented
+             when sm2_obj IS the card (no-box cards), not on every box rating.
 
-v13 changes:
-  [L1] Live PDF Sync — QFileSystemWatcher monitors the loaded PDF file.
-       When you annotate/edit the PDF in any external app (Foxit, Adobe,
-       Drawboard, Xodo, etc.) and save, the editor auto-reloads within 800ms.
-       Status indicator: 🟢 watching → 🟡 change detected → 🟢 reloaded ✓
-  [L2] "📂 Open in PDF Reader" button — opens current PDF in system default
-       app (os.startfile on Windows, open on Mac, xdg-open on Linux).
-       Works with any PDF reader that supports saving annotations.
-  [L3] Debounce timer (800ms) prevents multiple rapid reloads when editors
-       emit several file-change events on a single save operation.
-  [L4] Re-watch after delete+recreate — some editors (Adobe, Foxit) delete
-       the file and recreate it on save; watcher auto-re-adds the path.
-  [L5] Watcher stopped cleanly on dialog close/cancel/accept — no leaks.
+  [FIX-3]  _start_review() — win.closeEvent double-save fixed:
+             Review QMainWindow closeEvent was calling save_data again after
+             finished signal already triggered save_data. Added a flag to
+             prevent double-save on review window close.
 
-v14 changes:
-  [T1] Tool Toolbar — vertical Anki-style toolbar on left of canvas:
-         Select (V), Rectangle (R), Ellipse (E), Text-Label (T)
-  [T2] Select Tool — click to select, drag to move, 8-handle resize
-  [T3] Ellipse Tool — draw oval/circle masks, stored & reviewed as ellipses
-  [T4] Text-Label Tool — click inside any mask to edit its label inline
-  [T5] Rotation — drag handle (circle above selected shape) to rotate
-       both rect and ellipse masks; angle stored per-box
-  [T6] Full Undo/Redo stack (Ctrl+Z / Ctrl+Y) in editor
-  [T7] Del key fix — always works when canvas has focus
-  [R8] Hide One, Guess One review mode — only the target mask hidden,
-       all other masks visible; toggle button in review header
+  [FIX-4]  is_due_today() called on un-initialised boxes in ReviewScreen:
+             sm2_init(box) is now always called before is_due_today(box) check
+             in _card_has_due_today() inside _review_due() as well.
+
+  [FIX-5]  Group dedup across cards: seen_groups is now reset per-card
+             inside the ReviewScreen.__init__ loop, preventing group bleed
+             between cards that share the same group_id string by coincidence.
 """
 
 import sys, os, json, copy, uuid, math
@@ -94,26 +63,10 @@ DATA_FILE = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
 #  SM-2 ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ANKI-STYLE SCHEDULER
-#
-#  Card states (stored in "sched_state"):
-#    "new"       — never seen
-#    "learning"  — in intraday learning steps (minutes-based)
-#    "review"    — graduated, days-based SM-2 scheduling
-#    "relearn"   — failed a review card, back to learning steps
-#
-#  Learning steps (minutes): [1, 6, 10, 15]  → mimics real Anki default+
-#  After passing all steps  → card graduates to "review" with 1-day interval
-#
-#  "sm2_due" stores a full ISO datetime string (not just date) so we can
-#  schedule to-the-minute during learning.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-LEARNING_STEPS  = [1, 10]           # minutes — matches real Anki default (1m → 10m → graduate)
-GRADUATING_IV   = 1                 # days after completing all learning steps
-EASY_IV         = 4                 # days for Easy on a new/learning card
-RELEARN_STEPS   = [10]              # minutes — after failing a review card
+LEARNING_STEPS  = [1, 10]
+GRADUATING_IV   = 1
+EASY_IV         = 4
+RELEARN_STEPS   = [10]
 
 def _now_iso():
     return datetime.now().isoformat(timespec="seconds")
@@ -125,88 +78,67 @@ def _due_in_days(days):
     return (datetime.now() + timedelta(days=days)).isoformat(timespec="seconds")
 
 def sched_init(c):
-    """Initialise scheduling fields on a card/box dict (idempotent)."""
-    c.setdefault("sched_state",   "new")      # new | learning | review | relearn
-    c.setdefault("sched_step",    0)           # index into LEARNING_STEPS
-    c.setdefault("sm2_interval",  1)           # days (only meaningful in review)
-    c.setdefault("sm2_ease",      2.5)         # ease factor
-    c.setdefault("sm2_due",       _now_iso())  # full datetime string
+    c.setdefault("sched_state",   "new")
+    c.setdefault("sched_step",    0)
+    c.setdefault("sm2_interval",  1)
+    c.setdefault("sm2_ease",      2.5)
+    c.setdefault("sm2_due",       _now_iso())
     c.setdefault("sm2_repetitions", 0)
     c.setdefault("sm2_last_quality", -1)
+    c.setdefault("reviews", 0)          # [FIX-2] ensure field always exists
     return c
 
-# Keep sm2_init as alias so save/load code still works
 def sm2_init(c):
     return sched_init(c)
 
 def sched_update(c, quality):
-    """
-    Anki-style rating logic:
-      quality 0  → Blackout  (reset to step 0)
-      quality 1  → Again     (reset to step 0)
-      quality 3  → Hard      (repeat current step)
-      quality 4  → Good      (advance to next step / graduate)
-      quality 5  → Easy      (graduate immediately with EASY_IV)
-    """
     c = sched_init(c)
     state = c["sched_state"]
     step  = c["sched_step"]
     ef    = c["sm2_ease"]
     iv    = c["sm2_interval"]
 
-    # Treat 'new' exactly like 'learning' — first press enters step 0
     if state == "new":
         state = "learning"
         c["sched_state"] = "learning"
 
-    # Update ease factor (only meaningful in review state)
     if state == "review":
         ef = max(1.3, round(
             ef + 0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02), 4))
 
-    # ── state machine ─────────────────────────────────────────────────────────
     if quality <= 1:
-        # Again / Blackout → back to first learning step
         steps     = RELEARN_STEPS if state == "review" else LEARNING_STEPS
         new_state = "relearn" if state == "review" else "learning"
         new_step  = 0
         due       = _due_in_minutes(steps[0])
 
     elif quality == 3:
-        # Hard → real Anki behaviour:
-        #   on step 0: average of step[0] and step[1]  (e.g. (1+10)/2 = 5m)
-        #   on any other step: repeat current step
         if state in ("learning", "relearn"):
             steps     = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
             new_state = state
             new_step  = step
             if step == 0 and len(steps) > 1:
-                # Average of first two steps, capped at 1 day more than step[0]
                 hard_mins = (steps[0] + steps[1]) // 2
             else:
                 hard_mins = steps[min(step, len(steps) - 1)]
             due = _due_in_minutes(hard_mins)
         else:
-            # Hard in review → slightly shorter interval
             new_state = "review"
             new_step  = 0
             iv        = max(1, round(iv * 1.2))
             due       = _due_in_days(iv)
 
     elif quality == 5:
-        # Easy → graduate immediately regardless of state
         new_state = "review"
         new_step  = 0
         iv        = max(EASY_IV, round(iv * ef)) if state == "review" else EASY_IV
         due       = _due_in_days(iv)
 
     else:
-        # Good (quality == 4) → advance to next step
         if state in ("learning", "relearn"):
             steps     = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
             next_step = step + 1
             if next_step >= len(steps):
-                # Graduated! 🎓
                 new_state = "review"
                 new_step  = 0
                 iv        = GRADUATING_IV
@@ -216,7 +148,6 @@ def sched_update(c, quality):
                 new_step  = next_step
                 due       = _due_in_minutes(steps[next_step])
         else:
-            # Good in review → normal SM-2 interval growth
             new_state = "review"
             new_step  = 0
             iv = (1 if c["sm2_repetitions"] == 0 else
@@ -237,14 +168,12 @@ def sched_update(c, quality):
     return c
 
 def sm2_update(c, quality):
-    """Alias so existing call-sites still work."""
     return sched_update(c, quality)
 
 def is_due_now(c):
-    """True if card/box is due right now (compares full datetime)."""
     sched_init(c)
     if c.get("sm2_last_quality", -1) == -1:
-        return True                            # never seen → always due
+        return True
     due_str = c.get("sm2_due", "")
     if not due_str:
         return True
@@ -254,16 +183,10 @@ def is_due_now(c):
         return True
 
 def is_due_today(c):
-    """
-    True if card should appear in today's session:
-      - new / learning cards   → is_due_now()  (minute-precision)
-      - review cards           → due date (date part only) <= today
-    """
     sched_init(c)
     state = c.get("sched_state", "new")
     if state in ("new", "learning", "relearn"):
         return is_due_now(c)
-    # review cards — only compare date portion
     due_str = c.get("sm2_due", "")
     if not due_str:
         return True
@@ -277,7 +200,6 @@ def sm2_is_due(c):
     return is_due_today(c)
 
 def sm2_days_left(c):
-    """Days until next review (for review-state cards)."""
     try:
         due = datetime.fromisoformat(c.get("sm2_due", ""))
         delta = (due.date() - date.today()).days
@@ -286,12 +208,6 @@ def sm2_days_left(c):
         return 0
 
 def _fmt_due_interval(c):
-    """Human-readable next interval shown on rating buttons."""
-    state = c.get("sched_state", "new")
-    step  = c.get("sched_step", 0)
-    iv    = c.get("sm2_interval", 1)
-    ef    = c.get("sm2_ease", 2.5)
-
     def _preview(quality):
         s = copy.deepcopy(c)
         sched_init(s)
@@ -304,11 +220,9 @@ def _fmt_due_interval(c):
         else:
             days = s["sm2_interval"]
             return f"{days}d"
-
     return {q: _preview(q) for q in [1, 3, 4, 5]}
 
 def sm2_simulate(c, q):
-    """Return interval string for preview labels."""
     previews = _fmt_due_interval(c)
     return previews.get(q, "?")
 
@@ -324,13 +238,12 @@ def sm2_badge(c):
         mins  = steps[min(step, len(steps)-1)]
         tag   = "🔁 Relearn" if state == "relearn" else "📖 Learning"
         return f"{tag}  step:{step+1}/{len(steps)}  next:{mins}m"
-    # review
     if is_due_today(c):
         return f"🔴 Review Due  iv:{iv}d  EF:{ef:.2f}"
     return f"✅ {sm2_days_left(c)}d left  iv:{iv}d  EF:{ef:.2f}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DATA  — atomic save to avoid corruption on crash
+#  DATA
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_data():
@@ -343,13 +256,12 @@ def load_data():
     return {"decks": []}
 
 def save_data(data):
-    # [OPT-7] Atomic write: write to temp file first, then rename
     dir_  = os.path.dirname(DATA_FILE) or "."
     fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DATA_FILE)   # atomic on POSIX; best-effort on Windows
+        os.replace(tmp, DATA_FILE)
     except Exception:
         try:
             os.unlink(tmp)
@@ -358,11 +270,10 @@ def save_data(data):
         raise
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DECK TREE HELPERS  — [OPT-3] module-level so both DeckTree & DeckView share
+#  DECK TREE HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def find_deck_by_id(deck_id, lst):
-    """Recursively find and return the deck dict with the given _id."""
     for d in lst:
         if d.get("_id") == deck_id:
             return d
@@ -372,7 +283,6 @@ def find_deck_by_id(deck_id, lst):
     return None
 
 def next_deck_id(data):
-    """Return max existing _id + 1 across the whole nested tree."""
     max_id = [0]
     def _walk(lst):
         for d in lst:
@@ -380,10 +290,6 @@ def next_deck_id(data):
             _walk(d.get("children", []))
     _walk(data.get("decks", []))
     return max_id[0] + 1
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  BOX ID HELPER  — [OPT-2] uuid4 for guaranteed uniqueness
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def new_box_id():
     return str(uuid.uuid4())
@@ -470,7 +376,7 @@ C_BORDER  = "#45475A"
 C_MASK    = "#F7916A"
 C_GROUP   = "#BD93F9"
 
-BASE_FONT_SIZE = 11   # pt — user can change via A+ / A− buttons, saved to data file
+BASE_FONT_SIZE = 11
 
 def _build_ss(font_size: int = BASE_FONT_SIZE) -> str:
     return f"""
@@ -507,16 +413,13 @@ QMenu{{background:{C_SURFACE};color:{C_TEXT};border:1px solid {C_BORDER};border-
 QMenu::item:selected{{background:{C_ACCENT};}}
 """
 
-SS = _build_ss()   # default — replaced at runtime by MainWindow when user changes size
+SS = _build_ss()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  OCCLUSION CANVAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── Canvas helpers ────────────────────────────────────────────────────────────
-
 def _rotated_corners(cx, cy, w, h, angle_deg):
-    """Return the 4 corners of a rect rotated around its centre."""
     rad = math.radians(angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     hw, hh = w / 2, h / 2
@@ -529,7 +432,6 @@ def _rotated_corners(cx, cy, w, h, angle_deg):
     return result
 
 def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
-    """Hit-test: is point (px,py) inside rotated rect?"""
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     dx, dy = px - cx, py - cy
@@ -538,7 +440,6 @@ def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
     return abs(lx) <= w / 2 and abs(ly) <= h / 2
 
 def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
-    """Hit-test: is point (px,py) inside rotated ellipse?"""
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     dx, dy = px - cx, py - cy
@@ -552,47 +453,37 @@ def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
 class OcclusionCanvas(QLabel):
     boxes_changed = pyqtSignal(list)
 
-    # draw_tool: "rect" | "ellipse" | "select" | "text"
     TOOLS = ("select", "rect", "ellipse", "text")
-
-    # resize handle indices: 0=TL 1=TC 2=TR 3=ML 4=MR 5=BL 6=BC 7=BR
-    _HANDLE_R = 6    # handle radius in screen pixels
+    _HANDLE_R = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self._px               : QPixmap = None
         self._boxes            : list    = []
-        self._mode                       = "edit"   # "edit" | "review"
-        self._tool                       = "rect"   # current draw tool
+        self._mode                       = "edit"
+        self._tool                       = "rect"
         self._scale                      = 1.0
         self._selected_idx               = -1
         self._selected_indices           = set()
         self._target_idx                 = -1
         self._target_group_id            = ""
-        self._review_mode_style          = "hide_all"  # "hide_all" | "hide_one"
+        self._review_mode_style          = "hide_all"
 
-        # drawing state
         self._drawing        = False
         self._start          = QPointF()
         self._live_rect      = QRectF()
 
-        # select/move/resize/rotate state
-        self._drag_op        = None   # None|"move"|"resize"|"rotate"
+        self._drag_op        = None
         self._drag_handle    = -1
         self._drag_start_pos = QPointF()
         self._drag_orig_box  = None
 
-        # undo/redo stacks  (list of deep-copied box lists)
         self._undo_stack : list = []
         self._redo_stack : list = []
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
-
-    # ═════════════════════════════════════════════════════════════════════════
-    #  PUBLIC API
-    # ═════════════════════════════════════════════════════════════════════════
 
     def set_tool(self, tool: str):
         self._tool = tool
@@ -637,7 +528,7 @@ class OcclusionCanvas(QLabel):
                 "label":    b.get("label", ""),
                 "shape":    b.get("shape", "rect"),
                 "angle":    b.get("angle", 0.0),
-                "group_id": b.get("group_id", ""),   # "" = ungrouped
+                "group_id": b.get("group_id", ""),
             }
             for k in SM2_KEYS:
                 if k in b:
@@ -651,7 +542,7 @@ class OcclusionCanvas(QLabel):
         for b in self._boxes:
             b["revealed"] = False
         if mode == "review":
-            self.setFocusPolicy(Qt.NoFocus)   # never steal Space in review
+            self.setFocusPolicy(Qt.NoFocus)
             self.setCursor(QCursor(Qt.PointingHandCursor))
         else:
             self.setFocusPolicy(Qt.StrongFocus)
@@ -659,7 +550,6 @@ class OcclusionCanvas(QLabel):
         self._redraw()
 
     def set_review_style(self, style: str):
-        """style: 'hide_all' | 'hide_one'"""
         self._review_mode_style = style
         self._redraw()
 
@@ -740,12 +630,11 @@ class OcclusionCanvas(QLabel):
             self._redraw()
 
     def group_selected(self):
-        """Assign a shared group_id to all currently selected boxes."""
         indices = self._get_all_selected()
         if len(indices) < 2:
             self._show_toast("⚠ Select 2+ masks to group")
             return
-        gid = str(uuid.uuid4())[:8]   # short id, visible in mask panel
+        gid = str(uuid.uuid4())[:8]
         self._push_undo()
         for i in indices:
             self._boxes[i]["group_id"] = gid
@@ -754,7 +643,6 @@ class OcclusionCanvas(QLabel):
         self._show_toast(f"⛓ {len(indices)} masks grouped")
 
     def ungroup_selected(self):
-        """Remove group_id from selected boxes."""
         indices = self._get_all_selected()
         if not indices:
             return
@@ -766,13 +654,10 @@ class OcclusionCanvas(QLabel):
         self._show_toast(f"✂ {len(indices)} masks ungrouped")
 
     def _get_all_selected(self):
-        """Return sorted list of all selected indices."""
         result = set(self._selected_indices)
         if self._selected_idx >= 0:
             result.add(self._selected_idx)
         return sorted(result)
-
-    # ── undo / redo ──────────────────────────────────────────────────────────
 
     def _push_undo(self):
         self._undo_stack.append(copy.deepcopy(self._boxes))
@@ -800,8 +685,6 @@ class OcclusionCanvas(QLabel):
         self._redraw()
         self.boxes_changed.emit(self.get_boxes())
 
-    # ── zoom ─────────────────────────────────────────────────────────────────
-
     def zoom_in(self):
         self._scale = min(self._scale * 1.10, 8.0)
         self._redraw()
@@ -819,24 +702,17 @@ class OcclusionCanvas(QLabel):
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
-            # Always use angleDelta (standardised: 120 units per scroll notch).
-            # pixelDelta can be huge on trackpads, causing jumpy zoom.
             angle = e.angleDelta().y()
             if angle == 0:
                 e.accept()
                 return
-            # Each full notch (120 units) → 10% zoom step
             factor = 1.0 + (angle / 120.0) * 0.10
-            factor = max(0.90, min(factor, 1.11))   # clamp: max ~11% per notch
+            factor = max(0.90, min(factor, 1.11))
             self._scale = max(0.05, min(8.0, self._scale * factor))
             self._redraw()
             e.accept()
         else:
             super().wheelEvent(e)
-
-    # ═════════════════════════════════════════════════════════════════════════
-    #  INTERNAL HELPERS
-    # ═════════════════════════════════════════════════════════════════════════
 
     def _deserialise_box(self, b, revealed=False):
         r = b["rect"]
@@ -847,18 +723,16 @@ class OcclusionCanvas(QLabel):
             "revealed": revealed,
             "label":    b.get("label", ""),
             "box_id":   b.get("box_id", ""),
-            "group_id": b.get("group_id", ""),   # "" = ungrouped
+            "group_id": b.get("group_id", ""),
             **{k: b[k] for k in ("sm2_interval","sm2_repetitions","sm2_ease",
                                   "sm2_due","sm2_last_quality")
                if k in b}
         }
 
     def _ip(self, pos):
-        """Screen pos → image-space QPointF."""
         return QPointF(pos.x() / self._scale, pos.y() / self._scale)
 
     def _sr(self, r: QRectF) -> QRectF:
-        """Image-space QRectF → screen-space QRectF."""
         return QRectF(r.x() * self._scale, r.y() * self._scale,
                       r.width() * self._scale, r.height() * self._scale)
 
@@ -869,10 +743,7 @@ class OcclusionCanvas(QLabel):
                                int(self._px.height() * self._scale),
                                Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-    # ── handle positions (screen coords, for selected box) ───────────────────
-
     def _handle_positions(self, idx):
-        """Return dict: 'resize' → list of 8 QPointF, 'rotate' → QPointF"""
         if not (0 <= idx < len(self._boxes)):
             return None
         b  = self._boxes[idx]
@@ -898,15 +769,11 @@ class OcclusionCanvas(QLabel):
         return {"resize": handles, "rotate": rotate_pt}
 
     def _hit_handle(self, screen_pos, idx):
-        """
-        Returns ('rotate', -1) | ('resize', handle_idx) | ('box', -1) | None
-        """
         hps = self._handle_positions(idx)
         if not hps:
             return None
         sp = QPointF(screen_pos)
         r  = self._HANDLE_R + 2
-        # rotate handle first (higher priority)
         rpt = hps["rotate"]
         if (sp - rpt).manhattanLength() <= r:
             return ("rotate", -1)
@@ -915,9 +782,7 @@ class OcclusionCanvas(QLabel):
                 return ("resize", hi)
         return None
 
-
     def _show_toast(self, msg: str):
-        """Show a brief floating notice on the canvas."""
         if not hasattr(self, "_toast_label"):
             from PyQt5.QtWidgets import QLabel
             self._toast_label = QLabel(self)
@@ -933,7 +798,6 @@ class OcclusionCanvas(QLabel):
             self._toast_timer.timeout.connect(self._toast_label.hide)
         self._toast_label.setText(msg)
         self._toast_label.adjustSize()
-        # centre it near top of canvas
         x = (self.width()  - self._toast_label.width())  // 2
         y = 18
         self._toast_label.move(x, y)
@@ -942,7 +806,6 @@ class OcclusionCanvas(QLabel):
         self._toast_timer.start(1800)
 
     def _select_box(self, hit: int, add_to_selection: bool = False):
-        """Select a box; if it belongs to a group, select the whole group."""
         if hit < 0:
             self._selected_idx     = -1
             self._selected_indices = set()
@@ -966,7 +829,6 @@ class OcclusionCanvas(QLabel):
         self.boxes_changed.emit(self.get_boxes())
 
     def _hit_box(self, ip: QPointF):
-        """Return index of topmost box hit at image-space point, or -1."""
         for i in range(len(self._boxes) - 1, -1, -1):
             b  = self._boxes[i]
             r  = b["rect"]
@@ -983,8 +845,6 @@ class OcclusionCanvas(QLabel):
                     return i
         return -1
 
-    # ── drawing ───────────────────────────────────────────────────────────────
-
     def _redraw(self):
         if not self._px or self._px.isNull():
             return
@@ -998,7 +858,6 @@ class OcclusionCanvas(QLabel):
         for i, b in enumerate(self._boxes):
             self._draw_box(p, i, b)
 
-        # live preview while drawing
         if self._drawing and not self._live_rect.isEmpty():
             self._draw_live(p)
 
@@ -1022,15 +881,12 @@ class OcclusionCanvas(QLabel):
 
         if self._mode == "review":
             revealed  = b.get("revealed", False)
-            # is_target: true for the single target box OR any box in the target group
             in_target_group = (bool(self._target_group_id) and
                                b.get("group_id", "") == self._target_group_id)
             is_target = (i == self._target_idx) or in_target_group
             hide_one  = (self._review_mode_style == "hide_one")
 
-            # hide_one: only target is hidden; others are fully transparent
             if hide_one and not is_target:
-                # draw a subtle green outline — box is "visible / already known"
                 if not revealed:
                     p.setPen(QPen(QColor(C_GREEN), 1, Qt.DotLine))
                     p.setBrush(Qt.NoBrush)
@@ -1065,7 +921,6 @@ class OcclusionCanvas(QLabel):
                 else:
                     p.drawRect(local)
         else:
-            # edit mode
             gid    = b.get("group_id", "")
             grouped = bool(gid)
             fill = QColor("#50FA7B" if sel else
@@ -1081,7 +936,6 @@ class OcclusionCanvas(QLabel):
                 p.drawRect(local)
             p.setPen(QPen(border_col, 1))
             p.setFont(QFont("Segoe UI", 9))
-            # show group badge
             display_lbl = lbl
             if grouped:
                 display_lbl = f"[{gid[:4]}] {lbl}" if lbl else f"[{gid[:4]}]"
@@ -1089,7 +943,6 @@ class OcclusionCanvas(QLabel):
 
         p.restore()
 
-        # draw resize + rotate handles for selected box in edit mode
         if self._mode == "edit" and i == self._selected_idx:
             self._draw_handles(p, i)
 
@@ -1097,22 +950,18 @@ class OcclusionCanvas(QLabel):
         hps = self._handle_positions(idx)
         if not hps:
             return
-        # resize handles
         p.setPen(QPen(QColor(C_GREEN), 1))
         p.setBrush(QBrush(QColor("#1E1E2E")))
         hr = self._HANDLE_R
         for hpt in hps["resize"]:
             p.drawEllipse(hpt, hr, hr)
-        # rotate handle
         rpt = hps["rotate"]
-        # stem from top-centre handle to rotate handle
         top_c = hps["resize"][1]
         p.setPen(QPen(QColor(C_ACCENT), 1))
         p.drawLine(top_c, rpt)
         p.setBrush(QBrush(QColor(C_ACCENT)))
         p.setPen(QPen(QColor("#FFF"), 1))
         p.drawEllipse(rpt, hr + 1, hr + 1)
-        # little arrow symbol inside rotate handle
         p.setFont(QFont("Segoe UI", 7))
         p.setPen(QPen(QColor("#FFF"), 1))
         p.drawText(QRectF(rpt.x() - 6, rpt.y() - 6, 12, 12), Qt.AlignCenter, "↻")
@@ -1128,10 +977,6 @@ class OcclusionCanvas(QLabel):
         else:
             p.drawRect(sr)
 
-    # ═════════════════════════════════════════════════════════════════════════
-    #  MOUSE EVENTS
-    # ═════════════════════════════════════════════════════════════════════════
-
     def mousePressEvent(self, e):
         if not self._px:
             return
@@ -1143,7 +988,6 @@ class OcclusionCanvas(QLabel):
         if self._mode == "review" and e.button() == Qt.LeftButton:
             hit = self._hit_box(ip)
             if hit >= 0:
-                # Toggle Magic: जो भी करंट स्टेट है, उसे उल्टा कर दो!
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
                 self._redraw()
             return
@@ -1151,14 +995,11 @@ class OcclusionCanvas(QLabel):
         if self._mode != "edit" or e.button() != Qt.LeftButton:
             return
 
-        # Alt held = temporarily act as select tool
         effective_tool = self._tool
         if mods & Qt.AltModifier and self._tool != "select":
             effective_tool = "select"
 
-        # ── select tool ──────────────────────────────────────────────────────
         if effective_tool == "select":
-            # check handles of currently selected box first
             if self._selected_idx >= 0:
                 hit_h = self._hit_handle(sp, self._selected_idx)
                 if hit_h:
@@ -1183,7 +1024,6 @@ class OcclusionCanvas(QLabel):
                     self._select_box(-1)
             return
 
-        # ── text tool ────────────────────────────────────────────────────────
         if effective_tool == "text":
             hit = self._hit_box(ip)
             if hit >= 0:
@@ -1192,8 +1032,6 @@ class OcclusionCanvas(QLabel):
                 self._select_box(-1)
             return
 
-        # ── rect / ellipse draw ───────────────────────────────────────────────
-        # clicking an existing box selects it instead of starting a draw
         hit = self._hit_box(ip)
         if hit >= 0:
             self._select_box(hit, add_to_selection=bool(mods & Qt.ShiftModifier))
@@ -1238,7 +1076,6 @@ class OcclusionCanvas(QLabel):
             self._redraw()
             return
 
-        # cursor feedback in select mode
         if self._tool == "select" and self._mode == "edit":
             if self._selected_idx >= 0:
                 hh = self._hit_handle(sp, self._selected_idx)
@@ -1275,27 +1112,21 @@ class OcclusionCanvas(QLabel):
             self._redraw()
 
     def _do_resize(self, sp: QPointF):
-        """Resize selected box by moving one of 8 handles, respecting rotation."""
         idx  = self._selected_idx
         b    = self._boxes[idx]
         orig = self._drag_orig_box
         hi   = self._drag_handle
 
-        # Work in image space
         delta = (sp - self._drag_start_pos) / self._scale
         ang   = orig.get("angle", 0.0)
         rad   = math.radians(-ang)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
-        # Rotate delta into box-local space
         ldx =  delta.x() * cos_a - delta.y() * sin_a
         ldy =  delta.x() * sin_a + delta.y() * cos_a
 
         r   = orig["rect"]
         x, y, w, h = r.x(), r.y(), r.width(), r.height()
-        cx, cy = x + w/2, y + h/2
 
-        # Handle index → which edges to move
-        # 0=TL 1=TC 2=TR 3=ML 4=MR 5=BL 6=BC 7=BR
         move_left  = hi in (0, 3, 5)
         move_right = hi in (2, 4, 7)
         move_top   = hi in (0, 1, 2)
@@ -1315,14 +1146,9 @@ class OcclusionCanvas(QLabel):
         b["angle"] = ang
         self._redraw()
 
-    # ═════════════════════════════════════════════════════════════════════════
-    #  KEYBOARD
-    # ═════════════════════════════════════════════════════════════════════════
-
     def keyPressEvent(self, e):
         mods = e.modifiers()
         key  = e.key()
-        # In review mode, pass Space and rating keys up to ReviewScreen
         if self._mode == "review":
             super().keyPressEvent(e)
             return
@@ -1346,13 +1172,11 @@ class OcclusionCanvas(QLabel):
         super().resizeEvent(e)
 
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TOOL BAR  — vertical Anki-style tool selector
+#  TOOL BAR
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ToolBar(QWidget):
-    """Vertical left toolbar — Anki-style icon-only tool buttons."""
     tool_changed = pyqtSignal(str)
 
     _TOOLS = [
@@ -1364,7 +1188,7 @@ class ToolBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(50)   # 1.3x of 40
+        self.setFixedWidth(50)
         self.setStyleSheet(
             "QWidget{background:#F0F0F0;border-right:1px solid #C8C8C8;}")
         L = QVBoxLayout(self)
@@ -1375,7 +1199,7 @@ class ToolBar(QWidget):
             b = QPushButton(icon)
             b.setToolTip(tip)
             b.setCheckable(True)
-            b.setFixedSize(40, 40)   # 1.3x of 32
+            b.setFixedSize(40, 40)
             b.setStyleSheet(
                 "QPushButton{background:transparent;color:#333;"
                 "border:none;border-radius:5px;font-size:20px;font-weight:bold;}"
@@ -1486,11 +1310,10 @@ class CardEditorDialog(QDialog):
         self.card                = card or {}
         self._pdf_pages          = []
         self._cur_page           = 0
-        self._combined_px        = QPixmap()   # combined PDF pixmap
+        self._combined_px        = QPixmap()
         self._data               = data
         self._deck               = deck
         self._auto_subdeck_name  = None
-        # File watcher — monitors loaded PDF for external changes
         self._watcher            = QFileSystemWatcher()
         self._watched_path       = None
         self._reload_timer       = QTimer()
@@ -1507,7 +1330,6 @@ class CardEditorDialog(QDialog):
         return super().exec_()
 
     def _setup_ui(self):
-        # ── Anki-style: light background for the editor dialog ────────────────
         self.setStyleSheet("""
             QDialog { background: #ECECEC; }
             QWidget { background: #ECECEC; color: #222; font-family: 'Segoe UI'; font-size: 12px; }
@@ -1547,9 +1369,8 @@ class CardEditorDialog(QDialog):
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
 
-        # ══ TOP MENUBAR-STYLE TOOLBAR ════════════════════════════════════════
         top_bar = QFrame()
-        top_bar.setFixedHeight(46)   # 1.3x of 38
+        top_bar.setFixedHeight(46)
         top_bar.setStyleSheet(
             "QFrame{background:#F0F0F0;border-bottom:1px solid #C8C8C8;border-radius:0;}"
             "QPushButton{background:transparent;border:none;border-radius:4px;"
@@ -1566,12 +1387,11 @@ class CardEditorDialog(QDialog):
             b = QPushButton(label)
             b.setToolTip(tip)
             b.setCheckable(checkable)
-            b.setFixedHeight(34)   # 1.3x
+            b.setFixedHeight(34)
             if w:
                 b.setFixedWidth(w)
             return b
 
-        # File ops
         btn_img = _tbtn("🖼 Image", "Load Image")
         btn_pdf = _tbtn("📄 PDF",   "Load PDF")
         btn_pdf.setEnabled(PDF_SUPPORT)
@@ -1586,24 +1406,20 @@ class CardEditorDialog(QDialog):
             s.setFixedWidth(1)
             return s
 
-        # Undo / Redo
         btn_undo = _tbtn("↩", "Undo  Ctrl+Z", w=36)
         btn_redo = _tbtn("↪", "Redo  Ctrl+Y", w=36)
         btn_undo.clicked.connect(lambda: self.canvas.undo())
         btn_redo.clicked.connect(lambda: self.canvas.redo())
 
-        # Zoom
         btn_zi = _tbtn("🔍+", "Zoom In  Ctrl++",  w=46)
         btn_zo = _tbtn("🔍−", "Zoom Out  Ctrl+−", w=46)
         btn_zf = _tbtn("⊡",   "Zoom Fit  Ctrl+0", w=32)
 
-        # Delete / Clear
         btn_del   = _tbtn("🗑",    "Delete selected  Del", w=32)
         btn_clear = _tbtn("✕ All", "Clear all masks")
 
-        # Group / Ungroup — action buttons, NOT toggle
-        btn_grp   = _tbtn("⛓ Group",   "Group selected masks  [G]\nSelected masks → tested as ONE card")
-        btn_ungrp = _tbtn("⛓ Ungroup", "Ungroup selected masks  [Shift+G]\nMakes each mask its own card again")
+        btn_grp   = _tbtn("⛓ Group",   "Group selected masks  [G]")
+        btn_ungrp = _tbtn("⛓ Ungroup", "Ungroup selected masks  [Shift+G]")
         btn_grp.setStyleSheet(
             "QPushButton{background:transparent;border:none;border-radius:4px;"
             "padding:4px 10px;font-size:13px;color:#1a5ca8;min-height:32px;}"
@@ -1615,7 +1431,6 @@ class CardEditorDialog(QDialog):
         btn_grp.clicked.connect(lambda: self.canvas.group_selected())
         btn_ungrp.clicked.connect(lambda: self.canvas.ungroup_selected())
 
-        # PDF reader / live sync
         self.btn_open_ext = _tbtn("📂 Open PDF", "Open in system PDF reader")
         self.btn_open_ext.clicked.connect(self._open_in_reader)
         self.btn_open_ext.setVisible(False)
@@ -1632,7 +1447,6 @@ class CardEditorDialog(QDialog):
             tl.addWidget(w)
         tl.addStretch()
 
-        # Save / Cancel on the right
         btn_cancel = _tbtn("Cancel", "Discard changes")
         btn_save   = QPushButton("💾  Save Card")
         btn_save.setFixedHeight(34)
@@ -1649,7 +1463,6 @@ class CardEditorDialog(QDialog):
 
         L.addWidget(top_bar)
 
-        # ══ PDF INFO BAR (hidden until PDF loaded) ═══════════════════════════
         self.pdf_bar = QWidget()
         self.pdf_bar.setStyleSheet("background:#E8E8E8;border-bottom:1px solid #CCC;")
         pb = QHBoxLayout(self.pdf_bar)
@@ -1662,16 +1475,13 @@ class CardEditorDialog(QDialog):
         self.pdf_bar.hide()
         L.addWidget(self.pdf_bar)
 
-        # ══ MAIN AREA: left toolbar | canvas | right panel ═══════════════════
         main_row = QHBoxLayout()
         main_row.setContentsMargins(0, 0, 0, 0)
         main_row.setSpacing(0)
 
-        # Left vertical tool sidebar
         self.toolbar = ToolBar()
         main_row.addWidget(self.toolbar)
 
-        # Canvas scroll area — grey background like Anki
         sc = _ZoomableScrollArea()
         sc.setWidgetResizable(True)
         sc.setStyleSheet("QScrollArea{background:#787878;border:none;}")
@@ -1682,7 +1492,6 @@ class CardEditorDialog(QDialog):
         self.toolbar.tool_changed.connect(self.canvas.set_tool)
         main_row.addWidget(sc, stretch=1)
 
-        # Right panel — mask list + card metadata (collapsible splitter)
         right_panel = QWidget()
         right_panel.setFixedWidth(240)
         right_panel.setStyleSheet(
@@ -1693,7 +1502,6 @@ class CardEditorDialog(QDialog):
         rp.setContentsMargins(0, 0, 0, 0)
         rp.setSpacing(0)
 
-        # ── Mask list section ────────────────────────────────────────────────
         ml_hdr = QFrame()
         ml_hdr.setFixedHeight(28)
         ml_hdr.setStyleSheet(
@@ -1709,7 +1517,7 @@ class CardEditorDialog(QDialog):
         rp.addWidget(self.mask_panel, stretch=1)
 
         self.mask_panel.list_w.currentRowChanged.connect(self._center_on_mask)
-        # ── Card info section ────────────────────────────────────────────────
+
         ci_hdr = QFrame()
         ci_hdr.setFixedHeight(28)
         ci_hdr.setStyleSheet(
@@ -1744,7 +1552,6 @@ class CardEditorDialog(QDialog):
         body_w.setLayout(main_row)
         L.addWidget(body_w, stretch=1)
 
-        # ══ BOTTOM HINT BAR ══════════════════════════════════════════════════
         hint_bar = QFrame()
         hint_bar.setFixedHeight(20)
         hint_bar.setStyleSheet(
@@ -1760,14 +1567,12 @@ class CardEditorDialog(QDialog):
         hl.addStretch()
         L.addWidget(hint_bar)
 
-        # wire zoom buttons
         btn_zi.clicked.connect(lambda: self.canvas.zoom_in())
         btn_zo.clicked.connect(lambda: self.canvas.zoom_out())
         btn_zf.clicked.connect(self._zoom_fit)
         btn_del.clicked.connect(lambda: self.canvas.delete_selected_boxes())
         btn_clear.clicked.connect(self.canvas.clear_all)
 
-        # store scroll area ref for zoom fit
         self._sc = sc
 
     def _zoom_fit(self):
@@ -1775,26 +1580,19 @@ class CardEditorDialog(QDialog):
         self.canvas.zoom_fit(vp.width(), vp.height())
 
     def _center_on_mask(self, row):
-        # अगर कोई गलत क्लिक हो जाए तो इग्नोर करो
         if not (0 <= row < len(self.canvas._boxes)):
             return
-            
-        # उस मास्क की स्क्रीन पर असली लोकेशन निकालो
         r = self.canvas._sr(self.canvas._boxes[row]["rect"])
-        
-        # स्क्रॉलबार्स को पकड़ो और स्क्रीन को एकदम सेंटर में फेंक दो!
         vbar = self._sc.verticalScrollBar()
         hbar = self._sc.horizontalScrollBar()
         hbar.setValue(int(max(0, r.center().x() - self._sc.viewport().width()  // 2)))
         vbar.setValue(int(max(0, r.center().y() - self._sc.viewport().height() // 2)))
-        
-    # ── loaders ───────────────────────────────────────────────────────────────
 
     def _toggle_group(self):
-        pass  # no longer used — group is per-shape via canvas.group_selected()
+        pass
 
     def _update_group_btn(self):
-        pass  # no longer a toggle button
+        pass
 
     def keyPressEvent(self, e):
         key  = e.key()
@@ -1847,11 +1645,10 @@ class CardEditorDialog(QDialog):
         if combined.isNull():
             QMessageBox.warning(self, "PDF Error", err or "Could not render PDF.")
             return
-        self._combined_px = combined   # keep ref so Qt does not GC it
+        self._combined_px = combined
         self.card["pdf_path"] = path
         self.card.pop("image_path", None)
         self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
-        # Show file name + page count in info bar
         try:
             _doc = fitz.open(path); n = len(_doc); _doc.close()
         except Exception:
@@ -1863,11 +1660,9 @@ class CardEditorDialog(QDialog):
         self.canvas.load_pixmap(self._combined_px)
         if not self.inp_title.text():
             self.inp_title.setText(self._auto_subdeck_name)
-        # Start live sync watcher
         self._watch_pdf(path)
 
     def _show_pdf_page(self):
-        """Legacy stub — PDF is now displayed as one combined scrollable pixmap."""
         pass
 
     def _prev_page(self):
@@ -1904,10 +1699,7 @@ class CardEditorDialog(QDialog):
             self.canvas.set_boxes(card["boxes"])
             self.mask_panel._refresh(card["boxes"])
 
-    # ── live sync / file watcher ──────────────────────────────────────────────
-
     def _watch_pdf(self, path: str):
-        """Start watching a PDF file for external changes."""
         self._stop_watch()
         self._watched_path = path
         self._watcher.addPath(path)
@@ -1918,21 +1710,18 @@ class CardEditorDialog(QDialog):
             f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
 
     def _stop_watch(self):
-        """Stop watching any currently watched file."""
         if self._watched_path:
             self._watcher.removePath(self._watched_path)
             self._watched_path = None
         self._reload_timer.stop()
 
     def _on_file_changed(self, path: str):
-        """Called by QFileSystemWatcher when the file is modified."""
         self.lbl_sync.setText("🟡 Live Sync: change detected…")
         self.lbl_sync.setStyleSheet(
             f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
-        self._reload_timer.start()   # debounce
+        self._reload_timer.start()
 
     def _reload_pdf(self):
-        """Reload the watched PDF — called 800ms after last file-change event."""
         path = self._watched_path
         if not path or not os.path.exists(path):
             QTimer.singleShot(500, self._reload_pdf)
@@ -1945,11 +1734,9 @@ class CardEditorDialog(QDialog):
             self.lbl_sync.setStyleSheet(
                 f"color:{C_RED};font-size:11px;background:transparent;")
             return
-        # Save current boxes before reloading pixmap
         saved_boxes = self.canvas.get_boxes()
         self._combined_px = combined
         self.canvas.load_pixmap(self._combined_px)
-        # Restore masks after reload
         if saved_boxes:
             self.canvas.set_boxes(saved_boxes)
             self.mask_panel._refresh(saved_boxes)
@@ -1961,7 +1748,6 @@ class CardEditorDialog(QDialog):
         ) if self._watched_path else None)
 
     def _open_in_reader(self):
-        """Open the current PDF in the system default reader."""
         path = self.card.get("pdf_path") or self._watched_path
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
@@ -1990,8 +1776,6 @@ class CardEditorDialog(QDialog):
         self._stop_watch()
         super().accept()
 
-    # ── save ──────────────────────────────────────────────────────────────────
-
     def _save(self):
         if not self.card.get("image_path") and not self.card.get("pdf_path"):
             QMessageBox.warning(self, "No Source", "Load an image or PDF first.")
@@ -2002,7 +1786,6 @@ class CardEditorDialog(QDialog):
         SM2_KEYS   = ("sm2_interval", "sm2_repetitions", "sm2_ease",
                       "sm2_due", "sm2_last_quality", "box_id")
 
-        # [OPT-2] Match by box_id first, fallback to index for old cards
         old_by_id = {b["box_id"]: b for b in old_boxes if "box_id" in b}
 
         merged = []
@@ -2015,7 +1798,6 @@ class CardEditorDialog(QDialog):
                 for k in SM2_KEYS:
                     if k in old:
                         nb[k] = old[k]
-            # Assign uuid4 box_id if missing
             if "box_id" not in nb:
                 nb["box_id"] = new_box_id()
             merged.append(nb)
@@ -2076,31 +1858,20 @@ class QueueDelegate(QStyledItemDelegate):
 
 
 class _ZoomableScrollArea(QScrollArea):
-    """
-    A QScrollArea that intercepts Ctrl+wheel (two-finger pinch on trackpad)
-    and forwards it to the embedded OcclusionCanvas for zoom instead of scrolling.
-    Plain scroll (no Ctrl) works normally.
-    """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._canvas = None   # set after canvas is created
+        self._canvas = None
 
     def wheelEvent(self, e):
         if (e.modifiers() & Qt.ControlModifier) and self._canvas:
-            # Forward to canvas which handles pinch/zoom
             self._canvas.wheelEvent(e)
         else:
             super().wheelEvent(e)
 
 
 class ReviewScreen(QWidget):
-    """
-    Review mode.
-    Only boxes where is_due_today() == True are queued.
-    """
     finished = pyqtSignal()
 
-    # Blackout removed — 4 ratings: 1=Again 2=Hard 3=Good 4=Easy
     RATINGS = [
         ("1  🔁 Again", "danger",  1),
         ("2  😓 Hard",  "hard",    3),
@@ -2115,28 +1886,50 @@ class ReviewScreen(QWidget):
         self._pdf_cache      = {}
         self._current_pixmap = None
 
+        # ── [FIX-1] Build items with robust per-card dedup ─────────────────
+        # Use a set to guarantee no (card_id, box_key) pair appears twice.
+        # box_key = box_id (str) for ungrouped, or ("group", gid) for grouped.
+        seen_item_keys = set()
+
         for card in cards:
             boxes = card.get("boxes", [])
+
+            # Unique card identifier for dedup key
+            card_key = id(card)   # memory id — unique per live dict object
+
             if len(boxes) == 0:
-                sm2_init(card)
-                self._items.append((card, None, card))
+                # Whole-card item (no boxes)
+                item_key = (card_key, None)
+                if item_key not in seen_item_keys:
+                    seen_item_keys.add(item_key)
+                    sm2_init(card)
+                    self._items.append((card, None, card))
                 continue
 
-            # Collect unique group_ids and ungrouped boxes
-            seen_groups = {}   # group_id -> first box index (SM2 tracked on first box)
+            # ── [FIX-5] Reset seen_groups PER CARD so groups don't bleed ──
+            seen_groups = set()   # group_ids seen in THIS card only
+
             for i, box in enumerate(boxes):
-                sm2_init(box)
+                sm2_init(box)   # [FIX-4] always init before is_due_today
                 gid = box.get("group_id", "")
+
                 if gid:
+                    # Grouped box — one item per unique group_id per card
                     if gid not in seen_groups:
-                        seen_groups[gid] = i
-                        # Group = all boxes with this gid tested together
-                        if is_due_today(box):
-                            self._items.append((card, ("group", gid), box))
+                        seen_groups.add(gid)
+                        item_key = (card_key, ("group", gid))
+                        if item_key not in seen_item_keys:
+                            seen_item_keys.add(item_key)
+                            if is_due_today(box):
+                                self._items.append((card, ("group", gid), box))
                 else:
-                    # Ungrouped = individual card per box
-                    if is_due_today(box):
-                        self._items.append((card, i, box))
+                    # Ungrouped box — one item per box
+                    box_id = box.get("box_id", f"__idx_{i}")
+                    item_key = (card_key, box_id)
+                    if item_key not in seen_item_keys:
+                        seen_item_keys.add(item_key)
+                        if is_due_today(box):
+                            self._items.append((card, i, box))
 
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
         self._idx  = 0
@@ -2157,7 +1950,6 @@ class ReviewScreen(QWidget):
                 self._set_fullscreen_ui(True)
         elif key == Qt.Key_Space:
             self._reveal_current()
-        # Rating keys only work AFTER reveal
         elif key == Qt.Key_1 and self._rating_frame.isVisible():
             self._rate(1)
         elif key == Qt.Key_2 and self._rating_frame.isVisible():
@@ -2166,7 +1958,6 @@ class ReviewScreen(QWidget):
             self._rate(4)
         elif key == Qt.Key_4 and self._rating_frame.isVisible():
             self._rate(5)
-        # Zoom shortcuts
         elif mods & Qt.ControlModifier and key in (Qt.Key_Equal, Qt.Key_Plus):
             self.canvas.zoom_in()
         elif mods & Qt.ControlModifier and key == Qt.Key_Minus:
@@ -2181,12 +1972,10 @@ class ReviewScreen(QWidget):
             super().keyPressEvent(e)
 
     def _reveal_current(self):
-        """Reveal target mask, then show rating buttons (Anki-style)."""
         if not (0 <= self._idx < len(self._items)):
             return
         _, box_idx, _ = self._items[self._idx]
         if box_idx is None:
-            # Whole card — reveal all
             self.canvas.reveal_all()
         elif isinstance(box_idx, tuple) and box_idx[0] == "group":
             gid = box_idx[1]
@@ -2195,16 +1984,13 @@ class ReviewScreen(QWidget):
                     b["revealed"] = True
             self.canvas._redraw()
         else:
-            # Single box
             if 0 <= box_idx < len(self.canvas._boxes):
                 self.canvas._boxes[box_idx]["revealed"] = True
                 self.canvas._redraw()
-        # Show rating panel, hide reveal button
         self._reveal_bar.hide()
         self._rating_frame.show()
 
     def _set_fullscreen_ui(self, fullscreen: bool):
-        """Fullscreen: hide header bar, title strip, hint. Keep canvas + bottom panel."""
         self._hdr_widget.setVisible(not fullscreen)
         self.lbl_title.setVisible(not fullscreen)
         self._hint_label.setVisible(not fullscreen)
@@ -2214,7 +2000,6 @@ class ReviewScreen(QWidget):
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
 
-        # ══ HEADER BAR ═══════════════════════════════════════════════════════
         hdr_w = QFrame()
         hdr_w.setFixedHeight(46)
         hdr_w.setStyleSheet(
@@ -2241,7 +2026,6 @@ class ReviewScreen(QWidget):
             f"border-radius:6px;padding:3px 10px;font-size:11px;")
         hdr.addWidget(self.lbl_sm2)
 
-        # Zoom buttons
         def _zb(txt, tip):
             b = QPushButton(txt); b.setToolTip(tip)
             b.setFixedSize(28, 28)
@@ -2262,9 +2046,6 @@ class ReviewScreen(QWidget):
         hdr.addWidget(b_zfit); hdr.addWidget(b_center)
 
         b_edit = QPushButton("✏ Edit Card")
-        b_edit.setToolTip(
-            "Open card editor mid-review.\n"
-            "Edit masks or open PDF in external reader, then return here.")
         b_edit.setStyleSheet(
             f"QPushButton{{background:{C_ACCENT};color:white;border:none;"
             f"border-radius:6px;padding:4px 14px;font-size:12px;font-weight:bold;}}"
@@ -2272,14 +2053,9 @@ class ReviewScreen(QWidget):
         b_edit.clicked.connect(self._edit_current_card)
         hdr.addWidget(b_edit)
 
-        # Hide All / Hide One toggle  [T8]
         self._btn_mode = QPushButton("🟧 Hide All, Guess One")
         self._btn_mode.setCheckable(True)
         self._btn_mode.setChecked(False)
-        self._btn_mode.setToolTip(
-            "Toggle review mode:\n"
-            "OFF = Hide All, Guess One (all masks hidden)\n"
-            "ON  = Hide One, Guess One (only target mask hidden)")
         self._btn_mode.setStyleSheet(
             f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
             f"border:1px solid {C_BORDER};border-radius:6px;"
@@ -2299,7 +2075,6 @@ class ReviewScreen(QWidget):
         L.addWidget(hdr_w)
         self._hdr_widget = hdr_w
 
-        # Title strip
         self.lbl_title = QLabel("")
         self.lbl_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
         self.lbl_title.setStyleSheet(
@@ -2308,7 +2083,6 @@ class ReviewScreen(QWidget):
         self.lbl_title.setFixedHeight(30)
         L.addWidget(self.lbl_title)
 
-        # ══ CANVAS (takes full available width) ══════════════════════════════
         self._canvas_scroll = _ZoomableScrollArea()
         self._canvas_scroll.setWidgetResizable(True)
         self._canvas_scroll.setStyleSheet(
@@ -2320,16 +2094,14 @@ class ReviewScreen(QWidget):
         self.canvas = OcclusionCanvas()
         self.canvas.set_mode("review")
         self._canvas_scroll.setWidget(self.canvas)
-        self._canvas_scroll._canvas = self.canvas   # ref for event filter
+        self._canvas_scroll._canvas = self.canvas
         L.addWidget(self._canvas_scroll, stretch=1)
 
-        # ══ BOTTOM AREA: hint + reveal/rating panel ═══════════════════════════
         bottom_w = QWidget()
         bottom_w.setStyleSheet(f"background:{C_SURFACE};")
         bl = QVBoxLayout(bottom_w)
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
 
-        # Hint bar
         hint = QLabel(
             "Space = reveal  •  After reveal: 1=Again  2=Hard  3=Good  4=Easy  •  "
             "Ctrl+Scroll or Ctrl+/− to zoom  •  F11 fullscreen")
@@ -2341,7 +2113,6 @@ class ReviewScreen(QWidget):
         bl.addWidget(hint)
         self._hint_label = hint
 
-        # ── Show Answer button (visible BEFORE reveal) ─────────────────────
         self._reveal_bar = QFrame()
         self._reveal_bar.setStyleSheet(f"QFrame{{background:{C_BG};}}")
         rb_l = QHBoxLayout(self._reveal_bar)
@@ -2355,7 +2126,6 @@ class ReviewScreen(QWidget):
         rb_l.addStretch(); rb_l.addWidget(b_rev); rb_l.addStretch()
         bl.addWidget(self._reveal_bar)
 
-        # ── Rating panel (hidden UNTIL reveal) ────────────────────────────
         self._rating_frame = QFrame()
         self._rating_frame.setStyleSheet(
             f"QFrame{{background:{C_BG};border-top:1px solid {C_BORDER};}}")
@@ -2370,7 +2140,6 @@ class ReviewScreen(QWidget):
 
         br = QHBoxLayout(); br.setSpacing(8)
         RATING_STYLES = {
-            # Muted, Anki-inspired tones — readable but not glaring
             "danger":  "background:#5C2A2A;color:#FFB3B3;border:1px solid #7A3535;"
                        "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
             "hard":    "background:#5C3D1A;color:#FFCC88;border:1px solid #7A5225;"
@@ -2401,18 +2170,14 @@ class ReviewScreen(QWidget):
             self._prev_lbls.append((pl, q))
         rfl.addLayout(prev_row)
 
-        self._rating_frame.hide()   # hidden until reveal
+        self._rating_frame.hide()
         bl.addWidget(self._rating_frame)
 
         L.addWidget(bottom_w)
 
-        # ── hidden in fullscreen ───────────────────────────────────────────
-        self._mid_row_widget = self._reveal_bar   # kept for _set_fullscreen_ui compat
-
-    # ── zoom / center helpers ─────────────────────────────────────────────────
+        self._mid_row_widget = self._reveal_bar
 
     def _toggle_review_mode(self):
-        """Switch between Hide All / Hide One review styles."""
         if self._btn_mode.isChecked():
             self._btn_mode.setText("👁 Hide One, Guess One")
             self.canvas.set_review_style("hide_one")
@@ -2425,7 +2190,6 @@ class ReviewScreen(QWidget):
         self.canvas.zoom_fit(vp.width(), vp.height())
 
     def _center_on_target(self):
-        """Scroll canvas so the active mask is centered in the viewport."""
         r = self.canvas.get_target_scaled_rect()
         if r:
             vbar = self._canvas_scroll.verticalScrollBar()
@@ -2434,33 +2198,19 @@ class ReviewScreen(QWidget):
             vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
 
     def _edit_current_card(self):
-        """
-        Open CardEditorDialog for the current card mid-review.
-        After the editor closes (saved or cancelled), reload the canvas
-        so any changes — new masks, updated PDF annotations — show immediately.
-        """
         if not (0 <= self._idx < len(self._items)):
             return
-
         card, box_idx, sm2_obj = self._items[self._idx]
-
-        # Re-find the live card dict from _data so edits persist to storage
-        # (self._items holds references to the original dicts, so edits are live)
         dlg = CardEditorDialog(None, card=dict(card), data=self._data)
         result = dlg.exec_()
-
         if result == QDialog.Accepted:
-            # Merge edited card back — update in place so SM-2 refs stay valid
             edited = dlg.get_card()
             card.update(edited)
             if self._data:
                 save_data(self._data)
-
-        # Reload canvas regardless of save/cancel — user may have changed PDF externally
         self._reload_current_canvas()
 
     def _reload_current_canvas(self):
-        """Reload the canvas pixmap for the current card (after edit or PDF change)."""
         if not (0 <= self._idx < len(self._items)):
             return
         card, box_idx, _ = self._items[self._idx]
@@ -2490,7 +2240,7 @@ class ReviewScreen(QWidget):
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(-1)
                 self.canvas.set_mode("review")
-                self.canvas.set_target_group(gid)   # AFTER set_mode so it is not cleared
+                self.canvas.set_target_group(gid)
             elif box_idx is None:
                 self.canvas.set_boxes(boxes)
                 self.canvas.set_target_box(-1)
@@ -2522,7 +2272,6 @@ class ReviewScreen(QWidget):
         boxes = card.get("boxes", [])
         title = card.get("title", "")
 
-        # box_idx can be: None (whole card), int (single box), ("group", gid)
         if isinstance(box_idx, tuple) and box_idx[0] == "group":
             gid = box_idx[1]
             grp_labels = [b.get("label","") for b in boxes if b.get("group_id","") == gid]
@@ -2535,12 +2284,10 @@ class ReviewScreen(QWidget):
             self.lbl_title.setText(title)
 
         self.lbl_sm2.setText(sm2_badge(sm2_obj))
-        # Preview labels — now shows "1m", "6m", "1d", "4d" etc.
         previews = _fmt_due_interval(sm2_obj)
         for pl, q in self._prev_lbls:
             pl.setText(f"→{previews.get(q, '?')}")
 
-        # Load pixmap
         px = None
         if card.get("image_path") and os.path.exists(card["image_path"]):
             tmp = QPixmap(card["image_path"])
@@ -2559,7 +2306,6 @@ class ReviewScreen(QWidget):
             self.canvas.load_pixmap(px)
 
             if isinstance(box_idx, tuple) and box_idx[0] == "group":
-                # Group review: hide only boxes in this group, rest visible
                 gid = box_idx[1]
                 display_boxes = [
                     {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id")
@@ -2572,7 +2318,7 @@ class ReviewScreen(QWidget):
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(-1)
                 self.canvas.set_mode("review")
-                self.canvas.set_target_group(gid)   # AFTER set_mode so it is not cleared
+                self.canvas.set_target_group(gid)
             elif box_idx is None:
                 self.canvas.set_boxes(boxes)
                 self.canvas.set_target_box(-1)
@@ -2591,14 +2337,10 @@ class ReviewScreen(QWidget):
                 self.canvas.set_target_box(box_idx)
                 self.canvas.set_mode("review")
 
-            # Auto-scale: fit image WIDTH to viewport (like a PDF viewer / real Anki).
-            # Do it after a short delay so the viewport has its final size.
             def _apply_zoom(p=px):
                 vp = self._canvas_scroll.viewport()
                 vw = max(vp.width(), 100)
-                # Scale so image fills the full viewport width
                 new_scale = vw / max(p.width(), 1)
-                # Never shrink below 15% or blow up beyond 300%
                 self.canvas._scale = max(0.15, min(new_scale, 3.0))
                 self.canvas._redraw()
             QTimer.singleShot(30, _apply_zoom)
@@ -2614,46 +2356,49 @@ class ReviewScreen(QWidget):
         else:
             self.canvas.load_pixmap(QPixmap())
 
-        # Reset to "before reveal" state for each new card
         self._reveal_bar.show()
         self._rating_frame.hide()
-        # Grab focus so Space/1/2/3/4 keys go to ReviewScreen not canvas
         self.setFocus()
 
     def _rate(self, quality):
+        # ── [FIX-2] Correct review counting ───────────────────────────────
+        # sched_update() already increments sm2_obj["reviews"] internally.
+        # We only update card-level "reviews" when the sm2_obj IS the card
+        # (i.e., no-box cards). For box-based cards, box["reviews"] is
+        # updated by sched_update. Do NOT also increment card["reviews"]
+        # to avoid the double-count that caused the "reviewed twice" display.
         card, box_idx, sm2_obj = self._items[self._idx]
-        sched_update(sm2_obj, quality)
-        card["reviews"] = card.get("reviews", 0) + 1
+
+        sched_update(sm2_obj, quality)   # updates sm2_obj["reviews"] internally
+
+        # Only update card-level reviews for whole-card (no-box) mode
+        if box_idx is None:
+            card["reviews"] = sm2_obj.get("reviews", 0)
+
         if self._data:
             save_data(self._data)
 
         state = sm2_obj.get("sched_state", "review")
 
         if state in ("learning", "relearn"):
-            # Card is still in learning — re-insert it at correct position
-            # (sorted by sm2_due so it appears after other sooner-due cards)
             item = self._items.pop(self._idx)
-            # Find insertion point: first item whose due is >= this card's due
             due_str = sm2_obj.get("sm2_due", "")
-            insert_at = len(self._items)   # default: append at end
+            insert_at = len(self._items)
             for j in range(self._idx, len(self._items)):
                 other_due = self._items[j][2].get("sm2_due", "")
                 if other_due >= due_str:
                     insert_at = j
                     break
             self._items.insert(insert_at, item)
-            # _idx stays the same — next item naturally slides into position
-            # Rebuild queue list labels
             self._rebuild_queue()
         else:
-            # Graduated to review — move on
             self._done += 1
             self._idx  += 1
 
         self._load_item()
 
     def _rebuild_queue(self):
-        pass   # queue panel removed — nothing to rebuild
+        pass
 
     def _finish(self):
         self.prog.setValue(len(self._items))
@@ -2767,7 +2512,6 @@ class DeckTree(QWidget):
 
     def _get_deck_from_item(self, item):
         did = self._get_id_from_item(item)
-        # [OPT-3] use module-level helper
         return find_deck_by_id(did, self._data.get("decks", [])) if did is not None else None
 
     def _get_selected_id(self):
@@ -2815,7 +2559,7 @@ class DeckTree(QWidget):
         if not ok or not name.strip():
             return
         new_deck = {
-            "_id":      next_deck_id(self._data),   # [OPT-3]
+            "_id":      next_deck_id(self._data),
             "name":     name.strip(),
             "cards":    [],
             "children": [],
@@ -2891,7 +2635,7 @@ class DeckView(QWidget):
         self.deck          = None
         self._deck_id      = None
         self._data         = {}
-        self._thumb_cache  = {}   # [OPT-10] image_path → QIcon
+        self._thumb_cache  = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -2946,12 +2690,12 @@ class DeckView(QWidget):
         self._deck_id = deck.get("_id")
         self.deck     = deck
         self.lbl_deck.setText(deck.get("name", "?"))
-        self._thumb_cache.clear()   # clear cache when switching decks
+        self._thumb_cache.clear()
         self._refresh()
 
     def _refresh(self):
         if self._deck_id is not None:
-            fresh = find_deck_by_id(self._deck_id, self._data.get("decks", []))  # [OPT-3]
+            fresh = find_deck_by_id(self._deck_id, self._data.get("decks", []))
             if fresh:
                 self.deck = fresh
         if not self.deck:
@@ -2959,13 +2703,10 @@ class DeckView(QWidget):
         self.card_list.clear()
         cards  = self.deck.get("cards", [])
         due_c  = 0
-        today  = date.today().isoformat()
 
         for c in cards:
             sm2_init(c)
-            # [OPT-5] count due boxes for non-grouped cards
             boxes   = c.get("boxes", [])
-            # Due = any ungrouped box due, OR first box of each group due
             if not boxes:
                 card_due = is_due_today(c)
             else:
@@ -2990,7 +2731,6 @@ class DeckView(QWidget):
                 f"| Rep:{c.get('sm2_repetitions',0)}  "
                 f"| EF:{c.get('sm2_ease',2.5):.2f}  | {badge}")
 
-            # [OPT-10] thumbnail cache
             img_path = c.get("image_path", "")
             if img_path and os.path.exists(img_path):
                 if img_path not in self._thumb_cache:
@@ -3022,7 +2762,7 @@ class DeckView(QWidget):
                     break
             if target_deck is None:
                 target_deck = {
-                    "_id":      next_deck_id(self._data),   # [OPT-3]
+                    "_id":      next_deck_id(self._data),
                     "name":     subdeck_name,
                     "cards":    [],
                     "children": [],
@@ -3041,7 +2781,6 @@ class DeckView(QWidget):
         save_data(self._data)
 
     def _find_home(self):
-        # [OPT-9] cleaner loop
         w = self.parent()
         while w is not None:
             if isinstance(w, HomeScreen):
@@ -3077,7 +2816,6 @@ class DeckView(QWidget):
             self._refresh()
             save_data(self._data)
 
-    # [OPT-4] _review_due now uses is_due_today everywhere — single source of truth
     def _review_due(self):
         if not self.deck:
             return
@@ -3089,7 +2827,7 @@ class DeckView(QWidget):
                 return is_due_today(card)
             seen_gids = set()
             for b in boxes:
-                sm2_init(b)
+                sm2_init(b)   # [FIX-4] always init before check
                 gid = b.get("group_id", "")
                 if gid:
                     if gid not in seen_gids:
@@ -3100,6 +2838,7 @@ class DeckView(QWidget):
                     if is_due_today(b):
                         return True
             return False
+
         due = [c for c in self.deck.get("cards", []) if _card_has_due_today(c)]
         if not due:
             QMessageBox.information(self, "✅ All clear!",
@@ -3128,13 +2867,31 @@ class DeckView(QWidget):
         self._start_review(sub)
 
     def _start_review(self, cards):
+        # ── [FIX-3] Prevent double-save on review window close ─────────────
+        # win.closeEvent on QMainWindow would fire save_data AGAIN after
+        # the finished signal already called save_data. We use a simple flag.
+        _save_done = [False]
+
         win = QMainWindow(self)
         win.setWindowTitle("Review Mode 🧠")
         win.setMinimumSize(960, 730)
         rev = ReviewScreen(cards, data=self._data, parent=win)
-        rev.finished.connect(win.close)
-        rev.finished.connect(self._refresh)
-        rev.finished.connect(lambda: save_data(self._data))
+
+        def _on_finished():
+            if not _save_done[0]:
+                _save_done[0] = True
+                save_data(self._data)
+            self._refresh()
+            win.close()
+
+        # Override closeEvent to skip redundant save
+        original_close = win.closeEvent
+        def _safe_close(e):
+            _save_done[0] = True   # mark so any further save is skipped
+            original_close(e)
+        win.closeEvent = _safe_close
+
+        rev.finished.connect(_on_finished)
         win.setCentralWidget(rev)
         win.setStyleSheet(SS)
         win.showMaximized()
@@ -3144,66 +2901,35 @@ class DeckView(QWidget):
 #  HOME SCREEN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  APP ICON  — generated programmatically, no external file needed
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def make_app_icon() -> QIcon:
-    """
-    Draw a 256×256 icon:
-      • Dark rounded square background
-      • White card shape
-      • Two orange occlusion rectangles
-      • Small green tick at bottom-right
-    Returns a QIcon usable for the window and taskbar.
-    """
     SIZE = 256
     px = QPixmap(SIZE, SIZE)
     px.fill(Qt.transparent)
     p = QPainter(px)
     p.setRenderHint(QPainter.Antialiasing)
-
-    # Background — rounded dark square
     p.setBrush(QBrush(QColor(C_SURFACE)))
     p.setPen(Qt.NoPen)
     p.drawRoundedRect(0, 0, SIZE, SIZE, 48, 48)
-
-    # White card body
     card_rect = QRect(36, 44, 184, 148)
     p.setBrush(QBrush(QColor("#FFFFFF")))
     p.setPen(QPen(QColor(C_BORDER), 3))
     p.drawRoundedRect(card_rect, 10, 10)
-
-    # Faint ruled lines on the card (like a note)
     p.setPen(QPen(QColor("#E0E0E0"), 1))
     for y in range(card_rect.top() + 24, card_rect.bottom() - 10, 18):
         p.drawLine(card_rect.left() + 12, y, card_rect.right() - 12, y)
-
-    # Orange occlusion mask 1 (top-left area)
     p.setBrush(QBrush(QColor(C_MASK)))
     p.setPen(Qt.NoPen)
     p.drawRoundedRect(52, 62, 80, 36, 5, 5)
-
-    # Orange occlusion mask 2 (mid-right area)
     p.drawRoundedRect(148, 104, 60, 30, 5, 5)
-
-    # Green checkmark circle at bottom-right
     p.setBrush(QBrush(QColor(C_GREEN)))
     p.setPen(Qt.NoPen)
     p.drawEllipse(168, 168, 60, 60)
-
-    # Checkmark tick
     p.setPen(QPen(QColor("#1E1E2E"), 7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
     p.drawLine(182, 199, 192, 211)
     p.drawLine(192, 211, 214, 185)
-
     p.end()
     return QIcon(px)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ABOUT DIALOG
-# ═══════════════════════════════════════════════════════════════════════════════
 
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
@@ -3214,40 +2940,31 @@ class AboutDialog(QDialog):
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
-
-        # ── Coloured header band ───────────────────────────────────────────────
         header = QFrame()
         header.setFixedHeight(140)
         header.setStyleSheet(f"QFrame{{background:{C_SURFACE};border-radius:0px;}}")
         hl = QVBoxLayout(header)
         hl.setAlignment(Qt.AlignCenter)
-
-        # Draw mini icon
         icon_lbl = QLabel()
         icon_lbl.setAlignment(Qt.AlignCenter)
         icon_px = make_app_icon().pixmap(72, 72)
         icon_lbl.setPixmap(icon_px)
         hl.addWidget(icon_lbl)
-
         name_lbl = QLabel("Anki Occlusion")
         name_lbl.setFont(QFont("Segoe UI", 18, QFont.Bold))
         name_lbl.setStyleSheet(f"color:{C_ACCENT};background:transparent;")
         name_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(name_lbl)
-
         ver_lbl = QLabel("Version 1.0  •  Desktop Edition")
         ver_lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;background:transparent;")
         ver_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(ver_lbl)
         L.addWidget(header)
-
-        # ── Body ──────────────────────────────────────────────────────────────
         body = QWidget()
         body.setStyleSheet(f"background:{C_BG};")
         bl = QVBoxLayout(body)
         bl.setContentsMargins(32, 24, 32, 24)
         bl.setSpacing(16)
-
         def _section(title, text):
             t = QLabel(title)
             t.setFont(QFont("Segoe UI", 10, QFont.Bold))
@@ -3257,12 +2974,10 @@ class AboutDialog(QDialog):
             d.setWordWrap(True)
             bl.addWidget(t)
             bl.addWidget(d)
-
         _section("What it does",
             "Draw rectangular masks over your PDF notes and images, "
             "then study them with a full Anki-style spaced repetition "
             "scheduler — learning steps, review intervals, ease factors.")
-
         _section("Keyboard shortcuts",
             "F11 — fullscreen        Ctrl+Z / Y — undo / redo\n"
             "Space — reveal answer   1/2/3/4 — rate Again/Hard/Good/Easy\n"
@@ -3270,79 +2985,27 @@ class AboutDialog(QDialog):
             "Ctrl+A — select all     Ctrl+Scroll — zoom\n"
             "Alt+Click — multi-select   Hold Alt — temp select tool\n"
             "C — center on mask      Drag ↻ handle — rotate shape")
-
-        _section("Data location",
-            f"{DATA_FILE}")
-
+        _section("Data location", f"{DATA_FILE}")
         bl.addStretch()
-
-        # Close button
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet(
             f"background:{C_ACCENT};color:white;border:none;border-radius:8px;"
             f"padding:8px 32px;font-weight:bold;font-size:13px;")
         close_btn.clicked.connect(self.accept)
         bl.addWidget(close_btn, alignment=Qt.AlignCenter)
-
         L.addWidget(body)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ONBOARDING SCREEN  — shown only on first launch
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class OnboardingDialog(QDialog):
-    """
-    A 4-step welcome wizard shown exactly once on first launch.
-    After the user clicks Get Started the flag is written to DATA_FILE
-    so it never appears again.
-    """
     STEPS = [
-        {
-            "icon":  "🃏",
-            "title": "Welcome to Anki Occlusion",
-            "body":  (
-                "The fastest way to turn your PDF notes and images "
-                "into Anki-style flashcards — without typing a single word.\n\n"
-                "This quick tour takes about 30 seconds."
-            ),
-        },
-        {
-            "icon":  "📂",
-            "title": "Step 1 — Create a Deck",
-            "body":  (
-                "Click  ＋ Deck  in the left sidebar to create your first deck.\n\n"
-                "You can nest decks inside each other — for example:\n"
-                "  Biology  ›  Chapter 3  ›  Cell Division\n\n"
-                "Drag and drop to reorganise them any time."
-            ),
-        },
-        {
-            "icon":  "🖼",
-            "title": "Step 2 — Add a Card",
-            "body":  (
-                "Select a deck, then click  ＋ Add Card.\n\n"
-                "Load a PDF or image, then use the toolbar:\n"
-                "  ▶ Select — move, resize, rotate shapes\n"
-                "  ▭ Rectangle — draw rectangular masks\n"
-                "  ⬭ Ellipse — draw oval masks\n"
-                "  T Text — click a mask to edit its label\n\n"
-                "Each mask becomes one flashcard question automatically."
-            ),
-        },
-        {
-            "icon":  "🧠",
-            "title": "Step 3 — Review",
-            "body":  (
-                "Click  🔴 Review Due  to start your session.\n\n"
-                "Two review modes (toggle in review header):\n"
-                "  🟧 Hide All, Guess One — all masks hidden one by one\n"
-                "  👁 Hide One, Guess One — only the target mask hidden\n\n"
-                "Press Space to reveal, then rate yourself:\n"
-                "  1 = Again   2 = Hard   3 = Good   4 = Easy\n\n"
-                "The scheduler decides when you'll see each card next."
-            ),
-        },
+        {"icon": "🃏", "title": "Welcome to Anki Occlusion",
+         "body": "The fastest way to turn your PDF notes and images into Anki-style flashcards — without typing a single word.\n\nThis quick tour takes about 30 seconds."},
+        {"icon": "📂", "title": "Step 1 — Create a Deck",
+         "body": "Click  ＋ Deck  in the left sidebar to create your first deck.\n\nYou can nest decks inside each other — for example:\n  Biology  ›  Chapter 3  ›  Cell Division\n\nDrag and drop to reorganise them any time."},
+        {"icon": "🖼", "title": "Step 2 — Add a Card",
+         "body": "Select a deck, then click  ＋ Add Card.\n\nLoad a PDF or image, then use the toolbar:\n  ▶ Select — move, resize, rotate shapes\n  ▭ Rectangle — draw rectangular masks\n  ⬭ Ellipse — draw oval masks\n  T Text — click a mask to edit its label\n\nEach mask becomes one flashcard question automatically."},
+        {"icon": "🧠", "title": "Step 3 — Review",
+         "body": "Click  🔴 Review Due  to start your session.\n\nTwo review modes (toggle in review header):\n  🟧 Hide All, Guess One — all masks hidden one by one\n  👁 Hide One, Guess One — only the target mask hidden\n\nPress Space to reveal, then rate yourself:\n  1 = Again   2 = Hard   3 = Good   4 = Easy\n\nThe scheduler decides when you'll see each card next."},
     ]
 
     def __init__(self, parent=None):
@@ -3358,8 +3021,6 @@ class OnboardingDialog(QDialog):
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
-
-        # ── Progress dots ─────────────────────────────────────────────────────
         dot_bar = QWidget()
         dot_bar.setFixedHeight(32)
         dot_bar.setStyleSheet(f"background:{C_SURFACE};")
@@ -3373,38 +3034,30 @@ class OnboardingDialog(QDialog):
             dl.addWidget(dot)
             self._dots.append(dot)
         L.addWidget(dot_bar)
-
-        # ── Content area ──────────────────────────────────────────────────────
         content = QWidget()
         content.setStyleSheet(f"background:{C_BG};")
         cl = QVBoxLayout(content)
         cl.setContentsMargins(48, 32, 48, 24)
         cl.setSpacing(16)
-
         self._icon_lbl = QLabel()
         self._icon_lbl.setFont(QFont("Segoe UI", 48))
         self._icon_lbl.setAlignment(Qt.AlignCenter)
         self._icon_lbl.setStyleSheet("background:transparent;")
-
         self._title_lbl = QLabel()
         self._title_lbl.setFont(QFont("Segoe UI", 16, QFont.Bold))
         self._title_lbl.setStyleSheet(f"color:{C_TEXT};background:transparent;")
         self._title_lbl.setAlignment(Qt.AlignCenter)
         self._title_lbl.setWordWrap(True)
-
         self._body_lbl = QLabel()
         self._body_lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;background:transparent;")
         self._body_lbl.setWordWrap(True)
         self._body_lbl.setAlignment(Qt.AlignCenter)
-
         cl.addStretch()
         cl.addWidget(self._icon_lbl)
         cl.addWidget(self._title_lbl)
         cl.addWidget(self._body_lbl)
         cl.addStretch()
         L.addWidget(content, stretch=1)
-
-        # ── Bottom buttons ─────────────────────────────────────────────────────
         btn_bar = QFrame()
         btn_bar.setFixedHeight(64)
         btn_bar.setStyleSheet(
@@ -3412,25 +3065,20 @@ class OnboardingDialog(QDialog):
             f"border-top:1px solid {C_BORDER};border-radius:0px;}}")
         bl = QHBoxLayout(btn_bar)
         bl.setContentsMargins(24, 0, 24, 0)
-
         self._skip_btn = QPushButton("Skip")
         self._skip_btn.setStyleSheet(
-            f"background:transparent;color:{C_SUBTEXT};border:none;"
-            f"font-size:12px;padding:6px 16px;")
+            f"background:transparent;color:{C_SUBTEXT};border:none;font-size:12px;padding:6px 16px;")
         self._skip_btn.clicked.connect(self.accept)
-
         self._back_btn = QPushButton("← Back")
         self._back_btn.setStyleSheet(
             f"background:{C_CARD};color:{C_TEXT};border:1px solid {C_BORDER};"
             f"border-radius:8px;padding:8px 20px;font-size:12px;")
         self._back_btn.clicked.connect(self._prev)
-
         self._next_btn = QPushButton("Next →")
         self._next_btn.setStyleSheet(
             f"background:{C_ACCENT};color:white;border:none;"
             f"border-radius:8px;padding:8px 24px;font-weight:bold;font-size:13px;")
         self._next_btn.clicked.connect(self._next)
-
         bl.addWidget(self._skip_btn)
         bl.addStretch()
         bl.addWidget(self._back_btn)
@@ -3442,16 +3090,12 @@ class OnboardingDialog(QDialog):
         self._icon_lbl.setText(step["icon"])
         self._title_lbl.setText(step["title"])
         self._body_lbl.setText(step["body"])
-
-        # Update dots
         for i, dot in enumerate(self._dots):
             dot.setStyleSheet(
                 f"color:{C_ACCENT if i == idx else C_BORDER};"
                 f"font-size:10px;background:transparent;")
-
-        is_last = (idx == len(self.STEPS) - 1)
+        is_last  = (idx == len(self.STEPS) - 1)
         is_first = (idx == 0)
-
         self._back_btn.setVisible(not is_first)
         self._skip_btn.setVisible(not is_last)
         self._next_btn.setText("🚀  Get Started!" if is_last else "Next →")
@@ -3484,7 +3128,6 @@ class HomeScreen(QWidget):
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
-
         top = QFrame()
         top.setFixedHeight(56)
         top.setStyleSheet(
@@ -3502,7 +3145,6 @@ class HomeScreen(QWidget):
         tl.addWidget(sub)
         tl.addStretch()
 
-        # Help / About buttons in top bar
         def _topbtn(text, tip):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -3518,7 +3160,6 @@ class HomeScreen(QWidget):
         btn_help.clicked.connect(self._show_help)
         btn_about.clicked.connect(self._show_about)
 
-        # Font size controls — A− / A / A+
         def _fontbtn(text, tip):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -3568,7 +3209,6 @@ class HomeScreen(QWidget):
         OnboardingDialog(self).exec_()
 
     def _emit_font(self, direction: int):
-        """Ask the MainWindow to change font size (+1 / -1 / 0=reset)."""
         win = self.window()
         if isinstance(win, MainWindow):
             win.change_font_size(direction)
@@ -3591,10 +3231,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
         self.setWindowIcon(make_app_icon())
-
-        # Load saved font size preference
         self._font_size = int(self._data.get("_font_size", BASE_FONT_SIZE))
-
         self.showMaximized()
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
@@ -3603,21 +3240,12 @@ class MainWindow(QMainWindow):
             "PyMuPDF loaded — PDF support active"
             if PDF_SUPPORT else "⚠ pip install pymupdf  for PDF support"))
         self.setStatusBar(sb)
-
-        # Apply saved font size on launch
         if self._font_size != BASE_FONT_SIZE:
             self._apply_font_size(self._font_size)
-
-        # Show onboarding only on first ever launch
         if not self._data.get("_onboarding_done"):
             QTimer.singleShot(200, self._run_onboarding)
 
     def change_font_size(self, direction: int):
-        """
-        direction: +1 = larger, -1 = smaller, 0 = reset to default.
-        Rebuilds the global QSS so every widget updates instantly.
-        Saves the preference to data file.
-        """
         if direction == 0:
             self._font_size = BASE_FONT_SIZE
         else:
@@ -3627,13 +3255,11 @@ class MainWindow(QMainWindow):
         save_data(self._data)
 
     def _apply_font_size(self, size: int):
-        """Rebuild and reapply the global stylesheet with the new font size."""
         QApplication.instance().setStyleSheet(_build_ss(size))
 
     def _run_onboarding(self):
         dlg = OnboardingDialog(self)
         dlg.exec_()
-        # Mark as done so it never shows again
         self._data["_onboarding_done"] = True
         save_data(self._data)
 
@@ -3676,7 +3302,6 @@ if __name__ == "__main__":
     app.setStyleSheet(SS)
     app.setApplicationName("Anki Occlusion")
     app.setApplicationVersion("1.0")
-    # Set icon early so it appears in taskbar before window opens
     _icon = make_app_icon()
     app.setWindowIcon(_icon)
     win = MainWindow()
