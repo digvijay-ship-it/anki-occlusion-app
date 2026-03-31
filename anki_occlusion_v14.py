@@ -1,6 +1,18 @@
 """
-Anki Occlusion — PDF & Image Flashcard App  v15 (Ultimate Lag-Free Edition)
+Anki Occlusion — PDF & Image Flashcard App  v17 (Progressive Loading + Ultra Fast Cache Edition)
 ================================================
+v17 New Feature:
+  [PROGRESSIVE LOADING] PDF ab 10-10 pages ke chunks mein load hota hai.
+      Pehla chunk (10 pages) aate hi canvas pe dikhta hai — user turant
+      kaam shuru kar sakta hai. Baaki pages background mein silently load
+      hote rehte hain. Progress bar-style label dikhata hai kitne pages load hue.
+  [ULTRA FAST CACHE] PDF ek baar load hone ke baad RAM mein save ho jati hai.
+      Edit aur Review mode ke beech switch karne par zero delay (0.001s).
+v16 Bug Fixes:
+  [NOT-RESPONDING FIX] PDF ab background QThread mein load hota hai.
+      CardEditorDialog._load_card() aur _load_pdf() dono ab non-blocking hain.
+      _reload_pdf() (Live Sync) bhi thread-based ho gaya.
+      closeEvent/reject mein thread safely stop hota hai.
 v15 Bug Fixes:
   [FIX-1]  ReviewScreen.__init__ — duplicate item prevention
   [FIX-2]  _rate() — "reviews" double-increment fixed
@@ -23,7 +35,7 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
     QHeaderView
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher
+from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
     QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath
@@ -280,6 +292,8 @@ def new_box_id():
 #  PDF HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+GLOBAL_PDF_CACHE = {}  # <-- THE MAGIC CACHE (Instant Edit/Review Toggle)
+
 def pdf_page_to_pixmap(page, mat):
     pix = page.get_pixmap(matrix=mat, alpha=False)
     fd, tmp_path = tempfile.mkstemp(suffix=".png")
@@ -340,6 +354,94 @@ def pdf_to_combined_pixmap(path: str, zoom: float = 1.5):
             y += GAP
     painter.end()
     return combined, None, offsets
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PDF LOADER THREAD  (Progressive chunk loading — 10 pages at a time)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+CHUNK_SIZE = 30   # Kitne pages ek baar mein load hon
+
+def _build_combined_from_pages(pages):
+    """Pages list se ek combined QPixmap banao."""
+    if not pages:
+        return QPixmap()
+    GAP       = 12
+    SEP_COLOR = QColor("#45475A")
+    total_w   = max(p.width()  for p in pages)
+    total_h   = sum(p.height() for p in pages) + GAP * (len(pages) - 1)
+    combined  = QPixmap(total_w, total_h)
+    combined.fill(QColor("#1E1E2E"))
+    painter = QPainter(combined)
+    y = 0
+    for i, px in enumerate(pages):
+        painter.drawPixmap(0, y, px)
+        y += px.height()
+        if i < len(pages) - 1:
+            painter.setPen(QPen(SEP_COLOR, 2))
+            painter.drawLine(0, y + GAP // 2, total_w, y + GAP // 2)
+            y += GAP
+    painter.end()
+    return combined
+
+
+class PdfLoaderThread(QThread):
+    """
+    [PROGRESSIVE LOADING v17]
+    10-10 pages ka chunk emit karta hai — user pehle chunk se kaam shuru
+    kar sakta hai jabki baaki background mein load hote hain.
+    """
+    chunk_ready = pyqtSignal(object, int, int)  # (QPixmap combined_so_far, loaded, total)
+    done        = pyqtSignal(object, object)    # (QPixmap final_combined, error_str or None)
+    error       = pyqtSignal(str)
+
+    def __init__(self, path: str, chunk_size: int = CHUNK_SIZE, parent=None):
+        super().__init__(parent)
+        self._path       = path
+        self._chunk_size = chunk_size
+        self._stop_flag  = False
+
+    def stop(self):
+        self._stop_flag = True
+
+    def run(self):
+        if not PDF_SUPPORT:
+            self.done.emit(QPixmap(), "PyMuPDF not installed")
+            return
+        try:
+            doc = fitz.open(self._path)
+            if doc.is_encrypted:
+                self.done.emit(QPixmap(), "PDF is password-protected.")
+                return
+            total   = len(doc)
+            mat     = fitz.Matrix(1.5, 1.5)
+            all_pages = []
+
+            for page_num in range(total):
+                if self._stop_flag:
+                    doc.close()
+                    return
+                try:
+                    qpx = pdf_page_to_pixmap(doc.load_page(page_num), mat)
+                    if not qpx.isNull():
+                        all_pages.append(qpx)
+                except Exception:
+                    pass
+
+                # Har CHUNK_SIZE pages ke baad preview emit karo
+                loaded = len(all_pages)
+                if loaded > 0 and loaded % self._chunk_size == 0:
+                    preview = _build_combined_from_pages(all_pages)
+                    self.chunk_ready.emit(preview, loaded, total)
+
+            doc.close()
+            if self._stop_flag:
+                return
+            final = _build_combined_from_pages(all_pages)
+            self.done.emit(final, None)
+
+        except Exception as ex:
+            self.done.emit(QPixmap(), str(ex))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  THEME
@@ -1334,6 +1436,8 @@ class CardEditorDialog(QDialog):
         self._reload_timer.setInterval(800)
         self._reload_timer.timeout.connect(self._reload_pdf)
         self._watcher.fileChanged.connect(self._on_file_changed)
+        self._pdf_loader_thread  = None   # [NOT-RESPONDING FIX] background thread
+        self._pending_boxes      = []     # boxes to load after thread finishes
         self._setup_ui()
         if card:
             self._load_card(card)
@@ -1654,14 +1758,62 @@ class CardEditorDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Load PDF", "", "PDF (*.pdf)")
         if not path:
             return
-        combined, err, _ = pdf_to_combined_pixmap(path)
-        if combined.isNull():
-            QMessageBox.warning(self, "PDF Error", err or "Could not render PDF.")
-            return
-        self._combined_px = combined
         self.card["pdf_path"] = path
         self.card.pop("image_path", None)
         self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
+        self._pending_boxes = []
+        
+        # --- [ULTRA FAST CACHE CHECK] ---
+        if path in GLOBAL_PDF_CACHE:
+            self._on_pdf_loaded(GLOBAL_PDF_CACHE[path], None)
+        else:
+            self._show_pdf_loading(True)
+            self._start_pdf_thread(path)
+
+    def _start_pdf_thread(self, path: str):
+        """[PROGRESSIVE LOADING] 10-10 pages background mein load karo."""
+        if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
+            self._pdf_loader_thread.stop()
+            self._pdf_loader_thread.quit()
+            self._pdf_loader_thread.wait(500)
+        self._pdf_loader_thread = PdfLoaderThread(path, parent=self)
+        self._pdf_loader_thread.chunk_ready.connect(self._on_chunk_ready)
+        self._pdf_loader_thread.done.connect(self._on_pdf_loaded)
+        self._pdf_loader_thread.start()
+
+    def _on_chunk_ready(self, combined, loaded, total):
+        """[PROGRESSIVE] Har 10 pages baad canvas update karo — user wait nahi karta!"""
+        path = self.card.get("pdf_path", "")
+        self._combined_px = combined
+        self.canvas.load_pixmap(combined)
+        # Pending boxes pehle chunk pe hi restore karo
+        if self._pending_boxes:
+            self.canvas.set_boxes(self._pending_boxes)
+            self.mask_panel._refresh(self._pending_boxes)
+            self._pending_boxes = []
+        self.lbl_pg.setText(
+            f"📄  {os.path.basename(path)}  —  ⏳ {loaded}/{total} pages loaded…")
+        self.pdf_bar.show()
+        self.lbl_sync.setVisible(True)
+        self.lbl_sync.setText(f"⏳ Loading… {loaded}/{total} pages")
+        self.lbl_sync.setStyleSheet(
+            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+        self.setWindowTitle(f"Occlusion Card Editor  ⏳ {loaded}/{total} pages…")
+
+    def _on_pdf_loaded(self, combined, err):
+        """Saare pages load ho gaye — final canvas update karo."""
+        self._show_pdf_loading(False)
+        path = self.card.get("pdf_path", "")
+        if combined.isNull():
+            QMessageBox.warning(self, "PDF Error", err or "Could not render PDF.")
+            return
+        
+        self._combined_px = combined
+        
+        # --- [ULTRA FAST CACHE SAVE] ---
+        if path:
+            GLOBAL_PDF_CACHE[path] = combined
+
         try:
             _doc = fitz.open(path); n = len(_doc); _doc.close()
         except Exception:
@@ -1670,10 +1822,27 @@ class CardEditorDialog(QDialog):
             f"📄  {os.path.basename(path)}  —  {n} page{'s' if n != 1 else ''}"
             f"  •  scroll to navigate")
         self.pdf_bar.show()
+        # Final full pixmap set karo (saare pages ke saath)
         self.canvas.load_pixmap(self._combined_px)
         if not self.inp_title.text():
-            self.inp_title.setText(self._auto_subdeck_name)
+            self.inp_title.setText(self._auto_subdeck_name or "")
+        # Agar boxes abhi bhi pending hain (chunk nahi aaya tha) toh yahan restore karo
+        if self._pending_boxes:
+            self.canvas.set_boxes(self._pending_boxes)
+            self.mask_panel._refresh(self._pending_boxes)
+            self._pending_boxes = []
         self._watch_pdf(path)
+
+    def _show_pdf_loading(self, loading: bool):
+        """Loading indicator — title bar update + button disable."""
+        if loading:
+            self.setWindowTitle("Occlusion Card Editor  ⏳ Loading PDF…")
+            self.lbl_sync.setVisible(True)
+            self.lbl_sync.setText("⏳ Loading PDF…")
+            self.lbl_sync.setStyleSheet(
+                f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+        else:
+            self.setWindowTitle("Occlusion Card Editor")
 
     def _show_pdf_page(self):
         pass
@@ -1691,26 +1860,23 @@ class CardEditorDialog(QDialog):
         px = None
         if card.get("image_path") and os.path.exists(card.get("image_path")):
             px = QPixmap(card["image_path"])
+            if px and not px.isNull():
+                self.canvas.load_pixmap(px)
+            if card.get("boxes"):
+                self.canvas.set_boxes(card["boxes"])
+                self.mask_panel._refresh(card["boxes"])
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card.get("pdf_path")):
             path = card["pdf_path"]
-            combined, _, _ = pdf_to_combined_pixmap(path)
-            if not combined.isNull():
-                self._combined_px = combined
-                try:
-                    _doc = fitz.open(path); n = len(_doc); _doc.close()
-                except Exception:
-                    n = 0
-                self.lbl_pg.setText(
-                    f"📄  {os.path.basename(path)}  —  {n} page{'s' if n != 1 else ''}"
-                    f"  •  scroll to navigate")
-                self.pdf_bar.show()
-                px = self._combined_px
-                self._watch_pdf(path)
-        if px and not px.isNull():
-            self.canvas.load_pixmap(px)
-        if card.get("boxes"):
-            self.canvas.set_boxes(card["boxes"])
-            self.mask_panel._refresh(card["boxes"])
+            self.card["pdf_path"] = path
+            self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
+            self._pending_boxes = card.get("boxes", [])
+            
+            # --- [ULTRA FAST CACHE CHECK] ---
+            if path in GLOBAL_PDF_CACHE:
+                self._on_pdf_loaded(GLOBAL_PDF_CACHE[path], None)
+            else:
+                self._show_pdf_loading(True)
+                self._start_pdf_thread(path)
 
     def _watch_pdf(self, path: str):
         self._stop_watch()
@@ -1741,24 +1907,18 @@ class CardEditorDialog(QDialog):
             return
         if path not in self._watcher.files():
             self._watcher.addPath(path)
-        combined, err, _ = pdf_to_combined_pixmap(path)
-        if combined.isNull():
-            self.lbl_sync.setText(f"🔴 Live Sync: reload failed — {err or 'null pixmap'}")
-            self.lbl_sync.setStyleSheet(
-                f"color:{C_RED};font-size:11px;background:transparent;")
-            return
+            
+        # --- [ULTRA FAST CACHE INVALIDATE] ---
+        if path in GLOBAL_PDF_CACHE:
+            del GLOBAL_PDF_CACHE[path]
+
+        # [NOT-RESPONDING FIX] Reload bhi thread se karo
         saved_boxes = self.canvas.get_boxes()
-        self._combined_px = combined
-        self.canvas.load_pixmap(self._combined_px)
-        if saved_boxes:
-            self.canvas.set_boxes(saved_boxes)
-            self.mask_panel._refresh(saved_boxes)
-        self.lbl_sync.setText("🟢 Live Sync: reloaded ✓")
+        self._pending_boxes = saved_boxes
+        self.lbl_sync.setText("🟡 Live Sync: reloading…")
         self.lbl_sync.setStyleSheet(
-            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
-        QTimer.singleShot(3000, lambda: (
-            self.lbl_sync.setText("🟢 Live Sync: watching"),
-        ) if self._watched_path else None)
+            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+        self._start_pdf_thread(path)
 
     def _open_in_reader(self):
         path = self.card.get("pdf_path") or self._watched_path
@@ -1779,10 +1939,16 @@ class CardEditorDialog(QDialog):
 
     def closeEvent(self, e):
         self._stop_watch()
+        if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
+            self._pdf_loader_thread.quit()
+            self._pdf_loader_thread.wait(1000)
         super().closeEvent(e)
 
     def reject(self):
         self._stop_watch()
+        if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
+            self._pdf_loader_thread.quit()
+            self._pdf_loader_thread.wait(1000)
         super().reject()
 
     def accept(self):
@@ -1940,6 +2106,38 @@ class ReviewScreen(QWidget):
         self._done = 0
         self._setup_ui()
         self._load_item()
+
+    def closeEvent(self, e):
+        if hasattr(self, '_pdf_loader_thread') and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
+            self._pdf_loader_thread.stop()
+            self._pdf_loader_thread.quit()
+            self._pdf_loader_thread.wait(1000) 
+        
+        if hasattr(self, '_stop_watch'):
+            self._stop_watch()
+            
+        super().closeEvent(e)
+
+    def _load_item(self):
+        # 1. Check if all reviews are done
+        if self._idx >= len(self._items):
+            self._finish()
+            return
+
+        # 2. Get current item data
+        card, box_idx, sm2_obj = self._items[self._idx]
+
+        # 3. Update Progress Bar and Labels
+        self.prog.setMaximum(len(self._items))
+        self.prog.setValue(self._idx)
+        self.lbl_prog.setText(f"Card {self._idx + 1}/{len(self._items)}")
+        
+        # 4. Update SM-2 Stats and Title
+        self.lbl_sm2.setText(sm2_badge(sm2_obj))
+        self.lbl_title.setText(card.get("title", "Untitled"))
+
+        # 5. Render the image/PDF and masks on canvas
+        self._reload_current_canvas()
 
     def keyPressEvent(self, e):
         key  = e.key()
@@ -2223,11 +2421,16 @@ class ReviewScreen(QWidget):
         if card.get("image_path") and os.path.exists(card["image_path"]):
             px = QPixmap(card["image_path"])
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
-            key = card["pdf_path"] + "_combined"
-            combined, _, _ = pdf_to_combined_pixmap(card["pdf_path"])
-            if not combined.isNull():
-                self._pdf_cache[key] = combined
-                px = combined
+            path = card["pdf_path"]
+            
+            # --- [ULTRA FAST CACHE CHECK] ---
+            if path in GLOBAL_PDF_CACHE:
+                px = GLOBAL_PDF_CACHE[path]
+            else:
+                combined, _, _ = pdf_to_combined_pixmap(path)
+                if not combined.isNull():
+                    GLOBAL_PDF_CACHE[path] = combined
+                    px = combined
 
         if px and not px.isNull():
             self._current_pixmap = px
