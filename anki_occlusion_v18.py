@@ -2589,17 +2589,81 @@ class ReviewScreen(QWidget):
         self._load_item()
 
     def _reload_current_canvas(self):
-        """Canvas पर इमेज और मस्क लोड करने का Logic (Re-used from your code)"""
-        if not self._items: return
+        if not (0 <= self._idx < len(self._items)):
+            return
         card, box_idx, _ = self._items[0]
-        
-        # इमेज/PDF लोड करने का तुम्हारा ओरिजिनल लॉजिक यहाँ आएगा...
-        # (जैसे आपने पहले लिखा था, वही इस्तेमाल करें)
-        # ... [Canvas Loading Logic] ...
+
+        px = None
+        if card.get("image_path") and os.path.exists(card["image_path"]):
+            px = QPixmap(card["image_path"])
+        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
+            path = card["pdf_path"]
+            combined, _, _ = pdf_to_combined_pixmap(path)
+            if not combined.isNull():
+                px = combined
+
+        if px and not px.isNull():
+            self._current_pixmap = px
+            boxes = card.get("boxes", [])
+            self.canvas.load_pixmap(px)
+            
+            # --- [Logic for Masks - Standard] ---
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                display_boxes = [
+                    {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
+                    "revealed": b.get("group_id","") != gid}
+                    for b in boxes
+                ]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_group(gid)
+                self.canvas.set_target_box(-1)
+            elif box_idx is None:
+                self.canvas.set_boxes(boxes)
+                self.canvas.set_target_box(-1)
+                self.canvas.set_target_group("")
+            else:
+                display_boxes = [
+                    {"rect": b["rect"], "label": b.get("label",""),
+                    "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
+                    "group_id": b.get("group_id",""), "revealed": (i != box_idx)}
+                    for i, b in enumerate(boxes)
+                ]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(box_idx)
+                self.canvas.set_target_group("")
+
+            # 🚀 [FIX: PERSISTENT ZOOM ENCOUNTER]
+            # हम चेक करेंगे कि क्या स्केल पहले से सेट है (यानी 1.0 से अलग है)
+            # अगर यूजर ने मैन्युअली ज़ूम किया है, तो हम उसे नहीं बदलेंगे।
+            def _apply_zoom_logic():
+                # अगर स्केल डिफॉल्ट (1.0) है, तभी 'Fit to Width' करो (सिर्फ पहले कार्ड के लिए)
+                if getattr(self.canvas, '_scale', 1.0) == 1.0:
+                    vp = self._canvas_scroll.viewport()
+                    vw = max(vp.width(), 100)
+                    new_scale = vw / max(px.width(), 1)
+                    self.canvas._scale = max(0.15, min(new_scale, 3.0))
+                
+                # सिर्फ रिड्रॉ करो, स्केल को ओवरराइट नहीं
+                self.canvas._redraw()
+
+                # 🎯 [AUTO-SCROLL TO TARGET MASK]
+                # ज़ूम वही रहेगा, पर स्क्रीन उस मस्क पर पहुँच जाएगी जो अभी पूछना है
+                r = self.canvas.get_target_scaled_rect()
+                if r:
+                    vbar = self._canvas_scroll.verticalScrollBar()
+                    hbar = self._canvas_scroll.horizontalScrollBar()
+                    hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width() // 2)))
+                    vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
+
+            QTimer.singleShot(50, _apply_zoom_logic)
+
+        else:
+            self.canvas.load_pixmap(QPixmap())
+
         self._reveal_bar.show()
         self._rating_frame.hide()
         self.setFocus()
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DECK TREE
 # ═══════════════════════════════════════════════════════════════════════════════
