@@ -22,3 +22,25 @@ anki_occlusion_data.json
 # IDE configuration
 .vscode/
 .idea/
+# PyInstaller (जब आप .exe बनाते हैं)
+# ---------------------------------
+build/
+dist/
+localpycs/
+*.spec
+*.toc
+*.pkg
+
+# Binary artifacts (ये फाइल्स स्क्रीनशॉट में दिख रही हैं)
+# ----------------------------------------------------
+base_library.zip
+warn-AnkiOcclusion.txt
+xref-AnkiOcclusion.html
+PYZ-00.pyz
+PYZ-00.toc
+
+# Python cache (v13 cpython-312.pyc जैसी फाइल्स के लिए)
+# -----------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
