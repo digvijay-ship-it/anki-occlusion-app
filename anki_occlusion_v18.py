@@ -2612,7 +2612,7 @@ class ReviewScreen(QWidget):
                 gid = box_idx[1]
                 display_boxes = [
                     {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
-                    "revealed": b.get("group_id","") != gid}
+                    "revealed": False}  # FIX: अब बाय-डिफ़ॉल्ट सब कुछ हाइड रहेगा!
                     for b in boxes
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
@@ -2626,13 +2626,12 @@ class ReviewScreen(QWidget):
                 display_boxes = [
                     {"rect": b["rect"], "label": b.get("label",""),
                     "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
-                    "group_id": b.get("group_id",""), "revealed": (i != box_idx)}
+                    "group_id": b.get("group_id",""), "revealed": False} # FIX: यहाँ भी सब हाइड रहेगा!
                     for i, b in enumerate(boxes)
                 ]
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(box_idx)
                 self.canvas.set_target_group("")
-
             # 🚀 [FIX: PERSISTENT ZOOM ENCOUNTER]
             # हम चेक करेंगे कि क्या स्केल पहले से सेट है (यानी 1.0 से अलग है)
             # अगर यूजर ने मैन्युअली ज़ूम किया है, तो हम उसे नहीं बदलेंगे।
@@ -2640,7 +2639,7 @@ class ReviewScreen(QWidget):
                 # अगर स्केल डिफॉल्ट (1.0) है, तभी 'Fit to Width' करो (सिर्फ पहले कार्ड के लिए)
                 if getattr(self.canvas, '_scale', 1.0) == 1.0:
                     vp = self._canvas_scroll.viewport()
-                    vw = max(vp.width(), 100)
+                    vw = max(vp.width(), 80)
                     new_scale = vw / max(px.width(), 1)
                     self.canvas._scale = max(0.15, min(new_scale, 3.0))
                 
@@ -2664,6 +2663,119 @@ class ReviewScreen(QWidget):
         self._reveal_bar.show()
         self._rating_frame.hide()
         self.setFocus()
+
+    def _setup_ui(self):
+        L = QVBoxLayout(self)
+        L.setContentsMargins(10, 10, 10, 10)
+        L.setSpacing(10)
+
+        # Header: Progress, Toggle Button, and Badge
+        hdr = QHBoxLayout()
+        self.lbl_prog = QLabel("Remaining: ? | Done: 0")
+        self.lbl_prog.setStyleSheet("font-size:13px; font-weight:bold; color:#A6ADC8;")
+        
+        # Toggle Button Add कर रहे हैं
+        self.btn_toggle_mode = QPushButton("👁 Hide All")
+        self.btn_toggle_mode.setCheckable(True)
+        self.btn_toggle_mode.setStyleSheet("QPushButton{background:#313145; color:#CDD6F4; border:1px solid #45475A; border-radius:6px; padding:4px 12px; font-weight:bold;} QPushButton:checked{background:#7C6AF7; color:white;}")
+        self.btn_toggle_mode.clicked.connect(self._toggle_review_mode)
+
+        self.lbl_sm2 = QLabel("")
+        
+        hdr.addWidget(self.lbl_prog)
+        hdr.addStretch()
+        hdr.addWidget(self.btn_toggle_mode) # बटन को हेडर में डाला
+        hdr.addSpacing(15)
+        hdr.addWidget(self.lbl_sm2)
+        L.addLayout(hdr)
+
+        # Title
+        self.lbl_title = QLabel("Title")
+        self.lbl_title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        self.lbl_title.setAlignment(Qt.AlignCenter)
+        self.lbl_title.setStyleSheet("color:#CDD6F4;")
+        L.addWidget(self.lbl_title)
+
+        # Canvas Area
+        self._canvas_scroll = _ZoomableScrollArea()
+        self._canvas_scroll.setWidgetResizable(True)
+        self._canvas_scroll.setStyleSheet("QScrollArea{background:#1E1E2E; border:1px solid #45475A; border-radius:8px;}")
+        
+        self.canvas = OcclusionCanvas()
+        self.canvas.set_mode("review")
+        self._canvas_scroll.setWidget(self.canvas)
+        self._canvas_scroll._canvas = self.canvas 
+        L.addWidget(self._canvas_scroll, stretch=1)
+
+        # Bottom Action Bar
+        bot_layout = QVBoxLayout()
+        
+        # Reveal Button
+        self._reveal_bar = QPushButton("Spacebar — Reveal Answer")
+        self._reveal_bar.setFixedHeight(50)
+        self._reveal_bar.setStyleSheet("QPushButton{background:#7C6AF7; color:white; font-size:16px; font-weight:bold; border-radius:8px;} QPushButton:hover{background:#6A58E0;}")
+        self._reveal_bar.clicked.connect(self._show_answer)
+
+        # Rating Frame (Hidden initially)
+        self._rating_frame = QFrame()
+        r_lay = QHBoxLayout(self._rating_frame)
+        r_lay.setContentsMargins(0, 0, 0, 0)
+        r_lay.setSpacing(10)
+        
+        self._prev_lbls = []
+        for label, obj_name, quality in self.RATINGS:
+            vbox = QVBoxLayout()
+            btn = QPushButton(label)
+            btn.setObjectName(obj_name)
+            btn.setFixedHeight(45)
+            btn.setFont(QFont("Segoe UI", 12, QFont.Bold))
+            btn.clicked.connect(lambda _, q=quality: self._rate(q))
+            
+            prev_lbl = QLabel("→ ?")
+            prev_lbl.setAlignment(Qt.AlignCenter)
+            prev_lbl.setStyleSheet("color:#A6ADC8; font-size:11px;")
+            
+            vbox.addWidget(btn)
+            vbox.addWidget(prev_lbl)
+            r_lay.addLayout(vbox)
+            self._prev_lbls.append((prev_lbl, quality))
+
+        bot_layout.addWidget(self._reveal_bar)
+        bot_layout.addWidget(self._rating_frame)
+        L.addLayout(bot_layout)
+        
+        self._rating_frame.hide()
+
+    def _show_answer(self):
+        """Answer reveal करने का लॉजिक"""
+        self.canvas.reveal_all()
+        self._reveal_bar.hide()
+        self._rating_frame.show()
+        self.canvas.update()
+
+    def keyPressEvent(self, e):
+        """Review screen के लिए Keyboard Shortcuts"""
+        key = e.key()
+        if key == Qt.Key_Space and self._reveal_bar.isVisible():
+            self._show_answer()
+        elif key == Qt.Key_1 and self._rating_frame.isVisible():
+            self._rate(1)
+        elif key == Qt.Key_2 and self._rating_frame.isVisible():
+            self._rate(3)
+        elif key == Qt.Key_3 and self._rating_frame.isVisible():
+            self._rate(4)
+        elif key == Qt.Key_4 and self._rating_frame.isVisible():
+            self._rate(5)
+        elif key == Qt.Key_F11:  # F11 Fullscreen Encounter!
+            win = self.window()
+            if win.isFullScreen():
+                win.showMaximized()
+            else:
+                win.showFullScreen()
+        elif key == Qt.Key_Escape:
+            self.finished.emit()
+        else:
+            super().keyPressEvent(e)
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DECK TREE
 # ═══════════════════════════════════════════════════════════════════════════════
