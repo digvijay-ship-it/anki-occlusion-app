@@ -39,7 +39,22 @@ v15 Bug Fixes:
             to eliminate mouseMoveEvent lag completely.
 """
 
-import sys, os, json, copy, uuid, math
+from sm2_engine import (
+    sched_init, sm2_init, sched_update, sm2_update, 
+    is_due_now, is_due_today, sm2_is_due, sm2_days_left, 
+    _fmt_due_interval, sm2_simulate, sm2_badge
+)
+
+from pdf_engine import (
+    PDF_SUPPORT, PAGE_CACHE, pdf_to_combined_pixmap, PdfLoaderThread
+)
+
+from data_manager import (
+    load_data, save_data, find_deck_by_id, next_deck_id, new_box_id,
+    DATA_FILE
+)
+
+import sys, os, copy, uuid, math
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
@@ -57,506 +72,10 @@ from PyQt5.QtGui import (
     QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath
 )
 
-try:
-    import fitz
-    PDF_SUPPORT = True
-except ImportError:
-    PDF_SUPPORT = False
-
 import tempfile
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
-DATA_FILE = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SM-2 ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-LEARNING_STEPS  = [1, 10]
-GRADUATING_IV   = 1
-EASY_IV         = 4
-RELEARN_STEPS   = [10]
-
-def _now_iso():
-    return datetime.now().isoformat(timespec="seconds")
-
-def _due_in_minutes(mins):
-    return (datetime.now() + timedelta(minutes=mins)).isoformat(timespec="seconds")
-
-def _due_in_days(days):
-    return (datetime.now() + timedelta(days=days)).isoformat(timespec="seconds")
-
-def sched_init(c):
-    c.setdefault("sched_state",   "new")
-    c.setdefault("sched_step",    0)
-    c.setdefault("sm2_interval",  1)
-    c.setdefault("sm2_ease",      2.5)
-    c.setdefault("sm2_due",       _now_iso())
-    c.setdefault("sm2_repetitions", 0)
-    c.setdefault("sm2_last_quality", -1)
-    c.setdefault("reviews", 0)
-    return c
-
-def sm2_init(c):
-    return sched_init(c)
-
-def sched_update(c, quality):
-    c = sched_init(c)
-    state = c["sched_state"]
-    step  = c["sched_step"]
-    ef    = c["sm2_ease"]
-    iv    = c["sm2_interval"]
-
-    if state == "new":
-        state = "learning"
-        c["sched_state"] = "learning"
-
-    if state == "review":
-        ef = max(1.3, round(
-            ef + 0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02), 4))
-
-    if quality <= 1:
-        steps     = RELEARN_STEPS if state == "review" else LEARNING_STEPS
-        new_state = "relearn" if state == "review" else "learning"
-        new_step  = 0
-        due       = _due_in_minutes(steps[0])
-
-    elif quality == 3:
-        if state in ("learning", "relearn"):
-            steps     = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
-            new_state = state
-            new_step  = step
-            if step == 0 and len(steps) > 1:
-                hard_mins = (steps[0] + steps[1]) // 2
-            else:
-                hard_mins = steps[min(step, len(steps) - 1)]
-            due = _due_in_minutes(hard_mins)
-        else:
-            new_state = "review"
-            new_step  = 0
-            iv        = max(1, round(iv * 1.2))
-            due       = _due_in_days(iv)
-
-    elif quality == 5:
-        new_state = "review"
-        new_step  = 0
-        iv        = max(EASY_IV, round(iv * ef)) if state == "review" else EASY_IV
-        due       = _due_in_days(iv)
-
-    else:
-        if state in ("learning", "relearn"):
-            steps     = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
-            next_step = step + 1
-            if next_step >= len(steps):
-                new_state = "review"
-                new_step  = 0
-                iv        = GRADUATING_IV
-                due       = _due_in_days(iv)
-            else:
-                new_state = state
-                new_step  = next_step
-                due       = _due_in_minutes(steps[next_step])
-        else:
-            new_state = "review"
-            new_step  = 0
-            iv = (1 if c["sm2_repetitions"] == 0 else
-                  6 if c["sm2_repetitions"] == 1 else
-                  max(1, round(iv * ef)))
-            due = _due_in_days(iv)
-
-    c.update({
-        "sched_state":       new_state,
-        "sched_step":        new_step,
-        "sm2_interval":      iv,
-        "sm2_ease":          ef,
-        "sm2_due":           due,
-        "sm2_last_quality":  quality,
-        "sm2_repetitions":   c["sm2_repetitions"] + (1 if quality >= 3 else 0),
-        "reviews":           c.get("reviews", 0) + 1,
-    })
-    return c
-
-def sm2_update(c, quality):
-    return sched_update(c, quality)
-
-def is_due_now(c):
-    sched_init(c)
-    if c.get("sm2_last_quality", -1) == -1:
-        return True
-    due_str = c.get("sm2_due", "")
-    if not due_str:
-        return True
-    try:
-        return datetime.fromisoformat(due_str) <= datetime.now()
-    except Exception:
-        return True
-
-def is_due_today(c):
-    sched_init(c)
-    state = c.get("sched_state", "new")
-    if state in ("new", "learning", "relearn"):
-        return is_due_now(c)
-    due_str = c.get("sm2_due", "")
-    if not due_str:
-        return True
-    try:
-        due_date = datetime.fromisoformat(due_str).date()
-        return due_date <= date.today()
-    except Exception:
-        return True
-
-def sm2_is_due(c):
-    return is_due_today(c)
-
-def sm2_days_left(c):
-    try:
-        due = datetime.fromisoformat(c.get("sm2_due", ""))
-        delta = (due.date() - date.today()).days
-        return max(0, delta)
-    except Exception:
-        return 0
-
-def _fmt_due_interval(c):
-    def _preview(quality):
-        s = copy.deepcopy(c)
-        sched_init(s)
-        sched_update(s, quality)
-        ns = s["sched_state"]
-        if ns in ("learning", "relearn"):
-            steps = RELEARN_STEPS if ns == "relearn" else LEARNING_STEPS
-            mins  = steps[min(s["sched_step"], len(steps)-1)]
-            return f"{mins}m" if mins < 60 else f"{mins//60}h"
-        else:
-            days = s["sm2_interval"]
-            return f"{days}d"
-    return {q: _preview(q) for q in [1, 3, 4, 5]}
-
-def sm2_simulate(c, q):
-    previews = _fmt_due_interval(c)
-    return previews.get(q, "?")
-
-def sm2_badge(c):
-    state = c.get("sched_state", "new")
-    iv    = c.get("sm2_interval", 1)
-    ef    = c.get("sm2_ease", 2.5)
-    step  = c.get("sched_step", 0)
-    if state == "new":
-        return "🆕 New"
-    if state in ("learning", "relearn"):
-        steps = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
-        mins  = steps[min(step, len(steps)-1)]
-        tag   = "🔁 Relearn" if state == "relearn" else "📖 Learning"
-        return f"{tag}  step:{step+1}/{len(steps)}  next:{mins}m"
-    if is_due_today(c):
-        return f"🔴 Review Due  iv:{iv}d  EF:{ef:.2f}"
-    return f"✅ {sm2_days_left(c)}d left  iv:{iv}d  EF:{ef:.2f}"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  DATA
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"decks": []}
-
-def save_data(data):
-    dir_  = os.path.dirname(DATA_FILE) or "."
-    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DATA_FILE)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except Exception:
-            pass
-        raise
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  DECK TREE HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def find_deck_by_id(deck_id, lst):
-    for d in lst:
-        if d.get("_id") == deck_id:
-            return d
-        found = find_deck_by_id(deck_id, d.get("children", []))
-        if found:
-            return found
-    return None
-
-def next_deck_id(data):
-    max_id = [0]
-    def _walk(lst):
-        for d in lst:
-            max_id[0] = max(max_id[0], d.get("_id", 0))
-            _walk(d.get("children", []))
-    _walk(data.get("decks", []))
-    return max_id[0] + 1
-
-def new_box_id():
-    return str(uuid.uuid4())
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PDF HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  LRU PAGE CACHE  (v18 — RAM Encounter Fix)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from collections import OrderedDict
-
-class LRUPageCache:
-    def __init__(self, max_pages: int = 15):
-        self._cache = OrderedDict()
-        self._max = max_pages
-
-    def get(self, path: str, page_num: int):
-        key = (path, page_num)
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            return self._cache[key]
-        return None
-
-    def put(self, path: str, page_num: int, pixmap: QPixmap):
-        key = (path, page_num)
-        self._cache[key] = pixmap
-        self._cache.move_to_end(key)
-        while len(self._cache) > self._max:
-            self._cache.popitem(last=False)
-
-    def invalidate_pdf(self, path: str):
-        keys_to_del = [k for k in self._cache if k[0] == path]
-        for k in keys_to_del: del self._cache[k]
-
-PAGE_CACHE = LRUPageCache(max_pages=15)
-
-def pdf_page_to_pixmap(page, mat):
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    qimg = QPixmap()
-    qimg.loadFromData(pix.tobytes())
-    return qimg
-
-def pdf_to_combined_pixmap(path: str, zoom: float = 1.5):
-    if not PDF_SUPPORT: return QPixmap(), 0, "No fitz"
-    try:
-        doc = fitz.open(path)
-        total = len(doc)
-        mat = fitz.Matrix(zoom, zoom)
-        pages = []
-        for i in range(total):
-            cached = PAGE_CACHE.get(path, i)
-            if cached: pages.append(cached)
-            else:
-                qpx = pdf_page_to_pixmap(doc.load_page(i), mat)
-                PAGE_CACHE.put(path, i, qpx)
-                pages.append(qpx)
-        doc.close()
-        
-        GAP = 12
-        total_w = max(p.width() for p in pages)
-        total_h = sum(p.height() for p in pages) + GAP * (total - 1)
-        combined = QPixmap(total_w, total_h)
-        combined.fill(QColor("#1E1E2E"))
-        p = QPainter(combined)
-        y = 0
-        for img in pages:
-            p.drawPixmap(0, y, img)
-            y += img.height() + GAP
-        p.end()
-        return combined, total, None
-    except Exception as e: return QPixmap(), 0, str(e)
-
-# Global singleton — poore app mein ek hi LRU cache
-PAGE_CACHE = LRUPageCache(max_pages=15)
-
-
-def pdf_page_to_pixmap(page, mat):
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    fd, tmp_path = tempfile.mkstemp(suffix=".png")
-    os.close(fd)
-    try:
-        pix.save(tmp_path)
-        qpx = QPixmap(tmp_path)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-    return qpx
-
-
-
-
-
-def pdf_to_pixmaps(path: str, zoom: float = 1.5):
-    """
-    [LRU CACHE v18] Individual pages pehle PAGE_CACHE se lo.
-    Cache miss hone par fitz se load karo aur cache mein daalo.
-    """
-    pages, errors = [], []
-    if not PDF_SUPPORT:
-        return pages, "PyMuPDF not installed — run: pip install pymupdf"
-    try:
-        doc = fitz.open(path)
-        if doc.is_encrypted:
-            return pages, "PDF is password-protected / encrypted."
-        mat = fitz.Matrix(zoom, zoom)
-        for page_num in range(len(doc)):
-            # Pehle LRU cache check karo
-            cached = PAGE_CACHE.get(path, page_num)
-            if cached:
-                pages.append(cached)
-                continue
-            try:
-                qpx = pdf_page_to_pixmap(doc.load_page(page_num), mat)
-                if qpx.isNull():
-                    errors.append(f"Page {page_num+1}: null pixmap")
-                else:
-                    PAGE_CACHE.put(path, page_num, qpx)
-                    pages.append(qpx)
-            except Exception as e:
-                errors.append(f"Page {page_num+1}: {e}")
-        doc.close()
-    except Exception as e:
-        return pages, str(e)
-    err_str = "\n".join(errors) if errors and not pages else None
-    return pages, err_str
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PDF LOADER THREAD  (Progressive chunk loading — 10 pages at a time)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-CHUNK_SIZE = 30   # Kitne pages ek baar mein load hon
-
-def _build_combined_from_pages(pages):
-    """Pages list se ek combined QPixmap banao."""
-    if not pages:
-        return QPixmap()
-    GAP       = 12
-    SEP_COLOR = QColor("#45475A")
-    total_w   = max(p.width()  for p in pages)
-    total_h   = sum(p.height() for p in pages) + GAP * (len(pages) - 1)
-    combined  = QPixmap(total_w, total_h)
-    combined.fill(QColor("#1E1E2E"))
-    painter = QPainter(combined)
-    y = 0
-    for i, px in enumerate(pages):
-        painter.drawPixmap(0, y, px)
-        y += px.height()
-        if i < len(pages) - 1:
-            painter.setPen(QPen(SEP_COLOR, 2))
-            painter.drawLine(0, y + GAP // 2, total_w, y + GAP // 2)
-            y += GAP
-    painter.end()
-    return combined
-def pdf_to_combined_pixmap(path: str, zoom: float = 1.5):
-    """
-    [LRU CACHE v18 ENCOUNTER] 
-    यह फंक्शन PDF के पेजों को लोड करके उन्हें एक साथ जोड़ता है।
-    """
-    if not PDF_SUPPORT:
-        return QPixmap(), 0, "PyMuPDF not installed"
-    
-    try:
-        doc = fitz.open(path)
-        total_pages = len(doc)
-        mat = fitz.Matrix(zoom, zoom)
-        all_pages = []
-
-        for i in range(total_pages):
-            # LRU Cache से पेज उठाओ या नया लोड करो
-            cached = PAGE_CACHE.get(path, i)
-            if cached:
-                all_pages.append(cached)
-            else:
-                qpx = pdf_page_to_pixmap(doc.load_page(i), mat)
-                if not qpx.isNull():
-                    PAGE_CACHE.put(path, i, qpx)
-                    all_pages.append(qpx)
-        
-        doc.close()
-        # अब इन पेजों को एक लंबी इमेज में कंबाइन करो
-        combined = _build_combined_from_pages(all_pages)
-        return combined, total_pages, None
-
-    except Exception as e:
-        return QPixmap(), 0, str(e)
-
-class PdfLoaderThread(QThread):
-    """
-    [PROGRESSIVE LOADING v17]
-    10-10 pages ka chunk emit karta hai — user pehle chunk se kaam shuru
-    kar sakta hai jabki baaki background mein load hote hain.
-    """
-    chunk_ready = pyqtSignal(object, int, int)  # (QPixmap combined_so_far, loaded, total)
-    done        = pyqtSignal(object, object)    # (QPixmap final_combined, error_str or None)
-    error       = pyqtSignal(str)
-
-    def __init__(self, path: str, chunk_size: int = CHUNK_SIZE, parent=None):
-        super().__init__(parent)
-        self._path       = path
-        self._chunk_size = chunk_size
-        self._stop_flag  = False
-
-    def stop(self):
-        self._stop_flag = True
-
-    def run(self):
-        if not PDF_SUPPORT:
-            self.done.emit(QPixmap(), "PyMuPDF not installed")
-            return
-        try:
-            doc = fitz.open(self._path)
-            if doc.is_encrypted:
-                self.done.emit(QPixmap(), "PDF is password-protected.")
-                return
-            total   = len(doc)
-            mat     = fitz.Matrix(1.5, 1.5)
-            all_pages = []
-
-            for page_num in range(total):
-                if self._stop_flag:
-                    doc.close()
-                    return
-
-                # [LRU CACHE v18] Pehle cache check karo — fitz call hi mat karo!
-                cached = PAGE_CACHE.get(self._path, page_num)
-                if cached:
-                    qpx = cached
-                else:
-                    try:
-                        qpx = pdf_page_to_pixmap(doc.load_page(page_num), mat)
-                        if not qpx.isNull():
-                            PAGE_CACHE.put(self._path, page_num, qpx)
-                    except Exception:
-                        continue
-
-                if not qpx.isNull():
-                    all_pages.append(qpx)
-
-                # Har CHUNK_SIZE pages ke baad preview emit karo
-                loaded = len(all_pages)
-                if loaded > 0 and loaded % self._chunk_size == 0:
-                    preview = _build_combined_from_pages(all_pages)
-                    self.chunk_ready.emit(preview, loaded, total)
-
-            doc.close()
-            if self._stop_flag:
-                return
-            final = _build_combined_from_pages(all_pages)
-            self.done.emit(final, None)
-
-        except Exception as ex:
-            self.done.emit(QPixmap(), str(ex))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2477,6 +1996,7 @@ class _ZoomableScrollArea(QScrollArea):
         else:
             super().wheelEvent(e)
 
+
 class ReviewScreen(QWidget):
     finished = pyqtSignal()
 
@@ -2489,275 +2009,119 @@ class ReviewScreen(QWidget):
 
     def __init__(self, cards, data=None, parent=None):
         super().__init__(parent)
-        self._data = data
-        self._items = []  # यह हमारी Active Queue होगी
-        self._done = 0
-        self._idx = 0     # हमेशा 0 पर रहेंगे क्योंकि हम Queue को Pop/Push करेंगे
-        
-        # --- [QUEUE INITIALIZATION] ---
+        self._data           = data
+        self._items          = []
+        self._pdf_cache      = {}
+        self._current_pixmap = None
+
         seen_item_keys = set()
+
         for card in cards:
             boxes = card.get("boxes", [])
             card_key = id(card)
-            
-            if not boxes:
-                sm2_init(card)
-                if is_due_today(card):
-                    self._items.append([card, None, card])
+
+            if len(boxes) == 0:
+                item_key = (card_key, None)
+                if item_key not in seen_item_keys:
+                    seen_item_keys.add(item_key)
+                    sm2_init(card)
+                    self._items.append((card, None, card))
                 continue
 
             seen_groups = set()
+
             for i, box in enumerate(boxes):
                 sm2_init(box)
                 gid = box.get("group_id", "")
+
                 if gid:
                     if gid not in seen_groups:
                         seen_groups.add(gid)
-                        if is_due_today(box):
-                            self._items.append([card, ("group", gid), box])
+                        item_key = (card_key, ("group", gid))
+                        if item_key not in seen_item_keys:
+                            seen_item_keys.add(item_key)
+                            if is_due_today(box):
+                                self._items.append((card, ("group", gid), box))
                 else:
-                    if is_due_today(box):
-                        self._items.append([card, i, box])
+                    box_id = box.get("box_id", f"__idx_{i}")
+                    item_key = (card_key, box_id)
+                    if item_key not in seen_item_keys:
+                        seen_item_keys.add(item_key)
+                        if is_due_today(box):
+                            self._items.append((card, i, box))
 
-        # Initial Sort: Due date के हिसाब से लाइन में लगाओ
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
-        
+        self._idx  = 0
+        self._done = 0
         self._setup_ui()
         self._load_item()
 
+    def closeEvent(self, e):
+        if hasattr(self, '_pdf_loader_thread') and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
+            self._pdf_loader_thread.stop()
+            self._pdf_loader_thread.quit()
+            self._pdf_loader_thread.wait(1000) 
+        
+        if hasattr(self, '_stop_watch'):
+            self._stop_watch()
+            
+        super().closeEvent(e)
+
     def _load_item(self):
-        """वर्तमान आइटम को स्क्रीन पर लोड करता है"""
-        if not self._items:
+        if self._idx >= len(self._items):
             self._finish()
             return
 
-        # हमेशा पहली पोजीशन (Index 0) का कार्ड दिखाओ
-        card, box_idx, sm2_obj = self._items[0]
+        card, box_idx, sm2_obj = self._items[self._idx]
 
-        # UI Updates
-        self.lbl_prog.setText(f"Remaining: {len(self._items)} | Done: {self._done}")
+        # UI updates...
+        self.prog.setMaximum(len(self._items))
+        self.prog.setValue(self._idx)
+        self.lbl_prog.setText(f"Card {self._idx + 1}/{len(self._items)}")
         self.lbl_sm2.setText(sm2_badge(sm2_obj))
         self.lbl_title.setText(card.get("title", "Untitled"))
 
-        # SM-2 Next Interval Previews
+        # 🚀 SM-2 SIMULATION UPDATE (Fix for the '?' bug)
+        # Ye part calculate karega ki Again/Good/Easy dabane par next date kya hogi
         previews = _fmt_due_interval(sm2_obj)
         for lbl, q in self._prev_lbls:
-            lbl.setText(f"→ {previews.get(q, '?')}")
+            val = previews.get(q, "?")
+            lbl.setText(f"→ {val}")
 
         self._reload_current_canvas()
-
-    def _rate(self, quality):
-        """कार्ड को रेटिंग देता है और कतार (Queue) को री-अरेंज करता है"""
-        if not self._items:
+        # 1. Check if all reviews are done
+        if self._idx >= len(self._items):
+            self._finish()
             return
 
-        # 1. वर्तमान कार्ड निकालो (Pop from front)
-        current_item = self._items.pop(0)
-        card, box_idx, sm2_obj = current_item
+        # 2. Get current item data
+        card, box_idx, sm2_obj = self._items[self._idx]
 
-        # 2. SM-2 इंजन से नई Due Date और State लो
-        sched_update(sm2_obj, quality)
+        # 3. Update Progress Bar and Labels
+        self.prog.setMaximum(len(self._items))
+        self.prog.setValue(self._idx)
+        self.lbl_prog.setText(f"Card {self._idx + 1}/{len(self._items)}")
         
-        # डेटा सेव करो
-        if self._data:
-            save_data(self._data)
+        # 4. Update SM-2 Stats and Title
+        self.lbl_sm2.setText(sm2_badge(sm2_obj))
+        self.lbl_title.setText(card.get("title", "Untitled"))
 
-        state = sm2_obj.get("sched_state", "review")
-
-        # 3. Decision Logic: क्या कार्ड अभी भी सीखना है?
-        # अगर 'Again' दबाया (quality 1) या कार्ड अभी भी Learning/Relearn स्टेज में है
-        if quality == 1 or state in ("learning", "relearn"):
-            # इस कार्ड को Queue में उसकी नई Due Date के हिसाब से 'Inject' करो
-            new_due = sm2_obj.get("sm2_due", "")
-            inserted = False
-            
-            for i in range(len(self._items)):
-                if self._items[i][2].get("sm2_due", "") > new_due:
-                    self._items.insert(i, current_item)
-                    inserted = True
-                    break
-            
-            if not inserted:
-                self._items.append(current_item)
-            
-            # चूँकि कार्ड वापस लाइन में लग गया है, self._done नहीं बढ़ेगा
-        else:
-            # कार्ड ग्रेजुएट हो गया (Passed)!
-            self._done += 1
-
-        # 4. अगला कार्ड लोड करो (जो अब index 0 पर आ चुका है)
-        self._load_item()
-
-    def _reload_current_canvas(self):
-        if not (0 <= self._idx < len(self._items)):
-            return
-        card, box_idx, _ = self._items[0]
-
-        px = None
-        if card.get("image_path") and os.path.exists(card["image_path"]):
-            px = QPixmap(card["image_path"])
-        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
-            path = card["pdf_path"]
-            combined, _, _ = pdf_to_combined_pixmap(path)
-            if not combined.isNull():
-                px = combined
-
-        if px and not px.isNull():
-            self._current_pixmap = px
-            boxes = card.get("boxes", [])
-            self.canvas.load_pixmap(px)
-            
-            # --- [Logic for Masks - Standard] ---
-            if isinstance(box_idx, tuple) and box_idx[0] == "group":
-                gid = box_idx[1]
-                display_boxes = [
-                    {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
-                    "revealed": False}  # FIX: अब बाय-डिफ़ॉल्ट सब कुछ हाइड रहेगा!
-                    for b in boxes
-                ]
-                self.canvas.set_boxes_with_state(display_boxes)
-                self.canvas.set_target_group(gid)
-                self.canvas.set_target_box(-1)
-            elif box_idx is None:
-                self.canvas.set_boxes(boxes)
-                self.canvas.set_target_box(-1)
-                self.canvas.set_target_group("")
-            else:
-                display_boxes = [
-                    {"rect": b["rect"], "label": b.get("label",""),
-                    "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
-                    "group_id": b.get("group_id",""), "revealed": False} # FIX: यहाँ भी सब हाइड रहेगा!
-                    for i, b in enumerate(boxes)
-                ]
-                self.canvas.set_boxes_with_state(display_boxes)
-                self.canvas.set_target_box(box_idx)
-                self.canvas.set_target_group("")
-            # 🚀 [FIX: PERSISTENT ZOOM ENCOUNTER]
-            # हम चेक करेंगे कि क्या स्केल पहले से सेट है (यानी 1.0 से अलग है)
-            # अगर यूजर ने मैन्युअली ज़ूम किया है, तो हम उसे नहीं बदलेंगे।
-            def _apply_zoom_logic():
-                # अगर स्केल डिफॉल्ट (1.0) है, तभी 'Fit to Width' करो (सिर्फ पहले कार्ड के लिए)
-                if getattr(self.canvas, '_scale', 1.0) == 1.0:
-                    vp = self._canvas_scroll.viewport()
-                    vw = max(vp.width(), 80)
-                    new_scale = vw / max(px.width(), 1)
-                    self.canvas._scale = max(0.15, min(new_scale, 3.0))
-                
-                # सिर्फ रिड्रॉ करो, स्केल को ओवरराइट नहीं
-                self.canvas._redraw()
-
-                # 🎯 [AUTO-SCROLL TO TARGET MASK]
-                # ज़ूम वही रहेगा, पर स्क्रीन उस मस्क पर पहुँच जाएगी जो अभी पूछना है
-                r = self.canvas.get_target_scaled_rect()
-                if r:
-                    vbar = self._canvas_scroll.verticalScrollBar()
-                    hbar = self._canvas_scroll.horizontalScrollBar()
-                    hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width() // 2)))
-                    vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
-
-            QTimer.singleShot(50, _apply_zoom_logic)
-
-        else:
-            self.canvas.load_pixmap(QPixmap())
-
-        self._reveal_bar.show()
-        self._rating_frame.hide()
-        self.setFocus()
-
-    def _setup_ui(self):
-        L = QVBoxLayout(self)
-        L.setContentsMargins(10, 10, 10, 10)
-        L.setSpacing(10)
-
-        # Header: Progress, Toggle Button, and Badge
-        hdr = QHBoxLayout()
-        self.lbl_prog = QLabel("Remaining: ? | Done: 0")
-        self.lbl_prog.setStyleSheet("font-size:13px; font-weight:bold; color:#A6ADC8;")
-        
-        # Toggle Button Add कर रहे हैं
-        self.btn_toggle_mode = QPushButton("👁 Hide All")
-        self.btn_toggle_mode.setCheckable(True)
-        self.btn_toggle_mode.setStyleSheet("QPushButton{background:#313145; color:#CDD6F4; border:1px solid #45475A; border-radius:6px; padding:4px 12px; font-weight:bold;} QPushButton:checked{background:#7C6AF7; color:white;}")
-        self.btn_toggle_mode.clicked.connect(self._toggle_review_mode)
-
-        self.lbl_sm2 = QLabel("")
-        
-        hdr.addWidget(self.lbl_prog)
-        hdr.addStretch()
-        hdr.addWidget(self.btn_toggle_mode) # बटन को हेडर में डाला
-        hdr.addSpacing(15)
-        hdr.addWidget(self.lbl_sm2)
-        L.addLayout(hdr)
-
-        # Title
-        self.lbl_title = QLabel("Title")
-        self.lbl_title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        self.lbl_title.setAlignment(Qt.AlignCenter)
-        self.lbl_title.setStyleSheet("color:#CDD6F4;")
-        L.addWidget(self.lbl_title)
-
-        # Canvas Area
-        self._canvas_scroll = _ZoomableScrollArea()
-        self._canvas_scroll.setWidgetResizable(True)
-        self._canvas_scroll.setStyleSheet("QScrollArea{background:#1E1E2E; border:1px solid #45475A; border-radius:8px;}")
-        
-        self.canvas = OcclusionCanvas()
-        self.canvas.set_mode("review")
-        self._canvas_scroll.setWidget(self.canvas)
-        self._canvas_scroll._canvas = self.canvas 
-        L.addWidget(self._canvas_scroll, stretch=1)
-
-        # Bottom Action Bar
-        bot_layout = QVBoxLayout()
-        
-        # Reveal Button
-        self._reveal_bar = QPushButton("Spacebar — Reveal Answer")
-        self._reveal_bar.setFixedHeight(50)
-        self._reveal_bar.setStyleSheet("QPushButton{background:#7C6AF7; color:white; font-size:16px; font-weight:bold; border-radius:8px;} QPushButton:hover{background:#6A58E0;}")
-        self._reveal_bar.clicked.connect(self._show_answer)
-
-        # Rating Frame (Hidden initially)
-        self._rating_frame = QFrame()
-        r_lay = QHBoxLayout(self._rating_frame)
-        r_lay.setContentsMargins(0, 0, 0, 0)
-        r_lay.setSpacing(10)
-        
-        self._prev_lbls = []
-        for label, obj_name, quality in self.RATINGS:
-            vbox = QVBoxLayout()
-            btn = QPushButton(label)
-            btn.setObjectName(obj_name)
-            btn.setFixedHeight(45)
-            btn.setFont(QFont("Segoe UI", 12, QFont.Bold))
-            btn.clicked.connect(lambda _, q=quality: self._rate(q))
-            
-            prev_lbl = QLabel("→ ?")
-            prev_lbl.setAlignment(Qt.AlignCenter)
-            prev_lbl.setStyleSheet("color:#A6ADC8; font-size:11px;")
-            
-            vbox.addWidget(btn)
-            vbox.addWidget(prev_lbl)
-            r_lay.addLayout(vbox)
-            self._prev_lbls.append((prev_lbl, quality))
-
-        bot_layout.addWidget(self._reveal_bar)
-        bot_layout.addWidget(self._rating_frame)
-        L.addLayout(bot_layout)
-        
-        self._rating_frame.hide()
-
-    def _show_answer(self):
-        """Answer reveal करने का लॉजिक"""
-        self.canvas.reveal_all()
-        self._reveal_bar.hide()
-        self._rating_frame.show()
-        self.canvas.update()
+        # 5. Render the image/PDF and masks on canvas
+        self._reload_current_canvas()
 
     def keyPressEvent(self, e):
-        """Review screen के लिए Keyboard Shortcuts"""
-        key = e.key()
-        if key == Qt.Key_Space and self._reveal_bar.isVisible():
-            self._show_answer()
+        key  = e.key()
+        mods = e.modifiers()
+        if key == Qt.Key_F11:
+            win = self.window()
+            if win.isFullScreen():
+                win.showMaximized()
+                self._set_fullscreen_ui(False)
+            else:
+                win.showFullScreen()
+                self._set_fullscreen_ui(True)
+        elif key == Qt.Key_Space:
+            self._reveal_current()
         elif key == Qt.Key_1 and self._rating_frame.isVisible():
             self._rate(1)
         elif key == Qt.Key_2 and self._rating_frame.isVisible():
@@ -2766,16 +2130,377 @@ class ReviewScreen(QWidget):
             self._rate(4)
         elif key == Qt.Key_4 and self._rating_frame.isVisible():
             self._rate(5)
-        elif key == Qt.Key_F11:  # F11 Fullscreen Encounter!
-            win = self.window()
-            if win.isFullScreen():
-                win.showMaximized()
-            else:
-                win.showFullScreen()
-        elif key == Qt.Key_Escape:
-            self.finished.emit()
+        elif mods & Qt.ControlModifier and key in (Qt.Key_Equal, Qt.Key_Plus):
+            self.canvas.zoom_in()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Minus:
+            self.canvas.zoom_out()
+        elif mods & Qt.ControlModifier and key == Qt.Key_0:
+            self._zoom_fit()
+        elif key == Qt.Key_C:
+            self._center_on_target()
+        elif key == Qt.Key_E:
+            self._edit_current_card()
         else:
             super().keyPressEvent(e)
+
+    def _reveal_current(self):
+        if not (0 <= self._idx < len(self._items)):
+            return
+        _, box_idx, _ = self._items[self._idx]
+        if box_idx is None:
+            self.canvas.reveal_all()
+        elif isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            for b in self.canvas._boxes:
+                if b.get("group_id", "") == gid:
+                    b["revealed"] = True
+            self.canvas._redraw()
+        else:
+            if 0 <= box_idx < len(self.canvas._boxes):
+                self.canvas._boxes[box_idx]["revealed"] = True
+                self.canvas._redraw()
+        self._reveal_bar.hide()
+        self._rating_frame.show()
+
+    def _set_fullscreen_ui(self, fullscreen: bool):
+        self._hdr_widget.setVisible(not fullscreen)
+        self.lbl_title.setVisible(not fullscreen)
+        self._hint_label.setVisible(not fullscreen)
+
+    def _setup_ui(self):
+        L = QVBoxLayout(self)
+        L.setContentsMargins(0, 0, 0, 0)
+        L.setSpacing(0)
+
+        hdr_w = QFrame()
+        hdr_w.setFixedHeight(46)
+        hdr_w.setStyleSheet(
+            f"QFrame{{background:{C_SURFACE};"
+            f"border-bottom:1px solid {C_BORDER};border-radius:0;}}")
+        hdr = QHBoxLayout(hdr_w)
+        hdr.setContentsMargins(14, 0, 14, 0); hdr.setSpacing(10)
+
+        self.lbl_prog = QLabel("Card 1/1")
+        self.lbl_prog.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        hdr.addWidget(self.lbl_prog)
+
+        self.prog = QProgressBar()
+        self.prog.setFixedHeight(8)
+        self.prog.setTextVisible(False)
+        self.prog.setStyleSheet(
+            f"QProgressBar{{background:{C_CARD};border-radius:4px;}}"
+            f"QProgressBar::chunk{{background:{C_ACCENT};border-radius:4px;}}")
+        hdr.addWidget(self.prog, stretch=1)
+
+        self.lbl_sm2 = QLabel("")
+        self.lbl_sm2.setStyleSheet(
+            f"background:{C_CARD};color:{C_SUBTEXT};"
+            f"border-radius:6px;padding:3px 10px;font-size:11px;")
+        hdr.addWidget(self.lbl_sm2)
+
+        def _zb(txt, tip):
+            b = QPushButton(txt); b.setToolTip(tip)
+            b.setFixedSize(28, 28)
+            b.setStyleSheet(
+                f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
+                f"border:1px solid {C_BORDER};border-radius:5px;font-size:13px;}}"
+                f"QPushButton:hover{{background:{C_SURFACE};}}")
+            return b
+        b_zin  = _zb("+", "Zoom In  Ctrl++")
+        b_zout = _zb("−", "Zoom Out  Ctrl+−")
+        b_zfit = _zb("⊡", "Zoom Fit  Ctrl+0")
+        b_center = _zb("⊕", "Center on active mask")
+        b_zin.clicked.connect(lambda: self.canvas.zoom_in())
+        b_zout.clicked.connect(lambda: self.canvas.zoom_out())
+        b_zfit.clicked.connect(self._zoom_fit)
+        b_center.clicked.connect(self._center_on_target)
+        hdr.addWidget(b_zin); hdr.addWidget(b_zout)
+        hdr.addWidget(b_zfit); hdr.addWidget(b_center)
+
+        b_edit = QPushButton("✏ Edit Card")
+        b_edit.setStyleSheet(
+            f"QPushButton{{background:{C_ACCENT};color:white;border:none;"
+            f"border-radius:6px;padding:4px 14px;font-size:12px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:#6A58E0;}}")
+        b_edit.clicked.connect(self._edit_current_card)
+        hdr.addWidget(b_edit)
+
+        self._btn_mode = QPushButton("🟧 Hide All, Guess One")
+        self._btn_mode.setCheckable(True)
+        self._btn_mode.setChecked(False)
+        self._btn_mode.setStyleSheet(
+            f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
+            f"border:1px solid {C_BORDER};border-radius:6px;"
+            f"padding:4px 14px;font-size:12px;}}"
+            f"QPushButton:checked{{background:#6A3FBF;color:white;"
+            f"border:1px solid {C_ACCENT};}}"
+            f"QPushButton:hover{{background:{C_SURFACE};}}")
+        self._btn_mode.clicked.connect(self._toggle_review_mode)
+        hdr.addWidget(self._btn_mode)
+
+        b_exit = QPushButton("✕ Exit")
+        b_exit.setStyleSheet(
+            f"background:{C_CARD};color:{C_TEXT};border:1px solid {C_BORDER};"
+            f"border-radius:6px;padding:4px 14px;font-size:12px;")
+        b_exit.clicked.connect(self.finished.emit)
+        hdr.addWidget(b_exit)
+        L.addWidget(hdr_w)
+        self._hdr_widget = hdr_w
+
+        self.lbl_title = QLabel("")
+        self.lbl_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.lbl_title.setStyleSheet(
+            f"color:{C_ACCENT};background:{C_BG};"
+            f"padding:4px 16px;border-bottom:1px solid {C_BORDER};")
+        self.lbl_title.setFixedHeight(30)
+        L.addWidget(self.lbl_title)
+
+        self._canvas_scroll = _ZoomableScrollArea()
+        self._canvas_scroll.setWidgetResizable(True)
+        self._canvas_scroll.setStyleSheet(
+            f"QScrollArea{{border:none;background:{C_BG};}}"
+            f"QScrollBar:vertical{{background:{C_SURFACE};width:8px;border-radius:4px;}}"
+            f"QScrollBar::handle:vertical{{background:{C_BORDER};border-radius:4px;}}"
+            f"QScrollBar:horizontal{{background:{C_SURFACE};height:8px;border-radius:4px;}}"
+            f"QScrollBar::handle:horizontal{{background:{C_BORDER};border-radius:4px;}}")
+        self.canvas = OcclusionCanvas()
+        self.canvas.set_mode("review")
+        self._canvas_scroll.setWidget(self.canvas)
+        self._canvas_scroll._canvas = self.canvas
+        L.addWidget(self._canvas_scroll, stretch=1)
+
+        bottom_w = QWidget()
+        bottom_w.setStyleSheet(f"background:{C_SURFACE};")
+        bl = QVBoxLayout(bottom_w)
+        bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
+
+        hint = QLabel(
+            "Space = reveal  •  After reveal: 1=Again  2=Hard  3=Good  4=Easy  •  "
+            "Ctrl+Scroll or Ctrl+/− to zoom  •  F11 fullscreen")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFixedHeight(22)
+        hint.setStyleSheet(
+            f"color:{C_SUBTEXT};font-size:11px;"
+            f"border-top:1px solid {C_BORDER};padding:2px;")
+        bl.addWidget(hint)
+        self._hint_label = hint
+
+        self._reveal_bar = QFrame()
+        self._reveal_bar.setStyleSheet(f"QFrame{{background:{C_BG};}}")
+        rb_l = QHBoxLayout(self._reveal_bar)
+        rb_l.setContentsMargins(0, 10, 0, 10)
+        b_rev = QPushButton("👁  Show Answer  [Space]")
+        b_rev.setStyleSheet(
+            f"background:{C_SURFACE};color:{C_TEXT};"
+            f"border:1px solid {C_BORDER};border-radius:8px;"
+            f"padding:10px 60px;font-size:14px;font-weight:bold;")
+        b_rev.clicked.connect(self._reveal_current)
+        rb_l.addStretch(); rb_l.addWidget(b_rev); rb_l.addStretch()
+        bl.addWidget(self._reveal_bar)
+
+        self._rating_frame = QFrame()
+        self._rating_frame.setStyleSheet(
+            f"QFrame{{background:{C_BG};border-top:1px solid {C_BORDER};}}")
+        rfl = QVBoxLayout(self._rating_frame)
+        rfl.setContentsMargins(12, 8, 12, 12); rfl.setSpacing(4)
+
+        lq = QLabel("🧠 How well did you remember?")
+        lq.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lq.setAlignment(Qt.AlignCenter)
+        lq.setStyleSheet(f"color:{C_SUBTEXT};")
+        rfl.addWidget(lq)
+
+        br = QHBoxLayout(); br.setSpacing(8)
+        RATING_STYLES = {
+            "danger":  "background:#5C2A2A;color:#FFB3B3;border:1px solid #7A3535;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "hard":    "background:#5C3D1A;color:#FFCC88;border:1px solid #7A5225;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "success": "background:#1E4A2A;color:#88DDAA;border:1px solid #2A6B3C;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+            "warning": "background:#4A4A1A;color:#E8E888;border:1px solid #66661F;"
+                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
+        }
+        self._rating_btns = []
+        for lbl, obj, q in self.RATINGS:
+            btn = QPushButton(lbl)
+            btn.setStyleSheet(RATING_STYLES.get(obj, ""))
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumHeight(48)
+            btn.clicked.connect(lambda _, qq=q: self._rate(qq))
+            br.addWidget(btn)
+            self._rating_btns.append(btn)
+        rfl.addLayout(br)
+
+        prev_row = QHBoxLayout(); prev_row.setSpacing(6)
+        self._prev_lbls = []
+        for _, _, q in self.RATINGS:
+            pl = QLabel("→?")
+            pl.setAlignment(Qt.AlignCenter)
+            pl.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
+            prev_row.addWidget(pl)
+            self._prev_lbls.append((pl, q))
+        rfl.addLayout(prev_row)
+
+        self._rating_frame.hide()
+        bl.addWidget(self._rating_frame)
+
+        L.addWidget(bottom_w)
+
+        self._mid_row_widget = self._reveal_bar
+
+    def _toggle_review_mode(self):
+        if self._btn_mode.isChecked():
+            self._btn_mode.setText("👁 Hide One, Guess One")
+            self.canvas.set_review_style("hide_one")
+        else:
+            self._btn_mode.setText("🟧 Hide All, Guess One")
+            self.canvas.set_review_style("hide_all")
+
+    def _zoom_fit(self):
+        vp = self._canvas_scroll.viewport()
+        self.canvas.zoom_fit(vp.width(), vp.height())
+
+    def _center_on_target(self):
+        r = self.canvas.get_target_scaled_rect()
+        if r:
+            vbar = self._canvas_scroll.verticalScrollBar()
+            hbar = self._canvas_scroll.horizontalScrollBar()
+            hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2)))
+            vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
+
+    def _edit_current_card(self):
+        if not (0 <= self._idx < len(self._items)):
+            return
+        card, box_idx, sm2_obj = self._items[self._idx]
+        dlg = CardEditorDialog(None, card=dict(card), data=self._data)
+        result = dlg.exec_()
+        if result == QDialog.Accepted:
+            edited = dlg.get_card()
+            card.update(edited)
+            if self._data:
+                save_data(self._data)
+        self._reload_current_canvas()
+
+    def _reload_current_canvas(self):
+        if not (0 <= self._idx < len(self._items)):
+            return
+        card, box_idx, _ = self._items[self._idx]
+
+        px = None
+        if card.get("image_path") and os.path.exists(card["image_path"]):
+            px = QPixmap(card["image_path"])
+        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
+            path = card["pdf_path"]
+
+            # [LRU PAGE CACHE v18] — pdf_to_combined_pixmap use karo;
+            # individual pages PAGE_CACHE mein store hoti hain via PdfLoaderThread.
+            # ReviewScreen synchronous load karta hai (blocking acceptable here —
+            # small PDFs; large PDFs ke liye future improvement possible).
+            combined, _, _ = pdf_to_combined_pixmap(path)
+            if not combined.isNull():
+                px = combined
+
+        if px and not px.isNull():
+            self._current_pixmap = px
+            boxes = card.get("boxes", [])
+            self.canvas.load_pixmap(px)
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                display_boxes = [
+                    {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
+                     "rect": b["rect"], "label": b.get("label",""),
+                     "revealed": b.get("group_id","") != gid}
+                    for b in boxes
+                ]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(-1)
+                self.canvas.set_mode("review")
+                self.canvas.set_target_group(gid)
+            elif box_idx is None:
+                self.canvas.set_boxes(boxes)
+                self.canvas.set_target_box(-1)
+                self.canvas.set_mode("review")
+            else:
+                display_boxes = [
+                    {"rect": b["rect"], "label": b.get("label",""),
+                     "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
+                     "group_id": b.get("group_id",""), "revealed": (i != box_idx)}
+                    for i, b in enumerate(boxes)
+                ]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(box_idx)
+                self.canvas.set_mode("review")
+
+            def _apply_zoom(p=px):
+                vp = self._canvas_scroll.viewport()
+                vw = max(vp.width(), 100)
+                new_scale = vw / max(p.width(), 1)
+                self.canvas._scale = max(0.15, min(new_scale, 3.0))
+                self.canvas._redraw()
+            QTimer.singleShot(30, _apply_zoom)
+
+            def _scroll_to_mask(bi=box_idx):
+                r = self.canvas.get_target_scaled_rect()
+                if r and bi is not None:
+                    vbar = self._canvas_scroll.verticalScrollBar()
+                    hbar = self._canvas_scroll.horizontalScrollBar()
+                    hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2)))
+                    vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
+            QTimer.singleShot(80, _scroll_to_mask)
+        else:
+            self.canvas.load_pixmap(QPixmap())
+
+        self._reveal_bar.show()
+        self._rating_frame.hide()
+        self.setFocus()
+
+    def _rate(self, quality):
+        card, box_idx, sm2_obj = self._items[self._idx]
+
+        sched_update(sm2_obj, quality)
+
+        if box_idx is None:
+            card["reviews"] = sm2_obj.get("reviews", 0)
+
+        if self._data:
+            save_data(self._data)
+
+        state = sm2_obj.get("sched_state", "review")
+
+        if state in ("learning", "relearn"):
+            item = self._items.pop(self._idx)
+            due_str = sm2_obj.get("sm2_due", "")
+            insert_at = len(self._items)
+            for j in range(self._idx, len(self._items)):
+                other_due = self._items[j][2].get("sm2_due", "")
+                if other_due >= due_str:
+                    insert_at = j
+                    break
+            self._items.insert(insert_at, item)
+            self._rebuild_queue()
+        else:
+            self._done += 1
+            self._idx  += 1
+
+        self._load_item()
+
+    def _rebuild_queue(self):
+        pass
+
+    def _finish(self):
+        self.prog.setValue(len(self._items))
+        still_learning = sum(
+            1 for _, _, sm2_obj in self._items
+            if sm2_obj.get("sched_state") in ("learning", "relearn")
+        )
+        QMessageBox.information(self, "Done! 🎉",
+            f"Reviewed: {self._done}\n"
+            f"Still in learning: {still_learning}\n\n"
+            f"Consistency beats cramming! 🔥")
+        self.finished.emit()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DECK TREE
 # ═══════════════════════════════════════════════════════════════════════════════
