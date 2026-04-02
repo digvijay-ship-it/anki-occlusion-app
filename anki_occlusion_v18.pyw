@@ -49,6 +49,8 @@ from pdf_engine import (
     PDF_SUPPORT, PAGE_CACHE, pdf_to_combined_pixmap, PdfLoaderThread
 )
 
+import fitz
+
 from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id,
     DATA_FILE
@@ -137,18 +139,6 @@ SS = _build_ss()
 # ═══════════════════════════════════════════════════════════════════════════════
 #  OCCLUSION CANVAS
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _rotated_corners(cx, cy, w, h, angle_deg):
-    rad = math.radians(angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    hw, hh = w / 2, h / 2
-    corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
-    result = []
-    for dx, dy in corners:
-        rx = cx + dx * cos_a - dy * sin_a
-        ry = cy + dx * sin_a + dy * cos_a
-        result.append(QPointF(rx, ry))
-    return result
 
 def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
     rad = math.radians(-angle_deg)
