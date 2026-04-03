@@ -1,23 +1,18 @@
-from sm2_engine import sm2_init
-from pdf_engine import PDF_SUPPORT, PdfLoaderThread, PAGE_CACHE, pdf_page_to_pixmap
-from data_manager import new_box_id  # CardEditorDialog._save के लिए
-
-import sys      
-from datetime import datetime  
+import sys
+from datetime import datetime
 import math
-import os      
-import fitz   
+import os
+import fitz
 import copy
 import uuid
 from PyQt5.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, 
+    QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
     QLineEdit, QListWidget, QFrame, QScrollArea, QMessageBox, QFileDialog,
-    QFormLayout, QTextEdit, QSizePolicy,QDialog
+    QFormLayout, QTextEdit, QSizePolicy, QDialog, QApplication
 )
-from PyQt5.QtCore import Qt, QPointF, QRectF, QTimer, pyqtSignal, QSize, QEvent,QFileSystemWatcher
+from PyQt5.QtCore import Qt, QPointF, QRectF, QTimer, pyqtSignal, QSize, QEvent, QFileSystemWatcher
 from PyQt5.QtGui import QPainter, QPen, QColor, QPixmap, QFont, QCursor, QBrush
 
-# दूसरे इंजन से ज़रूरी चीज़ें
 from sm2_engine import sm2_init
 from pdf_engine import PDF_SUPPORT, PdfLoaderThread, PAGE_CACHE, pdf_page_to_pixmap, pdf_to_combined_pixmap
 from data_manager import new_box_id
@@ -29,175 +24,6 @@ C_YELLOW  = "#F1FA8C"
 
 
 class OcclusionCanvas(QLabel):
-    boxes_changed = pyqtSignal(list)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self._px, self._boxes, self._scale = None, [], 1.0
-        self._mode, self._tool = "edit", "rect"
-        self._selected_idx, self._selected_indices = -1, set()
-        self._drawing, self._start, self._live_rect, self._drag_op = False, QPointF(), QRectF(), None
-        self._mask_cache_layer, self._mask_cache_dirty = None, True
-        self._fast_zoom = False
-        self._zoom_timer = QTimer(self)
-        self._zoom_timer.setSingleShot(True)
-        self._zoom_timer.timeout.connect(self._finalize_zoom)
-        self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.StrongFocus)
-
-    def load_pixmap(self, px: QPixmap):
-        self._px = px
-        self._invalidate_mask_cache()
-        self._redraw()
-
-    def _invalidate_mask_cache(self):
-        self._mask_cache_dirty = True
-
-    def _rebuild_mask_cache(self):
-        """
-    [HARDWARE MASK CACHE v18 + VISIBILITY CULLING v19]
-    Saare masks ko ek GPU-backed QPixmap offscreen layer mein render karo.
-    Sirf tab call hoti hai jab _mask_cache_dirty == True ho.
-
-    [v19 NEW] Off-screen masks ab draw hi nahi hote — pure skip.
-    500 masks + 450 off-screen = sirf 50 draw hote hain.
-    Dense PDFs par cache rebuild ~5-10x faster.
-    """
-        if not self._px or self._px.isNull():
-            self._mask_cache_layer = None
-            self._mask_cache_dirty = False
-            return
-
-        spx = self._spx()
-        if spx.isNull():
-            self._mask_cache_layer = None
-            self._mask_cache_dirty = False
-            return
-
-        # Scaled canvas ke same size ka transparent offscreen layer banao
-        self._mask_cache_layer = QPixmap(spx.width(), spx.height())
-        self._mask_cache_layer.fill(Qt.transparent)
-
-        p = QPainter(self._mask_cache_layer)
-        p.setRenderHint(QPainter.Antialiasing)
-
-        # ── [v19] VISIBILITY CULLING ─────────────────────────────────────────
-        # Parent QScrollArea dhundo — wahan se viewport aur scroll offset milega
-        clip_rect = None
-        parent_w = self.parent()
-        while parent_w is not None:
-            if isinstance(parent_w, QScrollArea):
-                vp = parent_w.viewport()
-                vp_rect = vp.rect()                        # screen pixels
-                h_off = parent_w.horizontalScrollBar().value()
-                v_off = parent_w.verticalScrollBar().value()
-                # Screen → canvas (unscaled) coordinates
-                # scroll offset already canvas-pixel mein hota hai (pre-scale)
-                clip_rect = QRectF(
-                    h_off / self._scale,
-                    v_off / self._scale,
-                    vp_rect.width()  / self._scale,
-                    vp_rect.height() / self._scale,
-                )
-                break
-            parent_w = parent_w.parent()
-        # ─────────────────────────────────────────────────────────────────────
-
-        for i, b in enumerate(self._boxes):
-            # Drag ho raha ho toh selected box skip karo —
-            # wo live paintEvent mein draw hoga (smooth drag ke liye)
-            if self._drag_op and i == self._selected_idx:
-                continue
-
-            # [v19] Off-screen mask? — bilkul skip, draw hi mat karo
-            # clip_rect None hone ka matlab: ScrollArea nahi mila → safe fallback,
-            # sab draw karo (pehle jaisa behavior)
-            if clip_rect is not None and not clip_rect.intersects(b["rect"]):
-                continue
-
-            self._draw_box(p, i, b)
-
-        p.end()
-        self._mask_cache_dirty = False
-    
-    def paintEvent(self, event):
-        if not self._px: return
-        p = QPainter(self)
-        is_active = self._drawing or self._drag_op or self._fast_zoom
-        p.setRenderHint(QPainter.SmoothPixmapTransform, not is_active)
-        p.save()
-        p.scale(self._scale, self._scale) # GPU Scaling
-        p.drawPixmap(0, 0, self._px)
-        if self._mask_cache_dirty: self._rebuild_mask_cache()
-        if self._mask_cache_layer: p.drawPixmap(0, 0, self._mask_cache_layer)
-        if self._drag_op and self._selected_idx >= 0:
-            self._draw_single_mask(p, self._selected_idx, self._boxes[self._selected_idx])
-        if self._drawing:
-            p.setBrush(QColor(124, 106, 247, 100)); p.setPen(QPen(QColor("#7C6AF7"), 2))
-            p.drawRect(self._live_rect)
-        p.restore()
-        p.end()
-
-    def _draw_single_mask(self, p, i, b):
-        r = b["rect"]
-        p.save()
-        p.translate(r.center()); p.rotate(b.get("angle", 0.0))
-        local = QRectF(-r.width()/2, -r.height()/2, r.width(), r.height())
-        sel = (i == self._selected_idx or i in self._selected_indices)
-        fill = QColor("#50FA7B" if sel else "#F7916A")
-        fill.setAlpha(155)
-        p.setBrush(fill); p.setPen(QPen(Qt.white, 1))
-        p.drawRect(local)
-        p.restore()
-
-    def _redraw(self):
-        if not self._px: return
-        self.resize(int(self._px.width() * self._scale), int(self._px.height() * self._scale))
-        self.update()
-
-    def _finalize_zoom(self):
-        self._fast_zoom = False
-        self.update()
-
-    def wheelEvent(self, e):
-        if e.modifiers() & Qt.ControlModifier:
-            self._fast_zoom = True
-            factor = 1.1 if e.angleDelta().y() > 0 else 0.9
-            self._scale = max(0.05, min(8.0, self._scale * factor))
-            self._redraw()
-            self._zoom_timer.start(150)
-            e.accept()
-        else: super().wheelEvent(e)
-
-    def event(self, e):
-        if e.type() == QEvent.NativeGesture and e.gestureType() == Qt.ZoomNativeGesture:
-            self._fast_zoom = True
-            self._scale = max(0.05, min(8.0, self._scale * (1.0 + e.value())))
-            self._redraw(); self._zoom_timer.start(150); return True
-        return super().event(e)
-
-    def _ip(self, p): return QPointF(p.x()/self._scale, p.y()/self._scale)
-    def mousePressEvent(self, e):
-        ip = self._ip(e.pos()); hit = -1
-        for i in range(len(self._boxes)-1, -1, -1):
-            if self._boxes[i]["rect"].contains(ip): hit = i; break
-        if hit >= 0:
-            self._selected_idx = hit
-            self._drag_op, self._drag_start_pos = "move", QPointF(e.pos())
-            self._drag_orig_box = copy.deepcopy(self._boxes[hit])
-        elif self._tool != "select": self._drawing, self._start = True, ip
-    def mouseMoveEvent(self, e):
-        if self._drawing: self._live_rect = QRectF(self._start, self._ip(e.pos())).normalized(); self.update()
-        elif self._drag_op == "move":
-            delta = (QPointF(e.pos()) - self._drag_start_pos) / self._scale
-            self._boxes[self._selected_idx]["rect"].moveTopLeft(self._drag_orig_box["rect"].topLeft() + delta)
-            self.update()
-    def mouseReleaseEvent(self, e):
-        if self._drawing and self._live_rect.width() > 5:
-            self._boxes.append({"rect": self._live_rect, "box_id": str(uuid.uuid4())})
-        self._drawing, self._drag_op = False, None
-        self._invalidate_mask_cache(); self.update()
     boxes_changed = pyqtSignal(list)
 
     TOOLS = ("select", "rect", "ellipse", "text")
@@ -244,6 +70,18 @@ class OcclusionCanvas(QLabel):
         self._zoom_timer.setSingleShot(True)
         self._zoom_timer.timeout.connect(self._finalize_zoom)
 
+        # ── INK LAYER (review-mode freehand drawing) ─────────────────────────
+        # Strokes stored in image-space (unscaled) so they survive zoom changes.
+        # Each stroke = list of QPointF in image coords.
+        self._ink_active   = False          # True = pen mode on
+        self._ink_strokes  : list = []      # committed strokes [[QPointF, ...], ...]
+        self._ink_current  : list = []      # stroke being drawn right now
+        self._ink_color_idx = 0
+        self._ink_colors   = ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF"]
+        self._ink_width    = 1.2            # pen width in image-space pixels
+        # Ctrl+Ctrl detection
+        self._ink_ctrl_last_time = 0.0
+
     def set_tool(self, tool: str):
         self._tool = tool
         cursors = {
@@ -279,6 +117,9 @@ class OcclusionCanvas(QLabel):
     def set_boxes_with_state(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=b.get("revealed", False))
                        for b in boxes]
+        # Clear ink when a new card loads
+        self._ink_strokes.clear()
+        self._ink_current.clear()
         self._invalidate_mask_cache()
         self.update()
 
@@ -783,6 +624,9 @@ class OcclusionCanvas(QLabel):
         if self._drawing and not self._live_rect.isEmpty():
             self._draw_live(p)
 
+        # Step 5: Ink layer — freehand strokes on top of everything
+        self._draw_ink_layer(p)
+
         p.end()
 
     def _draw_box(self, p: QPainter, i: int, b: dict):
@@ -886,6 +730,93 @@ class OcclusionCanvas(QLabel):
         p.setPen(QPen(QColor("#FFF"), 1))
         p.drawText(QRectF(rpt.x() - 6, rpt.y() - 6, 12, 12), Qt.AlignCenter, "↻")
 
+    # ── INK LAYER METHODS ────────────────────────────────────────────────────────
+
+    def ink_toggle(self):
+        """Toggle ink/pen mode on or off."""
+        self._ink_active = not self._ink_active
+        if self._ink_active:
+            self.setCursor(QCursor(Qt.CrossCursor))
+        else:
+            # Restore review cursor
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+
+    def ink_cycle_color(self):
+        """Cycle to the next ink color."""
+        self._ink_color_idx = (self._ink_color_idx + 1) % len(self._ink_colors)
+        self._show_toast(f"✏ Ink: {self._ink_colors[self._ink_color_idx]}")
+
+    def ink_clear(self):
+        """Clear all ink strokes on the current card."""
+        self._ink_strokes.clear()
+        self._ink_current.clear()
+        self.update()
+        self._show_toast("🧹 Ink cleared")
+
+    def ink_undo_stroke(self):
+        """Remove the last committed ink stroke."""
+        if self._ink_strokes:
+            self._ink_strokes.pop()
+            self.update()
+
+    @property
+    def _ink_pen_color(self):
+        return QColor(self._ink_colors[self._ink_color_idx])
+
+    def _draw_ink_layer(self, p: QPainter):
+        """Draw all committed strokes + the current in-progress stroke."""
+        if not self._ink_strokes and not self._ink_current:
+            return
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        # Scale pen width with canvas zoom
+        pen_w = max(1.0, self._ink_width * self._scale)
+        all_strokes = list(self._ink_strokes)
+        if self._ink_current:
+            all_strokes.append(self._ink_current)
+        for stroke_data in all_strokes:
+            if len(stroke_data) < 2:
+                # Single dot
+                if stroke_data:
+                    color, pts = stroke_data[0], stroke_data[1:]
+                    if not pts:
+                        continue
+                else:
+                    continue
+            # Each stroke is stored as [QColor, QPointF, QPointF, ...]
+            color = stroke_data[0]
+            pts   = stroke_data[1:]
+            if not pts:
+                continue
+            pen = QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            p.setPen(pen)
+            if len(pts) == 1:
+                sp = QPointF(pts[0].x() * self._scale, pts[0].y() * self._scale)
+                p.drawPoint(sp)
+            else:
+                for i in range(len(pts) - 1):
+                    p1 = QPointF(pts[i].x()   * self._scale, pts[i].y()   * self._scale)
+                    p2 = QPointF(pts[i+1].x() * self._scale, pts[i+1].y() * self._scale)
+                    p.drawLine(p1, p2)
+        p.restore()
+
+    def _ink_press(self, ip: QPointF):
+        """Start a new ink stroke at image-space point ip."""
+        self._ink_current = [self._ink_pen_color, ip]
+
+    def _ink_move(self, ip: QPointF):
+        """Extend the current ink stroke."""
+        if self._ink_current:
+            self._ink_current.append(ip)
+            self.update()
+
+    def _ink_release(self):
+        """Commit the current stroke."""
+        if len(self._ink_current) >= 2:
+            self._ink_strokes.append(list(self._ink_current))
+        self._ink_current = []
+        self.update()
+
     def _draw_live(self, p: QPainter):
         sr = self._sr(self._live_rect)
         c  = QColor(C_ACCENT)
@@ -900,18 +831,36 @@ class OcclusionCanvas(QLabel):
     def mousePressEvent(self, e):
         if not self._px:
             return
+
+        # Pan mode check — Space held or H locked or middle button
+        # Pass event to parent ScrollArea so it can pan
+        scroll = self.parent()
+        while scroll is not None and not hasattr(scroll, "pan_mode"):
+            scroll = scroll.parent()
+        if scroll is not None and (scroll.pan_mode or e.button() == Qt.MiddleButton):
+            e.ignore()
+            return
+
         self.setFocus()
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
         mods = e.modifiers()
 
-        # Review Mode Logic (No Change)
+        # Review Mode Logic
         if self._mode == "review" and e.button() == Qt.LeftButton:
+            # Ink mode intercepts ALL left-clicks when active
+            if self._ink_active:
+                self._ink_press(ip)
+                e.accept()
+                return
             hit = self._hit_box(ip)
             if hit >= 0:
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
                 self._invalidate_mask_cache()
                 self.update()
+                return
+            # Empty area in review → pass to scroll area for pan
+            e.ignore()
             return
 
         if self._mode != "edit" or e.button() != Qt.LeftButton:
@@ -956,6 +905,19 @@ class OcclusionCanvas(QLabel):
             self.update()
 
     def mouseMoveEvent(self, e):
+        # Ink mode: draw stroke
+        if self._mode == "review" and self._ink_active and self._ink_current:
+            self._ink_move(self._ip(e.pos()))
+            e.accept()
+            return
+        # If scroll area is panning, ignore canvas move events entirely
+        scroll = self.parent()
+        while scroll is not None and not hasattr(scroll, "_pan_active"):
+            scroll = scroll.parent()
+        if scroll is not None and scroll._pan_active:
+            e.ignore()
+            return
+
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
 
@@ -1000,6 +962,11 @@ class OcclusionCanvas(QLabel):
             self.setCursor(QCursor(Qt.ArrowCursor))
 
     def mouseReleaseEvent(self, e):
+        # Ink stroke commit
+        if self._mode == "review" and self._ink_active and e.button() == Qt.LeftButton:
+            self._ink_release()
+            e.accept()
+            return
         if self._drawing and e.button() == Qt.LeftButton:
             self._drawing = False
             r = self._live_rect
@@ -1090,6 +1057,18 @@ class OcclusionCanvas(QLabel):
                 self.group_selected()
         else:
             super().keyPressEvent(e)
+
+    def leaveEvent(self, e):
+        """XP Pen / tablet: pen lift fires leaveEvent — restore cursor via scroll area."""
+        scroll = self.parent()
+        while scroll is not None and not hasattr(scroll, "_pan_active"):
+            scroll = scroll.parent()
+        if scroll is not None and scroll._pan_active:
+            scroll._pan_active = False
+            scroll._pan_start_pos = None
+            scroll._is_actually_panning = False
+            scroll._clear_pan_cursor()
+        super().leaveEvent(e)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1419,7 +1398,7 @@ class CardEditorDialog(QDialog):
         self.canvas = OcclusionCanvas()
         self.canvas.setStyleSheet("background:transparent;")
         sc.setWidget(self.canvas)
-        sc._canvas = self.canvas
+        sc.set_canvas(self.canvas)
         self.toolbar.tool_changed.connect(self.canvas.set_tool)
         main_row.addWidget(sc, stretch=1)
 
@@ -1493,8 +1472,9 @@ class CardEditorDialog(QDialog):
         hl.addWidget(QLabel(
             "V=Select  R=Rect  E=Ellipse  T=Label  |  "
             "Hold Alt=temp select  Alt+Click=multi-select  |  "
-            "G=group selected  Shift+G=ungroup  |  "
-            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo"))
+            "G=group  Shift+G=ungroup  |  "
+            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo  |  "
+            "Middle-click drag or H = Pan  (tablet/stylus)"))
         hl.addStretch()
         L.addWidget(hint_bar)
 
@@ -1518,12 +1498,6 @@ class CardEditorDialog(QDialog):
         hbar = self._sc.horizontalScrollBar()
         hbar.setValue(int(max(0, r.center().x() - self._sc.viewport().width()  // 2)))
         vbar.setValue(int(max(0, r.center().y() - self._sc.viewport().height() // 2)))
-
-    def _toggle_group(self):
-        pass
-
-    def _update_group_btn(self):
-        pass
 
     def keyPressEvent(self, e):
         key  = e.key()
@@ -1654,15 +1628,6 @@ class CardEditorDialog(QDialog):
                 f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
         else:
             self.setWindowTitle("Occlusion Card Editor")
-
-    def _show_pdf_page(self):
-        pass
-
-    def _prev_page(self):
-        pass
-
-    def _next_page(self):
-        pass
 
     def _load_card(self, card):
         self.inp_title.setText(card.get("title", ""))
@@ -1808,9 +1773,90 @@ class CardEditorDialog(QDialog):
         return self.card
 
 class _ZoomableScrollArea(QScrollArea):
+    """ScrollArea with:
+       - Ctrl+Scroll       → zoom canvas
+       - Middle-click drag → pan
+       - Space hold + drag → pan  (Photoshop-style, works with XP Pen tablet)
+       - H key toggle      → pan mode lock (tablet workflow)
+    Pan mode is exposed via pan_mode property so OcclusionCanvas
+    can check it before consuming left-click events.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._canvas = None
+        self._canvas        = None
+        self._pan_active    = False
+        self._pan_start_pos = None
+        self._pan_hval      = 0
+        self._pan_vval      = 0
+        self._pan_mode      = False   # True = pan locked (H key toggle)
+        self._space_held    = False   # True = Space held down
+        # Must accept focus so keyPress/keyRelease events are received
+
+        # XP Pen / tablet threshold
+        self._drag_threshold = 10
+        self._is_actually_panning = False
+
+        self.setFocusPolicy(Qt.StrongFocus)
+        # Install event filter on viewport — tablet/pen events land here, not on self
+        self.viewport().installEventFilter(self)
+
+    @property
+    def pan_mode(self):
+        """Canvas checks this — if True, left-click should pan not draw."""
+        return self._pan_mode
+
+    def eventFilter(self, obj, e):
+        """Catch mouse/tablet release and leave on the viewport AND canvas —
+        XP Pen fires events on whichever surface the pen is over."""
+        if obj is self.viewport() or obj is self._canvas:
+            t = e.type()
+            if t == QEvent.MouseButtonRelease:
+                if self._pan_active:
+                    self._pan_active = False
+                    self._pan_start_pos = None
+                    self._is_actually_panning = False
+                    self._clear_pan_cursor()
+                    if self._pan_mode:
+                        self._enter_pan_cursor()
+                    return False   # let event propagate normally
+            elif t in (QEvent.Leave, QEvent.HoverLeave):
+                if self._pan_active:
+                    self._pan_active = False
+                    self._pan_start_pos = None
+                    self._is_actually_panning = False
+                    self._clear_pan_cursor()
+                return False
+        return super().eventFilter(obj, e)
+
+    def set_canvas(self, canvas):
+        """Call this instead of sc._canvas = canvas so we can install event filters."""
+        self._canvas = canvas
+        canvas.installEventFilter(self)
+
+    def _set_pan_cursor(self, shape):
+        """Set cursor on every relevant surface — viewport, scroll area, and canvas."""
+        c = QCursor(shape)
+        self.viewport().setCursor(c)
+        self.setCursor(c)
+        if self._canvas:
+            self._canvas.setCursor(c)
+
+    def _clear_pan_cursor(self):
+        """Restore cursors after pan ends."""
+        self.viewport().unsetCursor()
+        self.unsetCursor()
+        if self._canvas:
+            in_review = getattr(self._canvas, '_mode', '') == "review"
+            if in_review:
+                self._canvas.setCursor(QCursor(Qt.PointingHandCursor))
+            else:
+                self._canvas.set_tool(self._canvas._tool)
+
+    def _enter_pan_cursor(self):
+        self._set_pan_cursor(Qt.OpenHandCursor)
+
+    def _exit_pan_cursor(self):
+        self._clear_pan_cursor()
 
     def wheelEvent(self, e):
         if (e.modifiers() & Qt.ControlModifier) and self._canvas:
@@ -1818,7 +1864,96 @@ class _ZoomableScrollArea(QScrollArea):
         else:
             super().wheelEvent(e)
 
+    def keyPressEvent(self, e):
+        # Space is reserved for card reveal in review mode — never capture it here
+        if e.key() == Qt.Key_H and not e.isAutoRepeat():
+            # H = toggle pan mode lock (like Photoshop hand tool)
+            self._pan_mode = not self._pan_mode
+            if self._pan_mode:
+                self._enter_pan_cursor()
+            else:
+                self._exit_pan_cursor()
+            e.accept()
+            return
+        super().keyPressEvent(e)
 
+    def keyReleaseEvent(self, e):
+        # Space key is not used for pan — pass through always
+        super().keyReleaseEvent(e)
+
+    def _should_pan(self, e):
+        """Review mode में Touchpad पर Left Click को 'Pan' की परमिशन दो!"""
+        # 🚀 जादू यहाँ है: अगर कैनवास 'review' मोड में है, तो Left Click = Pan
+        if self._canvas and getattr(self._canvas, '_mode', '') == "review":
+            if e.button() == Qt.LeftButton:
+                return True
+
+        # अगर मिडिल बटन है (कभी माउस लगाओ तो), वो भी काम करेगा
+        if e.button() == Qt.MiddleButton:
+            return True
+        
+        # Edit mode में Space/H दबा होने पर ही Left Click पैन करेगा
+        if e.button() == Qt.LeftButton and self.pan_mode:
+            return True
+            
+        return False
+    
+    def mousePressEvent(self, e):
+        if self._should_pan(e):
+            self._pan_active = True
+            self._pan_start_pos = e.globalPos()
+            self._pan_hval = self.horizontalScrollBar().value()
+            self._pan_vval = self.verticalScrollBar().value()
+            self._is_actually_panning = False
+            self._set_pan_cursor(Qt.OpenHandCursor)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._pan_active and self._pan_start_pos is not None:
+            delta_vec = e.globalPos() - self._pan_start_pos
+            
+            # 🚀 [ENCOUNTER] चेक करो क्या पेन थ्रेशोल्ड से ज़्यादा चला है?
+            if not self._is_actually_panning:
+                if delta_vec.manhattanLength() > self._drag_threshold:
+                    self._is_actually_panning = True
+                    self._set_pan_cursor(Qt.ClosedHandCursor)
+                else:
+                    return # अभी पैन शुरू नहीं करना, सिर्फ टैप हो सकता है
+
+            # एक्चुअल पैनिंग
+            self.horizontalScrollBar().setValue(self._pan_hval - delta_vec.x())
+            self.verticalScrollBar().setValue(self._pan_vval - delta_vec.y())
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._pan_active:
+            self._pan_active = False
+            self._pan_start_pos = None
+            self._is_actually_panning = False
+
+            self._clear_pan_cursor()
+
+            # If H-lock pan mode is still on in edit mode, re-enter open hand
+            if self._pan_mode:
+                self._enter_pan_cursor()
+
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def leaveEvent(self, e):
+        """XP Pen / tablet: pen lifting off surface fires leaveEvent before or
+        instead of mouseRelease in some driver versions. Clean up any stuck pan."""
+        if self._pan_active:
+            self._pan_active = False
+            self._pan_start_pos = None
+            self._is_actually_panning = False
+            self._clear_pan_cursor()
+        super().leaveEvent(e)
 def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)

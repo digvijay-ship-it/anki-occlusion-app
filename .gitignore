@@ -1,46 +1,60 @@
-# Python bytecode and cache
-__pycache__/
-*.pyc
-
-# Virtual Environment folders
-/venv/
-/.venv/
-/env/
-/.env/
-
-# Test files and artifacts
-# This will ignore test_anki_occlusion_v14.py
-test_*.py
-.pytest_cache/
-.coverage
-
-# Application-generated files (user data, locks, temp files)
-anki_occlusion_data.json
-*.lock
-*.tmp
-
-# IDE configuration
-.vscode/
-.idea/
-# PyInstaller (जब आप .exe बनाते हैं)
-# ---------------------------------
-build/
-dist/
-localpycs/
-*.spec
-*.toc
-*.pkg
-
-# Binary artifacts (ये फाइल्स स्क्रीनशॉट में दिख रही हैं)
-# ----------------------------------------------------
-base_library.zip
-warn-AnkiOcclusion.txt
-xref-AnkiOcclusion.html
-PYZ-00.pyz
-PYZ-00.toc
-
-# Python cache (v13 cpython-312.pyc जैसी फाइल्स के लिए)
-# -----------------------------------------------------
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments (If you use virtualenv)
+.env
+.venv
+env/
+venv/
+ENV/
+
+# VS Code / IDE settings
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+test_anki_occlusion_v14.py
+*_old.py
+temp/

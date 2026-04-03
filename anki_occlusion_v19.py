@@ -55,7 +55,7 @@ import fitz
 
 from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id,
-    DATA_FILE
+    DATA_FILE, store
 )
 
 import sys, os, copy, uuid, math
@@ -147,9 +147,10 @@ QUEUE_ROLE = Qt.UserRole + 10
 
 class QueueDelegate(QStyledItemDelegate):
     COLORS = {
-        "current": {"bg": QColor(C_GREEN),   "fg": QColor("#1E1E2E")},
+        "current": {"bg": QColor(C_GREEN),    "fg": QColor("#1E1E2E")},
         "done":    {"bg": QColor("#2A3A2A"),  "fg": QColor("#6A8A6A")},
         "pending": {"bg": QColor(C_SURFACE),  "fg": QColor(C_TEXT)},
+        "relearn": {"bg": QColor("#3A2A1A"),  "fg": QColor("#E08030")},
     }
 
     def paint(self, painter, option, index):
@@ -251,6 +252,7 @@ class ReviewScreen(QWidget):
             return
 
         card, box_idx, sm2_obj = self._items[self._idx]
+        self._rebuild_queue()           # sync queue panel on every card load
 
         # UI updates...
         self.prog.setMaximum(len(self._items))
@@ -266,25 +268,6 @@ class ReviewScreen(QWidget):
             val = previews.get(q, "?")
             lbl.setText(f"→ {val}")
 
-        self._reload_current_canvas()
-        # 1. Check if all reviews are done
-        if self._idx >= len(self._items):
-            self._finish()
-            return
-
-        # 2. Get current item data
-        card, box_idx, sm2_obj = self._items[self._idx]
-
-        # 3. Update Progress Bar and Labels
-        self.prog.setMaximum(len(self._items))
-        self.prog.setValue(self._idx)
-        self.lbl_prog.setText(f"Card {self._idx + 1}/{len(self._items)}")
-        
-        # 4. Update SM-2 Stats and Title
-        self.lbl_sm2.setText(sm2_badge(sm2_obj))
-        self.lbl_title.setText(card.get("title", "Untitled"))
-
-        # 5. Render the image/PDF and masks on canvas
         self._reload_current_canvas()
 
     def keyPressEvent(self, e):
@@ -318,6 +301,27 @@ class ReviewScreen(QWidget):
             self._center_on_target()
         elif key == Qt.Key_E:
             self._edit_current_card()
+        # ── INK LAYER SHORTCUTS ──────────────────────────────────────────────
+        elif key == Qt.Key_Alt and not e.isAutoRepeat():
+            self.canvas.ink_toggle()
+            active = self.canvas._ink_active
+            color  = self.canvas._ink_colors[self.canvas._ink_color_idx]
+            self.canvas._show_toast(f"✏ Pen {'ON' if active else 'OFF'}  {color if active else ''}")
+            self._update_ink_hint()
+        elif key == Qt.Key_X and not e.isAutoRepeat():
+            if self.canvas._ink_active:
+                self.canvas.ink_cycle_color()
+        elif key == Qt.Key_Control and not e.isAutoRepeat():
+            # Ctrl+Ctrl = clear all ink (two Ctrl presses within 500ms)
+            import time
+            now = time.monotonic()
+            if now - self.canvas._ink_ctrl_last_time < 0.5:
+                self.canvas.ink_clear()
+                self.canvas._ink_ctrl_last_time = 0.0
+            else:
+                self.canvas._ink_ctrl_last_time = now
+            super().keyPressEvent(e)
+            return
         else:
             super().keyPressEvent(e)
 
@@ -444,8 +448,34 @@ class ReviewScreen(QWidget):
         self.canvas = OcclusionCanvas()
         self.canvas.set_mode("review")
         self._canvas_scroll.setWidget(self.canvas)
-        self._canvas_scroll._canvas = self.canvas
-        L.addWidget(self._canvas_scroll, stretch=1)
+        self._canvas_scroll.set_canvas(self.canvas)
+
+        # ── Queue panel (right sidebar) ──────────────────────────────────
+        queue_panel = QWidget()
+        queue_panel.setFixedWidth(200)
+        queue_panel.setStyleSheet(f"background:{C_SURFACE};")
+        qp_l = QVBoxLayout(queue_panel)
+        qp_l.setContentsMargins(6, 8, 6, 8)
+        qp_l.setSpacing(4)
+        qp_hdr = QLabel("📋  Queue")
+        qp_hdr.setStyleSheet(
+            f"color:{C_SUBTEXT};font-size:11px;font-weight:bold;"
+            f"padding-bottom:4px;border-bottom:1px solid {C_BORDER};")
+        qp_l.addWidget(qp_hdr)
+        self._queue_list = QListWidget()
+        self._queue_list.setItemDelegate(QueueDelegate(self._queue_list))
+        self._queue_list.setFocusPolicy(Qt.NoFocus)
+        self._queue_list.setStyleSheet(
+            f"QListWidget{{background:{C_SURFACE};border:none;padding:0;}}"
+            f"QListWidget::item{{padding:0;}}")
+        qp_l.addWidget(self._queue_list, stretch=1)
+
+        mid_split = QSplitter(Qt.Horizontal)
+        mid_split.addWidget(self._canvas_scroll)
+        mid_split.addWidget(queue_panel)
+        mid_split.setSizes([900, 200])
+        mid_split.setHandleWidth(1)
+        L.addWidget(mid_split, stretch=1)
 
         bottom_w = QWidget()
         bottom_w.setStyleSheet(f"background:{C_SURFACE};")
@@ -453,8 +483,7 @@ class ReviewScreen(QWidget):
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
 
         hint = QLabel(
-            "Space = reveal  •  After reveal: 1=Again  2=Hard  3=Good  4=Easy  •  "
-            "Ctrl+Scroll or Ctrl+/− to zoom  •  F11 fullscreen")
+            "Space = reveal  •  1/2/3/4 = rate  •  Ctrl+Scroll = zoom  •  H = pan  •  P = pen on/off  •  X = color  •  Ctrl+Ctrl = clear ink  •  F11")
         hint.setAlignment(Qt.AlignCenter)
         hint.setFixedHeight(22)
         hint.setStyleSheet(
@@ -523,9 +552,32 @@ class ReviewScreen(QWidget):
         self._rating_frame.hide()
         bl.addWidget(self._rating_frame)
 
+        # ── Waiting state bar (shown when learning cards are pending) ──
+        self._wait_bar = QFrame()
+        self._wait_bar.setStyleSheet(f"QFrame{{background:{C_BG};}}")
+        wb_l = QVBoxLayout(self._wait_bar)
+        wb_l.setContentsMargins(0, 16, 0, 16)
+        wb_l.setSpacing(6)
+        self._wait_lbl_count = QLabel("")
+        self._wait_lbl_count.setAlignment(Qt.AlignCenter)
+        self._wait_lbl_count.setStyleSheet(
+            f"color:{C_TEXT};font-size:14px;font-weight:bold;background:transparent;")
+        self._wait_lbl_countdown = QLabel("")
+        self._wait_lbl_countdown.setAlignment(Qt.AlignCenter)
+        self._wait_lbl_countdown.setStyleSheet(
+            f"color:{C_SUBTEXT};font-size:12px;background:transparent;")
+        wb_l.addWidget(self._wait_lbl_count)
+        wb_l.addWidget(self._wait_lbl_countdown)
+        self._wait_bar.hide()
+        bl.addWidget(self._wait_bar)
+
         L.addWidget(bottom_w)
 
         self._mid_row_widget = self._reveal_bar
+
+    def _update_ink_hint(self):
+        """Flash a small ink-status label near the hint bar."""
+        pass   # toast in canvas handles display; placeholder for future status bar
 
     def _toggle_review_mode(self):
         if self._btn_mode.isChecked():
@@ -557,7 +609,7 @@ class ReviewScreen(QWidget):
             edited = dlg.get_card()
             card.update(edited)
             if self._data:
-                save_data(self._data)
+                store.mark_dirty()  # 🔒 DirtyStore
         self._reload_current_canvas()
 
     def _reload_current_canvas(self):
@@ -570,45 +622,18 @@ class ReviewScreen(QWidget):
             px = QPixmap(card["image_path"])
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
             path = card["pdf_path"]
-
-            # [LRU PAGE CACHE v18] — pdf_to_combined_pixmap use karo;
-            # individual pages PAGE_CACHE mein store hoti hain via PdfLoaderThread.
-            # ReviewScreen synchronous load karta hai (blocking acceptable here —
-            # small PDFs; large PDFs ke liye future improvement possible).
+            # [PERF FIX] LRU cache check — agar pages already cached hain toh
+            # synchronous load karo (0 disk I/O). Miss hone par async thread.
             combined, _, _ = pdf_to_combined_pixmap(path)
             if not combined.isNull():
                 px = combined
+            else:
+                # Cache miss — async thread se load karo, UI block nahi hogi
+                self._start_review_pdf_thread(card, box_idx)
+                return
 
         if px and not px.isNull():
-            self._current_pixmap = px
-            boxes = card.get("boxes", [])
-            self.canvas.load_pixmap(px)
-            if isinstance(box_idx, tuple) and box_idx[0] == "group":
-                gid = box_idx[1]
-                display_boxes = [
-                    {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
-                     "rect": b["rect"], "label": b.get("label",""),
-                     "revealed": b.get("group_id","") != gid}
-                    for b in boxes
-                ]
-                self.canvas.set_boxes_with_state(display_boxes)
-                self.canvas.set_target_box(-1)
-                self.canvas.set_mode("review")
-                self.canvas.set_target_group(gid)
-            elif box_idx is None:
-                self.canvas.set_boxes(boxes)
-                self.canvas.set_target_box(-1)
-                self.canvas.set_mode("review")
-            else:
-                display_boxes = [
-                    {"rect": b["rect"], "label": b.get("label",""),
-                     "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
-                     "group_id": b.get("group_id",""), "revealed": (i != box_idx)}
-                    for i, b in enumerate(boxes)
-                ]
-                self.canvas.set_boxes_with_state(display_boxes)
-                self.canvas.set_target_box(box_idx)
-                self.canvas.set_mode("review")
+            self._apply_canvas(card, box_idx, px)
 
             def _apply_zoom(p=px):
                 vp = self._canvas_scroll.viewport()
@@ -633,6 +658,66 @@ class ReviewScreen(QWidget):
         self._rating_frame.hide()
         self.setFocus()
 
+    def _apply_canvas(self, card, box_idx, px):
+        """Pixmap + boxes canvas pe set karo — sync aur async dono paths use karte hain."""
+        self._current_pixmap = px
+        boxes = card.get("boxes", [])
+        self.canvas.load_pixmap(px)
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            display_boxes = [
+                {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
+                 "rect": b["rect"], "label": b.get("label",""),
+                 "revealed": b.get("group_id","") != gid}
+                for b in boxes
+            ]
+            self.canvas.set_boxes_with_state(display_boxes)
+            self.canvas.set_target_box(-1)
+            self.canvas.set_mode("review")
+            self.canvas.set_target_group(gid)
+        elif box_idx is None:
+            self.canvas.set_boxes(boxes)
+            self.canvas.set_target_box(-1)
+            self.canvas.set_mode("review")
+        else:
+            display_boxes = [
+                {"rect": b["rect"], "label": b.get("label",""),
+                 "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
+                 "group_id": b.get("group_id",""), "revealed": (i != box_idx)}
+                for i, b in enumerate(boxes)
+            ]
+            self.canvas.set_boxes_with_state(display_boxes)
+            self.canvas.set_target_box(box_idx)
+            self.canvas.set_mode("review")
+
+    def _start_review_pdf_thread(self, card, box_idx):
+        """[PERF FIX] Cache miss hone par async thread — UI freeze nahi hoti."""
+        path = card.get("pdf_path", "")
+        if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread \
+                and self._pdf_loader_thread.isRunning():
+            self._pdf_loader_thread.stop()
+            self._pdf_loader_thread.quit()
+            self._pdf_loader_thread.wait(300)
+        self._pdf_loader_thread = PdfLoaderThread(path, parent=self)
+        # Store context so done-signal knows which card/box to render
+        self._pending_review_card    = card
+        self._pending_review_box_idx = box_idx
+        self._pdf_loader_thread.done.connect(self._on_review_pdf_loaded)
+        self._pdf_loader_thread.start()
+
+    def _on_review_pdf_loaded(self, combined, err):
+        """Async PDF load complete — canvas update karo."""
+        if combined.isNull() or err:
+            return
+        card    = self._pending_review_card
+        box_idx = self._pending_review_box_idx
+        # Verify card is still the current one (user ne skip nahi kiya)
+        if not (0 <= self._idx < len(self._items)):
+            return
+        if self._items[self._idx][0] is not card:
+            return
+        self._apply_canvas(card, box_idx, combined)
+
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
 
@@ -642,7 +727,7 @@ class ReviewScreen(QWidget):
             card["reviews"] = sm2_obj.get("reviews", 0)
 
         if self._data:
-            save_data(self._data)
+            store.mark_dirty()  # 🔒 DirtyStore
 
         state = sm2_obj.get("sched_state", "review")
 
@@ -664,19 +749,186 @@ class ReviewScreen(QWidget):
         self._load_item()
 
     def _rebuild_queue(self):
-        pass
+        """Rebuild the right-side queue list — reflects current order + states."""
+        self._queue_list.clear()
+        for i, (card, box_idx, sm2_obj) in enumerate(self._items):
+            title = card.get("title", "Untitled")
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                label = f"{title}  [grp]"
+            elif box_idx is None:
+                label = title
+            else:
+                label = f"{title}  #{box_idx + 1}"
+            item = QListWidgetItem(label)
+            if i < self._idx:
+                state = "done"
+            elif i == self._idx:
+                state = "current"
+            else:
+                sched = sm2_obj.get("sched_state", "new")
+                state = "relearn" if sched in ("learning", "relearn") else "pending"
+            item.setData(QUEUE_ROLE, state)
+            self._queue_list.addItem(item)
+        # Scroll to current card
+        if 0 <= self._idx < self._queue_list.count():
+            self._queue_list.scrollToItem(
+                self._queue_list.item(self._idx),
+                QListWidget.PositionAtCenter
+            )
+
 
     def _finish(self):
-        self.prog.setValue(len(self._items))
-        still_learning = sum(
-            1 for _, _, sm2_obj in self._items
+        # [BUG 1 FIX] Check if any learning/relearn items are still pending
+        # (e.g. m1 got Again → due in 1min, but m2/m3 finished early)
+        # If yes, wait and re-check instead of ending the session.
+        pending_learning = [
+            (i, sm2_obj) for i, (_, _, sm2_obj) in enumerate(self._items)
             if sm2_obj.get("sched_state") in ("learning", "relearn")
-        )
-        QMessageBox.information(self, "Done! 🎉",
-            f"Reviewed: {self._done}\n"
-            f"Still in learning: {still_learning}\n\n"
-            f"Consistency beats cramming! 🔥")
+        ]
+        if pending_learning:
+            # Find the earliest due learning item
+            earliest_idx, earliest_obj = min(
+                pending_learning,
+                key=lambda x: x[1].get("sm2_due", "")
+            )
+            due_str = earliest_obj.get("sm2_due", "")
+            try:
+                from datetime import datetime as _dt
+                due_dt  = _dt.fromisoformat(due_str)
+                wait_ms = max(0, int((_dt.now() - due_dt).total_seconds() * -1000))
+            except Exception:
+                wait_ms = 0
+            if wait_ms > 0:
+                # Show waiting state — re-check when earliest card becomes due
+                self._show_waiting_state(wait_ms, len(pending_learning))
+                return
+            else:
+                # Due time already passed — jump to that item directly
+                self._idx = earliest_idx
+                self._load_item()
+                return
+
+        self.prog.setValue(len(self._items))
+        self._show_session_summary()
+
+    def _show_session_summary(self):
+        """Session khatam — stats dialog dikhao."""
+        again = hard = good = easy = 0
+        for _, _, sm2_obj in self._items:
+            q = sm2_obj.get("sm2_last_quality", -1)
+            if   q == 1: again += 1
+            elif q == 3: hard  += 1
+            elif q == 4: good  += 1
+            elif q == 5: easy  += 1
+
+        total = again + hard + good + easy
+        retention = round((good + easy) / total * 100) if total else 0
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Session Complete")
+        dlg.setFixedSize(340, 320)
+        dlg.setStyleSheet(f"QDialog{{background:{C_BG};}}")
+        L = QVBoxLayout(dlg)
+        L.setContentsMargins(24, 24, 24, 24)
+        L.setSpacing(12)
+
+        title = QLabel("🎉  Session Complete")
+        title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(f"color:{C_ACCENT};background:transparent;")
+        L.addWidget(title)
+
+        # Retention bar
+        bar_w = QWidget()
+        bar_l = QHBoxLayout(bar_w)
+        bar_l.setContentsMargins(0,0,0,0); bar_l.setSpacing(0)
+        colors = [(again, C_RED), (hard, "#E08030"), (good, C_GREEN), (easy, C_YELLOW)]
+        for count, color in colors:
+            if count and total:
+                seg = QFrame()
+                seg.setFixedHeight(10)
+                seg.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                seg.setStyleSheet(f"background:{color};border-radius:0px;")
+                bar_l.addWidget(seg, stretch=count)
+        L.addWidget(bar_w)
+
+        # Stats grid
+        def _stat_row(label, value, color):
+            row = QWidget()
+            row.setStyleSheet("background:transparent;")
+            rl  = QHBoxLayout(row)
+            rl.setContentsMargins(0,0,0,0)
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;background:transparent;")
+            val = QLabel(str(value))
+            val.setStyleSheet(f"color:{color};font-size:13px;font-weight:bold;background:transparent;")
+            val.setAlignment(Qt.AlignRight)
+            rl.addWidget(lbl); rl.addWidget(val)
+            return row
+
+        L.addWidget(_stat_row("🔁  Again",  again, C_RED))
+        L.addWidget(_stat_row("😓  Hard",   hard,  "#E08030"))
+        L.addWidget(_stat_row("✅  Good",   good,  C_GREEN))
+        L.addWidget(_stat_row("⚡  Easy",   easy,  C_YELLOW))
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"background:{C_BORDER};")
+        sep.setFixedHeight(1)
+        L.addWidget(sep)
+
+        L.addWidget(_stat_row("Retention", f"{retention}%",
+            C_GREEN if retention >= 80 else C_YELLOW if retention >= 60 else C_RED))
+        L.addWidget(_stat_row("Total reviewed", self._done, C_TEXT))
+
+        btn = QPushButton("Close  ✓")
+        btn.setStyleSheet(
+            f"background:{C_ACCENT};color:white;border:none;border-radius:8px;"
+            f"padding:8px 24px;font-size:13px;font-weight:bold;")
+        btn.clicked.connect(dlg.accept)
+        L.addWidget(btn, alignment=Qt.AlignCenter)
+
+        dlg.exec_()
         self.finished.emit()
+
+    def _show_waiting_state(self, wait_ms: int, pending_count: int):
+        """Learning cards pending hain — countdown show karo, session end mat karo."""
+        secs = max(1, wait_ms // 1000)
+        self._reveal_bar.hide()
+        self._rating_frame.hide()
+        # _wait_bar is a proper QFrame already in the layout (created in _setup_ui)
+        mins, s = divmod(secs, 60)
+        self._wait_lbl_countdown.setText(
+            f"next card in  {mins}m {s:02d}s")
+        self._wait_lbl_count.setText(
+            f"⏳  {pending_count} card(s) still in learning")
+        self._wait_bar.show()
+        QTimer.singleShot(1000, self._check_learning_due)
+
+    def _check_learning_due(self):
+        """Every 1s check karein kya koi learning card due ho gaya."""
+        self._wait_bar.hide()
+        pending = [
+            (i, sm2_obj) for i, (_, _, sm2_obj) in enumerate(self._items)
+            if sm2_obj.get("sched_state") in ("learning", "relearn")
+        ]
+        if not pending:
+            self.finished.emit()
+            return
+        from datetime import datetime as _dt
+        now_str = _dt.now().isoformat(timespec="seconds")
+        due_now = [
+            (i, obj) for i, obj in pending
+            if obj.get("sm2_due", "") <= now_str
+        ]
+        if due_now:
+            earliest_idx = min(due_now, key=lambda x: x[1].get("sm2_due", ""))[0]
+            self._idx = earliest_idx
+            self._wait_bar.hide()
+            self._reveal_bar.show()
+            self._load_item()
+        else:
+            self._finish()   # re-evaluate wait time
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -839,7 +1091,7 @@ class DeckTree(QWidget):
                 QMessageBox.warning(self, "Error", "Parent deck not found!")
                 return
             parent.setdefault("children", []).append(new_deck)
-        save_data(self._data)
+        store.mark_dirty()  # 🔒 DirtyStore
         self.refresh()
         self._select_by_id(new_deck["_id"])
 
@@ -858,7 +1110,7 @@ class DeckTree(QWidget):
         name, ok = QInputDialog.getText(self, "Rename Deck", "New name:", text=deck.get("name", ""))
         if ok and name.strip():
             deck["name"] = name.strip()
-            save_data(self._data)
+            store.mark_dirty()  # 🔒 DirtyStore
             self.refresh()
 
     def _delete_selected(self):
@@ -875,7 +1127,7 @@ class DeckTree(QWidget):
             QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
         self._remove_from_tree(deck_id, self._data.get("decks", []))
-        save_data(self._data)
+        store.mark_dirty()  # 🔒 DirtyStore
         self.refresh()
 
     def _remove_from_tree(self, deck_id, lst):
@@ -952,11 +1204,14 @@ class DeckView(QWidget):
         L.addLayout(bot)
 
     def load_deck(self, deck, data):
-        self._data    = data
-        self._deck_id = deck.get("_id")
+        self._data = data
+        new_id     = deck.get("_id")
+        # [PERF FIX] Thumb cache sirf tab clear karo jab deck badla ho
+        if new_id != self._deck_id:
+            self._thumb_cache.clear()
+        self._deck_id = new_id
         self.deck     = deck
         self.lbl_deck.setText(deck.get("name", "?"))
-        self._thumb_cache.clear()
         self._refresh()
 
     def _refresh(self):
@@ -971,8 +1226,11 @@ class DeckView(QWidget):
         due_c  = 0
 
         for c in cards:
-            sm2_init(c)
-            boxes   = c.get("boxes", [])
+            # [PERF FIX] sm2_init sirf tab call karo jab fields missing hon
+            # (setdefault calls skip karna = O(1) per card instead of O(fields))
+            if "sched_state" not in c:
+                sm2_init(c)
+            boxes = c.get("boxes", [])
             if not boxes:
                 card_due = is_due_today(c)
             else:
@@ -1044,7 +1302,7 @@ class DeckView(QWidget):
             home.refresh()
         else:
             self._refresh()
-        save_data(self._data)
+        store.mark_dirty()  # 🔒 DirtyStore
 
     def _find_home(self):
         w = self.parent()
@@ -1067,7 +1325,7 @@ class DeckView(QWidget):
             c.pop("_auto_subdeck", None)
             cards[idx] = c
             self._refresh()
-            save_data(self._data)
+            store.mark_dirty()  # 🔒 DirtyStore
 
     def _delete_card(self):
         if not self.deck:
@@ -1080,7 +1338,7 @@ class DeckView(QWidget):
             QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
             cards.pop(idx)
             self._refresh()
-            save_data(self._data)
+            store.mark_dirty()  # 🔒 DirtyStore
 
     def _review_due(self):
         if not self.deck:
@@ -1143,13 +1401,17 @@ class DeckView(QWidget):
         def _on_finished():
             if not _save_done[0]:
                 _save_done[0] = True
-                save_data(self._data)
+                store.mark_dirty()  # 🔒 DirtyStore
             self._refresh()
             win.close()
 
         original_close = win.closeEvent
         def _safe_close(e):
-            _save_done[0] = True
+            # [BUG 2 FIX] X button se close karne par bhi save karo
+            # Warna reviewed cards ki sm2_due changes lost ho jaati hain
+            if not _save_done[0]:
+                _save_done[0] = True
+                store.mark_dirty()  # 🔒 Force dirty — next autosave ya app-close pe save hoga
             original_close(e)
         win.closeEvent = _safe_close
 
@@ -1490,6 +1752,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._data = load_data()
+        store.start_autosave()          # 🔒 DirtyStore — auto-save every 60s if dirty
         self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
         self.setWindowIcon(make_app_icon())
@@ -1514,7 +1777,7 @@ class MainWindow(QMainWindow):
             self._font_size = max(8, min(20, self._font_size + direction))
         self._apply_font_size(self._font_size)
         self._data["_font_size"] = self._font_size
-        save_data(self._data)
+        store.mark_dirty()  # 🔒 DirtyStore
 
     def _apply_font_size(self, size: int):
         QApplication.instance().setStyleSheet(_build_ss(size))
@@ -1523,7 +1786,7 @@ class MainWindow(QMainWindow):
         dlg = OnboardingDialog(self)
         dlg.exec_()
         self._data["_onboarding_done"] = True
-        save_data(self._data)
+        store.mark_dirty()  # 🔒 DirtyStore
 
     def keyPressEvent(self, e):
         key  = e.key()
@@ -1543,7 +1806,7 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(e)
 
     def closeEvent(self, e):
-        save_data(self._data)
+        store.stop_autosave()           # 🔒 Final force-save + background thread stop
         super().closeEvent(e)
 
 

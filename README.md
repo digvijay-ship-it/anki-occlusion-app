@@ -10,32 +10,44 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 
 ### Core
 - **PDF & Image Occlusion** — Load any PDF or image, drag masks over what you want to hide, and each mask becomes its own flashcard question automatically.
-- **SM-2 Spaced Repetition** — Full Anki-style scheduler with intraday learning steps (1m → 6m → 10m → 15m) and graduated review intervals (days/weeks). Cards move through `new → learning → review → relearn` states exactly like real Anki.
+- **SM-2 Spaced Repetition** — Full Anki-style scheduler with intraday learning steps and graduated review intervals. Cards move through `new → learning → review → relearn` states exactly like real Anki.
 - **Anki-Style Review Flow** — Cards show with all masks hidden. Press `Space` to reveal, then rate yourself: **Again / Hard / Good / Easy**. Rating buttons only appear after you reveal — just like Anki.
-- **Hide One, Guess One** *(v14)* — Toggle between "Hide All, Guess One" (all masks hidden) and "Hide One, Guess One" (only target mask hidden) modes during your review sessions.
+- **Hide One, Guess One** — Toggle between "Hide All, Guess One" and "Hide One, Guess One" modes during review sessions.
 - **Nested Decks** — Create decks and sub-decks to organise your subjects (e.g. `Biology › Chapter 3 › Cell Division`). Right-click for deck options.
-- **Grouped Masks** — Link multiple masks together so they are reviewed as a single card (all masks hidden at once).
-- **Ultra Fast Cache** *(v17)* — PDFs are cached in RAM upon first load, resulting in instant (zero-delay) switching between Edit and Review modes.
+- **Grouped Masks** — Link multiple masks together so they are reviewed as a single card.
+- **Auto-Save** *(v19)* — DirtyStore background thread auto-saves every 60 seconds. Data is never lost even if the app crashes mid-session.
+
+### SM-2 Scheduler *(v19 fixes)*
+- **Hard button fixed** — Now correctly shows 5m (midpoint) instead of 1m in the learning phase.
+- **Discrete EF penalties** — Again −0.20, Hard −0.15, Good 0.00, Easy +0.15 (Anki-accurate).
+- **Interval fuzzing** — Small random offset added to review intervals to prevent card pile-ups.
+- **365-day cap** — Intervals never grow beyond one year.
 
 ### PDF Features
-- **Live PDF Sync** *(v13)* — When a PDF is loaded in the editor, the app watches the file for changes. Annotate your PDF in **any external app** (Foxit, Adobe Acrobat, Drawboard, Xodo, etc.), save it there, and the editor **auto-reloads within 800ms** — your masks stay in place.
-- **Open in PDF Reader** *(v13)* — One-click button opens the current PDF in your system default reader so you can annotate and switch back seamlessly.
-- **Progressive Background Loading** *(v16 & v17)* — Large PDFs load in a background thread in chunks of 10 pages. The UI never freezes ("Not Responding"), and you can start working on the first pages immediately while the rest load silently.
-- **Multi-page PDFs** — Navigate pages with Prev / Next buttons inside the editor.
+- **Live PDF Sync** *(v13)* — The editor watches the file for changes. Annotate in any external app (Foxit, Adobe, Drawboard, Xodo), save there, and the editor auto-reloads within 800ms — masks stay in place.
+- **Open in PDF Reader** *(v13)* — One-click button opens the current PDF in your system default reader.
+- **Progressive Background Loading** *(v16 & v17)* — Large PDFs load in a background thread in chunks. The UI never freezes, and you can start working immediately while the rest loads silently.
+- **LRU Page Cache** *(v18)* — Individual pages are cached (max 15 in RAM). Switching between Edit and Review mode is instant with zero disk I/O on cache hits.
 
 ### Editor
-- **New Toolbar** *(v14)* — Anki-style vertical toolbar to switch between Select (V), Rectangle (R), Ellipse (E), and Text (T) tools.
-- **Ellipse & Text Tools** *(v14)* — Draw oval/circular masks and quickly label them inline.
-- **Pinch-to-Zoom** — Ctrl+Scroll (or two-finger trackpad pinch) zooms the canvas. Works in both the editor and review mode.
-- **Undo / Redo** — Full undo stack in the editor (Ctrl+Z / Ctrl+Y).
-- **Select, Move, Resize & Rotate** *(v14)* — Click to select, drag to move, use 8 handles to resize, and drag the top circular handle to rotate shapes at any angle.
-- **Zero-Lag Drawing** *(v15)* — Native hardware painting applied to the canvas to completely eliminate mouse lag when drawing, moving, or resizing masks.
-- **Dynamic Font Size** — A− / A / A+ buttons in the top bar scale the entire app font. Preference is saved and restored on next launch.
+- **Toolbar** — Vertical toolbar to switch between Select (V), Rectangle (R), Ellipse (E), and Text (T) tools.
+- **Ellipse & Text Tools** — Draw oval/circular masks and label them inline.
+- **Pan Navigation** *(v19)* — Hold `Space` + drag to pan (Photoshop-style). Press `H` to lock/unlock pan mode. Works with mouse, trackpad, and **XP Pen / drawing tablet stylus**.
+- **Pinch-to-Zoom** — Ctrl+Scroll or trackpad pinch zooms the canvas in both editor and review.
+- **Undo / Redo** — Full undo stack (Ctrl+Z / Ctrl+Y).
+- **Select, Move, Resize & Rotate** — Click to select, drag to move, 8 handles to resize, top circular handle to rotate.
+- **Zero-Lag Drawing** — Native hardware painting eliminates mouse lag when drawing or moving masks.
+- **Dynamic Font Size** — A− / A / A+ buttons scale the entire app font. Saved and restored on next launch.
+
+### Review
+- **Review Queue Panel** *(v19)* — Right-side panel shows the full session queue with live status: current (green), done (dim), pending, and relearn (orange) states.
+- **Learning Card Countdown** *(v19)* — When all pending cards are done but learning cards still have time left, the session shows a live countdown ("⏳ 1 card in learning — next due in 0m 45s") instead of ending early. The card appears automatically when due.
+- **Session Summary** *(v19)* — After each session a stats dialog shows a colored retention bar (Again / Hard / Good / Easy segments), per-rating counts, retention %, and total reviewed.
 
 ### Other
-- **First-Launch Wizard** — A short onboarding tour on first use explains the workflow in 30 seconds.
-- **App Icon** — Programmatically generated icon; no external image file needed.
-- **Safe Storage** — Atomic file write (write to temp → rename) guarantees your data is never corrupted even on a crash mid-save.
+- **First-Launch Wizard** — A short onboarding tour on first use explains the workflow.
+- **App Icon** — Programmatically generated; no external image file needed.
+- **Crash-Safe Storage** — Atomic write (temp file + rename) guarantees data is never corrupted even on a crash mid-save.
 - **Single-Instance Lock** — Only one window can open at a time.
 
 ---
@@ -53,12 +65,12 @@ pip install PyQt5 pymupdf
 **Run:**
 
 ```bash
-python anki_occlusion_v17.py
+python anki_occlusion_v18.pyw
 ```
 
 On Windows PowerShell with spaces in the path:
 ```powershell
-python "C:\path with spaces\anki_occlusion_v13.py"
+python "C:\path with spaces\anki_occlusion_v18.pyw"
 ```
 
 ---
@@ -71,14 +83,14 @@ Click **＋ Deck** in the left sidebar. To nest it, select a parent deck first a
 ### 2 — Add a Card
 Select a deck → click **＋ Add Card** → load a PDF or image → drag rectangles over the content you want to hide → click **💾 Save Card**.
 
-**Tip for PDFs:** Click **📂 Open in PDF Reader** to annotate your PDF in Foxit / Adobe / Drawboard, save it there, and the editor will auto-reload showing your fresh annotations. Then draw your occlusion masks on top.
+**Tip for PDFs:** Click **📂 Open in PDF Reader** to annotate in Foxit / Adobe / Drawboard, save there, and the editor auto-reloads within a second. Then draw your masks on top.
 
 ### 3 — Review
 Click **🔴 Review Due** to study cards that are due today.
 - Press `Space` to reveal the answer
 - Press `1` Again · `2` Hard · `3` Good · `4` Easy to rate
 
-The scheduler decides when you'll see each card next — minutes for new cards, days or weeks for well-known ones.
+The queue panel on the right shows all cards in the session with live status. The scheduler decides when you'll see each card next — minutes for new cards, days or weeks for well-known ones.
 
 ---
 
@@ -94,21 +106,31 @@ The scheduler decides when you'll see each card next — minutes for new cards, 
 | `3` | Good |
 | `4` | Easy |
 | `C` | Center view on active mask |
+| `E` | Edit current card |
 | `Ctrl` + `Scroll` | Zoom in / out |
 | `Ctrl` + `+` / `-` / `0` | Zoom in / out / fit |
+| `Space` + drag | Pan canvas |
+| `H` | Toggle pan mode lock |
 | `F11` | Toggle fullscreen |
 
 ### Editor Mode
 
 | Shortcut | Action |
 |----------|--------|
+| `V` | Select tool |
+| `R` | Rectangle tool |
+| `E` | Ellipse tool |
+| `T` | Text / Label tool |
 | `Ctrl` + `Z` | Undo |
 | `Ctrl` + `Y` | Redo |
-| `Ctrl` + `A` | Select all masks |
-| `Ctrl` + `D` | Duplicate selected mask |
+| `Ctrl` + `A` | Select visible masks |
+| `Ctrl` + `Shift` + `A` | Select all masks |
+| `G` | Group selected masks |
+| `Shift` + `G` | Ungroup selected masks |
 | `Del` | Delete selected mask(s) |
-| `G` | Toggle group mode |
 | `Ctrl` + `Scroll` | Zoom canvas |
+| `Space` + drag | Pan canvas |
+| `H` | Toggle pan mode lock |
 
 ### Home Screen
 
@@ -127,17 +149,10 @@ The scheduler decides when you'll see each card next — minutes for new cards, 
 2. Click **📂 Open in PDF Reader** — your PDF opens in Foxit / Adobe / Drawboard / Xodo
 3. Draw highlights, underlines, circles, text — whatever you like
 4. **Save** in your PDF reader (`Ctrl+S`)
-5. The editor shows **🟡 change detected…** then **🟢 reloaded ✓** within a second
+5. The editor shows **🟡 change detected…** then reloads within a second
 6. Your annotated PDF is now displayed — draw occlusion masks on top
 
-Works with any app that saves to the same file path, including:
-- Foxit PDF Reader / Editor
-- Adobe Acrobat Reader / Pro
-- Drawboard PDF
-- Xodo
-- PDF-XChange Editor
-- Inkscape (export to same file)
-- Any app that does in-place saves
+Works with any app that saves to the same file path, including Foxit, Adobe Acrobat, Drawboard, Xodo, PDF-XChange Editor, and Inkscape.
 
 ---
 
@@ -151,7 +166,7 @@ All decks, cards, and scheduling data are stored in a single JSON file:
 | macOS | `~/anki_occlusion_data.json` |
 | Linux | `~/anki_occlusion_data.json` |
 
-Your font size preference is also saved here under the `_font_size` key.
+Auto-saves every 60 seconds when data has changed. A final save is always performed on app close.
 
 ---
 
@@ -159,12 +174,14 @@ Your font size preference is also saved here under the `_font_size` key.
 
 | Version | Highlights |
 |---------|-----------|
-| v17 | Progressive chunk loading (start working instantly), Ultra-fast RAM caching |
-| v16 | PDF background loading in QThread (fixes UI "Not Responding" freezes) |
-| v15 | Native hardware painting (Zero-lag drawing), SM-2 queue/duplicate bug fixes |
-| v14 | Hide One Guess One mode, Ellipse & Text tools, Object move/resize/rotate |
-| v13 | Live PDF Sync, Open in PDF Reader button, debounce reload, clean watcher teardown |
-| v12 | Anki-style reveal flow, pinch zoom, center-on-mask button, dynamic font size, onboarding wizard, app icon, About dialog |
+| v19 | SM-2 Hard/EF/fuzzing fixes; DirtyStore autosave; session bugs fixed (Again card, X-button save loss); queue panel; learning countdown; session summary; Space+drag & H pan (tablet/stylus support); async PDF in review; performance fixes |
+| v18 | Hardware mask cache (GPU-backed offscreen layer, ~3× FPS); LRU page cache (RAM from ~2GB → ~300MB for large PDFs) |
+| v17 | Progressive chunk loading (start working instantly), ultra-fast RAM caching |
+| v16 | PDF background loading in QThread (fixes "Not Responding" freezes) |
+| v15 | Native hardware painting (zero-lag drawing), SM-2 queue/duplicate bug fixes |
+| v14 | Hide One Guess One mode, Ellipse & Text tools, object move/resize/rotate |
+| v13 | Live PDF Sync, Open in PDF Reader, debounce reload, clean watcher teardown |
+| v12 | Anki-style reveal flow, pinch zoom, center-on-mask, dynamic font size, onboarding wizard, app icon, About dialog |
 | v11 | Anki-style SM-2 scheduler (learning steps, relearn), improved review UX |
 | v10 | Mask colors fixed, group/ungroup from deck view, shift+click multi-select |
 | v9  | Initial public release |
