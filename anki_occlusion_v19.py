@@ -727,11 +727,12 @@ class ReviewScreen(QWidget):
             card["reviews"] = sm2_obj.get("reviews", 0)
 
         if self._data:
-            store.mark_dirty()  # 🔒 DirtyStore
+            store.mark_dirty()
 
         state = sm2_obj.get("sched_state", "review")
 
         if state in ("learning", "relearn"):
+            # Pull item out and re-insert by due time
             item = self._items.pop(self._idx)
             due_str = sm2_obj.get("sm2_due", "")
             insert_at = len(self._items)
@@ -741,12 +742,29 @@ class ReviewScreen(QWidget):
                     insert_at = j
                     break
             self._items.insert(insert_at, item)
-            self._rebuild_queue()
         else:
             self._done += 1
             self._idx  += 1
 
+        # ── NEW: after every rating, bubble any expired learning cards to front ──
+        self._promote_expired_learning(self._idx)
+
         self._load_item()
+
+    def _promote_expired_learning(self, insert_pos):
+        from datetime import datetime as _dt
+        now_str = _dt.now().isoformat(timespec="seconds")
+
+        to_promote = [
+            j for j in range(insert_pos, len(self._items))
+            if self._items[j][2].get("sched_state") in ("learning", "relearn")
+            and self._items[j][2].get("sm2_due", "") <= now_str
+        ]
+
+        for offset, j in enumerate(to_promote):
+            real_j = j - offset
+            item = self._items.pop(real_j)
+            self._items.insert(insert_pos + offset, item)
 
     def _rebuild_queue(self):
         """Rebuild the right-side queue list — reflects current order + states."""

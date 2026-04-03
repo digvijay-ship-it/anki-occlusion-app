@@ -197,8 +197,31 @@ def is_due_now(c):
 def is_due_today(c):
     sched_init(c)
     state = c.get("sched_state", "new")
-    if state in ("new", "learning", "relearn"):
+
+    if state == "new":
         return is_due_now(c)
+
+    if state in ("learning", "relearn"):
+        # [BUG FIX] Learning/relearn cards that were already rated
+        # (sm2_last_quality != -1) must ALWAYS show on the same day,
+        # even if their intraday due time is still in the future.
+        # Scenario: user rates m2 Good (→ due in 1min), exits, reopens
+        # within that 1min window — m2 should still appear in the queue.
+        # Strict datetime check was hiding it until the exact minute passed.
+        if c.get("sm2_last_quality", -1) != -1:
+            # Already rated today — show it regardless of exact due time
+            # (as long as due date is today or earlier)
+            due_str = c.get("sm2_due", "")
+            if not due_str:
+                return True
+            try:
+                return datetime.fromisoformat(due_str).date() <= date.today()
+            except Exception:
+                return True
+        # Never rated — treat as new
+        return is_due_now(c)
+
+    # review state: compare by date only
     due_str = c.get("sm2_due", "")
     if not due_str:
         return True

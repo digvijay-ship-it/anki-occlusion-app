@@ -1302,12 +1302,14 @@ class CardEditorDialog(QDialog):
                 b.setFixedWidth(w)
             return b
 
-        btn_img = _tbtn("🖼 Image", "Load Image")
-        btn_pdf = _tbtn("📄 PDF",  "Load PDF")
+        btn_img   = _tbtn("🖼 Image",    "Load Image")
+        btn_paste = _tbtn("📋 Paste",    "Paste image from clipboard  Ctrl+V")
+        btn_pdf   = _tbtn("📄 PDF",      "Load PDF")
         btn_pdf.setEnabled(PDF_SUPPORT)
         if not PDF_SUPPORT:
             btn_pdf.setToolTip("pip install pymupdf")
         btn_img.clicked.connect(self._load_image)
+        btn_paste.clicked.connect(self._paste_image)
         btn_pdf.clicked.connect(self._load_pdf)
 
         def _sep():
@@ -1348,7 +1350,7 @@ class CardEditorDialog(QDialog):
         self.lbl_sync.setStyleSheet("background:transparent;font-size:11px;color:#666;")
         self.lbl_sync.setVisible(False)
 
-        for w in [btn_img, btn_pdf, _sep(),
+        for w in [btn_img, btn_paste, btn_pdf, _sep(),
                   btn_undo, btn_redo, _sep(),
                   btn_zi, btn_zo, btn_zf, _sep(),
                   btn_del, btn_clear, _sep(),
@@ -1508,6 +1510,8 @@ class CardEditorDialog(QDialog):
             self.canvas.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_S:
             self._save()
+        elif mods & Qt.ControlModifier and key == Qt.Key_V:
+            self._paste_image()
         elif key == Qt.Key_V:
             self.toolbar.select_tool("select")
         elif key == Qt.Key_R:
@@ -1538,6 +1542,45 @@ class CardEditorDialog(QDialog):
         self.canvas.load_pixmap(px)
         if not self.inp_title.text():
             self.inp_title.setText(os.path.splitext(os.path.basename(path))[0])
+
+    def _paste_image(self):
+        """Clipboard se image lo aur canvas pe load karo."""
+        clipboard = QApplication.clipboard()
+        px = clipboard.pixmap()
+
+        # QPixmap directly nahi mila — image try karo
+        if px.isNull():
+            img = clipboard.image()
+            if not img.isNull():
+                px = QPixmap.fromImage(img)
+
+        if px.isNull():
+            QMessageBox.information(
+                self, "Nothing to paste",
+                "Clipboard mein koi image nahi hai.\n"
+                "Pehle koi image copy karo (screenshot, browser image, etc.)")
+            return
+
+        # Temp file mein save karo taaki card.image_path valid rahe
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(suffix=".png",
+                                        prefix="anki_paste_",
+                                        dir=os.path.expanduser("~"))
+        os.close(fd)
+        if not px.save(tmp_path, "PNG"):
+            QMessageBox.warning(self, "Error", "Could not save pasted image.")
+            return
+
+        self.card["image_path"] = tmp_path
+        self.card.pop("pdf_path", None)
+        self._pdf_pages = []
+        self.pdf_bar.hide()
+        self.btn_open_ext.setVisible(False)
+        self.lbl_sync.setVisible(False)
+        self._stop_watch()
+        self.canvas.load_pixmap(px)
+        if not self.inp_title.text():
+            self.inp_title.setText("Pasted Image")
 
     def _load_pdf(self):
         if not PDF_SUPPORT:
