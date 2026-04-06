@@ -46,7 +46,7 @@ from sm2_engine import (
 )
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread
+    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, pdf_page_to_pixmap
 )
 
 from editor_ui import CardEditorDialog,OcclusionCanvas,_ZoomableScrollArea
@@ -599,17 +599,19 @@ class ReviewScreen(QWidget):
 
     def _zoom_fit(self):
         vp = self._canvas_scroll.viewport()
-        # PDF mode: single page height se fit karo, total stacked height se NAHI
         if self.canvas._pages:
+            # PDF: fit by width only — user scrolls vertically through pages
             w = self.canvas._total_w
-            h = max((p.height() for p in self.canvas._pages), default=0)
+            if w < 1:
+                return
+            self.canvas._scale = vp.width() / w
         else:
             w, h = self.canvas._canvas_wh()
-        if w < 1 or h < 1:
-            return
-        scale_w = vp.width()  / w
-        scale_h = vp.height() / h
-        self.canvas._scale = min(scale_w, scale_h)
+            if w < 1 or h < 1:
+                return
+            scale_w = vp.width()  / w
+            scale_h = vp.height() / h
+            self.canvas._scale = min(scale_w, scale_h)
         self.canvas._on_zoom()
         
     def _center_on_target(self):
@@ -745,26 +747,46 @@ class ReviewScreen(QWidget):
         if card.get("image_path") and os.path.exists(card["image_path"]):
             px = QPixmap(card["image_path"])
             
-        # 2. PDF Logic (⚡ V20 ENCOUNTER FIX: Unlimited page traversal)
+        # 2. PDF Logic — fitz se true page count lo, gaps fill karo
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
             path = card["pdf_path"]
-            clean_pages = []
-            page_idx = 0
-            
-            # Jab tak PAGE_CACHE mein pages milenge, ye loop chalega (126+ masks fix)
-            while True:
-                pg = PAGE_CACHE.get(path, page_idx)
-                if pg is None:
-                    break
-                clean_pages.append(pg)
-                page_idx += 1
-            
-            if clean_pages:
-                # Agar saare cached pages mil gaye, toh virtual pages load karo
-                self._apply_canvas_pages(card, box_idx, clean_pages)
-                return
+
+            # True page count — cache mein gaps honge to bhi sab pages milenge
+            try:
+                _doc = fitz.open(path)
+                total_pages = len(_doc)
+                _doc.close()
+            except Exception:
+                total_pages = 0
+
+            if total_pages > 0:
+                mat = fitz.Matrix(1.5, 1.5)
+                clean_pages = []
+                try:
+                    _doc2 = fitz.open(path)
+                    for i in range(total_pages):
+                        pg = PAGE_CACHE.get(path, i)
+                        if pg is None or pg.isNull():
+                            # Gap mein missing page — render karke cache karo
+                            try:
+                                pg = pdf_page_to_pixmap(_doc2.load_page(i), mat)
+                                if not pg.isNull():
+                                    PAGE_CACHE.put(path, i, pg)
+                            except Exception:
+                                continue
+                        if pg and not pg.isNull():
+                            clean_pages.append(pg)
+                    _doc2.close()
+                except Exception:
+                    clean_pages = []
+
+                if clean_pages:
+                    self._apply_canvas_pages(card, box_idx, clean_pages)
+                    return
+                else:
+                    self._start_review_pdf_thread(card, box_idx)
+                    return
             else:
-                # Cache miss hone par async thread se background mein load hone do
                 self._start_review_pdf_thread(card, box_idx)
                 return
 
@@ -795,7 +817,7 @@ class ReviewScreen(QWidget):
             display_boxes = [
                 {**{k: b[k] for k in ("rect","label","shape","angle","group_id","box_id") if k in b},
                  "rect": b["rect"], "label": b.get("label",""),
-                 "revealed": b.get("group_id","") != gid}
+                 "revealed": False}
                 for b in boxes
             ]
             self.canvas.set_boxes_with_state(display_boxes)
@@ -810,7 +832,7 @@ class ReviewScreen(QWidget):
             display_boxes = [
                 {"rect": b["rect"], "label": b.get("label",""),
                  "shape": b.get("shape","rect"), "angle": b.get("angle",0.0),
-                 "group_id": b.get("group_id",""), "revealed": (i != box_idx)}
+                 "group_id": b.get("group_id",""), "revealed": False}
                 for i, b in enumerate(boxes)
             ]
             self.canvas.set_boxes_with_state(display_boxes)
@@ -820,33 +842,38 @@ class ReviewScreen(QWidget):
     def _apply_canvas_pages(self, card, box_idx, pages):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
         path = card.get("pdf_path", "")
-        self.canvas._current_pdf_path = path 
-        
-        # 1. Load ALL pages (1 to 126 masks covered)
+        self.canvas._current_pdf_path = path
+
+        # 1. Load ALL pages
         self.canvas.load_pages(pages)
-        
+
         # 2. Re-register with Registry for deep cards
         from cache_manager import MASK_REGISTRY
         MASK_REGISTRY.register(path, self.canvas)
-        
-        # 3. Setup boxes state
+
+        # 3. set_mode FIRST so it doesn't wipe revealed state set below
+        self.canvas.set_mode("review")
+
+        # 4. Setup boxes state (must come AFTER set_mode)
         boxes = card.get("boxes", [])
         if isinstance(box_idx, tuple) and box_idx[0] == "group":
             gid = box_idx[1]
-            display_boxes = [{**b, "revealed": b.get("group_id","") != gid} for b in boxes]
+            display_boxes = [{**b, "revealed": False} for b in boxes]
             self.canvas.set_boxes_with_state(display_boxes)
             self.canvas.set_target_group(gid)
         else:
-            display_boxes = [{**b, "revealed": (i != box_idx)} for i, b in enumerate(boxes)]
+            display_boxes = [{**b, "revealed": False} for i, b in enumerate(boxes)]
             self.canvas.set_boxes_with_state(display_boxes)
             self.canvas.set_target_box(box_idx if box_idx is not None else -1)
-            
-        self.canvas.set_mode("review")
 
-        # 4. Zoom fit + center
-        self._zoom_fit()
-        self._center_on_target()
+        # 5. Always reset UI state — Show Answer bar visible, rating hidden
+        self._reveal_bar.show()
+        self._rating_frame.hide()
 
+        # 6. Zoom fit + center (deferred so viewport geometry is final)
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, lambda: (self._zoom_fit(), self._center_on_target()))
+        
     def _start_review_pdf_thread(self, card, box_idx):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen -> Function: _start_review_pdf_thread"""
         path = card.get("pdf_path", "")

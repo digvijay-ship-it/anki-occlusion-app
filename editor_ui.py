@@ -120,6 +120,11 @@ class OcclusionCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Tell Qt this widget paints every pixel itself — no background blend needed.
+        # This eliminates the implicit background fill pass Qt does before paintEvent,
+        # which is the main cause of scroll lag on large canvas widgets.
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
 
         # ── image sources ─────────────────────────────────────────────────────
         self._px        = None   # QPixmap | None  — single-image mode
@@ -169,6 +174,10 @@ class OcclusionCanvas(QWidget):
         self._zoom_timer = QTimer(self)
         self._zoom_timer.setSingleShot(True)
         self._zoom_timer.timeout.connect(self._finalize_zoom)
+
+        self._smooth_timer = QTimer(self)
+        self._smooth_timer.setSingleShot(True)
+        self._smooth_timer.timeout.connect(self._apply_smooth)
 
         # ── per-page scaled pixmap cache ──────────────────────────────────────
         # dict: page_idx → (scale_at_cache_time, QPixmap)
@@ -266,12 +275,9 @@ class OcclusionCanvas(QWidget):
     def _resize_canvas(self):
         """File: editor_ui.py -> Class: OcclusionCanvas -> Function: _resize_canvas"""
         w, h = self._canvas_wh()
-        # Zoom (scale) ke hisaab se width aur height multiply karo
         new_w = max(int(w * self._scale), 1)
         new_h = max(int(h * self._scale), 1)
-        
-        self.resize(new_w, new_h) # ⚡ Pure size ka widget banega
-        self.setMinimumSize(new_w, new_h) # ⚡ Scroll area ko force karega
+        self.resize(new_w, new_h)
         self.updateGeometry()
 
     def has_content(self):
@@ -297,10 +303,9 @@ class OcclusionCanvas(QWidget):
         if cached_scale == self._scale and cached_px is not None:
             return cached_px
         src  = self._pages[idx]
-        mode = Qt.FastTransformation if self._fast_zoom else Qt.SmoothTransformation
         spx  = src.scaled(int(src.width()  * self._scale),
                           int(src.height() * self._scale),
-                          Qt.KeepAspectRatio, mode)
+                          Qt.KeepAspectRatio, Qt.FastTransformation)
         self._spx_cache[idx] = (self._scale, spx)
         return spx
 
@@ -318,10 +323,9 @@ class OcclusionCanvas(QWidget):
 
         # 2. Draw PDF Pages (Background Layer)
         if self._px and not self._px.isNull():
-            mode = Qt.FastTransformation if self._fast_zoom else Qt.SmoothTransformation
             spx  = self._px.scaled(int(self._px.width()  * self._scale),
                                    int(self._px.height() * self._scale),
-                                   Qt.KeepAspectRatio, mode)
+                                   Qt.KeepAspectRatio, Qt.FastTransformation)
             p.drawPixmap(0, 0, spx)
 
         elif self._pages:
@@ -342,8 +346,7 @@ class OcclusionCanvas(QWidget):
                     p.drawLine(0, sep_y, self.width(), sep_y)
 
         # 3. ⚡ MASK LAYER (Must be drawn AFTER pages to be visible)
-        if self._mask_cache_dirty:
-            self._rebuild_mask_cache()
+        # Cache is rebuilt via QTimer in _invalidate_mask_cache, never during paint
 
         if self._mask_cache_layer and not self._mask_cache_layer.isNull():
             # Fast path: GPU-cached QPixmap (normal PDFs within Qt 32 767px limit)
@@ -376,6 +379,12 @@ class OcclusionCanvas(QWidget):
 
     def _invalidate_mask_cache(self):
         self._mask_cache_dirty = True
+        QTimer.singleShot(0, self._rebuild_mask_cache_if_dirty)
+
+    def _rebuild_mask_cache_if_dirty(self):
+        if self._mask_cache_dirty:
+            self._rebuild_mask_cache()
+            self.update()
 
     def _rebuild_mask_cache(self):
         if not self.has_content():
@@ -428,7 +437,7 @@ class OcclusionCanvas(QWidget):
         self._on_zoom()
 
     def _on_zoom(self):
-        self._spx_cache.clear()
+        # Don't clear _spx_cache here — _get_scaled_page checks scale per entry
         self._invalidate_mask_cache()
         self._resize_canvas()
         self.update()
@@ -456,12 +465,15 @@ class OcclusionCanvas(QWidget):
             e.accept()
         else:
             super().wheelEvent(e)
+            self._smooth_timer.start(300)   # smooth re-render 300ms after scroll stops
 
     def _finalize_zoom(self):
         self._fast_zoom = False
+        self._smooth_timer.start(300)   # switch to smooth quality after zoom settles
+
+    def _apply_smooth(self):
+        """Clear fast-scaled cache and repaint with SmoothTransformation."""
         self._spx_cache.clear()
-        self._invalidate_mask_cache()
-        self._resize_canvas()
         self.update()
 
     # =========================================================================
@@ -1340,7 +1352,8 @@ class CardEditorDialog(QDialog):
         main_row = QHBoxLayout(); main_row.setContentsMargins(0,0,0,0); main_row.setSpacing(0)
         self.toolbar = ToolBar(); main_row.addWidget(self.toolbar)
 
-        sc = _ZoomableScrollArea(); sc.setWidgetResizable(True)
+        sc = _ZoomableScrollArea(); sc.setWidgetResizable(False)
+        sc.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         sc.setStyleSheet("QScrollArea{background:#787878;border:none;}")
         self.canvas = OcclusionCanvas()
         self.canvas.setStyleSheet("background:transparent;")
