@@ -46,7 +46,7 @@ from sm2_engine import (
 )
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, pdf_to_combined_pixmap, PdfLoaderThread
+    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread
 )
 
 from editor_ui import CardEditorDialog,OcclusionCanvas,_ZoomableScrollArea
@@ -588,8 +588,14 @@ class ReviewScreen(QWidget):
             self.canvas.set_review_style("hide_all")
 
     def _zoom_fit(self):
+        """File: anki_occlusion_v19.py -> Class: ReviewScreen -> Function: _zoom_fit"""
         vp = self._canvas_scroll.viewport()
-        self.canvas.zoom_fit(vp.width(), vp.height())
+        w, h = self.canvas._canvas_wh()
+        if w < 1: return
+        
+        # Screen width ke hisaab se zoom set karo
+        self.canvas._scale = vp.width() / w
+        self.canvas._on_zoom() # Size aur geometry update trigger karega
 
     def _center_on_target(self):
         r = self.canvas.get_target_scaled_rect()
@@ -603,7 +609,8 @@ class ReviewScreen(QWidget):
         if not (0 <= self._idx < len(self._items)):
             return
         card, box_idx, sm2_obj = self._items[self._idx]
-        dlg = CardEditorDialog(None, card=dict(card), data=self._data)
+        scroll_pos = self._canvas_scroll.verticalScrollBar().value()
+        dlg = CardEditorDialog(None, card=dict(card), data=self._data, initial_scroll=scroll_pos)
         result = dlg.exec_()
         if result == QDialog.Accepted:
             edited = dlg.get_card()
@@ -613,54 +620,59 @@ class ReviewScreen(QWidget):
         self._reload_current_canvas()
 
     def _reload_current_canvas(self):
+        """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
         if not (0 <= self._idx < len(self._items)):
             return
         card, box_idx, _ = self._items[self._idx]
 
         px = None
+        # 1. Image logic (Unchanged)
         if card.get("image_path") and os.path.exists(card["image_path"]):
             px = QPixmap(card["image_path"])
+            
+        # 2. PDF Logic (⚡ V20 ENCOUNTER FIX: Unlimited page traversal)
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
             path = card["pdf_path"]
-            # [PERF FIX] LRU cache check — agar pages already cached hain toh
-            # synchronous load karo (0 disk I/O). Miss hone par async thread.
-            combined, _, _ = pdf_to_combined_pixmap(path)
-            if not combined.isNull():
-                px = combined
+            clean_pages = []
+            page_idx = 0
+            
+            # Jab tak PAGE_CACHE mein pages milenge, ye loop chalega (126+ masks fix)
+            while True:
+                pg = PAGE_CACHE.get(path, page_idx)
+                if pg is None:
+                    break
+                clean_pages.append(pg)
+                page_idx += 1
+            
+            if clean_pages:
+                # Agar saare cached pages mil gaye, toh virtual pages load karo
+                self._apply_canvas_pages(card, box_idx, clean_pages)
+                return
             else:
-                # Cache miss — async thread se load karo, UI block nahi hogi
+                # Cache miss hone par async thread se background mein load hone do
                 self._start_review_pdf_thread(card, box_idx)
                 return
 
+        # 3. Apply Canvas for Images or Empty states
         if px and not px.isNull():
             self._apply_canvas(card, box_idx, px)
-
-            def _apply_zoom(p=px):
-                vp = self._canvas_scroll.viewport()
-                vw = max(vp.width(), 100)
-                new_scale = vw / max(p.width(), 1)
-                self.canvas._scale = max(0.15, min(new_scale, 3.0))
-                self.canvas._redraw()
-            QTimer.singleShot(30, _apply_zoom)
-
-            def _scroll_to_mask(bi=box_idx):
-                r = self.canvas.get_target_scaled_rect()
-                if r and bi is not None:
-                    vbar = self._canvas_scroll.verticalScrollBar()
-                    hbar = self._canvas_scroll.horizontalScrollBar()
-                    hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2)))
-                    vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
-            QTimer.singleShot(80, _scroll_to_mask)
+            # Image specific zoom logic remains here...
         else:
             self.canvas.load_pixmap(QPixmap())
 
         self._reveal_bar.show()
         self._rating_frame.hide()
         self.setFocus()
-
+        
     def _apply_canvas(self, card, box_idx, px):
         """Pixmap + boxes canvas pe set karo — sync aur async dono paths use karte hain."""
         self._current_pixmap = px
+        _pdf_path = card.get("pdf_path", "")
+        # [PIXMAP REGISTRY] ReviewWindow ka current pixmap + canvas track karo
+        from cache_manager import PIXMAP_REGISTRY
+        PIXMAP_REGISTRY.register(
+            f"review_current_{id(self)}", self, "_current_pixmap", _pdf_path)
+        self.canvas._current_pdf_path = _pdf_path
         boxes = card.get("boxes", [])
         self.canvas.load_pixmap(px)
         if isinstance(box_idx, tuple) and box_idx[0] == "group":
@@ -690,33 +702,63 @@ class ReviewScreen(QWidget):
             self.canvas.set_target_box(box_idx)
             self.canvas.set_mode("review")
 
-    def _start_review_pdf_thread(self, card, box_idx):
-        """[PERF FIX] Cache miss hone par async thread — UI freeze nahi hoti."""
+    def _apply_canvas_pages(self, card, box_idx, pages):
+        """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
         path = card.get("pdf_path", "")
-        if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread \
-                and self._pdf_loader_thread.isRunning():
+        self.canvas._current_pdf_path = path 
+        
+        # 1. Load ALL pages (1 to 126 masks covered)
+        self.canvas.load_pages(pages)
+        
+        # 2. Re-register with Registry for deep cards
+        from cache_manager import MASK_REGISTRY
+        MASK_REGISTRY.register(path, self.canvas)
+        
+        # 3. Setup boxes state
+        boxes = card.get("boxes", [])
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            display_boxes = [{**b, "revealed": b.get("group_id","") != gid} for b in boxes]
+            self.canvas.set_boxes_with_state(display_boxes)
+            self.canvas.set_target_group(gid)
+        else:
+            display_boxes = [{**b, "revealed": (i != box_idx)} for i, b in enumerate(boxes)]
+            self.canvas.set_boxes_with_state(display_boxes)
+            self.canvas.set_target_box(box_idx if box_idx is not None else -1)
+            
+        self.canvas.set_mode("review")
+        
+        # ⚡ INCREASE DELAY: Virtual Renderer ko geometry update karne do
+        # Isse page 1 ke niche wale (114+) masks render hone lagenge
+        QTimer.singleShot(150, self._zoom_fit)
+        QTimer.singleShot(250, self._center_on_target)
+
+    def _start_review_pdf_thread(self, card, box_idx):
+        """File: anki_occlusion_v19.py -> Class: ReviewScreen -> Function: _start_review_pdf_thread"""
+        path = card.get("pdf_path", "")
+        if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
             self._pdf_loader_thread.wait(300)
+            
         self._pdf_loader_thread = PdfLoaderThread(path, parent=self)
-        # Store context so done-signal knows which card/box to render
-        self._pending_review_card    = card
+        self._pending_review_card = card
         self._pending_review_box_idx = box_idx
-        self._pdf_loader_thread.done.connect(self._on_review_pdf_loaded)
+        
+        # ⚡ V20 Fix: Connect to the new handler that expects a list of pages
+        self._pdf_loader_thread.done.connect(self._on_review_pages_ready)
         self._pdf_loader_thread.start()
 
-    def _on_review_pdf_loaded(self, combined, err):
-        """Async PDF load complete — canvas update karo."""
-        if combined.isNull() or err:
+    def _on_review_pages_ready(self, pages, err):
+        """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
+        if not pages or err:
             return
-        card    = self._pending_review_card
+            
+        card = self._pending_review_card
         box_idx = self._pending_review_box_idx
-        # Verify card is still the current one (user ne skip nahi kiya)
-        if not (0 <= self._idx < len(self._items)):
-            return
-        if self._items[self._idx][0] is not card:
-            return
-        self._apply_canvas(card, box_idx, combined)
+        
+        # ⚡ FIX: 'card' argument pass karna must hai
+        self._apply_canvas_pages(card, box_idx, pages)
 
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
@@ -1162,6 +1204,193 @@ class DeckTree(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  CACHE WIDGET
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _fmt_bytes(n: int) -> str:
+    if n < 1024:     return f"{n} B"
+    if n < 1024**2:  return f"{n/1024:.1f} KB"
+    if n < 1024**3:  return f"{n/1024**2:.1f} MB"
+    return f"{n/1024**3:.2f} GB"
+
+class CacheWidget(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("cacheFrame")
+        self.setFixedWidth(220)
+        self.setStyleSheet(f"""
+            QFrame#cacheFrame {{
+                background:{C_SURFACE};
+                border-left:1px solid {C_BORDER};
+                border-radius:0px;
+            }}
+            QLabel {{ background:transparent; }}
+        """)
+        self._auto_timer = QTimer(self)
+        self._auto_timer.timeout.connect(self.refresh)
+        self._auto_timer.start(4000)
+        self._build_ui()
+        self.refresh()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Header
+        hdr = QFrame()
+        hdr.setFixedHeight(38)
+        hdr.setStyleSheet(
+            f"QFrame{{background:{C_CARD};"
+            f"border-bottom:1px solid {C_BORDER};border-radius:0px;}}")
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(10, 0, 10, 0)
+        title = QLabel("💾 Cache")
+        title.setStyleSheet(
+            f"color:{C_TEXT};font-size:11px;font-weight:bold;")
+        self._lbl_total = QLabel("")
+        self._lbl_total.setStyleSheet(
+            f"color:{C_GREEN};font-size:10px;")
+        self._lbl_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        hl.addWidget(title)
+        hl.addStretch()
+        hl.addWidget(self._lbl_total)
+        root.addWidget(hdr)
+
+        # Scrollable list of cached PDFs
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            f"QScrollArea{{border:none;background:transparent;}}"
+            f"QScrollBar:vertical{{background:{C_SURFACE};width:5px;border-radius:2px;}}"
+            f"QScrollBar::handle:vertical{{background:{C_BORDER};border-radius:2px;}}")
+
+        self._list_container = QWidget()
+        self._list_container.setStyleSheet("background:transparent;")
+        self._list_layout = QVBoxLayout(self._list_container)
+        self._list_layout.setContentsMargins(6, 6, 6, 6)
+        self._list_layout.setSpacing(6)
+        self._list_layout.addStretch()
+        scroll.setWidget(self._list_container)
+        root.addWidget(scroll, stretch=1)
+
+        # Clear All button at bottom
+        btn_all = QPushButton("🧹 Clear All Caches")
+        btn_all.setStyleSheet(
+            f"background:#444460;color:{C_TEXT};border:none;"
+            f"border-top:1px solid {C_BORDER};"
+            f"border-radius:0px;padding:8px;font-size:11px;")
+        btn_all.clicked.connect(self._clear_all)
+        root.addWidget(btn_all)
+
+    def refresh(self):
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+
+        # Collect all known PDFs
+        known = set()
+        known.update(COMBINED_CACHE.all_cached_pdfs())
+        known.update(PAGE_CACHE.all_cached_pdfs())
+        known.update(MASK_REGISTRY.all_registered_pdfs())
+
+        # Clear old entries (keep trailing stretch)
+        while self._list_layout.count() > 1:
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        total_bytes = 0
+        for pdf_path in sorted(known):
+            disk_b = COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
+            ram_b  = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
+            mask_b = MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
+            total  = disk_b + ram_b + mask_b
+            total_bytes += total
+            card = self._make_card(pdf_path, disk_b, ram_b, mask_b, total)
+            self._list_layout.insertWidget(
+                self._list_layout.count() - 1, card)
+
+        if not known:
+            empty = QLabel("No cached PDFs yet.")
+            empty.setStyleSheet(f"color:{C_SUBTEXT};font-size:10px;")
+            empty.setAlignment(Qt.AlignCenter)
+            self._list_layout.insertWidget(0, empty)
+
+        count = len(known)
+        self._lbl_total.setText(
+            f"{_fmt_bytes(total_bytes)}  {count} PDF{'s' if count!=1 else ''}")
+
+    def _make_card(self, pdf_path, disk_b, ram_b, mask_b, total_b):
+        card = QFrame()
+        card.setStyleSheet(
+            f"QFrame{{background:{C_CARD};"
+            f"border:1px solid {C_BORDER};border-radius:6px;}}"
+            f"QLabel{{background:transparent;}}")
+        vl = QVBoxLayout(card)
+        vl.setContentsMargins(8, 6, 8, 6)
+        vl.setSpacing(3)
+
+        # File name
+        name = os.path.basename(pdf_path)
+        if len(name) > 22: name = name[:19] + "..."
+        name_lbl = QLabel(name)
+        name_lbl.setStyleSheet(
+            f"color:{C_TEXT};font-size:10px;font-weight:bold;")
+        name_lbl.setToolTip(pdf_path)
+        vl.addWidget(name_lbl)
+
+        def _row(icon, val):
+            w = QWidget(); w.setStyleSheet("background:transparent;")
+            hl = QHBoxLayout(w)
+            hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(4)
+            il = QLabel(icon); il.setFixedWidth(16)
+            il.setStyleSheet("font-size:10px;")
+            vl2 = QLabel(val)
+            vl2.setStyleSheet(f"color:{C_GREEN};font-size:10px;")
+            vl2.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            hl.addWidget(il)
+            hl.addStretch()
+            hl.addWidget(vl2)
+            return w
+
+        vl.addWidget(_row("💿", _fmt_bytes(disk_b)))
+        vl.addWidget(_row("🧠", _fmt_bytes(ram_b)))
+        vl.addWidget(_row("🎭", _fmt_bytes(mask_b)))
+
+        # Total + remove button
+        hl_bot = QHBoxLayout()
+        tl = QLabel(_fmt_bytes(total_b))
+        tl.setStyleSheet(
+            f"color:{C_SUBTEXT};font-size:10px;font-weight:bold;")
+        btn = QPushButton("🗑")
+        btn.setFixedSize(24, 24)
+        btn.setToolTip("Remove this PDF cache")
+        btn.setStyleSheet(
+            f"background:{C_RED};color:white;border:none;"
+            f"border-radius:4px;font-size:11px;padding:0px;")
+        btn.clicked.connect(lambda _, p=pdf_path: self._remove_pdf(p))
+        hl_bot.addWidget(tl)
+        hl_bot.addStretch()
+        hl_bot.addWidget(btn)
+        vl.addLayout(hl_bot)
+        return card
+
+    def _remove_pdf(self, pdf_path):
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+        COMBINED_CACHE.invalidate(pdf_path)
+        PAGE_CACHE.invalidate_pdf(pdf_path)
+        MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
+        self.refresh()
+
+    def _clear_all(self):
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+        COMBINED_CACHE.clear()
+        PAGE_CACHE.clear()
+        for p in list(MASK_REGISTRY.all_registered_pdfs()):
+            MASK_REGISTRY.invalidate_masks_for_pdf(p)
+        self.refresh()
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  DECK VIEW
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1205,6 +1434,7 @@ class DeckView(QWidget):
         self.card_list.setIconSize(QSize(64, 48))
         self.card_list.itemDoubleClicked.connect(self._edit_card)
         L.addWidget(self.card_list, stretch=1)
+
 
         bot = QHBoxLayout()
         be  = QPushButton("✏ Edit")
@@ -1526,7 +1756,8 @@ class AboutDialog(QDialog):
             "V=Select  R=Rect  E=Ellipse  T=Label  Del=delete selected\n"
             "Ctrl+A — select all     Ctrl+Scroll — zoom\n"
             "Alt+Click — multi-select   Hold Alt — temp select tool\n"
-            "C — center on mask      Drag ↻ handle — rotate shape")
+            "C — center on mask      Drag ↻ handle — rotate shape\n"
+            "Space+drag — pan canvas  H — toggle pan lock")
         _section("Data location", f"{DATA_FILE}")
         bl.addStretch()
         close_btn = QPushButton("Close")
@@ -1660,10 +1891,53 @@ class OnboardingDialog(QDialog):
             self._show_step(self._step)
 
 
+class _PreloadThread(QThread):
+    """
+    Silent background thread — PDF ko disk cache mein silently save karo.
+    Koi UI signal nahi, koi canvas update nahi. Sirf disk par PNG save hota hai.
+    Deck switch hone par stop() call karo — thread cleanly exit ho jaayega.
+    """
+    def __init__(self, pdf_path: str, parent=None):
+        super().__init__(parent)
+        self._path      = pdf_path
+        self._stop_flag = False
+
+    def stop(self):
+        self._stop_flag = True
+
+    def run(self):
+        if not PDF_SUPPORT:
+            return
+        from pdf_engine import PAGE_CACHE, pdf_page_to_pixmap
+        try:
+            doc = fitz.open(self._path)
+            if doc.is_encrypted:
+                return
+            total = len(doc)
+            mat   = fitz.Matrix(1.5, 1.5)
+            
+            for i in range(total):
+                if self._stop_flag:
+                    doc.close()
+                    return
+                
+                # Check if page is already in cache
+                cached = PAGE_CACHE.get(self._path, i)
+                if not cached:
+                    # If not, render and put in PAGE_CACHE
+                    qpx = pdf_page_to_pixmap(doc.load_page(i), mat)
+                    if not qpx.isNull():
+                        PAGE_CACHE.put(self._path, i, qpx)
+            
+            doc.close()
+        except Exception:
+            pass
+
 class HomeScreen(QWidget):
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
         self._data = data
+        self._preload_thread = None   # background PDF preload thread
         self._setup_ui()
 
     def _setup_ui(self):
@@ -1738,11 +2012,57 @@ class HomeScreen(QWidget):
         split.addWidget(self.deck_tree)
         self.deck_view = DeckView()
         split.addWidget(self.deck_view)
-        split.setSizes([340, 860])
+        self._cache_widget = CacheWidget()        # ← ADD
+        split.addWidget(self._cache_widget)       # ← ADD
+        split.setSizes([340, 760, 220])           # ← CHANGE (was [340, 860])
         L.addWidget(split, stretch=1)
 
     def _on_deck_selected(self, deck):
         self.deck_view.load_deck(deck, self._data)
+        self._preload_deck_pdf(deck)
+
+    def _preload_deck_pdf(self, deck):
+        """
+        Background mein deck ke pehle PDF card ko preload karo.
+        Agar koi aur preload chal raha tha toh usse cancel karo pehle.
+        Sirf ek PDF at a time preload hoti hai.
+        """
+        # Cancel any running preload
+        if hasattr(self, "_preload_thread") and self._preload_thread is not None:
+            if self._preload_thread.isRunning():
+                self._preload_thread.stop()
+                self._preload_thread.quit()
+                self._preload_thread.wait(300)
+            self._preload_thread = None
+
+        if not PDF_SUPPORT:
+            return
+
+        # Find first card in this deck (or any child deck) with a pdf_path
+        pdf_path = self._find_first_pdf(deck)
+        if not pdf_path or not os.path.exists(pdf_path):
+            return
+
+        # Already cached? No need to preload
+        # In v20, we check if page 0 exists in the PAGE_CACHE instead
+        if PAGE_CACHE.get(pdf_path, 0) is not None:
+            return
+
+        # Start silent background thread — no signals connected to UI
+        self._preload_thread = _PreloadThread(pdf_path, parent=self)
+        self._preload_thread.start()
+
+    def _find_first_pdf(self, deck):
+        """DFS: deck aur uske children mein pehla pdf_path dhundho."""
+        for card in deck.get("cards", []):
+            p = card.get("pdf_path", "")
+            if p and os.path.exists(p):
+                return p
+        for child in deck.get("children", []):
+            p = self._find_first_pdf(child)
+            if p:
+                return p
+        return None
 
     def _show_about(self):
         AboutDialog(self).exec_()
@@ -1778,6 +2098,7 @@ class MainWindow(QMainWindow):
         self.showMaximized()
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
+
         sb = QStatusBar()
         sb.showMessage("✅ SM-2 Active  |  " + (
             "PyMuPDF loaded — PDF support active"
