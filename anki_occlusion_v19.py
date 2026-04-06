@@ -269,6 +269,7 @@ class ReviewScreen(QWidget):
             lbl.setText(f"→ {val}")
 
         self._reload_current_canvas()
+        self.canvas.setFocus() # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
 
     def keyPressEvent(self, e):
         key  = e.key()
@@ -283,6 +284,7 @@ class ReviewScreen(QWidget):
                 self._set_fullscreen_ui(True)
         elif key == Qt.Key_Space:
             self._reveal_current()
+            self._debug_report("Space (reveal)")
         elif key == Qt.Key_1 and self._rating_frame.isVisible():
             self._rate(1)
         elif key == Qt.Key_2 and self._rating_frame.isVisible():
@@ -298,7 +300,12 @@ class ReviewScreen(QWidget):
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
             self._zoom_fit()
         elif key == Qt.Key_C:
+            # Ensure canvas has focus so it can calculate target rects
+            self._zoom_fit()
             self._center_on_target()
+            self._debug_report("C key")
+        elif key == Qt.Key_D and not e.isAutoRepeat():
+            self._debug_report("D key (manual)")
         elif key == Qt.Key_E:
             self._edit_current_card()
         # ── INK LAYER SHORTCUTS ──────────────────────────────────────────────
@@ -438,7 +445,10 @@ class ReviewScreen(QWidget):
         L.addWidget(self.lbl_title)
 
         self._canvas_scroll = _ZoomableScrollArea()
-        self._canvas_scroll.setWidgetResizable(True)
+        # setWidgetResizable(False) — canvas apni natural size maintain kare,
+        # scroll area use stretch na kare (otherwise PDF too wide dikhta hai)
+        self._canvas_scroll.setWidgetResizable(False)
+        self._canvas_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self._canvas_scroll.setStyleSheet(
             f"QScrollArea{{border:none;background:{C_BG};}}"
             f"QScrollBar:vertical{{background:{C_SURFACE};width:8px;border-radius:4px;}}"
@@ -483,7 +493,7 @@ class ReviewScreen(QWidget):
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
 
         hint = QLabel(
-            "Space = reveal  •  1/2/3/4 = rate  •  Ctrl+Scroll = zoom  •  H = pan  •  P = pen on/off  •  X = color  •  Ctrl+Ctrl = clear ink  •  F11")
+            "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  Ctrl+Scroll = zoom  •  H = pan  •  Alt = pen  •  X = color  •  Ctrl+Ctrl = clear ink  •  F11")
         hint.setAlignment(Qt.AlignCenter)
         hint.setFixedHeight(22)
         hint.setStyleSheet(
@@ -588,22 +598,127 @@ class ReviewScreen(QWidget):
             self.canvas.set_review_style("hide_all")
 
     def _zoom_fit(self):
-        """File: anki_occlusion_v19.py -> Class: ReviewScreen -> Function: _zoom_fit"""
         vp = self._canvas_scroll.viewport()
-        w, h = self.canvas._canvas_wh()
-        if w < 1: return
+        # PDF mode: single page height se fit karo, total stacked height se NAHI
+        if self.canvas._pages:
+            w = self.canvas._total_w
+            h = max((p.height() for p in self.canvas._pages), default=0)
+        else:
+            w, h = self.canvas._canvas_wh()
+        if w < 1 or h < 1:
+            return
+        scale_w = vp.width()  / w
+        scale_h = vp.height() / h
+        self.canvas._scale = min(scale_w, scale_h)
+        self.canvas._on_zoom()
         
-        # Screen width ke hisaab se zoom set karo
-        self.canvas._scale = vp.width() / w
-        self.canvas._on_zoom() # Size aur geometry update trigger karega
-
     def _center_on_target(self):
-        r = self.canvas.get_target_scaled_rect()
-        if r:
-            vbar = self._canvas_scroll.verticalScrollBar()
-            hbar = self._canvas_scroll.horizontalScrollBar()
-            hbar.setValue(int(max(0, r.center().x() - self._canvas_scroll.viewport().width()  // 2)))
-            vbar.setValue(int(max(0, r.center().y() - self._canvas_scroll.viewport().height() // 2)))
+        # Force a layout update so viewport dimensions are accurate
+        QApplication.processEvents()
+        
+        vp = self._canvas_scroll.viewport()
+        view_w = vp.width()
+        view_h = vp.height()
+        
+        # Canvas se scroll position lo — canvas size se calculate hoti hai,
+        # scrollbar.maximum() pe depend nahi karta (jo late update hota hai)
+        pos = self.canvas.get_target_scroll_pos(view_w, view_h)
+        
+        # If target is not set yet (e.g. first load), try to find it from current item
+        if pos is None and 0 <= self._idx < len(self._items):
+            pos = self.canvas.get_target_scroll_pos(view_w, view_h)
+
+        if pos is None:
+            return
+
+        hval, vval = pos
+        self._canvas_scroll.horizontalScrollBar().setValue(hval)
+        self._canvas_scroll.verticalScrollBar().setValue(vval)
+
+    def _debug_report(self, trigger: str = "manual"):
+        """
+        Press D in review screen to print a full diagnostic report to terminal.
+        Also called automatically on C and Space.
+
+        Covers:
+          - Which widget has keyboard focus
+          - Canvas scale, size, logical size
+          - Viewport size
+          - Scroll position (current H/V values and maximums)
+          - Target mask rect (scaled) and computed scroll-to position
+          - Current card index, box_idx, sm2 state
+          - Reveal bar / rating frame visibility
+          - PDF path + page count in cache
+        """
+        import time
+        sep = "─" * 60
+        vp      = self._canvas_scroll.viewport()
+        view_w  = vp.width()
+        view_h  = vp.height()
+        hsb     = self._canvas_scroll.horizontalScrollBar()
+        vsb     = self._canvas_scroll.verticalScrollBar()
+        cw, ch  = self.canvas._canvas_wh()
+        focused = QApplication.focusWidget()
+
+        lines = [
+            "",
+            sep,
+            f"  🔍 DEBUG REPORT  —  trigger: [{trigger}]  @ {time.strftime('%H:%M:%S')}",
+            sep,
+            f"  Focus widget    : {type(focused).__name__} (id={id(focused)})",
+            f"  Canvas mode     : {self.canvas._mode}",
+            f"  Canvas scale    : {self.canvas._scale:.4f}",
+            f"  Canvas logical  : {cw} × {ch} px (image-space)",
+            f"  Canvas widget   : {self.canvas.width()} × {self.canvas.height()} px (screen)",
+            f"  Viewport        : {view_w} × {view_h} px",
+            f"  Scroll H        : {hsb.value()} / {hsb.maximum()}",
+            f"  Scroll V        : {vsb.value()} / {vsb.maximum()}",
+        ]
+
+        # Target mask
+        tr = self.canvas.get_target_scaled_rect()
+        if tr:
+            lines.append(f"  Target rect     : x={tr.x():.1f} y={tr.y():.1f} "
+                         f"w={tr.width():.1f} h={tr.height():.1f}  (screen-space)")
+            pos = self.canvas.get_target_scroll_pos(view_w, view_h)
+            if pos:
+                lines.append(f"  Computed scroll : H={pos[0]}  V={pos[1]}")
+        else:
+            lines.append(f"  Target rect     : None (target_idx={self.canvas._target_idx}, "
+                         f"group='{self.canvas._target_group_id}')")
+
+        # Current item
+        if 0 <= self._idx < len(self._items):
+            card, box_idx, sm2_obj = self._items[self._idx]
+            lines += [
+                f"  Card idx        : {self._idx} / {len(self._items) - 1}",
+                f"  Card title      : {card.get('title','?')}",
+                f"  Box idx         : {box_idx}",
+                f"  SM2 state       : {sm2_obj.get('sched_state','?')}  due={sm2_obj.get('sm2_due','?')}",
+                f"  Total boxes     : {len(card.get('boxes', []))}",
+            ]
+            pdf_path = card.get("pdf_path", "")
+            if pdf_path:
+                cached_pages = 0
+                for i in range(10000):
+                    if PAGE_CACHE.get(pdf_path, i) is None:
+                        break
+                    cached_pages += 1
+                lines.append(f"  PDF path        : {os.path.basename(pdf_path)}")
+                lines.append(f"  Cached pages    : {cached_pages}")
+            lines.append(f"  Canvas pages    : {len(self.canvas._pages)}")
+
+        # UI state
+        lines += [
+            f"  Reveal bar      : {'visible' if self._reveal_bar.isVisible() else 'hidden'}",
+            f"  Rating frame    : {'visible' if self._rating_frame.isVisible() else 'hidden'}",
+            sep,
+            "",
+        ]
+
+        print("\n".join(lines))
+        # Also show as canvas toast so it's visible without terminal
+        self.canvas._show_toast(f"📋 Debug report printed to terminal  [{trigger}]")
 
     def _edit_current_card(self):
         if not (0 <= self._idx < len(self._items)):
@@ -727,11 +842,10 @@ class ReviewScreen(QWidget):
             self.canvas.set_target_box(box_idx if box_idx is not None else -1)
             
         self.canvas.set_mode("review")
-        
-        # ⚡ INCREASE DELAY: Virtual Renderer ko geometry update karne do
-        # Isse page 1 ke niche wale (114+) masks render hone lagenge
-        QTimer.singleShot(150, self._zoom_fit)
-        QTimer.singleShot(250, self._center_on_target)
+
+        # 4. Zoom fit + center
+        self._zoom_fit()
+        self._center_on_target()
 
     def _start_review_pdf_thread(self, card, box_idx):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen -> Function: _start_review_pdf_thread"""

@@ -539,18 +539,43 @@ class OcclusionCanvas(QWidget):
         self.update()
 
     def get_target_scaled_rect(self):
+        target_r = None
         if self._target_group_id:
-            rects = [self._sr(b["rect"]) for b in self._boxes
-                     if b.get("group_id","") == self._target_group_id]
+            # Group वाले मास्क के लिए Bound निकालो
+            rects = [self._sr(b["rect"]) for b in self._boxes if b.get("group_id","") == self._target_group_id]
             if rects:
-                x1 = min(r.left()   for r in rects)
-                y1 = min(r.top()    for r in rects)
-                x2 = max(r.right()  for r in rects)
-                y2 = max(r.bottom() for r in rects)
-                return QRectF(x1, y1, x2-x1, y2-y1)
-        if 0 <= self._target_idx < len(self._boxes):
-            return self._sr(self._boxes[self._target_idx]["rect"])
-        return None
+                x1, y1 = min(r.left() for r in rects), min(r.top() for r in rects)
+                x2, y2 = max(r.right() for r in rects), max(r.bottom() for r in rects)
+                target_r = QRectF(x1, y1, x2-x1, y2-y1)
+        elif 0 <= self._target_idx < len(self._boxes):
+            # Single मास्क के लिए Rect लो
+            target_r = self._sr(self._boxes[self._target_idx]["rect"])
+        return target_r
+
+    def get_target_scroll_pos(self, view_w: int, view_h: int):
+        """
+        Target mask ko viewport ke center mein laane ke liye chahiye
+        scroll (hval, vval) return karta hai.
+
+        Canvas ki logical size (_canvas_wh() * _scale) se calculate karta hai —
+        self.width()/self.height() pe depend NAHI karta, kyunki woh values
+        _resize_canvas() ke baad bhi Qt layout pass se pehle stale hoti hain.
+        Isliye zoom + center ek hi frame mein bhi correctly kaam karta hai.
+
+        Returns (hval, vval) ya None agar koi target nahi hai.
+        """
+        r = self.get_target_scaled_rect()
+        if r is None:
+            return None
+        cx = r.center().x()
+        cy = r.center().y()
+        # Logical canvas size se clamp karo — widget geometry pe depend mat karo
+        img_w, img_h = self._canvas_wh()
+        canvas_w = max(int(img_w * self._scale), 1)
+        canvas_h = max(int(img_h * self._scale), 1)
+        hval = int(max(0, min(cx - view_w / 2, canvas_w - view_w)))
+        vval = int(max(0, min(cy - view_h / 2, canvas_h - view_h)))
+        return hval, vval
 
     def select_all(self):
         if not self._boxes: return
@@ -1023,7 +1048,7 @@ class OcclusionCanvas(QWidget):
 
     def keyPressEvent(self, e):
         mods = e.modifiers(); key = e.key()
-        if self._mode == "review": super().keyPressEvent(e); return
+        if self._mode == "review": e.ignore(); return
         if key == Qt.Key_Delete:                                self.delete_selected_boxes()
         elif mods & Qt.ControlModifier and key == Qt.Key_Z:    self.undo()
         elif mods & Qt.ControlModifier and key == Qt.Key_Y:    self.redo()
