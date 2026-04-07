@@ -7,6 +7,7 @@
 #    4. Easy (q=5) in review now applies +0.15 EF bonus
 #    5. Interval fuzzing added for review intervals > 2 days
 #    6. Max interval cap added (default 365 days)
+#    7. Button ordering enforced: Hard ≤ Good ≤ Easy after fuzzing (preview + actual)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import copy
@@ -132,10 +133,19 @@ def sched_update(c, quality):
         new_state = "review"
         new_step  = 0
         if state == "review":
-            iv = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef)))
+            # ✅ FIX: Compute Good interval first, guarantee Easy ≥ Good after fuzz
+            good_ef = c["sm2_ease"]  # Good uses original EF (delta=0)
+            good_iv_raw = (1 if c["sm2_repetitions"] == 0 else
+                           6 if c["sm2_repetitions"] == 1 else
+                           min(MAX_INTERVAL, max(1, round(iv * good_ef))))
+            easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef)))
+            # Fuzz both independently, then clamp Easy ≥ Good
+            good_iv_fuzzed = _fuzz_interval(good_iv_raw)
+            easy_iv_fuzzed = _fuzz_interval(easy_iv_raw)
+            iv = max(easy_iv_fuzzed, good_iv_fuzzed)
         else:
             iv = EASY_IV
-        iv  = _fuzz_interval(iv)
+            iv = _fuzz_interval(iv)
         due = _due_in_days(iv)
 
     # ── GOOD (quality == 4) ───────────────────────────────────────────────────
@@ -266,7 +276,25 @@ def _fmt_due_interval(c):
         else:
             days = s["sm2_interval"]
             return f"{days}d"
-    return {q: _preview(q) for q in [1, 3, 4, 5]}
+
+    previews = {q: _preview(q) for q in [1, 3, 4, 5]}
+
+    # ✅ FIX: Enforce button ordering Hard ≤ Good ≤ Easy for day-based intervals.
+    # Fuzzing is random and can accidentally make Easy < Good or Hard > Good.
+    def _to_days(s):
+        return int(s[:-1]) if s.endswith("d") else None
+
+    hard_d = _to_days(previews[3])
+    good_d = _to_days(previews[4])
+    easy_d = _to_days(previews[5])
+
+    if good_d is not None and easy_d is not None and easy_d < good_d:
+        previews[5] = previews[4]   # Easy can't show less than Good
+
+    if hard_d is not None and good_d is not None and hard_d > good_d:
+        previews[3] = previews[4]   # Hard can't show more than Good
+
+    return previews
 
 def sm2_simulate(c, q):
     previews = _fmt_due_interval(c)
@@ -316,3 +344,9 @@ if __name__ == "__main__":
         c = copy.deepcopy(review_card)
         sched_update(c, q)
         print(f"  {label:5s} (q={q}) → iv:{c['sm2_interval']:3d}d  ef:{c['sm2_ease']:.2f}  due:{c['sm2_due'][:10]}")
+
+    print("\n=== Button Ordering Check (Easy >= Good >= Hard) ===")
+    for _ in range(10):
+        c = copy.deepcopy(review_card)
+        previews = _fmt_due_interval(c)
+        print(f"  Hard:{previews[3]}  Good:{previews[4]}  Easy:{previews[5]}")

@@ -282,6 +282,8 @@ class ReviewScreen(QWidget):
             else:
                 win.showFullScreen()
                 self._set_fullscreen_ui(True)
+        elif key == Qt.Key_Escape:
+            self.window().close()
         elif key == Qt.Key_Space:
             self._reveal_current()
             self._debug_report("Space (reveal)")
@@ -309,7 +311,7 @@ class ReviewScreen(QWidget):
         elif key == Qt.Key_E:
             self._edit_current_card()
         # ── INK LAYER SHORTCUTS ──────────────────────────────────────────────
-        elif key == Qt.Key_Alt and not e.isAutoRepeat():
+        elif (key == Qt.Key_Alt or key == Qt.Key_QuoteLeft) and not e.isAutoRepeat():
             self.canvas.ink_toggle()
             active = self.canvas._ink_active
             color  = self.canvas._ink_colors[self.canvas._ink_color_idx]
@@ -746,12 +748,23 @@ class ReviewScreen(QWidget):
         # 1. Image logic (Unchanged)
         if card.get("image_path") and os.path.exists(card["image_path"]):
             px = QPixmap(card["image_path"])
-            
-        # 2. PDF Logic — fitz se true page count lo, gaps fill karo
+
+        # 2. PDF Logic — cache hit = instant, cache miss = background thread
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
             path = card["pdf_path"]
 
-            # True page count — cache mein gaps honge to bhi sab pages milenge
+            # Collect only already-cached pages — never block UI thread
+            clean_pages = []
+            i = 0
+            while True:
+                pg = PAGE_CACHE.get(path, i)
+                if pg is None:
+                    break
+                if not pg.isNull():
+                    clean_pages.append(pg)
+                i += 1
+
+            # Check if we have ALL pages (fitz metadata only — fast)
             try:
                 _doc = fitz.open(path)
                 total_pages = len(_doc)
@@ -759,34 +772,14 @@ class ReviewScreen(QWidget):
             except Exception:
                 total_pages = 0
 
-            if total_pages > 0:
-                mat = fitz.Matrix(1.5, 1.5)
-                clean_pages = []
-                try:
-                    _doc2 = fitz.open(path)
-                    for i in range(total_pages):
-                        pg = PAGE_CACHE.get(path, i)
-                        if pg is None or pg.isNull():
-                            # Gap mein missing page — render karke cache karo
-                            try:
-                                pg = pdf_page_to_pixmap(_doc2.load_page(i), mat)
-                                if not pg.isNull():
-                                    PAGE_CACHE.put(path, i, pg)
-                            except Exception:
-                                continue
-                        if pg and not pg.isNull():
-                            clean_pages.append(pg)
-                    _doc2.close()
-                except Exception:
-                    clean_pages = []
-
+            if clean_pages and len(clean_pages) == total_pages:
+                # ✅ Full cache hit — instant, no blocking
+                self._apply_canvas_pages(card, box_idx, clean_pages)
+                return
+            else:
+                # ⚡ Partial or no cache — show what we have, thread fills the rest
                 if clean_pages:
                     self._apply_canvas_pages(card, box_idx, clean_pages)
-                    return
-                else:
-                    self._start_review_pdf_thread(card, box_idx)
-                    return
-            else:
                 self._start_review_pdf_thread(card, box_idx)
                 return
 
@@ -1574,6 +1567,7 @@ class DeckView(QWidget):
         self.card_list = QListWidget()
         self.card_list.setIconSize(QSize(64, 48))
         self.card_list.itemDoubleClicked.connect(self._edit_card)
+        self.card_list.keyPressEvent = self._card_list_key_press
         L.addWidget(self.card_list, stretch=1)
 
 
@@ -1591,6 +1585,15 @@ class DeckView(QWidget):
         bot.addStretch()
         bot.addWidget(brs)
         L.addLayout(bot)
+
+    def _card_list_key_press(self, e):
+        key = e.key()
+        if key == Qt.Key_E:
+            self._edit_card(self.card_list.currentItem())
+        elif key == Qt.Key_R:
+            self._review_selected()
+        else:
+            QListWidget.keyPressEvent(self.card_list, e)
 
     def load_deck(self, deck, data):
         self._data = data
