@@ -288,8 +288,8 @@ def _fmt_due_interval(c):
     good_d = _to_days(previews[4])
     easy_d = _to_days(previews[5])
 
-    if good_d is not None and easy_d is not None and easy_d < good_d:
-        previews[5] = previews[4]   # Easy can't show less than Good
+    if good_d is not None and easy_d is not None and easy_d <= good_d:
+        previews[5] = f"{good_d + 1}d"   # Easy always strictly > Good
 
     if hard_d is not None and good_d is not None and hard_d > good_d:
         previews[3] = previews[4]   # Hard can't show more than Good

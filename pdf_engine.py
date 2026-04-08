@@ -27,7 +27,7 @@ except ImportError:
     PDF_SUPPORT = False
 
 # How many pages to emit per chunk so the canvas updates quickly
-CHUNK_SIZE = 5
+CHUNK_SIZE = 40
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

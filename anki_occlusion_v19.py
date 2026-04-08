@@ -1,5 +1,14 @@
 """
-Anki Occlusion — PDF & Image Flashcard App  v18 (Hardware Mask Cache + LRU Page Cache Edition)
+Anki Occlusion — PDF & Image Flashcard App  v19 (Smart Review Items Rebuild)
+================================================
+v19 New Feature:
+  [SMART REVIEW REBUILD] ReviewScreen ab sirf tabhi _items list rebuild karta hai
+      jab editor mein koi box ka group_id actually change hua ho.
+      Bina kisi change ke review se editor aur wapas = zero overhead.
+      Sirf affected card ke items replace hote hain — baaki cards untouched.
+      Detection: before/after snapshot of {box_id -> group_id} map.
+
+v18 (Hardware Mask Cache + LRU Page Cache Edition)
 ================================================
 v18 New Features:
   [HARDWARE MASK CACHE] OcclusionCanvas ab masks ko ek GPU-backed QPixmap
@@ -729,14 +738,74 @@ class ReviewScreen(QWidget):
             return
         card, box_idx, sm2_obj = self._items[self._idx]
         scroll_pos = self._canvas_scroll.verticalScrollBar().value()
+
+        # --- SNAPSHOT: editor kholne se pehle har box ka group_id save karo ---
+        before_snapshot = {
+            b.get("box_id", f"__i_{i}"): b.get("group_id", "")
+            for i, b in enumerate(card.get("boxes", []))
+        }
+
         dlg = CardEditorDialog(None, card=dict(card), data=self._data, initial_scroll=scroll_pos)
         result = dlg.exec_()
+
         if result == QDialog.Accepted:
             edited = dlg.get_card()
             card.update(edited)
             if self._data:
                 store.mark_dirty()  # 🔒 DirtyStore
+
+            # --- COMPARE: kya koi box ka group_id badla? ---
+            after_snapshot = {
+                b.get("box_id", f"__i_{i}"): b.get("group_id", "")
+                for i, b in enumerate(card.get("boxes", []))
+            }
+
+            if before_snapshot != after_snapshot:
+                # Sirf tabhi rebuild karo jab group structure change hua ho
+                self._rebuild_items_for_card(card)
+
         self._reload_current_canvas()
+
+    def _rebuild_items_for_card(self, changed_card):
+        """
+        Sirf ek specific card ke items ko _items list mein rebuild karo.
+        Baaki saare cards ke items bilkul untouched rahenge.
+
+        Trigger: sirf tab jab editor mein kisi box ka group_id change hua ho.
+        """
+        card_key = id(changed_card)
+
+        # Step 1: Is card ke purane saare entries _items se hata do
+        self._items = [
+            (c, b, s) for (c, b, s) in self._items
+            if id(c) != card_key
+        ]
+
+        # Step 2: Is card ke liye fresh items banao (same logic as __init__)
+        boxes = changed_card.get("boxes", [])
+        new_items = []
+        seen_groups = set()
+
+        if len(boxes) == 0:
+            new_items.append((changed_card, None, changed_card))
+        else:
+            for i, box in enumerate(boxes):
+                gid = box.get("group_id", "")
+                if gid:
+                    if gid not in seen_groups:
+                        seen_groups.add(gid)
+                        if is_due_today(box):
+                            new_items.append((changed_card, ("group", gid), box))
+                else:
+                    if is_due_today(box):
+                        new_items.append((changed_card, i, box))
+
+        # Step 3: Current index ke position par naye items insert karo
+        # (taaki review sequence buri tarah na toote)
+        self._items[self._idx:self._idx] = new_items
+
+        # Step 4: Queue panel refresh karo
+        self._rebuild_queue()
 
     def _reload_current_canvas(self):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
@@ -1641,9 +1710,41 @@ class DeckView(QWidget):
             due_c += card_due
 
             badge = "🔴 Due" if card_due else f"✅ {sm2_days_left(c)}d"
+
+            # ── Pages count ───────────────────────────────────────────────────
+            pdf_path = c.get("pdf_path", "")
+            if pdf_path and os.path.exists(pdf_path) and PDF_SUPPORT:
+                try:
+                    import fitz as _fitz
+                    _doc = _fitz.open(pdf_path)
+                    n_pages = len(_doc)
+                    _doc.close()
+                except Exception:
+                    n_pages = 0
+                pages_str = f"📄{n_pages}p  "
+            else:
+                pages_str = ""
+
+            # ── Mask count: grouped + individual ─────────────────────────────
+            seen_grp  = set()
+            n_grouped = 0
+            n_indiv   = 0
+            for b in boxes:
+                gid = b.get("group_id", "")
+                if gid:
+                    if gid not in seen_grp:
+                        seen_grp.add(gid)
+                        n_grouped += 1
+                else:
+                    n_indiv += 1
+            mask_parts = []
+            if n_grouped: mask_parts.append(f"{n_grouped}grp")
+            if n_indiv:   mask_parts.append(f"{n_indiv}ind")
+            mask_str = "🎭" + ("+".join(mask_parts) if mask_parts else "0")
+
             item  = QListWidgetItem(
                 f"  {c.get('title','Untitled')}  "
-                f"| Boxes:{len(boxes)}  "
+                f"| {pages_str}{mask_str}  "
                 f"| Rep:{c.get('sm2_repetitions',0)}  "
                 f"| EF:{c.get('sm2_ease',2.5):.2f}  | {badge}")
 
