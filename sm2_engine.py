@@ -8,6 +8,9 @@
 #    5. Interval fuzzing added for review intervals > 2 days
 #    6. Max interval cap added (default 365 days)
 #    7. Button ordering enforced: Hard ≤ Good ≤ Easy after fuzzing (preview + actual)
+#    8. _due_in_days now uses date.today() as reference instead of datetime.now()
+#       Old: reviewed at 11:58 PM + 1d = next day 11:58 PM (same date, shows up same day)
+#       New: date.today() + Nd = pure calendar date at 00:00 — time of review irrelevant
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import copy
@@ -27,7 +30,18 @@ def _due_in_minutes(mins):
     return (datetime.now() + timedelta(minutes=mins)).isoformat(timespec="seconds")
 
 def _due_in_days(days):
-    return (datetime.now() + timedelta(days=days)).isoformat(timespec="seconds")
+    # ⚡ FIX: Use date.today() as reference, not datetime.now().
+    # Old: datetime.now() + 1d = same time tomorrow → card due same time next day
+    #      Reviewed at 11 PM Monday + 1d = 11 PM Tuesday → shows up Tuesday ✅
+    #      but reviewed at 11:58 PM Monday + 1d = 11:58 PM Tuesday → still Tuesday ✅
+    #      WORSE: interval=1 from 11PM Monday = Tuesday 11PM, but user opens at
+    #      9AM Tuesday → card NOT due yet. Opens at midnight = due immediately.
+    #
+    # New: date.today() + Nd = a pure calendar date, no time.
+    #      Reviewed any time Monday + 1d = Tuesday (00:00:00)
+    #      is_due_today() compares date-only → consistent regardless of review time.
+    due_date = date.today() + timedelta(days=days)
+    return datetime.combine(due_date, datetime.min.time()).isoformat(timespec="seconds")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  INTERVAL FUZZING
