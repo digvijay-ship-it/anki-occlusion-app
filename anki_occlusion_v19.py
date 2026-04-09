@@ -329,17 +329,8 @@ class ReviewScreen(QWidget):
         elif key == Qt.Key_X and not e.isAutoRepeat():
             if self.canvas._ink_active:
                 self.canvas.ink_cycle_color()
-        elif key == Qt.Key_Control and not e.isAutoRepeat():
-            # Ctrl+Ctrl = clear all ink (two Ctrl presses within 500ms)
-            import time
-            now = time.monotonic()
-            if now - self.canvas._ink_ctrl_last_time < 0.5:
-                self.canvas.ink_clear()
-                self.canvas._ink_ctrl_last_time = 0.0
-            else:
-                self.canvas._ink_ctrl_last_time = now
-            super().keyPressEvent(e)
-            return
+        elif key == Qt.Key_Delete and not e.isAutoRepeat():
+            self.canvas.ink_clear()
         else:
             super().keyPressEvent(e)
 
@@ -504,7 +495,7 @@ class ReviewScreen(QWidget):
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
 
         hint = QLabel(
-            "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  Ctrl+Scroll = zoom  •  H = pan  •  Alt = pen  •  X = color  •  Ctrl+Ctrl = clear ink  •  F11")
+            "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  Ctrl+Scroll = zoom  •  H = pan  •  Alt = pen  •  X = color  •  Del = clear ink  •  F11")
         hint.setAlignment(Qt.AlignCenter)
         hint.setFixedHeight(22)
         hint.setStyleSheet(
