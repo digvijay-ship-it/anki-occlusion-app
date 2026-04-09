@@ -1716,7 +1716,8 @@ class CardEditorDialog(QDialog):
         old_boxes = self.card.get("boxes",[])
         new_boxes = self.canvas.get_boxes()
         SM2_KEYS  = ("sm2_interval","sm2_repetitions","sm2_ease",
-                     "sm2_due","sm2_last_quality","box_id")
+                     "sm2_due","sm2_last_quality","box_id",
+                     "sched_state","sched_step","reviews")
         old_by_id = {b["box_id"]: b for b in old_boxes if "box_id" in b}
         merged = []
         for i, nb in enumerate(new_boxes):
