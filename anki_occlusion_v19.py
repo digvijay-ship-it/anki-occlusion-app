@@ -133,6 +133,7 @@ QListWidget,QTreeWidget{{background:{C_SURFACE};border:1px solid {C_BORDER};bord
 QListWidget::item,QTreeWidget::item{{padding:6px;border-radius:6px;}}
 QListWidget::item:selected,QTreeWidget::item:selected{{background:{C_ACCENT};color:white;}}
 QListWidget::item:hover,QTreeWidget::item:hover{{background:{C_CARD};}}
+QTreeView::drop-indicator{{background:{C_ACCENT};height:3px;border:none;border-radius:2px;}}
 QScrollArea{{border:none;background:transparent;}}
 QScrollBar:vertical{{background:{C_SURFACE};width:8px;border-radius:4px;}}
 QScrollBar::handle:vertical{{background:{C_BORDER};border-radius:4px;}}
@@ -1212,12 +1213,51 @@ class ReviewScreen(QWidget):
 #  DECK TREE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class _DeckTreeWidget(QTreeWidget):
+    """QTreeWidget with a custom bright drop-indicator line drawn in paintEvent."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drop_line_y  = -1   # screen-y of indicator line, -1 = hidden
+        self._drop_line_indent = 0
+
+    def set_drop_line(self, y: int, indent: int = 0):
+        self._drop_line_y      = y
+        self._drop_line_indent = indent
+        self.viewport().update()
+
+    def clear_drop_line(self):
+        self._drop_line_y = -1
+        self.viewport().update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._drop_line_y < 0:
+            return
+        p = QPainter(self.viewport())
+        pen = QPen(QColor("#7C6AF7"), 3)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        x1 = self._drop_line_indent
+        x2 = self.viewport().width() - 8
+        y  = self._drop_line_y
+        p.drawLine(x1, y, x2, y)
+        # Draw a small circle on left to make it look like a insertion point
+        p.setBrush(QColor("#7C6AF7"))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(x1, y - 4, 8, 8)
+        p.end()
+
+
 class DeckTree(QWidget):
     deck_selected = pyqtSignal(object)
 
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
         self._data = data
+        self._last_drop_pos  = None
+        self._last_drop_item = None
+        self._last_drop_ctrl = False
         self._ensure_ids()
         self._setup_ui()
         self.refresh()
@@ -1239,7 +1279,7 @@ class DeckTree(QWidget):
         hdr = QLabel("📚  Decks")
         hdr.setFont(QFont("Segoe UI", 13, QFont.Bold))
         L.addWidget(hdr)
-        self.tree = QTreeWidget()
+        self.tree = _DeckTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -1257,6 +1297,7 @@ class DeckTree(QWidget):
         self.tree.dropEvent    = self._on_tree_drop
         self.tree.dragEnterEvent = self._on_drag_enter
         self.tree.dragMoveEvent  = self._on_drag_move
+        self.tree.dragLeaveEvent = self._on_drag_leave
         L.addWidget(self.tree, stretch=1)
         btn_row = QHBoxLayout()
         b_new = QPushButton("＋ Deck")
@@ -1272,6 +1313,14 @@ class DeckTree(QWidget):
         btn_row.addStretch()
         btn_row.addWidget(b_del)
         L.addLayout(btn_row)
+        # Drop hint — shows during drag to guide user
+        self._drop_hint = QLabel("↕ Reorder — hold Ctrl to nest inside")
+        self._drop_hint.setStyleSheet(
+            "background:#534AB7;color:white;font-size:11px;"
+            "padding:4px 8px;border-radius:4px;")
+        self._drop_hint.setAlignment(Qt.AlignCenter)
+        self._drop_hint.setVisible(False)
+        L.addWidget(self._drop_hint)
         hint = QLabel("Double-click to open  •  Right-click for menu")
         hint.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
         hint.setAlignment(Qt.AlignCenter)
@@ -1509,9 +1558,44 @@ class DeckTree(QWidget):
     def _on_drag_move(self, event):
         if (event.mimeData().hasFormat(CARD_DRAG_MIME) or
                 event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist")):
+            self._last_drop_pos  = self.tree.dropIndicatorPosition()
+            self._last_drop_item = self.tree.itemAt(event.pos())
+            ctrl = bool(event.keyboardModifiers() & Qt.ControlModifier)
+            self._last_drop_ctrl = ctrl
+            item = self._last_drop_item
+
+            # ── Draw custom drop line ─────────────────────────────────────────
+            if item and not ctrl:
+                rect  = self.tree.visualItemRect(item)
+                pos   = self._last_drop_pos
+                line_y = rect.top() if pos == QAbstractItemView.AboveItem else rect.bottom()
+                self.tree.set_drop_line(line_y, rect.left())
+            else:
+                self.tree.clear_drop_line()
+
+            # ── Hint label ────────────────────────────────────────────────────
+            if item:
+                name  = item.data(0, Qt.UserRole)
+                deck  = find_deck_by_id(name, self._data.get("decks", []))
+                dname = deck["name"] if deck else "?"
+                if ctrl:
+                    self._drop_hint.setText(f"📂 Drop INTO '{dname}' as child")
+                    self._drop_hint.setStyleSheet(
+                        "background:#1D9E75;color:white;font-size:11px;"
+                        "padding:4px 8px;border-radius:4px;")
+                else:
+                    self._drop_hint.setText("↕ Reorder — hold Ctrl to nest inside")
+                    self._drop_hint.setStyleSheet(
+                        "background:#534AB7;color:white;font-size:11px;"
+                        "padding:4px 8px;border-radius:4px;")
+            self._drop_hint.setVisible(True)
             event.accept()
         else:
             event.ignore()
+
+    def _on_drag_leave(self, event=None):
+        self._drop_hint.setVisible(False)
+        self.tree.clear_drop_line()
 
     def _on_tree_drop(self, event):
         # ── Card dropped from DeckView onto a deck ────────────────────────────
@@ -1544,8 +1628,11 @@ class DeckTree(QWidget):
             return
 
         # ── Deck reorder (InternalMove) ───────────────────────────────────────
-        target_item = self.tree.itemAt(event.pos())
-        drop_pos    = self.tree.dropIndicatorPosition()
+        self._drop_hint.setVisible(False)
+        self.tree.clear_drop_line()
+        target_item = getattr(self, '_last_drop_item', self.tree.itemAt(event.pos()))
+        drop_pos    = getattr(self, '_last_drop_pos', self.tree.dropIndicatorPosition())
+        ctrl        = getattr(self, '_last_drop_ctrl', False)
         dragged_id  = self._get_selected_id()
         if dragged_id is None:
             event.ignore(); return
@@ -1561,9 +1648,11 @@ class DeckTree(QWidget):
             tdeck = find_deck_by_id(tid, self._data["decks"])
             if tdeck is None:
                 self._data["decks"].append(deck)
-            elif drop_pos == QAbstractItemView.OnItem:
+            elif ctrl:
+                # Ctrl held → nest as child
                 tdeck.setdefault("children", []).append(deck)
             else:
+                # No Ctrl → always reorder as sibling
                 plist = self._find_parent_list(tid, self._data["decks"])
                 if plist is None:
                     self._data["decks"].append(deck)
@@ -1779,18 +1868,25 @@ class CacheWidget(QFrame):
         return card
 
     def _remove_pdf(self, pdf_path):
-        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
         COMBINED_CACHE.invalidate(pdf_path)
         PAGE_CACHE.invalidate_pdf(pdf_path)
         MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
+        # [FIX] Remove PDF from MASK_REGISTRY map entirely so box disappears
+        MASK_REGISTRY._map.pop(pdf_path, None)
+        # [FIX] Also unregister from PIXMAP_REGISTRY
+        for label in [l for l, (_, _, p) in PIXMAP_REGISTRY._entries.items() if p == pdf_path]:
+            PIXMAP_REGISTRY.unregister(label)
         self.refresh()
 
     def _clear_all(self):
-        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
         COMBINED_CACHE.clear()
         PAGE_CACHE.clear()
-        for p in list(MASK_REGISTRY.all_registered_pdfs()):
-            MASK_REGISTRY.invalidate_masks_for_pdf(p)
+        MASK_REGISTRY._map.clear()
+        # [FIX] Also clear PIXMAP_REGISTRY so all boxes disappear
+        for label in list(PIXMAP_REGISTRY._entries.keys()):
+            PIXMAP_REGISTRY.unregister(label)
         self.refresh()
 
 # ═══════════════════════════════════════════════════════════════════════════════
