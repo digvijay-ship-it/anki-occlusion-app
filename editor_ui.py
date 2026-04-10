@@ -537,7 +537,8 @@ class OcclusionCanvas(QWidget):
 
     def get_boxes(self):
         SM2_KEYS = ("sm2_interval","sm2_repetitions","sm2_ease",
-                    "sm2_due","sm2_last_quality","box_id")
+                    "sm2_due","sm2_last_quality","box_id",
+                    "sched_state","sched_step","reviews")
         result = []
         for b in self._boxes:
             r = b["rect"]
@@ -1380,6 +1381,16 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext = _tbtn("📂 Open PDF", "Open in system PDF reader")
         self.btn_open_ext.clicked.connect(self._open_in_reader)
         self.btn_open_ext.setVisible(False)
+
+        self.btn_relink = _tbtn("🔄 Relink PDF", "Replace the PDF source file — keeps all existing masks")
+        self.btn_relink.setEnabled(PDF_SUPPORT)
+        self.btn_relink.clicked.connect(self._relink_pdf)
+        self.btn_relink.setVisible(False)
+        self.btn_relink.setStyleSheet(
+            "QPushButton{background:transparent;border:none;border-radius:4px;"
+            "padding:4px 10px;font-size:13px;color:#8B4513;min-height:32px;}"
+            "QPushButton:hover{background:#FFE4C4;}")
+
         self.lbl_sync = QLabel("")
         self.lbl_sync.setStyleSheet("background:transparent;font-size:11px;color:#666;")
         self.lbl_sync.setVisible(False)
@@ -1389,7 +1400,7 @@ class CardEditorDialog(QDialog):
                   btn_zi, btn_zo, btn_zf, _sep(),
                   btn_del, btn_clear, _sep(),
                   btn_grp, btn_ungrp, _sep(),
-                  self.btn_open_ext, self.lbl_sync]:
+                  self.btn_open_ext, self.btn_relink, self.lbl_sync]:
             tl.addWidget(w)
         tl.addStretch()
 
@@ -1557,6 +1568,7 @@ class CardEditorDialog(QDialog):
         self.card["pdf_path"] = path; self.card.pop("image_path", None)
         self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
         self._pending_boxes = []
+        self.btn_relink.setVisible(True)
         self._show_pdf_loading(True)
         self._start_pdf_thread(path)
 
@@ -1580,11 +1592,13 @@ class CardEditorDialog(QDialog):
         else:
             self.canvas.append_pages(pages[loaded - (loaded % 5 or 5):])
 
-        # Restore pending boxes on the first chunk
+        # Restore pending boxes on the first chunk — but do NOT clear _pending_boxes
+        # here. _on_pdf_done will do the final authoritative restore once ALL pages
+        # are loaded, then clear it. Clearing here causes _on_pdf_done to find [] and
+        # skip restore entirely.
         if self._pending_boxes:
             self.canvas.set_boxes(self._pending_boxes)
             self.mask_panel._refresh(self._pending_boxes)
-            self._pending_boxes = []
 
         self.lbl_pg.setText(
             f"📄  {os.path.basename(path)}  —  ⏳ {loaded}/{total} pages…")
@@ -1602,7 +1616,8 @@ class CardEditorDialog(QDialog):
         if not pages:
             QMessageBox.warning(self, "PDF Error", err or "Could not render PDF."); return
 
-        # Load all pages at once (replaces any partial load)
+        # Read boxes BEFORE load_pages() — load_pages() resets canvas and clears boxes.
+        # Priority: _pending_boxes (relink/reload) > canvas current > card data
         existing_boxes = self.canvas.get_boxes()
         self.canvas.load_pages(pages)
 
@@ -1618,11 +1633,18 @@ class CardEditorDialog(QDialog):
         if not self.inp_title.text():
             self.inp_title.setText(self._auto_subdeck_name or "")
 
-        boxes_to_restore = self._pending_boxes or existing_boxes
+        # _pending_boxes is the authoritative source for relink/reload.
+        # existing_boxes is what canvas had before load_pages() wiped it (normal reload).
+        # card["boxes"] is the ground truth from saved data — final fallback.
+        boxes_to_restore = (
+            self._pending_boxes
+            or existing_boxes
+            or list(self.card.get("boxes", []))
+        )
         if boxes_to_restore:
             self.canvas.set_boxes(boxes_to_restore)
             self.mask_panel._refresh(boxes_to_restore)
-            self._pending_boxes = []
+        self._pending_boxes = []
 
         self._watch_pdf(path)
         if self._initial_scroll > 0:
@@ -1659,15 +1681,30 @@ class CardEditorDialog(QDialog):
             path = card["pdf_path"]
             self.card["pdf_path"] = path
             self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
-            self._pending_boxes = current_boxes 
+            self._pending_boxes = current_boxes
+            self.btn_relink.setVisible(True)
             self._show_pdf_loading(True)
             self._start_pdf_thread(path) # ⚡ Virtual Renderer se load karega
+        elif card.get("pdf_path") and not os.path.exists(card["pdf_path"]):
+            self.btn_relink.setVisible(True)
+            self.lbl_sync.setVisible(True)
+            self.lbl_sync.setText("⚠ PDF not found — click 🔄 Relink PDF to fix")
+            self.lbl_sync.setStyleSheet(
+                "color:#CC6600;font-size:11px;background:transparent;font-weight:bold;")
+            # Apply masks directly to canvas right now — no PDF load will trigger
+            # _on_pdf_done so _pending_boxes would never get restored otherwise
+            if current_boxes:
+                self._pending_boxes = current_boxes
+                self.canvas.set_boxes(current_boxes)
+                self.mask_panel._refresh(current_boxes)
 
     # ── file watcher (live sync) ───────────────────────────────────────────────
 
     def _watch_pdf(self, path: str):
         self._stop_watch(); self._watched_path = path
-        self._watcher.addPath(path); self.btn_open_ext.setVisible(True)
+        self._watcher.addPath(path)
+        self.btn_open_ext.setVisible(True)
+        self.btn_relink.setVisible(True)
         self.lbl_sync.setVisible(True); self.lbl_sync.setText("🟢 Live Sync: watching")
         self.lbl_sync.setStyleSheet(
             f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
@@ -1707,6 +1744,52 @@ class CardEditorDialog(QDialog):
             else:                             subprocess.Popen(["xdg-open", path])
         except Exception as ex:
             QMessageBox.warning(self,"Could not open",f"Could not open PDF:\n{ex}")
+
+    def _relink_pdf(self):
+        """Pick a new PDF file — replaces the stored path but keeps ALL existing masks."""
+        if not PDF_SUPPORT:
+            QMessageBox.warning(self, "No PDF support", "pip install pymupdf"); return
+
+        old_path = self.card.get("pdf_path", "") or self._watched_path or ""
+        start_dir = os.path.dirname(old_path) if old_path else ""
+
+        new_path, _ = QFileDialog.getOpenFileName(
+            self, "Choose New PDF File", start_dir, "PDF (*.pdf)")
+        if not new_path:
+            return
+
+        # Confirm so user doesn't accidentally overwrite with wrong file
+        reply = QMessageBox.question(
+            self, "Relink PDF",
+            f"Replace source PDF with:\n{new_path}\n\n"
+            "All your existing masks will be kept exactly as they are.\n"
+            "The new PDF will be used as the background going forward.\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if reply != QMessageBox.Yes:
+            return
+
+        # Save masks — prefer canvas if it has boxes loaded (normal relink),
+        # fall back to card["boxes"] when canvas is empty (broken-path relink)
+        canvas_boxes = self.canvas.get_boxes()
+        saved_boxes = canvas_boxes if canvas_boxes else list(self.card.get("boxes", []))
+
+        # Invalidate old cache, update stored path
+        if old_path:
+            PAGE_CACHE.invalidate_pdf(old_path)
+        self.card["pdf_path"] = new_path
+        self.card.pop("image_path", None)
+        self._auto_subdeck_name = os.path.splitext(os.path.basename(new_path))[0]
+
+        # _pending_boxes makes _on_pdf_done restore masks after load
+        self._pending_boxes = saved_boxes
+
+        self.lbl_sync.setVisible(True)
+        self.lbl_sync.setText("🔄 Relinking…")
+        self.lbl_sync.setStyleSheet(
+            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+
+        self._show_pdf_loading(True)
+        self._start_pdf_thread(new_path)
 
     # ── save / close ──────────────────────────────────────────────────────────
 

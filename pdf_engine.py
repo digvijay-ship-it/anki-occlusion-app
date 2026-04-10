@@ -1,5 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PDF ENGINE  —  Virtual Page Renderer  (v20)
+#  PDF ENGINE  —  Virtual Page Renderer  (v21)
+#
+#  KEY CHANGE from v20:
+#    ❌  pdf_page_to_pixmap() wrote every page to a temp PNG on disk, then
+#        read it back — 150 disk I/O ops for a 50-page PDF = UI freeze.
+#    ✅  Now uses fitz.Pixmap.tobytes("png") → QPixmap.loadFromData() —
+#        pure in-RAM conversion, zero disk touch per page.
 #
 #  KEY CHANGE from v18/v19:
 #    ❌  One giant combined QPixmap  (broke at >32 767 px — Qt hard limit)
@@ -12,7 +18,6 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import os
-import tempfile
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap
@@ -27,7 +32,7 @@ except ImportError:
     PDF_SUPPORT = False
 
 # How many pages to emit per chunk so the canvas updates quickly
-CHUNK_SIZE = 40
+CHUNK_SIZE = 5
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -35,18 +40,19 @@ CHUNK_SIZE = 40
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def pdf_page_to_pixmap(page, mat) -> QPixmap:
-    """Render one fitz page → QPixmap via a temp PNG (avoids Qt raw-bytes issues)."""
+    """Render one fitz page → QPixmap directly from bytes (no disk I/O).
+
+    OLD: fitz → save PNG to disk → QPixmap(file) → delete file
+    NEW: fitz → PNG bytes in RAM → QPixmap.loadFromData()
+
+    For a 50-page PDF this eliminates 150 disk read/write/delete ops
+    which was the primary cause of UI freeze during PDF loading.
+    """
     pix = page.get_pixmap(matrix=mat, alpha=False)
-    fd, tmp = tempfile.mkstemp(suffix=".png")
-    os.close(fd)
-    try:
-        pix.save(tmp)
-        return QPixmap(tmp)
-    finally:
-        try:
-            os.unlink(tmp)
-        except Exception:
-            pass
+    png_bytes = pix.tobytes("png")
+    qpx = QPixmap()
+    qpx.loadFromData(png_bytes, "PNG")
+    return qpx
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

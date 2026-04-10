@@ -751,8 +751,13 @@ class ReviewScreen(QWidget):
                 for i, b in enumerate(card.get("boxes", []))
             }
 
-            if before_snapshot != after_snapshot:
-                # Sirf tabhi rebuild karo jab group structure change hua ho
+            # Rebuild if group structure changed OR box count changed (new mask added)
+            before_box_ids = set(before_snapshot.keys())
+            after_box_ids  = {
+                b.get("box_id", f"__i_{i}")
+                for i, b in enumerate(card.get("boxes", []))
+            }
+            if before_snapshot != after_snapshot or before_box_ids != after_box_ids:
                 self._rebuild_items_for_card(card)
 
         self._reload_current_canvas()
@@ -810,37 +815,55 @@ class ReviewScreen(QWidget):
             px = QPixmap(card["image_path"])
 
         # 2. PDF Logic — cache hit = instant, cache miss = background thread
-        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
+        elif card.get("pdf_path") and PDF_SUPPORT:
             path = card["pdf_path"]
 
-            # Collect only already-cached pages — never block UI thread
-            clean_pages = []
-            i = 0
-            while True:
-                pg = PAGE_CACHE.get(path, i)
-                if pg is None:
-                    break
-                if not pg.isNull():
-                    clean_pages.append(pg)
-                i += 1
+            if os.path.exists(path):
+                # Collect only already-cached pages — never block UI thread
+                clean_pages = []
+                i = 0
+                while True:
+                    pg = PAGE_CACHE.get(path, i)
+                    if pg is None:
+                        break
+                    if not pg.isNull():
+                        clean_pages.append(pg)
+                    i += 1
 
-            # Check if we have ALL pages (fitz metadata only — fast)
-            try:
-                _doc = fitz.open(path)
-                total_pages = len(_doc)
-                _doc.close()
-            except Exception:
-                total_pages = 0
+                # Check if we have ALL pages (fitz metadata only — fast)
+                try:
+                    _doc = fitz.open(path)
+                    total_pages = len(_doc)
+                    _doc.close()
+                except Exception:
+                    total_pages = 0
 
-            if clean_pages and len(clean_pages) == total_pages:
-                # ✅ Full cache hit — instant, no blocking
-                self._apply_canvas_pages(card, box_idx, clean_pages)
-                return
-            else:
-                # ⚡ Partial or no cache — show what we have, thread fills the rest
-                if clean_pages:
+                if clean_pages and len(clean_pages) == total_pages:
+                    # Full cache hit — instant, no blocking
                     self._apply_canvas_pages(card, box_idx, clean_pages)
-                self._start_review_pdf_thread(card, box_idx)
+                    return
+                else:
+                    # Partial or no cache — show what we have, thread fills the rest
+                    if clean_pages:
+                        self._apply_canvas_pages(card, box_idx, clean_pages)
+                    self._start_review_pdf_thread(card, box_idx)
+                    return
+            else:
+                # PDF file missing (folder renamed etc.) — show masks on grey
+                # background so user can still see which mask to review
+                self.canvas.load_pixmap(QPixmap())
+                boxes = card.get("boxes", [])
+                if boxes:
+                    display_boxes = [{**b, "revealed": False} for b in boxes]
+                    self.canvas.set_boxes_with_state(display_boxes)
+                    tgt = box_idx if isinstance(box_idx, int) and box_idx is not None else -1
+                    self.canvas.set_target_box(tgt)
+                    self.canvas.set_mode("review")
+                    self.canvas._show_toast(
+                        "PDF not found — Edit Card > Relink PDF to fix")
+                self._reveal_bar.show()
+                self._rating_frame.hide()
+                self.setFocus()
                 return
 
         # 3. Apply Canvas for Images or Empty states
