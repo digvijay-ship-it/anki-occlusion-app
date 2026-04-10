@@ -79,10 +79,10 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
     QHeaderView
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent
+from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath
+    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag
 )
 
 import tempfile
@@ -152,7 +152,8 @@ SS = _build_ss()
 #  REVIEW SCREEN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-QUEUE_ROLE = Qt.UserRole + 10
+QUEUE_ROLE       = Qt.UserRole + 10
+CARD_DRAG_MIME   = "application/x-anki-card"
 
 class QueueDelegate(QStyledItemDelegate):
     COLORS = {
@@ -751,13 +752,8 @@ class ReviewScreen(QWidget):
                 for i, b in enumerate(card.get("boxes", []))
             }
 
-            # Rebuild if group structure changed OR box count changed (new mask added)
-            before_box_ids = set(before_snapshot.keys())
-            after_box_ids  = {
-                b.get("box_id", f"__i_{i}")
-                for i, b in enumerate(card.get("boxes", []))
-            }
-            if before_snapshot != after_snapshot or before_box_ids != after_box_ids:
+            if before_snapshot != after_snapshot:
+                # Sirf tabhi rebuild karo jab group structure change hua ho
                 self._rebuild_items_for_card(card)
 
         self._reload_current_canvas()
@@ -1249,6 +1245,14 @@ class DeckTree(QWidget):
         self.tree.customContextMenuRequested.connect(self._ctx_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         self.tree.itemClicked.connect(self._on_click)
+        self.tree.setDragEnabled(True)
+        self.tree.setAcceptDrops(True)
+        self.tree.setDropIndicatorShown(True)
+        self.tree.setDragDropMode(QAbstractItemView.InternalMove)
+        self.tree.viewport().setAcceptDrops(True)
+        self.tree.dropEvent    = self._on_tree_drop
+        self.tree.dragEnterEvent = self._on_drag_enter
+        self.tree.dragMoveEvent  = self._on_drag_move
         L.addWidget(self.tree, stretch=1)
         btn_row = QHBoxLayout()
         b_new = QPushButton("＋ Deck")
@@ -1274,7 +1278,6 @@ class DeckTree(QWidget):
         self.tree.clear()
         for deck in self._data.get("decks", []):
             self.tree.addTopLevelItem(self._make_item(deck))
-        self.tree.expandAll()
         if sel_id is not None:
             self._select_by_id(sel_id)
 
@@ -1353,6 +1356,21 @@ class DeckTree(QWidget):
         name, ok = QInputDialog.getText(self, "New Deck", "Deck name:")
         if not ok or not name.strip():
             return
+        # ── Duplicate name check ──────────────────────────────────────────────
+        siblings = (self._data.get("decks", []) if parent_id is None
+                    else (find_deck_by_id(parent_id, self._data.get("decks", [])) or {}).get("children", []))
+        dup = next((d for d in siblings if d["name"].strip().lower() == name.strip().lower()), None)
+        if dup:
+            action = self._duplicate_dialog(name.strip())
+            if action == "show":
+                self._select_by_id(dup["_id"])
+                return
+            elif action == "retry":
+                self._new_deck(parent_id)
+                return
+            else:
+                return
+        # ─────────────────────────────────────────────────────────────────────
         new_deck = {
             "_id":      next_deck_id(self._data),
             "name":     name.strip(),
@@ -1368,7 +1386,7 @@ class DeckTree(QWidget):
                 QMessageBox.warning(self, "Error", "Parent deck not found!")
                 return
             parent.setdefault("children", []).append(new_deck)
-        store.mark_dirty()  # 🔒 DirtyStore
+        store.mark_dirty()
         self.refresh()
         self._select_by_id(new_deck["_id"])
 
@@ -1386,9 +1404,70 @@ class DeckTree(QWidget):
             return
         name, ok = QInputDialog.getText(self, "Rename Deck", "New name:", text=deck.get("name", ""))
         if ok and name.strip():
+            # ── Duplicate name check ──────────────────────────────────────────
+            parent = self._find_parent(deck_id, self._data.get("decks", []))
+            siblings = parent.get("children", []) if parent else self._data.get("decks", [])
+            dup = next((d for d in siblings if d["name"].strip().lower() == name.strip().lower()
+                        and d.get("_id") != deck_id), None)
+            if dup:
+                action = self._duplicate_dialog(name.strip())
+                if action == "show":
+                    self._select_by_id(dup["_id"])
+                    return
+                elif action == "retry":
+                    self._rename_by_id(deck_id)
+                    return
+                else:
+                    return
+            # ─────────────────────────────────────────────────────────────────
             deck["name"] = name.strip()
-            store.mark_dirty()  # 🔒 DirtyStore
+            store.mark_dirty()
             self.refresh()
+
+    def _duplicate_dialog(self, name):
+        """
+        Show a 3-button dialog when a duplicate deck name is entered.
+        Returns: 'show' | 'retry' | 'cancel'
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Duplicate Name")
+        dlg.setMinimumWidth(340)
+        L = QVBoxLayout(dlg)
+        L.setSpacing(12)
+        L.setContentsMargins(16, 16, 16, 16)
+
+        msg = QLabel(f"A deck named <b>'{name}'</b> already exists at this level.")
+        msg.setWordWrap(True)
+        L.addWidget(msg)
+
+        btn_row = QHBoxLayout()
+        b_show   = QPushButton("📍 Show Existing")
+        b_retry  = QPushButton("✏ Try Again")
+        b_cancel = QPushButton("Cancel")
+        b_cancel.setObjectName("flat")
+        btn_row.addWidget(b_show)
+        btn_row.addWidget(b_retry)
+        btn_row.addStretch()
+        btn_row.addWidget(b_cancel)
+        L.addLayout(btn_row)
+
+        result = ["cancel"]
+        b_show.clicked.connect(lambda: (result.__setitem__(0, "show"), dlg.accept()))
+        b_retry.clicked.connect(lambda: (result.__setitem__(0, "retry"), dlg.accept()))
+        b_cancel.clicked.connect(dlg.reject)
+
+        dlg.exec_()
+        return result[0]
+
+    def _find_parent(self, deck_id, lst, parent=None):
+        """Return the parent deck dict of the given deck_id, or None if top-level."""
+        for d in lst:
+            if d.get("_id") == deck_id:
+                return parent
+            found = self._find_parent(deck_id, d.get("children", []), d)
+            if found is not None:
+                return found
+        return None
 
     def _delete_selected(self):
         did = self._get_selected_id()
@@ -1415,6 +1494,109 @@ class DeckTree(QWidget):
             if self._remove_from_tree(deck_id, d.get("children", [])):
                 return True
         return False
+
+    def _on_drag_enter(self, event):
+        if (event.mimeData().hasFormat(CARD_DRAG_MIME) or
+                event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist")):
+            event.accept()
+        else:
+            event.ignore()
+
+    def _on_drag_move(self, event):
+        if (event.mimeData().hasFormat(CARD_DRAG_MIME) or
+                event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist")):
+            event.accept()
+        else:
+            event.ignore()
+
+    def _on_tree_drop(self, event):
+        # ── Card dropped from DeckView onto a deck ────────────────────────────
+        if event.mimeData().hasFormat(CARD_DRAG_MIME):
+            target_item = self.tree.itemAt(event.pos())
+            if target_item is None:
+                event.ignore(); return
+            target_id   = self._get_id_from_item(target_item)
+            target_deck = find_deck_by_id(target_id, self._data["decks"])
+            if target_deck is None:
+                event.ignore(); return
+
+            raw         = bytes(event.mimeData().data(CARD_DRAG_MIME)).decode()
+            src_id_str, row_str = raw.split("|")
+            src_deck    = find_deck_by_id(int(src_id_str), self._data["decks"])
+            if src_deck is None or src_deck is target_deck:
+                event.ignore(); return
+
+            cards = src_deck.get("cards", [])
+            row   = int(row_str)
+            if not (0 <= row < len(cards)):
+                event.ignore(); return
+
+            card = cards.pop(row)
+            target_deck.setdefault("cards", []).append(card)
+            store.mark_dirty()
+            self.refresh()
+            self._select_by_id(target_id)
+            event.accept()
+            return
+
+        # ── Deck reorder (InternalMove) ───────────────────────────────────────
+        target_item = self.tree.itemAt(event.pos())
+        drop_pos    = self.tree.dropIndicatorPosition()
+        dragged_id  = self._get_selected_id()
+        if dragged_id is None:
+            event.ignore(); return
+
+        deck = self._detach_deck(dragged_id, self._data["decks"])
+        if deck is None:
+            event.ignore(); return
+
+        if target_item is None:
+            self._data["decks"].append(deck)
+        else:
+            tid   = self._get_id_from_item(target_item)
+            tdeck = find_deck_by_id(tid, self._data["decks"])
+            if tdeck is None:
+                self._data["decks"].append(deck)
+            elif drop_pos == QAbstractItemView.OnItem:
+                tdeck.setdefault("children", []).append(deck)
+            else:
+                plist = self._find_parent_list(tid, self._data["decks"])
+                if plist is None:
+                    self._data["decks"].append(deck)
+                else:
+                    idx = next((i for i, d in enumerate(plist) if d["_id"] == tid), None)
+                    if idx is None:
+                        self._data["decks"].append(deck)
+                    else:
+                        insert_at = idx if drop_pos == QAbstractItemView.AboveItem else idx + 1
+                        plist.insert(insert_at, deck)
+
+        store.mark_dirty()
+        event.accept()
+        # [FIX] Defer refresh so Qt finishes its internal InternalMove first,
+        # otherwise the visual tree and data tree conflict and changes only
+        # appear after restart.
+        QTimer.singleShot(0, lambda: (self.refresh(), self._select_by_id(dragged_id)))
+
+    def _detach_deck(self, deck_id, lst):
+        """Remove and return a deck from wherever it lives in the tree."""
+        for i, d in enumerate(lst):
+            if d["_id"] == deck_id:
+                return lst.pop(i)
+            found = self._detach_deck(deck_id, d.get("children", []))
+            if found:
+                return found
+        return None
+
+    def _find_parent_list(self, deck_id, lst):
+        """Return the list that directly contains deck_id."""
+        for d in lst:
+            if d["_id"] == deck_id:
+                return lst
+            found = self._find_parent_list(deck_id, d.get("children", []))
+            if found:
+                return found
+        return None
 
     def get_selected_deck(self):
         return self._get_deck_from_item(self.tree.currentItem())
@@ -1651,6 +1833,9 @@ class DeckView(QWidget):
         self.card_list.setIconSize(QSize(64, 48))
         self.card_list.itemDoubleClicked.connect(self._edit_card)
         self.card_list.keyPressEvent = self._card_list_key_press
+        self.card_list.setDragEnabled(True)
+        self.card_list.setDragDropMode(QAbstractItemView.DragOnly)
+        self.card_list.startDrag = self._start_card_drag
         L.addWidget(self.card_list, stretch=1)
 
 
@@ -1678,12 +1863,26 @@ class DeckView(QWidget):
         else:
             QListWidget.keyPressEvent(self.card_list, e)
 
+    def _start_card_drag(self, _actions):
+        row = self.card_list.currentRow()
+        if row < 0 or not self.deck:
+            return
+        mime = QMimeData()
+        # Encode: src_deck_id|card_index
+        payload = f"{self.deck.get('_id')}|{row}".encode()
+        mime.setData(CARD_DRAG_MIME, QByteArray(payload))
+        drag = QDrag(self.card_list)
+        drag.setMimeData(mime)
+        drag.exec_(Qt.MoveAction)
+
     def load_deck(self, deck, data):
         self._data = data
         new_id     = deck.get("_id")
+        # [FIX] Same deck clicked again — don't clear card list or reset selection
+        if new_id == self._deck_id:
+            return
         # [PERF FIX] Thumb cache sirf tab clear karo jab deck badla ho
-        if new_id != self._deck_id:
-            self._thumb_cache.clear()
+        self._thumb_cache.clear()
         self._deck_id = new_id
         self.deck     = deck
         self.lbl_deck.setText(deck.get("name", "?"))
@@ -2278,7 +2477,8 @@ class HomeScreen(QWidget):
 
     def _on_deck_selected(self, deck):
         self.deck_view.load_deck(deck, self._data)
-        self._preload_deck_pdf(deck)
+        # [FIX] Removed _preload_deck_pdf here — PDF should only load
+        # when the user explicitly opens/reviews a card, not on deck click.
 
     def _preload_deck_pdf(self, deck):
         """
