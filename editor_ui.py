@@ -625,6 +625,27 @@ class OcclusionCanvas(QWidget):
         vval = int(max(0, min(cy - view_h / 2, canvas_h - view_h)))
         return hval, vval
 
+    def get_current_page(self, scroll_y: int) -> int:
+        """Return the 0-based page index visible at the given vertical scroll position."""
+        if not self._page_tops:
+            return 0
+        # Convert screen scroll_y → image-space y
+        img_y = scroll_y / max(self._scale, 0.01)
+        page = 0
+        for i, top in enumerate(self._page_tops):
+            if img_y >= top:
+                page = i
+            else:
+                break
+        return page
+
+    def scroll_to_page(self, page: int, scroll_area) -> None:
+        """Scroll the given QScrollArea so that page `page` is at the top."""
+        if not self._page_tops or page >= len(self._page_tops):
+            return
+        y = int(self._page_tops[page] * self._scale)
+        scroll_area.verticalScrollBar().setValue(y)
+
     def select_all(self):
         if not self._boxes: return
         self._selected_indices = set(range(len(self._boxes)))
@@ -1263,12 +1284,13 @@ class MaskPanel(QWidget):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class CardEditorDialog(QDialog):
-    def __init__(self, parent=None, card=None, data=None, deck=None, initial_scroll=0):
+    def __init__(self, parent=None, card=None, data=None, deck=None, initial_scroll=0, initial_page=0):
         super().__init__(parent)
         self.setWindowTitle("Occlusion Card Editor")
         self.setMinimumSize(1100, 700)
         self.card               = card or {}
         self._initial_scroll    = initial_scroll
+        self._initial_page      = initial_page
         self._pdf_pages         = []
         self._cur_page          = 0
         self._data              = data
@@ -1647,8 +1669,15 @@ class CardEditorDialog(QDialog):
         self._pending_boxes = []
 
         self._watch_pdf(path)
-        if self._initial_scroll > 0:
-            QTimer.singleShot(60, lambda:
+        # [FIX] Use page number instead of raw pixel scroll so editor opens
+        # on the correct page regardless of zoom level differences.
+        if self._initial_page > 0:
+            pg = self._initial_page
+            sc = self._sc
+            QTimer.singleShot(80, lambda: self.canvas.scroll_to_page(pg, sc))
+            self._initial_page = 0
+        elif self._initial_scroll > 0:
+            QTimer.singleShot(80, lambda:
                 self._sc.verticalScrollBar().setValue(self._initial_scroll))
             self._initial_scroll = 0
 

@@ -731,13 +731,17 @@ class ReviewScreen(QWidget):
         card, box_idx, sm2_obj = self._items[self._idx]
         scroll_pos = self._canvas_scroll.verticalScrollBar().value()
 
+        # [FIX] Pass current page number so editor opens on same page as review
+        current_page = self.canvas.get_current_page(scroll_pos)
+
         # --- SNAPSHOT: editor kholne se pehle har box ka group_id save karo ---
         before_snapshot = {
             b.get("box_id", f"__i_{i}"): b.get("group_id", "")
             for i, b in enumerate(card.get("boxes", []))
         }
 
-        dlg = CardEditorDialog(None, card=dict(card), data=self._data, initial_scroll=scroll_pos)
+        dlg = CardEditorDialog(None, card=dict(card), data=self._data,
+                               initial_scroll=scroll_pos, initial_page=current_page)
         result = dlg.exec_()
 
         if result == QDialog.Accepted:
