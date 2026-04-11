@@ -975,31 +975,46 @@ class ReviewScreen(QWidget):
         QTimer.singleShot(0, lambda: (self._zoom_fit(), self._center_on_target()))
         
     def _start_review_pdf_thread(self, card, box_idx):
-        """File: anki_occlusion_v19.py -> Class: ReviewScreen -> Function: _start_review_pdf_thread"""
         path = card.get("pdf_path", "")
         if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
             self._pdf_loader_thread.wait(300)
-            
-        self._pdf_loader_thread = PdfLoaderThread(path, parent=self)
-        self._pending_review_card = card
+
+        self._pdf_loader_thread     = PdfLoaderThread(path, parent=self)
+        self._pending_review_card   = card
         self._pending_review_box_idx = box_idx
-        
-        # ⚡ V20 Fix: Connect to the new handler that expects a list of pages
+
+        # [FIX] Show first chunk instantly as pages arrive
+        self._pdf_loader_thread.pages_ready.connect(self._on_review_pages_chunk)
         self._pdf_loader_thread.done.connect(self._on_review_pages_ready)
         self._pdf_loader_thread.start()
 
+        # Show loading toast immediately
+        try:
+            _doc = fitz.open(path)
+            total = len(_doc)
+            _doc.close()
+        except Exception:
+            total = "?"
+        self.canvas._show_toast(f"⏳ Loading PDF... 0/{total} pages")
+        self._pdf_total_pages = total
+
+    def _on_review_pages_chunk(self, pages, loaded, total):
+        """Show first pages as soon as first chunk arrives — don't wait for full load."""
+        card    = self._pending_review_card
+        box_idx = self._pending_review_box_idx
+        if pages:
+            self._apply_canvas_pages(card, box_idx, pages)
+        self.canvas._show_toast(f"⏳ Loading PDF... {loaded}/{total} pages")
+
     def _on_review_pages_ready(self, pages, err):
-        """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
         if not pages or err:
             return
-            
-        card = self._pending_review_card
+        card    = self._pending_review_card
         box_idx = self._pending_review_box_idx
-        
-        # ⚡ FIX: 'card' argument pass karna must hai
         self._apply_canvas_pages(card, box_idx, pages)
+        self.canvas._show_toast(f"✅ PDF loaded — {len(pages)} pages")
 
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
