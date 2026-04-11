@@ -204,6 +204,12 @@ class ReviewScreen(QWidget):
         self._pdf_cache      = {}
         self._current_pixmap = None
 
+        # ── O(1) box tracking ─────────────────────────────────────────────────
+        # All box_ids/group_ids that entered the queue (ever seen this session)
+        self._queued_ids     = set()
+        # Tombstone set — deleted boxes, skip in _load_item
+        self._deleted_ids    = set()
+
         seen_item_keys = set()
 
         for card in cards:
@@ -232,6 +238,7 @@ class ReviewScreen(QWidget):
                             seen_item_keys.add(item_key)
                             if is_due_today(box):
                                 self._items.append((card, ("group", gid), box))
+                                self._queued_ids.add(gid)          # O(1) track
                 else:
                     box_id = box.get("box_id", f"__idx_{i}")
                     item_key = (card_key, box_id)
@@ -239,6 +246,7 @@ class ReviewScreen(QWidget):
                         seen_item_keys.add(item_key)
                         if is_due_today(box):
                             self._items.append((card, i, box))
+                            self._queued_ids.add(box_id)           # O(1) track
 
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
         self._idx  = 0
@@ -258,6 +266,15 @@ class ReviewScreen(QWidget):
         super().closeEvent(e)
 
     def _load_item(self):
+        # [O(1) FIX] Skip tombstoned (deleted) boxes
+        while self._idx < len(self._items):
+            _, b, _ = self._items[self._idx]
+            bid = b[1] if isinstance(b, tuple) else (b if isinstance(b, str) else "")
+            if bid and bid in self._deleted_ids:
+                self._idx += 1
+            else:
+                break
+
         if self._idx >= len(self._items):
             self._finish()
             return
@@ -727,82 +744,88 @@ class ReviewScreen(QWidget):
         self.canvas._show_toast(f"📋 Debug report printed to terminal  [{trigger}]")
 
     def _edit_current_card(self):
-        if not (0 <= self._idx < len(self._items)):
+        # After session complete _idx == len(_items), use last card
+        idx = self._idx
+        if idx >= len(self._items):
+            idx = len(self._items) - 1
+        if not (0 <= idx < len(self._items)):
             return
-        card, box_idx, sm2_obj = self._items[self._idx]
-        scroll_pos = self._canvas_scroll.verticalScrollBar().value()
-
-        # [FIX] Pass current page number so editor opens on same page as review
+        card, box_idx, sm2_obj = self._items[idx]
+        scroll_pos   = self._canvas_scroll.verticalScrollBar().value()
         current_page = self.canvas.get_current_page(scroll_pos)
 
-        # --- SNAPSHOT: editor kholne se pehle har box ka group_id save karo ---
-        before_snapshot = {
-            b.get("box_id", f"__i_{i}"): b.get("group_id", "")
-            for i, b in enumerate(card.get("boxes", []))
-        }
+        # ── O(1) snapshot: box_ids before edit ────────────────────────────────
+        before_ids = {b.get("box_id", ""): b.get("group_id", "")
+                      for b in card.get("boxes", []) if b.get("box_id")}
 
         dlg = CardEditorDialog(None, card=dict(card), data=self._data,
                                initial_scroll=scroll_pos, initial_page=current_page)
         result = dlg.exec_()
 
-        if result == QDialog.Accepted:
-            edited = dlg.get_card()
-            card.update(edited)
-            if self._data:
-                store.mark_dirty()  # 🔒 DirtyStore
+        if result != QDialog.Accepted:
+            self._reload_current_canvas()
+            return
 
-            # --- COMPARE: kya koi box ka group_id badla? ---
-            after_snapshot = {
-                b.get("box_id", f"__i_{i}"): b.get("group_id", "")
-                for i, b in enumerate(card.get("boxes", []))
-            }
+        edited = dlg.get_card()
 
-            if before_snapshot != after_snapshot:
-                # Sirf tabhi rebuild karo jab group structure change hua ho
-                self._rebuild_items_for_card(card)
+        # [FIX] Preserve SM-2 data on existing boxes — editor returns fresh box
+        # dicts that don't have SM-2 fields. If we do card.update(edited) blindly,
+        # the new boxes list replaces the old one and all SM-2 state is lost.
+        # Solution: merge SM-2 fields from old boxes into edited boxes by box_id.
+        old_boxes_by_id = {b.get("box_id", ""): b for b in card.get("boxes", [])}
+        SM2_KEYS = ("sched_state", "sched_step", "sm2_interval", "sm2_ease",
+                    "sm2_due", "sm2_last_quality", "sm2_repetitions", "reviews")
+        for new_box in edited.get("boxes", []):
+            bid = new_box.get("box_id", "")
+            if bid and bid in old_boxes_by_id:
+                old = old_boxes_by_id[bid]
+                for k in SM2_KEYS:
+                    if k in old:
+                        new_box[k] = old[k]   # preserve SM-2 state
 
-        self._reload_current_canvas()
+        card.update(edited)
+        if self._data:
+            store.mark_dirty()
 
-    def _rebuild_items_for_card(self, changed_card):
-        """
-        Sirf ek specific card ke items ko _items list mein rebuild karo.
-        Baaki saare cards ke items bilkul untouched rahenge.
+        after_ids = {b.get("box_id", ""): b.get("group_id", "")
+                     for b in card.get("boxes", []) if b.get("box_id")}
 
-        Trigger: sirf tab jab editor mein kisi box ka group_id change hua ho.
-        """
-        card_key = id(changed_card)
-
-        # Step 1: Is card ke purane saare entries _items se hata do
-        self._items = [
-            (c, b, s) for (c, b, s) in self._items
-            if id(c) != card_key
-        ]
-
-        # Step 2: Is card ke liye fresh items banao (same logic as __init__)
-        boxes = changed_card.get("boxes", [])
-        new_items = []
-        seen_groups = set()
-
-        if len(boxes) == 0:
-            new_items.append((changed_card, None, changed_card))
-        else:
-            for i, box in enumerate(boxes):
-                gid = box.get("group_id", "")
+        # ── O(1) detect deleted boxes → tombstone them ─────────────────────────
+        for bid in before_ids:
+            if bid not in after_ids:
+                self._deleted_ids.add(bid)
+                gid = before_ids[bid]
                 if gid:
-                    if gid not in seen_groups:
-                        seen_groups.add(gid)
-                        if is_due_today(box):
-                            new_items.append((changed_card, ("group", gid), box))
-                else:
-                    if is_due_today(box):
-                        new_items.append((changed_card, i, box))
+                    self._deleted_ids.add(gid)
 
-        # Step 3: Current index ke position par naye items insert karo
-        # (taaki review sequence buri tarah na toote)
-        self._items[self._idx:self._idx] = new_items
+        # ── O(1) detect new boxes → add only them to queue ────────────────────
+        seen_new_groups = set()
+        for box in card.get("boxes", []):
+            bid = box.get("box_id", "")
+            gid = box.get("group_id", "")
+            track_id = gid if gid else bid
+            if not track_id:
+                continue
+            if track_id in self._queued_ids:
+                continue
+            if track_id in self._deleted_ids:
+                continue
+            sm2_init(box)
+            self._queued_ids.add(track_id)
+            if gid:
+                if gid not in seen_new_groups:
+                    seen_new_groups.add(gid)
+                    self._items.append((card, ("group", gid), box))
+            else:
+                i = card.get("boxes", []).index(box)
+                self._items.append((card, i, box))
 
-        # Step 4: Queue panel refresh karo
+        # If session was done and new items added, resume from first new item
+        if self._idx >= len(self._items):
+            self._idx = max(0, len(self._items) - 1)
+
         self._rebuild_queue()
+        self._reload_current_canvas()
 
     def _reload_current_canvas(self):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
@@ -983,11 +1006,21 @@ class ReviewScreen(QWidget):
 
         sched_update(sm2_obj, quality)
 
+        # [FIX] For grouped boxes, apply same SM-2 update to ALL boxes in the group
+        # so they all get the same due date and state. Without this, only the first
+        # box of the group gets updated — the rest stay "new" and reappear next session.
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            for box in card.get("boxes", []):
+                if box.get("group_id") == gid and box is not sm2_obj:
+                    sched_update(box, quality)
+
         if box_idx is None:
             card["reviews"] = sm2_obj.get("reviews", 0)
 
         if self._data:
             store.mark_dirty()
+            store.save_if_dirty()  # [FIX] Save immediately — don't wait for autosave
 
         state = sm2_obj.get("sched_state", "review")
 
@@ -1258,9 +1291,29 @@ class DeckTree(QWidget):
         self._last_drop_pos  = None
         self._last_drop_item = None
         self._last_drop_ctrl = False
+        self._blink_state    = False
         self._ensure_ids()
         self._setup_ui()
+        # Blink timer — toggles due badge color every 800ms
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._blink_tick)
+        self._blink_timer.start(800)
         self.refresh()
+
+    def _blink_tick(self):
+        """Toggle blink state and repaint all due items."""
+        self._blink_state = not self._blink_state
+        def _walk(item):
+            due_str = item.data(0, Qt.UserRole + 1)
+            if due_str and int(due_str) > 0:
+                name  = item.data(0, Qt.UserRole + 2)
+                due   = int(due_str)
+                badge = f"🔴{due}" if self._blink_state else f"⭕{due}"
+                item.setText(0, f"  📂  {name}  {badge}")
+            for i in range(item.childCount()):
+                _walk(item.child(i))
+        for i in range(self.tree.topLevelItemCount()):
+            _walk(self.tree.topLevelItem(i))
 
     def _ensure_ids(self):
         counter = [0]
@@ -1350,10 +1403,19 @@ class DeckTree(QWidget):
                     if is_due_today(b): return True
             return False
 
-        due   = sum(1 for c in deck.get("cards", []) if _card_due(c))
+        def _total_due(d):
+            """Recursively count due cards in this deck and all children."""
+            total = sum(1 for c in d.get("cards", []) if _card_due(c))
+            for child in d.get("children", []):
+                total += _total_due(child)
+            return total
+
+        due   = _total_due(deck)
         badge = f"🔴{due}" if due else "✅"
         item  = QTreeWidgetItem([f"  📂  {deck['name']}  {badge}"])
-        item.setData(0, Qt.UserRole, deck.get("_id"))
+        item.setData(0, Qt.UserRole,     deck.get("_id"))
+        item.setData(0, Qt.UserRole + 1, str(due))           # for blink timer
+        item.setData(0, Qt.UserRole + 2, deck['name'])       # for blink timer
         for child in deck.get("children", []):
             item.addChild(self._make_item(child))
         return item
@@ -2129,9 +2191,21 @@ class DeckView(QWidget):
         if dlg.exec_() == QDialog.Accepted:
             c = dlg.get_card()
             c.pop("_auto_subdeck", None)
+            # [FIX] Preserve SM-2 data — editor returns fresh box dicts without
+            # SM-2 fields. Merge SM-2 state from old boxes into new ones by box_id.
+            old_boxes_by_id = {b.get("box_id", ""): b for b in cards[idx].get("boxes", [])}
+            SM2_KEYS = ("sched_state", "sched_step", "sm2_interval", "sm2_ease",
+                        "sm2_due", "sm2_last_quality", "sm2_repetitions", "reviews")
+            for new_box in c.get("boxes", []):
+                bid = new_box.get("box_id", "")
+                if bid and bid in old_boxes_by_id:
+                    old = old_boxes_by_id[bid]
+                    for k in SM2_KEYS:
+                        if k in old:
+                            new_box[k] = old[k]
             cards[idx] = c
             self._refresh()
-            store.mark_dirty()  # 🔒 DirtyStore
+            store.mark_dirty()
 
     def _delete_card(self):
         if not self.deck:
@@ -2207,8 +2281,13 @@ class DeckView(QWidget):
         def _on_finished():
             if not _save_done[0]:
                 _save_done[0] = True
-                store.mark_dirty()  # 🔒 DirtyStore
-            self._refresh()
+                store.mark_dirty()
+            # [FIX] Refresh the full HomeScreen so deck tree updates due badges
+            home = self._find_home()
+            if home:
+                home.refresh()
+            else:
+                self._refresh()
             win.close()
 
         original_close = win.closeEvent
