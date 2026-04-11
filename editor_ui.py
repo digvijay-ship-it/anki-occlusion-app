@@ -885,9 +885,6 @@ class OcclusionCanvas(QWidget):
                 p.setBrush(QBrush(color))
                 p.setPen(QPen(QColor(text_col), 2))
                 (p.drawEllipse if shape=="ellipse" else p.drawRect)(local)
-                p.setPen(QPen(QColor(text_col), 1))
-                p.setFont(QFont("Segoe UI", 10, QFont.Bold))
-                p.drawText(local, Qt.AlignCenter, lbl)
             else:
                 p.setPen(QPen(QColor(C_GREEN), 2)); p.setBrush(Qt.NoBrush)
                 (p.drawEllipse if shape=="ellipse" else p.drawRect)(local)

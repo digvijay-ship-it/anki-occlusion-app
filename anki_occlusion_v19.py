@@ -981,32 +981,11 @@ class ReviewScreen(QWidget):
             self._pdf_loader_thread.quit()
             self._pdf_loader_thread.wait(300)
 
-        self._pdf_loader_thread     = PdfLoaderThread(path, parent=self)
-        self._pending_review_card   = card
+        self._pdf_loader_thread      = PdfLoaderThread(path, parent=self)
+        self._pending_review_card    = card
         self._pending_review_box_idx = box_idx
-
-        # [FIX] Show first chunk instantly as pages arrive
-        self._pdf_loader_thread.pages_ready.connect(self._on_review_pages_chunk)
         self._pdf_loader_thread.done.connect(self._on_review_pages_ready)
         self._pdf_loader_thread.start()
-
-        # Show loading toast immediately
-        try:
-            _doc = fitz.open(path)
-            total = len(_doc)
-            _doc.close()
-        except Exception:
-            total = "?"
-        self.canvas._show_toast(f"⏳ Loading PDF... 0/{total} pages")
-        self._pdf_total_pages = total
-
-    def _on_review_pages_chunk(self, pages, loaded, total):
-        """Show first pages as soon as first chunk arrives — don't wait for full load."""
-        card    = self._pending_review_card
-        box_idx = self._pending_review_box_idx
-        if pages:
-            self._apply_canvas_pages(card, box_idx, pages)
-        self.canvas._show_toast(f"⏳ Loading PDF... {loaded}/{total} pages")
 
     def _on_review_pages_ready(self, pages, err):
         if not pages or err:
@@ -1014,7 +993,6 @@ class ReviewScreen(QWidget):
         card    = self._pending_review_card
         box_idx = self._pending_review_box_idx
         self._apply_canvas_pages(card, box_idx, pages)
-        self.canvas._show_toast(f"✅ PDF loaded — {len(pages)} pages")
 
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
