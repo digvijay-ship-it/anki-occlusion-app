@@ -298,17 +298,26 @@ class _MaskRegistry:
     def mask_bytes_for_pdf(self, pdf_path: str) -> int:
         total = 0
         for canvas in self._map.get(pdf_path, set()):
-            layer = getattr(canvas, "_mask_cache_layer", None)
-            if layer and not layer.isNull():
-                total += layer.width() * layer.height() * 4
+            try:
+                layer = getattr(canvas, "_mask_cache_layer", None)
+                if layer and not layer.isNull():
+                    total += layer.width() * layer.height() * 4
+            except RuntimeError:
+                pass
         return total
 
     def invalidate_masks_for_pdf(self, pdf_path: str):
         """Force all canvases showing this PDF to rebuild their mask layer."""
+        dead = set()
         for canvas in self._map.get(pdf_path, set()):
-            canvas._mask_cache_layer = None
-            canvas._mask_cache_dirty = True
-            canvas.update()
+            try:
+                canvas._mask_cache_layer = None
+                canvas._mask_cache_dirty = True
+                canvas.update()
+            except RuntimeError:
+                dead.add(canvas)
+        if dead:
+            self._map[pdf_path] -= dead
 
     def all_registered_pdfs(self) -> set:
         return set(self._map.keys())

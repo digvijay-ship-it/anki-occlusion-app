@@ -265,6 +265,42 @@ class ReviewScreen(QWidget):
             
         super().closeEvent(e)
 
+    def _toggle_chrome(self):
+        """Right-click on canvas — show/hide header and hint bars."""
+        visible = self._hdr_widget.isVisible()
+        self._hdr_widget.setVisible(not visible)
+        self._hint_label.setVisible(not visible)
+
+    def _show_overlay(self, overlay):
+        """Show a floating overlay and reposition it."""
+        self._reposition_overlays()
+        overlay.show()
+        overlay.raise_()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._reposition_overlays()
+
+    def _reposition_overlays(self):
+        """Pin overlays to bottom-center of canvas scroll area."""
+        ref = self._canvas_scroll
+        w = ref.width()
+        h = ref.height()
+
+        # Rating frame — flush to bottom
+        self._rating_frame.adjustSize()
+        sh = self._rating_frame.sizeHint()
+        rw = max(sh.width(), 10)
+        rh = max(sh.height(), 48)
+        self._rating_frame.setGeometry((w - rw) // 2, h - rh - 2, rw, rh)
+
+        # Reveal bar — just above where rating would be
+        self._reveal_bar.adjustSize()
+        sh2 = self._reveal_bar.sizeHint()
+        bw = max(sh2.width(), 10)
+        bh = max(sh2.height(), 44)
+        self._reveal_bar.setGeometry((w - bw) // 2, h - bh - 2, bw, bh)
+
     def _load_item(self):
         # [O(1) FIX] Skip tombstoned (deleted) boxes
         while self._idx < len(self._items):
@@ -289,15 +325,19 @@ class ReviewScreen(QWidget):
         self.lbl_sm2.setText(sm2_badge(sm2_obj))
         self.lbl_title.setText(card.get("title", "Untitled"))
 
-        # 🚀 SM-2 SIMULATION UPDATE (Fix for the '?' bug)
-        # Ye part calculate karega ki Again/Good/Easy dabane par next date kya hogi
+        # 🚀 SM-2 SIMULATION UPDATE
         previews = _fmt_due_interval(sm2_obj)
-        for lbl, q in self._prev_lbls:
+        LABELS = ["Again", "Hard", "Good", "Easy"]
+        for (btn, q), (orig_lbl, _, _), color_lbl in zip(self._prev_lbls, self.RATINGS, LABELS):
             val = previews.get(q, "?")
-            lbl.setText(f"→ {val}")
+            # orig_lbl e.g. "1  🔁 Again" → parts[0]="1", parts[1]="🔁"
+            parts = orig_lbl.split()
+            icon = parts[1] if len(parts) > 1 else ""
+            btn.setText(f"{parts[0]} {icon}  {val}  {color_lbl}")
 
         self._reload_current_canvas()
         self.canvas.setFocus() # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
+        QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
 
     def keyPressEvent(self, e):
         key  = e.key()
@@ -370,11 +410,11 @@ class ReviewScreen(QWidget):
                 self.canvas._boxes[box_idx]["revealed"] = True
                 self.canvas._redraw()
         self._reveal_bar.hide()
-        self._rating_frame.show()
+        self._show_overlay(self._rating_frame)
 
     def _set_fullscreen_ui(self, fullscreen: bool):
         self._hdr_widget.setVisible(not fullscreen)
-        self.lbl_title.setVisible(not fullscreen)
+        self.lbl_title.setVisible(False)   # always hidden
         self._hint_label.setVisible(not fullscreen)
 
     def _setup_ui(self):
@@ -456,6 +496,7 @@ class ReviewScreen(QWidget):
         hdr.addWidget(b_exit)
         L.addWidget(hdr_w)
         self._hdr_widget = hdr_w
+        self._hdr_widget.hide()          # hidden by default, right-click to toggle
 
         self.lbl_title = QLabel("")
         self.lbl_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
@@ -463,6 +504,7 @@ class ReviewScreen(QWidget):
             f"color:{C_ACCENT};background:{C_BG};"
             f"padding:4px 16px;border-bottom:1px solid {C_BORDER};")
         self.lbl_title.setFixedHeight(30)
+        self.lbl_title.hide()
         L.addWidget(self.lbl_title)
 
         self._canvas_scroll = _ZoomableScrollArea()
@@ -478,6 +520,7 @@ class ReviewScreen(QWidget):
             f"QScrollBar::handle:horizontal{{background:{C_BORDER};border-radius:4px;}}")
         self.canvas = OcclusionCanvas()
         self.canvas.set_mode("review")
+        self.canvas.right_clicked.connect(self._toggle_chrome)
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
 
@@ -522,66 +565,7 @@ class ReviewScreen(QWidget):
             f"border-top:1px solid {C_BORDER};padding:2px;")
         bl.addWidget(hint)
         self._hint_label = hint
-
-        self._reveal_bar = QFrame()
-        self._reveal_bar.setStyleSheet(f"QFrame{{background:{C_BG};}}")
-        rb_l = QHBoxLayout(self._reveal_bar)
-        rb_l.setContentsMargins(0, 10, 0, 10)
-        b_rev = QPushButton("👁  Show Answer  [Space]")
-        b_rev.setStyleSheet(
-            f"background:{C_SURFACE};color:{C_TEXT};"
-            f"border:1px solid {C_BORDER};border-radius:8px;"
-            f"padding:10px 60px;font-size:14px;font-weight:bold;")
-        b_rev.clicked.connect(self._reveal_current)
-        rb_l.addStretch(); rb_l.addWidget(b_rev); rb_l.addStretch()
-        bl.addWidget(self._reveal_bar)
-
-        self._rating_frame = QFrame()
-        self._rating_frame.setStyleSheet(
-            f"QFrame{{background:{C_BG};border-top:1px solid {C_BORDER};}}")
-        rfl = QVBoxLayout(self._rating_frame)
-        rfl.setContentsMargins(12, 8, 12, 12); rfl.setSpacing(4)
-
-        lq = QLabel("🧠 How well did you remember?")
-        lq.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        lq.setAlignment(Qt.AlignCenter)
-        lq.setStyleSheet(f"color:{C_SUBTEXT};")
-        rfl.addWidget(lq)
-
-        br = QHBoxLayout(); br.setSpacing(8)
-        RATING_STYLES = {
-            "danger":  "background:#5C2A2A;color:#FFB3B3;border:1px solid #7A3535;"
-                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
-            "hard":    "background:#5C3D1A;color:#FFCC88;border:1px solid #7A5225;"
-                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
-            "success": "background:#1E4A2A;color:#88DDAA;border:1px solid #2A6B3C;"
-                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
-            "warning": "background:#4A4A1A;color:#E8E888;border:1px solid #66661F;"
-                       "border-radius:8px;padding:10px 0;font-size:13px;font-weight:bold;",
-        }
-        self._rating_btns = []
-        for lbl, obj, q in self.RATINGS:
-            btn = QPushButton(lbl)
-            btn.setStyleSheet(RATING_STYLES.get(obj, ""))
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.setMinimumHeight(48)
-            btn.clicked.connect(lambda _, qq=q: self._rate(qq))
-            br.addWidget(btn)
-            self._rating_btns.append(btn)
-        rfl.addLayout(br)
-
-        prev_row = QHBoxLayout(); prev_row.setSpacing(6)
-        self._prev_lbls = []
-        for _, _, q in self.RATINGS:
-            pl = QLabel("→?")
-            pl.setAlignment(Qt.AlignCenter)
-            pl.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
-            prev_row.addWidget(pl)
-            self._prev_lbls.append((pl, q))
-        rfl.addLayout(prev_row)
-
-        self._rating_frame.hide()
-        bl.addWidget(self._rating_frame)
+        self._hint_label.hide()          # hidden by default, right-click to toggle
 
         # ── Waiting state bar (shown when learning cards are pending) ──
         self._wait_bar = QFrame()
@@ -603,6 +587,57 @@ class ReviewScreen(QWidget):
         bl.addWidget(self._wait_bar)
 
         L.addWidget(bottom_w)
+
+        # ── Floating overlay: Show Answer button ──────────────────────────────
+        self._reveal_bar = QFrame(self._canvas_scroll)
+        self._reveal_bar.setStyleSheet("QFrame{background:transparent;border:none;}")
+        rb_l = QHBoxLayout(self._reveal_bar)
+        rb_l.setContentsMargins(0, 0, 0, 20)
+        rb_l.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
+        b_rev = QPushButton("👁  Show Answer  [Space]")
+        b_rev.setStyleSheet(
+            f"background:rgba(42,42,62,220);color:{C_TEXT};"
+            f"border:1px solid {C_BORDER};border-radius:8px;"
+            f"padding:8px 40px;font-size:13px;font-weight:bold;")
+        b_rev.clicked.connect(self._reveal_current)
+        rb_l.addWidget(b_rev)
+        self._reveal_bar.hide()
+
+        # ── Floating overlay: Rating buttons ─────────────────────────────────
+        self._rating_frame = QFrame(self._canvas_scroll)
+        self._rating_frame.setStyleSheet("QFrame{background:transparent;border:none;}")
+        rfl = QHBoxLayout(self._rating_frame)
+        rfl.setContentsMargins(0, 0, 0, 0)
+        rfl.setSpacing(8)
+        rfl.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        RATING_COLORS = {
+            "danger":  ("#FF5555", "#FF8888", "#CC2222"),
+            "hard":    ("#E08030", "#FFB060", "#B05010"),
+            "success": ("#50FA7B", "#80FFB0", "#20C040"),
+            "warning": ("#4DC4FF", "#88DDFF", "#1A88CC"),
+        }
+
+        self._rating_btns = []
+        self._prev_lbls   = []
+        LABELS = ["Again", "Hard", "Good", "Easy"]
+        for (orig_lbl, obj, q), color_lbl in zip(self.RATINGS, LABELS):
+            bg, fg_hover, hv = RATING_COLORS.get(obj, ("#555","#FFF","#333"))
+            # Extract icon+number prefix from orig_lbl e.g. "1  🔁 Again"
+            btn = QPushButton(f"{orig_lbl.split()[0]}  {orig_lbl.split()[1]}  ?  {color_lbl}")
+            btn.setFixedHeight(40)
+            btn.setMinimumWidth(140)
+            btn.setStyleSheet(
+                f"QPushButton{{background:{bg};color:#1E1E2E;"
+                f"border:none;border-radius:8px;"
+                f"font-size:13px;font-weight:bold;padding:0 16px;}}"
+                f"QPushButton:hover{{background:{fg_hover};color:#111;}}")
+            btn.clicked.connect(lambda _, qq=q: self._rate(qq))
+            rfl.addWidget(btn)
+            self._rating_btns.append(btn)
+            self._prev_lbls.append((btn, q))
+
+        self._rating_frame.hide()
 
         self._mid_row_widget = self._reveal_bar
 
@@ -885,7 +920,7 @@ class ReviewScreen(QWidget):
                     self.canvas.set_mode("review")
                     self.canvas._show_toast(
                         "PDF not found — Edit Card > Relink PDF to fix")
-                self._reveal_bar.show()
+                self._show_overlay(self._reveal_bar)
                 self._rating_frame.hide()
                 self.setFocus()
                 return
@@ -897,7 +932,7 @@ class ReviewScreen(QWidget):
         else:
             self.canvas.load_pixmap(QPixmap())
 
-        self._reveal_bar.show()
+        self._show_overlay(self._reveal_bar)
         self._rating_frame.hide()
         self.setFocus()
         
@@ -967,12 +1002,15 @@ class ReviewScreen(QWidget):
             self.canvas.set_target_box(box_idx if box_idx is not None else -1)
 
         # 5. Always reset UI state — Show Answer bar visible, rating hidden
-        self._reveal_bar.show()
+        self._show_overlay(self._reveal_bar)
         self._rating_frame.hide()
 
         # 6. Zoom fit + center (deferred so viewport geometry is final)
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(0, lambda: (self._zoom_fit(), self._center_on_target()))
+
+        # 7. Rebuild queue now that _page_tops is populated with real page positions
+        QTimer.singleShot(50, self._rebuild_queue)
         
     def _start_review_pdf_thread(self, card, box_idx):
         path = card.get("pdf_path", "")
@@ -981,11 +1019,32 @@ class ReviewScreen(QWidget):
             self._pdf_loader_thread.quit()
             self._pdf_loader_thread.wait(300)
 
-        self._pdf_loader_thread      = PdfLoaderThread(path, parent=self)
-        self._pending_review_card    = card
+        self._pdf_loader_thread     = PdfLoaderThread(path, parent=self)
+        self._pending_review_card   = card
         self._pending_review_box_idx = box_idx
+
+        # [FIX] Show first chunk instantly as pages arrive
+        self._pdf_loader_thread.pages_ready.connect(self._on_review_pages_chunk)
         self._pdf_loader_thread.done.connect(self._on_review_pages_ready)
         self._pdf_loader_thread.start()
+
+        # Show loading toast immediately
+        try:
+            _doc = fitz.open(path)
+            total = len(_doc)
+            _doc.close()
+        except Exception:
+            total = "?"
+        self.canvas._show_toast(f"⏳ Loading PDF... 0/{total} pages")
+        self._pdf_total_pages = total
+
+    def _on_review_pages_chunk(self, pages, loaded, total):
+        """Show first pages as soon as first chunk arrives — don't wait for full load."""
+        card    = self._pending_review_card
+        box_idx = self._pending_review_box_idx
+        if pages:
+            self._apply_canvas_pages(card, box_idx, pages)
+        self.canvas._show_toast(f"⏳ Loading PDF... {loaded}/{total} pages")
 
     def _on_review_pages_ready(self, pages, err):
         if not pages or err:
@@ -993,6 +1052,7 @@ class ReviewScreen(QWidget):
         card    = self._pending_review_card
         box_idx = self._pending_review_box_idx
         self._apply_canvas_pages(card, box_idx, pages)
+        self.canvas._show_toast(f"✅ PDF loaded — {len(pages)} pages")
 
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
@@ -1056,13 +1116,44 @@ class ReviewScreen(QWidget):
         """Rebuild the right-side queue list — reflects current order + states."""
         self._queue_list.clear()
         for i, (card, box_idx, sm2_obj) in enumerate(self._items):
-            title = card.get("title", "Untitled")
+            # ── Page number ───────────────────────────────────────────────────
+            # Derive from box Y-center vs canvas _page_tops if available
+            page_str = ""
+            boxes = card.get("boxes", [])
             if isinstance(box_idx, tuple) and box_idx[0] == "group":
-                label = f"{title}  [grp]"
-            elif box_idx is None:
-                label = title
+                gid = box_idx[1]
+                box_data = next((b for b in boxes if b.get("group_id") == gid), None)
+            elif isinstance(box_idx, int) and 0 <= box_idx < len(boxes):
+                box_data = boxes[box_idx]
             else:
-                label = f"{title}  #{box_idx + 1}"
+                box_data = None
+
+            if box_data:
+                r = box_data.get("rect")
+                if r and self.canvas._page_tops:
+                    cy = r[1] + r[3] / 2  # image-space Y center
+                    page = 0
+                    for pi, top in enumerate(self.canvas._page_tops):
+                        if cy >= top:
+                            page = pi
+                        else:
+                            break
+                    page_str = f"p.{page + 1} · "
+
+            # ── Box label ─────────────────────────────────────────────────────
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                # Find box number of first box in group
+                grp_num = next(
+                    (j + 1 for j, b in enumerate(boxes) if b.get("group_id") == gid),
+                    "?"
+                )
+                label = f"{page_str}#{grp_num} [grp]"
+            elif box_idx is None:
+                label = f"{page_str}card"
+            else:
+                label = f"{page_str}#{box_idx + 1}"
+
             item = QListWidgetItem(label)
             if i < self._idx:
                 state = "done"
@@ -1229,7 +1320,7 @@ class ReviewScreen(QWidget):
             earliest_idx = min(due_now, key=lambda x: x[1].get("sm2_due", ""))[0]
             self._idx = earliest_idx
             self._wait_bar.hide()
-            self._reveal_bar.show()
+            self._show_overlay(self._reveal_bar)
             self._load_item()
         else:
             self._finish()   # re-evaluate wait time
@@ -2264,45 +2355,9 @@ class DeckView(QWidget):
         self._start_review(sub)
 
     def _start_review(self, cards):
-        _save_done = [False]
-
-        main_win = self.window()
-
-        # Disable review buttons to prevent double-start
-        self.btn_due.setEnabled(False)
-        self.btn_all.setEnabled(False)
-
-        # [FIX] Don't replace central widget — use a stacked container instead
-        # so HomeScreen is never deleted by Qt
-        from PyQt5.QtWidgets import QStackedWidget
-        stack = main_win.centralWidget()
-
-        # If not already a stack, wrap HomeScreen in one
-        if not isinstance(stack, QStackedWidget):
-            home = stack
-            stack = QStackedWidget(main_win)
-            stack.addWidget(home)
-            main_win.setCentralWidget(stack)
-
-        home = stack.widget(0)
-        rev  = ReviewScreen(cards, data=self._data, parent=stack)
-        stack.addWidget(rev)
-        stack.setCurrentWidget(rev)
-
-        def _on_finished():
-            if not _save_done[0]:
-                _save_done[0] = True
-                store.mark_dirty()
-                store.save_if_dirty()
-            # Switch back to HomeScreen
-            stack.setCurrentWidget(home)
-            stack.removeWidget(rev)
-            rev.deleteLater()
-            home.refresh()
-            self.btn_due.setEnabled(True)
-            self.btn_all.setEnabled(True)
-
-        rev.finished.connect(_on_finished)
+        home = self._find_home()
+        if home:
+            home.show_review(cards, self._data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2638,6 +2693,7 @@ class HomeScreen(QWidget):
         tl.addSpacing(4)
         tl.addWidget(btn_help)
         tl.addWidget(btn_about)
+        self._top_bar = top
         L.addWidget(top)
 
         split = QSplitter(Qt.Horizontal)
@@ -2652,6 +2708,64 @@ class HomeScreen(QWidget):
         split.addWidget(self._cache_widget)       # ← ADD
         split.setSizes([340, 760, 220])           # ← CHANGE (was [340, 860])
         L.addWidget(split, stretch=1)
+
+    def show_review(self, cards, data):
+        """Replace the DeckView panel with ReviewScreen inline."""
+        _save_done = [False]
+        split = self._get_splitter()
+        if split is None:
+            return
+
+        # Hide deck_tree during review, store splitter sizes to restore later
+        self._pre_review_sizes = split.sizes()
+        self.deck_tree.hide()
+        self._top_bar.hide()
+        self.window().statusBar().hide()
+
+        rev = ReviewScreen(cards, data=data, parent=self)
+        self._active_review = rev
+
+        def _on_finished():
+            if not _save_done[0]:
+                _save_done[0] = True
+                store.mark_dirty()
+            self.hide_review()
+
+        rev.finished.connect(_on_finished)
+
+        # Replace index 1 (deck_view) with the ReviewScreen
+        split.replaceWidget(1, rev)
+        rev.show()
+        # Give most space to review, hide cache panel
+        split.setSizes([0, split.width(), 0])
+        # Give keyboard focus to canvas immediately so Space works without clicking
+        QTimer.singleShot(0, rev.canvas.setFocus)
+
+    def hide_review(self):
+        """Restore DeckView after review ends."""
+        split = self._get_splitter()
+        if split is None:
+            return
+        rev = getattr(self, "_active_review", None)
+        if rev:
+            split.replaceWidget(1, self.deck_view)
+            rev.setParent(None)
+            rev.deleteLater()
+            self._active_review = None
+        self.deck_tree.show()
+        self._top_bar.show()
+        self.window().statusBar().show()
+        # Restore original sizes
+        sizes = getattr(self, "_pre_review_sizes", [340, 760, 220])
+        split.setSizes(sizes)
+        self.refresh()
+
+    def _get_splitter(self):
+        """Return the main QSplitter child."""
+        for child in self.children():
+            if isinstance(child, QSplitter):
+                return child
+        return None
 
     def _on_deck_selected(self, deck):
         self.deck_view.load_deck(deck, self._data)

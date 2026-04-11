@@ -139,6 +139,7 @@ class OcclusionCanvas(QWidget):
       "screen-space" — image-space × _scale (what Qt draws)
     """
     boxes_changed = pyqtSignal(list)
+    right_clicked  = pyqtSignal()        # emitted on right-click in review mode
 
     TOOLS     = ("select", "rect", "ellipse", "text")
     _HANDLE_R = 6
@@ -829,11 +830,21 @@ class OcclusionCanvas(QWidget):
         if gid:
             members = {i for i,b in enumerate(self._boxes)
                        if b.get("group_id","") == gid}
-            if add_to_selection: self._selected_indices |= members
-            else:                self._selected_indices  = members
+            if add_to_selection:
+                # Keep existing selection, add previous _selected_idx too
+                if self._selected_idx >= 0:
+                    self._selected_indices.add(self._selected_idx)
+                self._selected_indices |= members
+            else:
+                self._selected_indices = members
         else:
-            if add_to_selection: self._selected_indices.add(hit)
-            else:                self._selected_indices = set()
+            if add_to_selection:
+                # Keep existing selection, add previous _selected_idx too
+                if self._selected_idx >= 0:
+                    self._selected_indices.add(self._selected_idx)
+                self._selected_indices.add(hit)
+            else:
+                self._selected_indices = set()
         self._selected_idx = hit
         self._invalidate_mask_cache(); self.update()
         self.boxes_changed.emit(self.get_boxes())
@@ -1028,6 +1039,9 @@ class OcclusionCanvas(QWidget):
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
                 self._invalidate_mask_cache(); self.update(); return
             e.ignore(); return
+
+        if self._mode == "review" and e.button() == Qt.RightButton:
+            self.right_clicked.emit(); return
 
         if self._mode != "edit" or e.button() != Qt.LeftButton: return
 
