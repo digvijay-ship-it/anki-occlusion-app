@@ -311,7 +311,7 @@ class ReviewScreen(QWidget):
                 win.showFullScreen()
                 self._set_fullscreen_ui(True)
         elif key == Qt.Key_Escape:
-            self.window().close()
+            self.finished.emit()
         elif key == Qt.Key_Space:
             self._reveal_current()
             self._debug_report("Space (reveal)")
@@ -2288,37 +2288,43 @@ class DeckView(QWidget):
     def _start_review(self, cards):
         _save_done = [False]
 
-        win = QMainWindow(self)
-        win.setWindowTitle("Review Mode 🧠")
-        win.setMinimumSize(960, 730)
-        rev = ReviewScreen(cards, data=self._data, parent=win)
+        main_win = self.window()
+
+        # Disable review buttons to prevent double-start
+        self.btn_due.setEnabled(False)
+        self.btn_all.setEnabled(False)
+
+        # [FIX] Don't replace central widget — use a stacked container instead
+        # so HomeScreen is never deleted by Qt
+        from PyQt5.QtWidgets import QStackedWidget
+        stack = main_win.centralWidget()
+
+        # If not already a stack, wrap HomeScreen in one
+        if not isinstance(stack, QStackedWidget):
+            home = stack
+            stack = QStackedWidget(main_win)
+            stack.addWidget(home)
+            main_win.setCentralWidget(stack)
+
+        home = stack.widget(0)
+        rev  = ReviewScreen(cards, data=self._data, parent=stack)
+        stack.addWidget(rev)
+        stack.setCurrentWidget(rev)
 
         def _on_finished():
             if not _save_done[0]:
                 _save_done[0] = True
                 store.mark_dirty()
-            # [FIX] Refresh the full HomeScreen so deck tree updates due badges
-            home = self._find_home()
-            if home:
-                home.refresh()
-            else:
-                self._refresh()
-            win.close()
-
-        original_close = win.closeEvent
-        def _safe_close(e):
-            # [BUG 2 FIX] X button se close karne par bhi save karo
-            # Warna reviewed cards ki sm2_due changes lost ho jaati hain
-            if not _save_done[0]:
-                _save_done[0] = True
-                store.mark_dirty()  # 🔒 Force dirty — next autosave ya app-close pe save hoga
-            original_close(e)
-        win.closeEvent = _safe_close
+                store.save_if_dirty()
+            # Switch back to HomeScreen
+            stack.setCurrentWidget(home)
+            stack.removeWidget(rev)
+            rev.deleteLater()
+            home.refresh()
+            self.btn_due.setEnabled(True)
+            self.btn_all.setEnabled(True)
 
         rev.finished.connect(_on_finished)
-        win.setCentralWidget(rev)
-        win.setStyleSheet(SS)
-        win.showMaximized()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
