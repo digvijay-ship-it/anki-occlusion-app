@@ -70,6 +70,7 @@ import sys
 from datetime import datetime
 import math
 import os
+import time
 import fitz
 import copy
 import uuid
@@ -80,15 +81,22 @@ from PyQt5.QtWidgets import (
     QFormLayout, QTextEdit, QSizePolicy, QDialog, QApplication
 )
 from PyQt5.QtCore import (
-    Qt, QPointF, QRectF, QTimer, pyqtSignal, QSize, QEvent,
+    Qt, QPointF, QRectF, QTimer, pyqtSignal, QSize, QEvent, QUrl,
     QFileSystemWatcher
 )
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QBrush
+    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QBrush, QDesktopServices
 )
 
 from sm2_engine import sm2_init
-from pdf_engine import PDF_SUPPORT, PdfLoaderThread, pdf_page_to_pixmap
+from pdf_engine import (
+    PDF_SUPPORT,
+    PdfLoaderThread,
+    PdfOnDemandThread,
+    invalidate_pdf_skeleton,
+    load_pdf_skeleton,
+    pdf_page_to_pixmap,
+)
 from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
 from data_manager import new_box_id
 
@@ -97,6 +105,7 @@ C_MASK   = "#F7916A"
 C_ACCENT = "#7C6AF7"
 C_YELLOW = "#F1FA8C"
 PAGE_GAP = 12   # vertical gap between pages in image-space pixels
+EDITOR_PDF_ZOOM = 1.5
 
 _QT_MAX_PX = 32_767  # Qt GPU texture hard limit — QPixmap silently fails above this
 
@@ -379,163 +388,6 @@ class OcclusionCanvas(QWidget):
               f"placeholder({old_w}×{old_h}) → real({new_w}×{new_h})  "
               f"dims_match={dims_match}  inject_time={t_ms:.2f}ms")
 
-    # =========================================================================
-    #  LAYOUT
-    # =========================================================================
-
-    def _compute_layout(self):
-        """File: editor_ui.py -> Class: OcclusionCanvas -> Function: _compute_layout"""
-        if not self._pages:
-            self._page_tops = []
-            self._total_h = 0
-            self._total_w = 0
-            return
-        tops = []
-        y = 0
-        max_w = 0
-        for i, px in enumerate(self._pages):
-            tops.append(y)
-            max_w = max(max_w, px.width())
-            y += px.height() # ⚡ Har page ki height judna MUST hai
-            if i < len(self._pages) - 1:
-                y += PAGE_GAP # Pages ke beech ka space
-        self._page_tops = tops
-        self._total_h = y # ⚡ Yahi height scrollbar banati hai
-        self._total_w = max_w
-
-    def _canvas_wh(self):
-        """File: editor_ui.py -> Class: OcclusionCanvas -> Function: _canvas_wh"""
-        if self._px and not self._px.isNull():
-            return self._px.width(), self._px.height()
-        return self._total_w, self._total_h # PDF के लिए सही डायमेंशन यहाँ से मिलेंगे
-
-    def _resize_canvas(self):
-        """File: editor_ui.py -> Class: OcclusionCanvas -> Function: _resize_canvas"""
-        w, h = self._canvas_wh()
-        new_w = max(int(w * self._scale), 1)
-        new_h = max(int(h * self._scale), 1)
-        old_w = self.width()
-        old_h = self.height()
-        self.resize(new_w, new_h)
-        self.updateGeometry()
-        if new_h != old_h:
-            _scroll_y = None
-            try:
-                _sa = self.parent()
-                while _sa and not hasattr(_sa, "verticalScrollBar"):
-                    _sa = _sa.parent()
-                if _sa:
-                    _scroll_y = _sa.verticalScrollBar().value()
-            except Exception:
-                pass
-            print(f"[JITTER][resize_canvas] 📏 canvas resized: "
-                  f"{old_w}×{old_h} → {new_w}×{new_h}  "
-                  f"(Δh={new_h - old_h:+}px)  scroll_y={_scroll_y}px  "
-                  f"← THIS causes the viewport to jump")
-
-    def has_content(self):
-        return bool((self._px and not self._px.isNull()) or self._pages)
-
-    # =========================================================================
-    #  COORDINATE HELPERS
-    # =========================================================================
-
-    def _ip(self, pos) -> QPointF:
-        return QPointF(pos.x() / self._scale, pos.y() / self._scale)
-
-    def _sr(self, r: QRectF) -> QRectF:
-        return QRectF(r.x() * self._scale, r.y() * self._scale,
-                      r.width() * self._scale, r.height() * self._scale)
-
-    # =========================================================================
-    #  SCALED PAGE CACHE  — avoids re-scaling unchanged pages every paintEvent
-    # =========================================================================
-
-    def _get_scaled_page(self, idx: int) -> QPixmap:
-        cached_scale, cached_px = self._spx_cache.get(idx, (None, None))
-        if cached_scale == self._scale and cached_px is not None:
-            return cached_px
-        src  = self._pages[idx]
-        spx  = src.scaled(int(src.width()  * self._scale),
-                          int(src.height() * self._scale),
-                          Qt.KeepAspectRatio, Qt.FastTransformation)
-        self._spx_cache[idx] = (self._scale, spx)
-        return spx
-
-    # =========================================================================
-    #  PAINT EVENT  — the heart of the virtual renderer
-    # =========================================================================
-
-    def paintEvent(self, event):
-        """File: editor_ui.py -> Class: OcclusionCanvas -> FIXED paintEvent"""
-        p    = QPainter(self)
-        clip = event.rect()
-
-        # 1. Background Fill
-        p.fillRect(clip, QColor("#1E1E2E"))
-
-        # 2. Draw PDF Pages (Background Layer)
-        if self._px and not self._px.isNull():
-            # ⚡ FIX: Cache the scaled single-image pixmap, same as _get_scaled_page().
-            # Before this fix, _px was re-scaled from scratch on EVERY paintEvent
-            # (scroll, drag, ink stroke — everything). Now it's one drawPixmap() call.
-            cached_scale, cached_spx = self._spx_cache.get("_px", (None, None))
-            if cached_scale != self._scale or cached_spx is None:
-                cached_spx = self._px.scaled(
-                    int(self._px.width()  * self._scale),
-                    int(self._px.height() * self._scale),
-                    Qt.KeepAspectRatio, Qt.FastTransformation)
-                self._spx_cache["_px"] = (self._scale, cached_spx)
-            p.drawPixmap(0, 0, cached_spx)
-
-        elif self._pages:
-            sep_pen = QPen(QColor("#45475A"), 2)
-            for i, page_px in enumerate(self._pages):
-                scr_top = int(self._page_tops[i] * self._scale)
-                scr_h   = int(page_px.height()   * self._scale)
-                scr_bot = scr_top + scr_h
-
-                if scr_bot < clip.top(): continue
-                if scr_top > clip.bottom(): break
-
-                p.drawPixmap(0, scr_top, self._get_scaled_page(i))
-
-                if i < len(self._pages) - 1:
-                    sep_y = scr_bot + int(PAGE_GAP * self._scale) // 2
-                    p.setPen(sep_pen)
-                    p.drawLine(0, sep_y, self.width(), sep_y)
-
-        # 3. ⚡ MASK LAYER (Must be drawn AFTER pages to be visible)
-        # Cache is rebuilt via QTimer in _invalidate_mask_cache, never during paint
-
-        if self._mask_cache_layer and not self._mask_cache_layer.isNull():
-            # Fast path: GPU-cached QPixmap (normal PDFs within Qt 32 767px limit)
-            p.drawPixmap(0, 0, self._mask_cache_layer)
-        else:
-            # ✅ FIX (v21): Direct-draw fallback for large PDFs (sh > 32 767px).
-            # ⚡ FIX (v22): Respect clip rect — skip boxes whose screen rect is
-            # entirely outside the dirty region. Without this, a single scroll event
-            # redraws ALL masks on the entire canvas, not just the visible strip.
-            p.setRenderHint(QPainter.Antialiasing)
-            for i, b in enumerate(self._boxes):
-                if self._drag_op and i == self._selected_idx:
-                    continue   # skip dragged box — drawn live below
-                sr = self._sr(b["rect"])
-                if not clip.intersects(sr.toRect()):
-                    continue   # ⚡ off-screen mask — skip entirely
-                self._draw_box(p, i, b)
-
-        # 4. Interactive Elements (Top Layer)
-        p.setRenderHint(QPainter.Antialiasing)
-        if self._drag_op and self._selected_idx >= 0:
-            self._draw_box(p, self._selected_idx, self._boxes[self._selected_idx])
-
-        if self._drawing and not self._live_rect.isEmpty():
-            self._draw_live(p)
-
-        self._draw_ink_layer(p)
-        p.end()
-        
     # =========================================================================
     #  MASK GPU CACHE
     # =========================================================================
@@ -1457,7 +1309,7 @@ class MaskPanel(QWidget):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class CardEditorDialog(QDialog):
-    def __init__(self, parent=None, card=None, data=None, deck=None, initial_scroll=0, initial_page=0):
+    def __init__(self, parent=None, card=None, data=None, deck=None, initial_scroll=0, initial_page=None):
         super().__init__(parent)
         self.setWindowTitle("Occlusion Card Editor")
         self.setMinimumSize(1100, 700)
@@ -1477,6 +1329,10 @@ class CardEditorDialog(QDialog):
         self._reload_timer.timeout.connect(self._reload_pdf)
         self._watcher.fileChanged.connect(self._on_file_changed)
         self._pdf_loader_thread = None
+        self._ondemand_thread   = None
+        self._ondemand_path     = None
+        self._pending_visible_request = None
+        self._pdf_total_pages   = 0
         self._pending_boxes     = []
         self._setup_ui()
         if card: self._load_card(card)
@@ -1765,18 +1621,158 @@ class CardEditorDialog(QDialog):
         self._pending_boxes = []
         self.btn_relink.setVisible(True)
         self._show_pdf_loading(True)
-        self._start_pdf_thread(path)
+        self._load_pdf_lazily(path)
 
-    def _start_pdf_thread(self, path: str):
+    def _stop_pdf_threads(self):
         if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
             self._pdf_loader_thread.wait(500)
+        self._pdf_loader_thread = None
+
+        if self._ondemand_thread and self._ondemand_thread.isRunning():
+            self._ondemand_thread.stop()
+            self._ondemand_thread.quit()
+            self._ondemand_thread.wait(500)
+        self._ondemand_thread = None
+
+    def _start_pdf_thread(self, path: str):
+        self._stop_pdf_threads()
         self._pdf_loader_thread = PdfLoaderThread(path, parent=self)
         # pages_ready → progressive update; done → final update
         self._pdf_loader_thread.pages_ready.connect(self._on_pages_ready)
         self._pdf_loader_thread.done.connect(self._on_pdf_done)
         self._pdf_loader_thread.start()
+
+    def _load_pdf_lazily(self, path: str):
+        self._stop_pdf_threads()
+        self._ondemand_path = path
+
+        skel = load_pdf_skeleton(path, zoom=EDITOR_PDF_ZOOM)
+
+        if skel.error:
+            self._start_pdf_thread(path)
+            return
+
+        self._pdf_total_pages = skel.total_pages
+        pages = list(skel.placeholders)
+        cached_count = 0
+        for i in range(skel.total_pages):
+            pg = PAGE_CACHE.get(path, i)
+            if pg and not pg.isNull():
+                pages[i] = pg
+                cached_count += 1
+
+        self.canvas._current_pdf_path = path
+        self.canvas.load_pages(pages)
+
+        if not self.inp_title.text():
+            self.inp_title.setText(self._auto_subdeck_name or "")
+
+        if self._pending_boxes:
+            self.canvas.set_boxes(self._pending_boxes)
+            self.mask_panel._refresh(self._pending_boxes)
+
+        self.lbl_pg.setText(
+            f"📄  {os.path.basename(path)}  —  {skel.total_pages} page{'s' if skel.total_pages != 1 else ''}"
+            f"  •  lazy loading"
+        )
+        self.pdf_bar.show()
+        self.lbl_sync.setVisible(True)
+        if cached_count == skel.total_pages and skel.total_pages > 0:
+            self.lbl_sync.setText("⚡ PDF ready from cache")
+            self.lbl_sync.setStyleSheet(
+                f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+        else:
+            self.lbl_sync.setText(f"⏳ Loading visible pages… ({cached_count}/{skel.total_pages} cached)")
+            self.lbl_sync.setStyleSheet(
+                f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+        self._show_pdf_loading(False)
+        self._watch_pdf(path)
+
+        try:
+            self._sc.visible_pages_changed.disconnect(self._on_visible_pages_changed)
+        except Exception:
+            pass
+        self._sc.visible_pages_changed.connect(self._on_visible_pages_changed)
+
+        if self._initial_page is not None and self._initial_page >= 0:
+            pg = self._initial_page
+            sc = self._sc
+            QTimer.singleShot(80, lambda: self.canvas.scroll_to_page(pg, sc))
+            self._initial_page = None
+        elif self._initial_scroll > 0:
+            QTimer.singleShot(80, lambda:
+                self._sc.verticalScrollBar().setValue(self._initial_scroll))
+            self._initial_scroll = 0
+
+        QTimer.singleShot(0, self._request_initial_visible_pages)
+
+    def _request_initial_visible_pages(self):
+        if self._pdf_total_pages <= 0:
+            return
+        self._sc._emit_visible_pages()
+
+    def _current_visible_page(self) -> int:
+        scroll_pos = self._sc.verticalScrollBar().value()
+        return self.canvas.get_current_page(scroll_pos)
+
+    def _request_pages(self, path: str, pages: list):
+        to_render = [pn for pn in pages if PAGE_CACHE.get(path, pn) is None]
+        if not to_render:
+            self.lbl_sync.setText("Visible pages ready")
+            self.lbl_sync.setStyleSheet(
+                f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+            return
+
+        if self._ondemand_thread and self._ondemand_thread.isRunning():
+            self._pending_visible_request = (path, list(to_render))
+            print(f"[DEBUG][editor_on_demand] render thread busy - queued pages {to_render}")
+            return
+
+        self._pending_visible_request = None
+        self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=EDITOR_PDF_ZOOM, parent=self)
+        self._ondemand_thread.page_ready.connect(self._on_editor_page_ready)
+        self._ondemand_thread.batch_done.connect(self._on_editor_pages_done)
+        self._ondemand_thread.error.connect(self._on_editor_pdf_error)
+        self._ondemand_thread.start()
+        self.lbl_sync.setText(f"Rendering pages {to_render[0] + 1}-{to_render[-1] + 1}...")
+        self.lbl_sync.setStyleSheet(
+            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+
+    def _on_visible_pages_changed(self, first: int, last: int):
+        path = self.card.get("pdf_path", "")
+        if not path:
+            return
+        self._request_pages(path, list(range(first, last + 1)))
+
+    def _on_editor_page_ready(self, page_num, qpx):
+        if self.card.get("pdf_path", "") != self._ondemand_path:
+            return
+        self.canvas.inject_page(page_num, qpx)
+
+    def _on_editor_pages_done(self, rendered):
+        if rendered:
+            self.lbl_sync.setText(f"Ready - rendered {len(rendered)} page{'s' if len(rendered) != 1 else ''}")
+        else:
+            self.lbl_sync.setText("Visible pages ready")
+        self.lbl_sync.setStyleSheet(
+            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+        pending = self._pending_visible_request
+        self._pending_visible_request = None
+        if pending and pending[0] == self.card.get("pdf_path", ""):
+            path, needed = pending
+            fresh_needed = [pn for pn in needed if PAGE_CACHE.get(path, pn) is None]
+            if fresh_needed:
+                print(f"[DEBUG][editor_on_demand] draining queued pages {fresh_needed}")
+                self._request_pages(path, fresh_needed)
+            else:
+                print(f"[DEBUG][editor_on_demand] queued pages already cached")
+
+    def _on_editor_pdf_error(self, err: str):
+        self.lbl_sync.setText(f"⚠ PDF render error: {err}")
+        self.lbl_sync.setStyleSheet(
+            "color:#CC6600;font-size:11px;background:transparent;font-weight:bold;")
 
     def _on_pages_ready(self, pages: list, loaded: int, total: int):
         """Called every CHUNK_SIZE pages — update canvas progressively."""
@@ -1844,11 +1840,11 @@ class CardEditorDialog(QDialog):
         self._watch_pdf(path)
         # [FIX] Use page number instead of raw pixel scroll so editor opens
         # on the correct page regardless of zoom level differences.
-        if self._initial_page > 0:
+        if self._initial_page is not None and self._initial_page >= 0:
             pg = self._initial_page
             sc = self._sc
             QTimer.singleShot(80, lambda: self.canvas.scroll_to_page(pg, sc))
-            self._initial_page = 0
+            self._initial_page = None
         elif self._initial_scroll > 0:
             QTimer.singleShot(80, lambda:
                 self._sc.verticalScrollBar().setValue(self._initial_scroll))
@@ -1886,7 +1882,7 @@ class CardEditorDialog(QDialog):
             self._pending_boxes = current_boxes
             self.btn_relink.setVisible(True)
             self._show_pdf_loading(True)
-            self._start_pdf_thread(path) # ⚡ Virtual Renderer se load karega
+            self._load_pdf_lazily(path)
         elif card.get("pdf_path") and not os.path.exists(card["pdf_path"]):
             self.btn_relink.setVisible(True)
             self.lbl_sync.setVisible(True)
@@ -1928,19 +1924,25 @@ class CardEditorDialog(QDialog):
             QTimer.singleShot(500, self._reload_pdf); return
         if path not in self._watcher.files(): self._watcher.addPath(path)
         PAGE_CACHE.invalidate_pdf(path)
+        invalidate_pdf_skeleton(path)
         saved_boxes = self.canvas.get_boxes()
         self._pending_boxes = saved_boxes
         self.lbl_sync.setText("🟡 Live Sync: reloading…")
         self.lbl_sync.setStyleSheet(
             f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
-        self._start_pdf_thread(path)
+        self._load_pdf_lazily(path)
 
     def _open_in_reader(self):
         path = self.card.get("pdf_path") or self._watched_path
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, "No PDF", "No PDF is currently loaded."); return
         import subprocess
+        page = self._current_visible_page() + 1
         try:
+            pdf_url = QUrl.fromLocalFile(path)
+            pdf_url.setFragment(f"page={page}")
+            if QDesktopServices.openUrl(pdf_url):
+                return
             if sys.platform == "win32":       os.startfile(path)
             elif sys.platform == "darwin":    subprocess.Popen(["open",     path])
             else:                             subprocess.Popen(["xdg-open", path])
@@ -1991,7 +1993,7 @@ class CardEditorDialog(QDialog):
             f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
 
         self._show_pdf_loading(True)
-        self._start_pdf_thread(new_path)
+        self._load_pdf_lazily(new_path)
 
     # ── save / close ──────────────────────────────────────────────────────────
 
@@ -2027,14 +2029,12 @@ class CardEditorDialog(QDialog):
 
     def closeEvent(self, e):
         self._stop_watch()
-        if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
-            self._pdf_loader_thread.quit(); self._pdf_loader_thread.wait(1000)
+        self._stop_pdf_threads()
         super().closeEvent(e)
 
     def reject(self):
         self._stop_watch()
-        if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
-            self._pdf_loader_thread.quit(); self._pdf_loader_thread.wait(1000)
+        self._stop_pdf_threads()
         super().reject()
 
     def accept(self):
@@ -2061,13 +2061,18 @@ class _ZoomableScrollArea(QScrollArea):
         self._space_held          = False
         self._drag_threshold      = 10
         self._is_actually_panning = False
+        self._last_scroll_value   = None
+        self._last_scroll_ts      = None
+        self._last_visible_emit_ts = None
+        self._last_scroll_range   = None
+        self._last_viewport_size  = None
         self.setFocusPolicy(Qt.StrongFocus)
         self.viewport().installEventFilter(self)
 
         # ── Scroll debounce timer — avoids firing on every pixel of scroll ───
         self._scroll_debounce = QTimer(self)
         self._scroll_debounce.setSingleShot(True)
-        self._scroll_debounce.setInterval(120)   # ms after scroll stops
+        self._scroll_debounce.setInterval(150)   # backup emit after motion settles
         self._scroll_debounce.timeout.connect(self._emit_visible_pages)
 
         # Connect scrollbar AFTER it exists (post __init__)
@@ -2078,6 +2083,7 @@ class _ZoomableScrollArea(QScrollArea):
         canvas.installEventFilter(self)
         # Hook scrollbar valueChanged → debounce → visible_pages_changed
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
         print(f"[DEBUG][scroll_area] ✅ Scrollbar hooked — will emit visible_pages_changed")
 
     @property
@@ -2085,7 +2091,48 @@ class _ZoomableScrollArea(QScrollArea):
 
     def _on_scroll(self, value):
         """Raw scroll event — debounce so we don't fire 60× per swipe."""
+        vbar = self.verticalScrollBar()
+        now = time.perf_counter()
+        prev_value = self._last_scroll_value
+        prev_ts = self._last_scroll_ts
+        delta = 0 if prev_value is None else value - prev_value
+        dt_ms = 0.0 if prev_ts is None else (now - prev_ts) * 1000.0
+        page = self._canvas.get_current_page(value) + 1 if self._canvas and self._canvas._page_tops else 0
+        vp = self.viewport()
+        range_now = (vbar.minimum(), vbar.maximum())
+        viewport_now = (vp.width(), vp.height())
+
+        if prev_value is None or abs(delta) >= max(80, viewport_now[1] // 2) or dt_ms > 120.0:
+            print(f"[JITTER][scroll_raw] value={value}  delta={delta:+}  dt={dt_ms:.1f}ms  "
+                  f"page=p.{page if page else '?'}  range={range_now[0]}..{range_now[1]}  "
+                  f"viewport={viewport_now[0]}x{viewport_now[1]}")
+            if prev_value is not None and abs(delta) > max(120, viewport_now[1] // 2):
+                print(f"[JITTER][scroll_raw] 🔴 large scroll jump detected  "
+                      f"delta={delta:+}  previous={prev_value} → now={value}")
+
+        self._last_scroll_value = value
+        self._last_scroll_ts = now
+        self._last_scroll_range = range_now
+        self._last_viewport_size = viewport_now
         self._scroll_debounce.start()
+
+        last_emit = self._last_visible_emit_ts
+        if last_emit is None or (now - last_emit) * 1000.0 >= 100.0:
+            print(f"[DEBUG][scroll_area] ▶ visible-pages tick during scroll")
+            self._emit_visible_pages()
+
+    def _on_scroll_range_changed(self, minimum, maximum):
+        prev = self._last_scroll_range
+        value = self.verticalScrollBar().value()
+        vp = self.viewport()
+        print(f"[JITTER][range_changed] scroll_range={minimum}..{maximum}  "
+              f"value={value}  viewport={vp.width()}x{vp.height()}  prev={prev}")
+        if prev is not None and prev != (minimum, maximum):
+            old_span = prev[1] - prev[0]
+            new_span = maximum - minimum
+            print(f"[JITTER][range_changed] 🟡 range delta={new_span - old_span:+}  "
+                  f"old_span={old_span}  new_span={new_span}")
+        self._last_scroll_range = (minimum, maximum)
 
     def _emit_visible_pages(self):
         """
@@ -2127,7 +2174,16 @@ class _ZoomableScrollArea(QScrollArea):
               f"img_range=({img_top:.0f}–{img_bottom:.0f})  "
               f"visible_pages=p.{first+1}–p.{last+1}")
 
+        self._last_visible_emit_ts = time.perf_counter()
         self.visible_pages_changed.emit(first, last)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        vp = self.viewport()
+        size_now = (vp.width(), vp.height())
+        prev = self._last_viewport_size
+        self._last_viewport_size = size_now
+        print(f"[JITTER][viewport_resize] viewport={size_now[0]}x{size_now[1]}  prev={prev}")
 
     def eventFilter(self, obj, e):
         if obj is self.viewport() or obj is self._canvas:
@@ -2265,3 +2321,6 @@ class _ZoomableScrollArea(QScrollArea):
 #           QTimer.singleShot(80,  lambda: self._scroll_to_mask(box_idx))
 #
 #  See full patch in the README or ask for the updated anki_occlusion_v19.py.
+
+
+

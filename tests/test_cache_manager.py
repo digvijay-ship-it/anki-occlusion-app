@@ -1,9 +1,9 @@
 import gc
 import os
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import uuid
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -44,45 +44,48 @@ class LRUPageCacheTests(unittest.TestCase):
         cache.invalidate_pdf("doc1.pdf")
         self.assertIsNone(cache.get("doc1.pdf", 0))
 
-    def test_cache_evicts_least_recently_used_page_at_limit(self):
-        cache = cache_manager.LRUPageCache(max_pages=2)
-        first = QPixmap(10, 10)
-        second = QPixmap(10, 10)
-        third = QPixmap(10, 10)
+    def test_cache_expires_pdf_after_idle_timeout(self):
+        cache = cache_manager.LRUPageCache(idle_minutes=5)
+        px = QPixmap(10, 10)
+        px.fill()
 
-        cache.put("doc.pdf", 0, first)
-        cache.put("doc.pdf", 1, second)
-        cache.put("doc.pdf", 2, third)
+        with patch.object(cache_manager.time, "monotonic", side_effect=[0.0, 0.0, 301.0]):
+            cache.put("doc.pdf", 0, px)
+            self.assertIsNone(cache.get("doc.pdf", 0))
 
-        self.assertIsNone(cache.get("doc.pdf", 0))
-        self.assertIs(cache.get("doc.pdf", 1), second)
-        self.assertIs(cache.get("doc.pdf", 2), third)
+        self.assertEqual(cache.ram_bytes_for_pdf("doc.pdf"), 0)
 
-    def test_get_refreshes_recency_before_eviction(self):
-        cache = cache_manager.LRUPageCache(max_pages=2)
-        first = QPixmap(10, 10)
-        second = QPixmap(10, 10)
-        third = QPixmap(10, 10)
+    def test_get_refreshes_pdf_activity_before_idle_timeout(self):
+        cache = cache_manager.LRUPageCache(idle_minutes=5)
+        px = QPixmap(10, 10)
+        px.fill()
 
-        cache.put("doc.pdf", 0, first)
-        cache.put("doc.pdf", 1, second)
-        self.assertIs(cache.get("doc.pdf", 0), first)
-        cache.put("doc.pdf", 2, third)
+        with patch.object(cache_manager.time, "monotonic", side_effect=[0.0, 0.0, 299.0, 299.0, 300.0, 300.0]):
+            cache.put("doc.pdf", 0, px)
+            self.assertIs(cache.get("doc.pdf", 0), px)
+            self.assertIs(cache.get("doc.pdf", 0), px)
 
-        self.assertIs(cache.get("doc.pdf", 0), first)
-        self.assertIsNone(cache.get("doc.pdf", 1))
-        self.assertIs(cache.get("doc.pdf", 2), third)
+        self.assertEqual(cache.ram_bytes_for_pdf("doc.pdf"), 10 * 10 * 4)
 
 
 class DiskCombinedCacheTests(unittest.TestCase):
     def setUp(self):
         tmp_root = Path(__file__).resolve().parent / "_tmp"
         tmp_root.mkdir(exist_ok=True)
-        self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_root)
-        self.addCleanup(self.tmpdir.cleanup)
+        self.tmpdir = tmp_root / f"cache_{uuid.uuid4().hex}"
+        self.tmpdir.mkdir()
+        self.addCleanup(self._cleanup_tmpdir)
+
+    def _cleanup_tmpdir(self):
+        for path in sorted(self.tmpdir.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                path.rmdir()
+        self.tmpdir.rmdir()
 
     def test_put_get_invalidate_and_clear(self):
-        with patch.object(cache_manager.tempfile, "gettempdir", return_value=self.tmpdir.name):
+        with patch.object(cache_manager.tempfile, "gettempdir", return_value=str(self.tmpdir)):
             cache = cache_manager.DiskCombinedCache()
             px = QPixmap(12, 18)
             px.fill()

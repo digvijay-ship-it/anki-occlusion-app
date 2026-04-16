@@ -1,8 +1,8 @@
 import os
 import contextlib
 import io
-import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,11 +22,13 @@ class PdfEngineTests(unittest.TestCase):
     def setUp(self):
         import fitz
 
-        tmp_root = Path(__file__).resolve().parent / "_tmp"
+        pdf_engine._SKELETON_CACHE.clear()
+        self.addCleanup(pdf_engine._SKELETON_CACHE.clear)
+
+        tmp_root = Path(__file__).resolve().parent / "_tmp_files"
         tmp_root.mkdir(exist_ok=True)
-        self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_root)
-        self.addCleanup(self.tmpdir.cleanup)
-        self.pdf_path = Path(self.tmpdir.name) / "sample.pdf"
+        self.pdf_path = tmp_root / f"sample_{uuid.uuid4().hex}.pdf"
+        self.addCleanup(lambda: self.pdf_path.exists() and self.pdf_path.unlink())
 
         doc = fitz.open()
         page1 = doc.new_page(width=200, height=300)
@@ -58,12 +60,56 @@ class PdfEngineTests(unittest.TestCase):
         self.assertEqual(result.page_dims, expected_dims)
         self.assertTrue(all(not px.isNull() for px in result.placeholders))
 
+    def test_load_pdf_skeleton_reuses_shared_placeholder_for_same_size_pages(self):
+        import fitz
+
+        same_size_path = self.pdf_path.with_name(f"same_size_{uuid.uuid4().hex}.pdf")
+        self.addCleanup(lambda: same_size_path.exists() and same_size_path.unlink())
+
+        doc = fitz.open()
+        doc.new_page(width=240, height=240).insert_text((40, 40), "Page 1")
+        doc.new_page(width=240, height=240).insert_text((40, 40), "Page 2")
+        doc.save(str(same_size_path))
+        doc.close()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = pdf_engine.load_pdf_skeleton(str(same_size_path), zoom=1.0)
+
+        self.assertEqual(result.total_pages, 2)
+        self.assertEqual(result.page_dims[0], result.page_dims[1])
+        self.assertIs(result.placeholders[0], result.placeholders[1])
+
     def test_load_pdf_skeleton_returns_error_for_missing_file(self):
         with contextlib.redirect_stdout(io.StringIO()):
             result = pdf_engine.load_pdf_skeleton(str(self.pdf_path) + ".missing")
 
         self.assertIsNotNone(result.error)
         self.assertEqual(result.total_pages, 0)
+
+    def test_load_pdf_skeleton_reuses_cached_result_for_same_file(self):
+        original_open = pdf_engine.fitz.open
+
+        with patch.object(pdf_engine.fitz, "open", wraps=original_open) as open_mock:
+            with contextlib.redirect_stdout(io.StringIO()):
+                first = pdf_engine.load_pdf_skeleton(str(self.pdf_path), zoom=1.0)
+                second = pdf_engine.load_pdf_skeleton(str(self.pdf_path), zoom=1.0)
+
+        self.assertIsNone(first.error)
+        self.assertIsNone(second.error)
+        self.assertEqual(open_mock.call_count, 1)
+        self.assertEqual(first.page_dims, second.page_dims)
+        self.assertIsNot(first.placeholders, second.placeholders)
+
+    def test_invalidate_pdf_skeleton_forces_reopen(self):
+        original_open = pdf_engine.fitz.open
+
+        with patch.object(pdf_engine.fitz, "open", wraps=original_open) as open_mock:
+            with contextlib.redirect_stdout(io.StringIO()):
+                pdf_engine.load_pdf_skeleton(str(self.pdf_path), zoom=1.0)
+                pdf_engine.invalidate_pdf_skeleton(str(self.pdf_path))
+                pdf_engine.load_pdf_skeleton(str(self.pdf_path), zoom=1.0)
+
+        self.assertEqual(open_mock.call_count, 2)
 
     def test_pdf_page_to_pixmap_renders_page(self):
         import fitz

@@ -1,5 +1,7 @@
 import os
 import unittest
+import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,6 +12,7 @@ from PyQt5.QtWidgets import QApplication
 
 from cache_manager import MASK_REGISTRY
 from editor_ui import (
+    CardEditorDialog,
     PAGE_GAP,
     OcclusionCanvas,
     _point_in_rotated_box,
@@ -137,6 +140,82 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertGreaterEqual(hval, 0)
         self.assertGreaterEqual(vval, 0)
         self.assertLessEqual(vval, int(self.canvas._total_h * self.canvas._scale) - 80)
+
+
+class CardEditorDialogTests(unittest.TestCase):
+    def setUp(self):
+        self.print_patch = patch("builtins.print")
+        self.print_patch.start()
+        self.addCleanup(self.print_patch.stop)
+
+        tmp_root = Path(__file__).resolve().parent / "_tmp_files"
+        tmp_root.mkdir(exist_ok=True)
+        self.pdf_path = str(tmp_root / f"sample_{uuid.uuid4().hex}.pdf")
+        Path(self.pdf_path).write_bytes(b"%PDF-1.4")
+        self.addCleanup(lambda: Path(self.pdf_path).exists() and Path(self.pdf_path).unlink())
+
+        self.dialog = CardEditorDialog()
+        self.addCleanup(self.dialog.close)
+
+    def _pixmap(self, w, h):
+        px = QPixmap(w, h)
+        px.fill()
+        return px
+
+    def test_load_pdf_lazily_uses_skeleton_path_and_restores_boxes(self):
+        fake_pages = [self._pixmap(100, 100), self._pixmap(100, 80)]
+        fake_skel = type("FakeSkeleton", (), {
+            "placeholders": fake_pages,
+            "page_dims": [(100, 100), (100, 80)],
+            "total_pages": 2,
+            "error": None,
+        })()
+        self.dialog.card["pdf_path"] = self.pdf_path
+        self.dialog._auto_subdeck_name = "sample"
+        self.dialog._pending_boxes = [
+            {"rect": [10, 10, 20, 20], "label": "A", "shape": "rect", "angle": 0, "group_id": "", "box_id": "a"}
+        ]
+
+        with patch("editor_ui.load_pdf_skeleton", return_value=fake_skel), \
+             patch.object(self.dialog, "_start_pdf_thread") as start_thread, \
+             patch.object(self.dialog, "_watch_pdf"), \
+             patch.object(self.dialog, "_request_initial_visible_pages"):
+            self.dialog._load_pdf_lazily(self.pdf_path)
+
+        start_thread.assert_not_called()
+        self.assertEqual(self.dialog._pdf_total_pages, 2)
+        self.assertEqual(len(self.dialog.canvas._pages), 2)
+        self.assertEqual(self.dialog.inp_title.text(), "sample")
+        self.assertEqual(len(self.dialog.canvas.get_boxes()), 1)
+
+    def test_load_pdf_lazily_honors_first_page_as_initial_page(self):
+        fake_pages = [self._pixmap(100, 100), self._pixmap(100, 80)]
+        fake_skel = type("FakeSkeleton", (), {
+            "placeholders": fake_pages,
+            "page_dims": [(100, 100), (100, 80)],
+            "total_pages": 2,
+            "error": None,
+        })()
+        self.dialog.card["pdf_path"] = self.pdf_path
+        self.dialog._initial_page = 0
+
+        with patch("editor_ui.load_pdf_skeleton", return_value=fake_skel), \
+             patch.object(self.dialog, "_watch_pdf"), \
+             patch("editor_ui.QTimer.singleShot") as single_shot:
+            self.dialog._load_pdf_lazily(self.pdf_path)
+
+        self.assertTrue(single_shot.called)
+        self.assertIsNone(self.dialog._initial_page)
+
+    def test_open_in_reader_uses_current_page_fragment(self):
+        self.dialog.card["pdf_path"] = self.pdf_path
+
+        with patch.object(self.dialog, "_current_visible_page", return_value=3), \
+             patch("editor_ui.QDesktopServices.openUrl", return_value=True) as open_url:
+            self.dialog._open_in_reader()
+
+        url = open_url.call_args[0][0]
+        self.assertEqual(url.fragment(), "page=4")
 
 
 if __name__ == "__main__":

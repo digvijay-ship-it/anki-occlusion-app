@@ -87,41 +87,55 @@ QScrollBar::handle:vertical {{ background:{C_BORDER}; border-radius:3px; }}
 #  BOUNDED LRU PAGE CACHE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DEFAULT_MAX_RAM_PAGES = 100
+DEFAULT_PDF_IDLE_MINUTES = 5
 
 class LRUPageCache:
     """
-    Bounded in-RAM page cache.
-    Keeps recently used rendered pages and evicts older pages at max_pages.
+    In-RAM page cache with per-PDF inactivity expiry.
+    If a PDF has not been touched for idle_minutes, all its cached pages are cleared.
     """
-    def __init__(self, max_pages: int = DEFAULT_MAX_RAM_PAGES):
-        self.max_pages = max(1, int(max_pages))
+    def __init__(self, idle_minutes: float = DEFAULT_PDF_IDLE_MINUTES):
+        self.idle_seconds = max(1.0, float(idle_minutes) * 60.0)
         self._cache = OrderedDict()     # (path, page_num) → QPixmap
+        self._pdf_last_access = {}
+
+    def _touch(self, path: str, now: float | None = None):
+        self._pdf_last_access[path] = time.monotonic() if now is None else now
+
+    def expire_stale(self, now: float | None = None):
+        now = time.monotonic() if now is None else now
+        stale_paths = [
+            path for path, last_access in self._pdf_last_access.items()
+            if now - last_access > self.idle_seconds
+        ]
+        for path in stale_paths:
+            self.invalidate_pdf(path)
 
     def get(self, path: str, page_num: int):
+        self.expire_stale()
         key = (path, page_num)
         if key in self._cache:
             self._cache.move_to_end(key)
+            self._touch(path)
             return self._cache[key]
         return None
 
     def put(self, path: str, page_num: int, pixmap):
+        self.expire_stale()
         key = (path, page_num)
         self._cache[key] = pixmap
         self._cache.move_to_end(key)
-        self._evict_if_needed()
-
-    def _evict_if_needed(self):
-        while len(self._cache) > self.max_pages:
-            self._cache.popitem(last=False)
+        self._touch(path)
 
     def invalidate_pdf(self, path: str):
         keys = [k for k in self._cache if k[0] == path]
         for k in keys:
             del self._cache[k]
+        self._pdf_last_access.pop(path, None)
 
     def clear(self):
         self._cache.clear()
+        self._pdf_last_access.clear()
 
     # ── Inspector helpers ─────────────────────────────────────────────────────
 

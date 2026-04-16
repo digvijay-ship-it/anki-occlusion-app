@@ -28,8 +28,10 @@
 
 import os
 import time
+import math
+from collections import OrderedDict
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QPixmap, QColor, QPainter
 
 from cache_manager import PAGE_CACHE
@@ -46,6 +48,33 @@ CHUNK_SIZE = 500
 
 # Skeleton placeholder color — dark grey, matches app background
 SKELETON_COLOR = "#2A2A3E"
+SKELETON_CACHE_MAX = 8
+_SKELETON_CACHE = OrderedDict()
+_SKELETON_PLACEHOLDER_CACHE = OrderedDict()
+_SKELETON_PLACEHOLDER_CACHE_MAX = 32
+
+
+def _get_skeleton_placeholder(w_px: int, h_px: int) -> QPixmap:
+    """
+    Return a shared placeholder pixmap for a given size.
+
+    The skeleton loader only needs a stable drawing surface for unloaded pages.
+    Reusing one pixmap per size avoids allocating the same full-resolution
+    placeholder hundreds of times for documents whose pages share dimensions.
+    """
+    key = (int(w_px), int(h_px))
+    cached = _SKELETON_PLACEHOLDER_CACHE.get(key)
+    if cached is not None:
+        _SKELETON_PLACEHOLDER_CACHE.move_to_end(key)
+        return cached
+
+    qpx = QPixmap(key[0], key[1])
+    qpx.fill(QColor(SKELETON_COLOR))
+    _SKELETON_PLACEHOLDER_CACHE[key] = qpx
+    _SKELETON_PLACEHOLDER_CACHE.move_to_end(key)
+    while len(_SKELETON_PLACEHOLDER_CACHE) > _SKELETON_PLACEHOLDER_CACHE_MAX:
+        _SKELETON_PLACEHOLDER_CACHE.popitem(last=False)
+    return qpx
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -72,6 +101,27 @@ class PdfSkeletonResult:
         self.error        = error
 
 
+def _skeleton_cache_key(path: str, zoom: float):
+    st = os.stat(path)
+    return (os.path.abspath(path), int(st.st_mtime_ns), st.st_size, float(zoom))
+
+
+def _clone_skeleton_result(result: PdfSkeletonResult) -> PdfSkeletonResult:
+    return PdfSkeletonResult(
+        list(result.placeholders),
+        list(result.page_dims),
+        result.total_pages,
+        result.error,
+    )
+
+
+def invalidate_pdf_skeleton(path: str):
+    abs_path = os.path.abspath(path)
+    keys = [k for k in _SKELETON_CACHE if k[0] == abs_path]
+    for key in keys:
+        del _SKELETON_CACHE[key]
+
+
 def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
     """
     Synchronous [तुरंत] skeleton loader — call this on the main thread.
@@ -92,6 +142,7 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
     Terminal debug output shows timing + per-page dimensions.
     """
     t_start = time.perf_counter()
+    cache_key = None
 
     if not PDF_SUPPORT:
         print("[DEBUG][skeleton] ❌ PyMuPDF not installed")
@@ -102,6 +153,14 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         return PdfSkeletonResult([], [], 0, f"File not found: {path}")
 
     try:
+        cache_key = _skeleton_cache_key(path, zoom)
+        cached = _SKELETON_CACHE.get(cache_key)
+        if cached is not None:
+            _SKELETON_CACHE.move_to_end(cache_key)
+            t_ms = (time.perf_counter() - t_start) * 1000
+            print(f"[DEBUG][skeleton] ⚡ cache hit: {os.path.basename(path)}  zoom={zoom}  total_pages={cached.total_pages}  {t_ms:.1f}ms")
+            return _clone_skeleton_result(cached)
+
         doc = fitz.open(path)
 
         if doc.is_encrypted:
@@ -112,7 +171,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         total        = len(doc)
         placeholders = []
         page_dims    = []
-        skeleton_col = QColor(SKELETON_COLOR)
 
         print(f"[DEBUG][skeleton] Starting skeleton load: {os.path.basename(path)}")
         print(f"[DEBUG][skeleton] total_pages={total}  zoom={zoom}")
@@ -147,20 +205,9 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
             h_px = max(1, h_px)
             page_dims.append((w_px, h_px))
 
-            # Grey placeholder QPixmap — exact same size as real page will be
-            qpx = QPixmap(w_px, h_px)
-            qpx.fill(skeleton_col)
-
-            # Optional: draw subtle page number text on placeholder
-            # so user knows which page they are looking at while loading
-            painter = QPainter(qpx)
-            painter.setPen(QColor("#45475A"))
-            painter.drawText(
-                qpx.rect(),
-                0x0004 | 0x0080,   # Qt.AlignHCenter | Qt.AlignVCenter
-                f"p.{i + 1}"
-            )
-            painter.end()
+            # Reuse one shared placeholder surface per size.
+            # Page labels are intentionally omitted here to keep the skeleton cheap.
+            qpx = _get_skeleton_placeholder(w_px, h_px)
 
             placeholders.append(qpx)
 
@@ -177,13 +224,20 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         # Estimate RAM saved vs full render
         # Full render: w*h*4 bytes (RGBA) per page
         full_ram_kb  = sum(w * h * 4 for w, h in page_dims) / 1024
-        skel_ram_kb  = sum(w * h * 4 for w, h in page_dims) / 1024  # same size but filled once
-        print(f"[DEBUG][skeleton] Placeholder RAM: ~{full_ram_kb/1024:.1f} MB "
-              f"(vs ~{full_ram_kb/1024:.1f} MB full render — same size but "
-              f"created in {t_ms:.1f}ms instead of seconds)")
+        unique_dims = sorted(set(page_dims))
+        shared_ram_kb = sum(w * h * 4 for w, h in unique_dims) / 1024
+        print(f"[DEBUG][skeleton] Placeholder RAM: ~{shared_ram_kb/1024:.1f} MB "
+              f"shared across {len(unique_dims)} unique sizes "
+              f"(vs ~{full_ram_kb/1024:.1f} MB full render — created in {t_ms:.1f}ms instead of seconds)")
         # ─────────────────────────────────────────────────────────────────────
 
-        return PdfSkeletonResult(placeholders, page_dims, total, None)
+        result = PdfSkeletonResult(placeholders, page_dims, total, None)
+        if cache_key is not None:
+            _SKELETON_CACHE[cache_key] = result
+            _SKELETON_CACHE.move_to_end(cache_key)
+            while len(_SKELETON_CACHE) > SKELETON_CACHE_MAX:
+                _SKELETON_CACHE.popitem(last=False)
+        return _clone_skeleton_result(result)
 
     except Exception as ex:
         print(f"[DEBUG][skeleton] ❌ Exception: {ex}")
@@ -194,7 +248,7 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 #  LOW-LEVEL PAGE RENDER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def pdf_page_to_pixmap(page, mat) -> QPixmap:
+def pdf_page_to_pixmap(page, mat, clip=None) -> QPixmap:
     """Render one fitz page → QPixmap directly from bytes (no disk I/O).
 
     OLD: fitz → save PNG to disk → QPixmap(file) → delete file
@@ -203,7 +257,10 @@ def pdf_page_to_pixmap(page, mat) -> QPixmap:
     For a 50-page PDF this eliminates 150 disk read/write/delete ops
     which was the primary cause of UI freeze during PDF loading.
     """
-    pix = page.get_pixmap(matrix=mat, alpha=False)
+    if clip is None:
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+    else:
+        pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
     png_bytes = pix.tobytes("png")
     qpx = QPixmap()
     qpx.loadFromData(png_bytes, "PNG")
@@ -218,13 +275,12 @@ def pdf_page_to_pixmap(page, mat) -> QPixmap:
 
 class PdfOnDemandThread(QThread):
     """
-    Render only the pages we actually need — not all 100.
+    Render only the pages we actually need - not all 100.
 
     Signals:
-        page_ready(page_num, QPixmap) — ek page render hone pe emit hota hai.
-                                        Caller canvas._pages[page_num] mein inject kare.
-        batch_done(list[int])         — saare requested pages render hone pe.
-        error(str)                    — kuch galat hua.
+        page_ready(page_num, QPixmap) - one page rendered and ready to inject.
+        batch_done(list[int])          - all requested pages rendered.
+        error(str)                     - something went wrong.
 
     Usage:
         t = PdfOnDemandThread(path, page_nums=[0, 3, 7, 12])
@@ -233,44 +289,43 @@ class PdfOnDemandThread(QThread):
     """
 
     page_ready = pyqtSignal(int, object)   # (page_num, QPixmap)
-    batch_done = pyqtSignal(list)          # list[int] — rendered page nums
+    batch_done = pyqtSignal(list)          # list[int] - rendered page nums
     error      = pyqtSignal(str)
 
-    def __init__(self, path: str, page_nums: list,
-                 zoom: float = 1.5, parent=None):
+    def __init__(self, path: str, page_nums: list, zoom: float = 1.5, parent=None):
         super().__init__(parent)
         self._path      = path
-        self._page_nums = list(page_nums)   # copy — caller can reuse list
         self._zoom      = zoom
         self._stop_flag = False
+        self._page_nums = [int(pn) for pn in page_nums]
 
     def stop(self):
         self._stop_flag = True
-        print(f"[DEBUG][on_demand] 🛑 stop() called — will exit after current page")
+        print(f"[DEBUG][on_demand] stop() called - will exit after current page")
 
     def run(self):
         t_thread_start = time.perf_counter()
         fname = os.path.basename(self._path)
 
-        print(f"[DEBUG][on_demand] ▶ Thread started")
+        print(f"[DEBUG][on_demand] -> Thread started")
         print(f"[DEBUG][on_demand]   file      : {fname}")
         print(f"[DEBUG][on_demand]   pages     : {self._page_nums}")
         print(f"[DEBUG][on_demand]   zoom      : {self._zoom}")
 
         if not PDF_SUPPORT:
-            msg = "PyMuPDF not installed — run: pip install pymupdf"
-            print(f"[DEBUG][on_demand] ❌ {msg}")
+            msg = "PyMuPDF not installed - run: pip install pymupdf"
+            print(f"[DEBUG][on_demand] X {msg}")
             self.error.emit(msg)
             return
 
         if not os.path.exists(self._path):
             msg = f"File not found: {self._path}"
-            print(f"[DEBUG][on_demand] ❌ {msg}")
+            print(f"[DEBUG][on_demand] X {msg}")
             self.error.emit(msg)
             return
 
         if not self._page_nums:
-            print(f"[DEBUG][on_demand] ⚠️  page_nums is empty — nothing to render")
+            print(f"[DEBUG][on_demand] warning: page_nums is empty - nothing to render")
             self.batch_done.emit([])
             return
 
@@ -279,7 +334,7 @@ class PdfOnDemandThread(QThread):
 
             if doc.is_encrypted:
                 msg = "PDF is password-protected"
-                print(f"[DEBUG][on_demand] ❌ {msg}")
+                print(f"[DEBUG][on_demand] X {msg}")
                 self.error.emit(msg)
                 doc.close()
                 return
@@ -289,76 +344,57 @@ class PdfOnDemandThread(QThread):
             rendered     = []
 
             print(f"[DEBUG][on_demand]   doc_pages : {total_in_doc}")
-            print(f"[DEBUG][on_demand] ─────────────────────────────────")
+            print(f"[DEBUG][on_demand] ------------------------------------------------")
 
             for page_num in self._page_nums:
-
-                # ── Stop check ────────────────────────────────────────────────
                 if self._stop_flag:
-                    print(f"[DEBUG][on_demand] 🛑 Stopped at page {page_num} "
-                          f"({len(rendered)}/{len(self._page_nums)} rendered)")
+                    print(f"[DEBUG][on_demand] stop requested at page {page_num} ({len(rendered)}/{len(self._page_nums)} rendered)")
                     doc.close()
                     return
 
-                # ── Range check ───────────────────────────────────────────────
                 if page_num < 0 or page_num >= total_in_doc:
-                    print(f"[DEBUG][on_demand]   p.{page_num+1} ⚠️  out of range "
-                          f"(doc has {total_in_doc} pages) — skip")
+                    print(f"[DEBUG][on_demand]   p.{page_num+1} warning: out of range (doc has {total_in_doc} pages) - skip")
                     continue
 
                 t_page_start = time.perf_counter()
-
-                # ── Cache hit? ────────────────────────────────────────────────
                 cached = PAGE_CACHE.get(self._path, page_num)
                 if cached and not cached.isNull():
                     t_ms = (time.perf_counter() - t_page_start) * 1000
-                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} ⚡ cache hit  "
-                          f"({t_ms:.1f}ms)  "
-                          f"{cached.width()}×{cached.height()}px")
+                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} cache hit  ({t_ms:.1f}ms)  {cached.width()}x{cached.height()}px")
                     self.page_ready.emit(page_num, cached)
                     rendered.append(page_num)
                     continue
 
-                # ── Render ────────────────────────────────────────────────────
                 try:
-                    qpx  = pdf_page_to_pixmap(doc.load_page(page_num), mat)
+                    qpx = pdf_page_to_pixmap(doc.load_page(page_num), mat)
                     t_ms = (time.perf_counter() - t_page_start) * 1000
 
                     if qpx.isNull():
-                        print(f"[DEBUG][on_demand]   p.{page_num+1:>3} ❌ render returned null pixmap")
+                        print(f"[DEBUG][on_demand]   p.{page_num+1:>3} render returned null pixmap")
                         continue
 
                     PAGE_CACHE.put(self._path, page_num, qpx)
 
-                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} ✅ rendered   "
-                          f"({t_ms:.1f}ms)  "
-                          f"{qpx.width()}×{qpx.height()}px")
-
+                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} rendered   ({t_ms:.1f}ms)  {qpx.width()}x{qpx.height()}px")
                     self.page_ready.emit(page_num, qpx)
                     rendered.append(page_num)
 
                 except Exception as ex:
-                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} ❌ exception: {ex}")
+                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} exception: {ex}")
                     continue
 
             doc.close()
 
             t_total_ms = (time.perf_counter() - t_thread_start) * 1000
-            print(f"[DEBUG][on_demand] ─────────────────────────────────")
-            print(f"[DEBUG][on_demand] ✅ batch_done  "
-                  f"rendered={len(rendered)}/{len(self._page_nums)}  "
-                  f"total_time={t_total_ms:.1f}ms")
+            print(f"[DEBUG][on_demand] ------------------------------------------------")
+            print(f"[DEBUG][on_demand] batch_done  rendered={len(rendered)}/{len(self._page_nums)}  total_time={t_total_ms:.1f}ms")
 
             self.batch_done.emit(rendered)
 
         except Exception as ex:
-            print(f"[DEBUG][on_demand] ❌ Fatal exception: {ex}")
+            print(f"[DEBUG][on_demand] Fatal exception: {ex}")
             self.error.emit(str(ex))
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PDF LOADER THREAD  —  emits individual page QPixmaps, never a combined one
-# ═══════════════════════════════════════════════════════════════════════════════
 
 class PdfLoaderThread(QThread):
     # Emitted every CHUNK_SIZE pages:  (pages_so_far, loaded_count, total_count)
@@ -427,3 +463,8 @@ class PdfLoaderThread(QThread):
 
         except Exception as ex:
             self.done.emit([], str(ex))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+
+

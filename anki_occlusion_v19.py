@@ -56,7 +56,7 @@ from sm2_engine import (
 
 from pdf_engine import (
     PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, pdf_page_to_pixmap,
-    load_pdf_skeleton, PdfOnDemandThread        # STEP 2 + 3
+    load_pdf_skeleton, PdfOnDemandThread, invalidate_pdf_skeleton        # STEP 2 + 3
 )
 
 from editor_ui import CardEditorDialog,OcclusionCanvas,_ZoomableScrollArea
@@ -80,10 +80,10 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
     QHeaderView
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray
+from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag
+    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices
 )
 
 import tempfile
@@ -204,7 +204,17 @@ class ReviewScreen(QWidget):
         self._items          = []
         self._pdf_cache      = {}
         self._current_pixmap = None
-
+        self._watcher        = QFileSystemWatcher()
+        self._watched_pdf_path = None
+        self._reload_timer   = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(800)
+        self._reload_timer.timeout.connect(self._reload_modified_pdf)
+        self._watcher.fileChanged.connect(self._on_pdf_file_changed)
+        self._pending_reload_page = None
+        self._external_pdf_path_hint = None
+        self._external_pdf_page_hint = None
+        self._pending_visible_request = None
         # ── O(1) box tracking ─────────────────────────────────────────────────
         # All box_ids/group_ids that entered the queue (ever seen this session)
         self._queued_ids     = set()
@@ -269,6 +279,49 @@ class ReviewScreen(QWidget):
             self._stop_watch()
 
         super().closeEvent(e)
+
+    def _watch_pdf(self, path: str):
+        self._stop_watch()
+        self._watched_pdf_path = path
+        if path and os.path.exists(path):
+            self._watcher.addPath(path)
+
+    def _stop_watch(self):
+        if self._watched_pdf_path:
+            try:
+                self._watcher.removePath(self._watched_pdf_path)
+            except Exception:
+                pass
+            self._watched_pdf_path = None
+        self._reload_timer.stop()
+
+    def _on_pdf_file_changed(self, path: str):
+        if not path:
+            return
+        print(f"[DEBUG][watch] change detected: {os.path.basename(path)}")
+        self.canvas._show_toast("PDF changed on disk — refreshing…")
+        self._reload_timer.start()
+
+    def _reload_modified_pdf(self):
+        path = self._watched_pdf_path
+        if not path:
+            return
+        if not os.path.exists(path):
+            QTimer.singleShot(500, self._reload_modified_pdf)
+            return
+        if path not in self._watcher.files():
+            self._watcher.addPath(path)
+
+        current_page = self.canvas.get_current_page(self._canvas_scroll.verticalScrollBar().value())
+        target_page = current_page
+        if self._external_pdf_path_hint == path and self._external_pdf_page_hint is not None:
+            target_page = self._external_pdf_page_hint
+
+        PAGE_CACHE.invalidate_pdf(path)
+        invalidate_pdf_skeleton(path)
+        self._pending_reload_page = target_page
+        print(f"[DEBUG][watch] refreshing PDF after save — target page p.{target_page + 1}")
+        self._reload_current_canvas()
 
     def _toggle_chrome(self):
         """Right-click on canvas — show/hide header and hint bars."""
@@ -381,6 +434,8 @@ class ReviewScreen(QWidget):
             self._debug_report("C key")
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
+        elif mods & Qt.ControlModifier and key == Qt.Key_E:
+            self._open_current_pdf_in_reader()
         elif key == Qt.Key_E:
             self._edit_current_card()
         # ── INK LAYER SHORTCUTS ──────────────────────────────────────────────
@@ -867,6 +922,44 @@ class ReviewScreen(QWidget):
         self._rebuild_queue()
         self._reload_current_canvas()
 
+    def _open_current_pdf_in_reader(self):
+        idx = self._idx
+        if idx >= len(self._items):
+            idx = len(self._items) - 1
+        if not (0 <= idx < len(self._items)):
+            return
+
+        card, _, _ = self._items[idx]
+        path = card.get("pdf_path", "")
+        if not path or not os.path.exists(path):
+            self.canvas._show_toast("No PDF loaded for this card")
+            return
+
+        scroll_pos = self._canvas_scroll.verticalScrollBar().value()
+        current_page_zero = self.canvas.get_current_page(scroll_pos)
+        current_page = current_page_zero + 1
+        self._external_pdf_path_hint = path
+        self._external_pdf_page_hint = current_page_zero
+
+        try:
+            pdf_url = QUrl.fromLocalFile(path)
+            pdf_url.setFragment(f"page={current_page}")
+            if QDesktopServices.openUrl(pdf_url):
+                self.canvas._show_toast(f"Opened PDF on p.{current_page}")
+                return
+
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", path])
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+            self.canvas._show_toast(f"Opened PDF for p.{current_page}")
+        except Exception as ex:
+            QMessageBox.warning(self, "Could not open PDF", f"Could not open PDF:\n{ex}")
+
     def _reload_current_canvas(self):
         """
         STEP 4 — Skeleton-first lazy loading.
@@ -905,6 +998,7 @@ class ReviewScreen(QWidget):
         # ── 2. PDF CARD ───────────────────────────────────────────────────────
         if card.get("pdf_path") and PDF_SUPPORT:
             path = card["pdf_path"]
+            self._watch_pdf(path)
 
             # ── 2a. PDF missing ───────────────────────────────────────────────
             if not os.path.exists(path):
@@ -958,16 +1052,17 @@ class ReviewScreen(QWidget):
                 self._start_review_pdf_thread(card, box_idx)   # fallback
                 return
 
-            # Inject already-cached pages into skeleton immediately
+            # Inject already-cached pages into a fresh skeleton copy immediately
+            pages = list(skel.placeholders)
             for i, pg in enumerate(clean_pages):
-                if i < len(skel.placeholders):
-                    skel.placeholders[i] = pg
+                if i < len(pages):
+                    pages[i] = pg
             if clean_pages:
                 print(f"[DEBUG][reload_canvas] 💉 pre-injected {len(clean_pages)} "
                       f"cached pages into skeleton")
 
             # Canvas ready with skeleton — instant UI
-            self._apply_canvas_pages(card, box_idx, skel.placeholders)
+            self._apply_canvas_pages(card, box_idx, pages)
             self.canvas._show_toast(f"⏳ Loading p.1–{skel.total_pages}...")
             t_skel_ms = (time.perf_counter() - t_start) * 1000
             print(f"[DEBUG][reload_canvas] ✅ canvas ready in {t_skel_ms:.1f}ms "
@@ -1077,7 +1172,6 @@ class ReviewScreen(QWidget):
                   f"starting background fill immediately")
             self._start_background_fill(path, priority_pages, total_pages)
             return
-
         self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
         self._ondemand_path   = path
         self._ondemand_total  = total_pages
@@ -1100,6 +1194,14 @@ class ReviewScreen(QWidget):
     _BG_FILL_WINDOW = 15
 
     def _start_background_fill(self, path, already_rendered, total_pages):
+        cached_pages = sum(
+            1 for page_num in range(total_pages)
+            if PAGE_CACHE.get(path, page_num) is not None
+        )
+        self.canvas._show_toast(f"✅ Ready — {cached_pages}/{total_pages} pages cached")
+        print(f"[DEBUG][bg_fill] background fill disabled — waiting for scroll on remaining pages")
+        return
+
         """
         After priority pages done — render a WINDOW of nearby pages in bg.
 
@@ -1212,30 +1314,45 @@ class ReviewScreen(QWidget):
         if not path:
             return
 
-        # Which visible pages are still grey placeholders?
-        needed = [
-            pn for pn in range(first, last + 1)
-            if PAGE_CACHE.get(path, pn) is None
-        ]
+        needed = [pn for pn in range(first, last + 1) if PAGE_CACHE.get(path, pn) is None]
 
         if not needed:
-            print(f"[DEBUG][on_visible] p.{first+1}–p.{last+1} all cached ⚡")
+            print(f"[DEBUG][on_visible] p.{first+1}-p.{last+1} all cached")
             return
 
-        print(f"[DEBUG][on_visible] p.{first+1}–p.{last+1} — "
-              f"need render: {[p+1 for p in needed]}")
+        print(f"[DEBUG][on_visible] p.{first+1}-p.{last+1} need render: {[p+1 for p in needed]}")
 
-        # Stop current bg thread and prioritise visible pages
-        self._stop_ondemand_thread()
-        self._ondemand_thread = PdfOnDemandThread(
-            path, needed, zoom=1.5, parent=self)
+        if self._ondemand_thread and self._ondemand_thread.isRunning():
+            self._pending_visible_request = (path, list(needed))
+            print(f"[DEBUG][on_visible] render thread busy - queued pages {[p+1 for p in needed]}")
+            return
+
+        self._start_visible_page_request(path, needed)
+
+    def _start_visible_page_request(self, path, needed):
+        self._pending_visible_request = None
+        self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
-        self._ondemand_thread.batch_done.connect(
-            lambda rendered: print(f"[DEBUG][on_visible] ✅ visible pages rendered: "
-                                   f"{[r+1 for r in rendered]}")
-        )
+        self._ondemand_thread.batch_done.connect(self._on_visible_pages_batch_done)
         self._ondemand_thread.start()
-        print(f"[DEBUG][on_visible] ▶ thread started for visible pages {[p+1 for p in needed]}")
+        print(f"[DEBUG][on_visible] started visible pages {[p+1 for p in needed]}")
+
+    def _on_visible_pages_batch_done(self, rendered):
+        if rendered:
+            print(f"[DEBUG][on_visible] visible pages rendered: {[r+1 for r in rendered]}")
+        else:
+            print(f"[DEBUG][on_visible] visible pages rendered: []")
+
+        pending = self._pending_visible_request
+        self._pending_visible_request = None
+        if pending and pending[0] == getattr(self, "_ondemand_path", None):
+            path, needed = pending
+            fresh_needed = [pn for pn in needed if PAGE_CACHE.get(path, pn) is None]
+            if fresh_needed:
+                print(f"[DEBUG][on_visible] draining queued pages {[p+1 for p in fresh_needed]}")
+                self._start_visible_page_request(path, fresh_needed)
+            else:
+                print(f"[DEBUG][on_visible] queued pages already cached")
 
     def _on_page_ready(self, page_num, qpx):
         """
@@ -1378,7 +1495,12 @@ class ReviewScreen(QWidget):
 
         # 6. Zoom fit + center (deferred so viewport geometry is final)
         from PyQt5.QtCore import QTimer
-        QTimer.singleShot(0, lambda: (self._zoom_fit(), self._center_on_target()))
+        if self._pending_reload_page is not None:
+            reload_page = self._pending_reload_page
+            self._pending_reload_page = None
+            QTimer.singleShot(0, lambda pg=reload_page: (self._zoom_fit(), self.canvas.scroll_to_page(pg, self._canvas_scroll)))
+        else:
+            QTimer.singleShot(0, lambda: (self._zoom_fit(), self._center_on_target()))
 
         # 7. Rebuild queue now that _page_tops is populated with real page positions
         QTimer.singleShot(50, self._rebuild_queue)
@@ -3317,3 +3439,8 @@ if __name__ == "__main__":
     ret = app.exec_()
     lock.unlock()
     sys.exit(ret)
+
+
+
+
+
