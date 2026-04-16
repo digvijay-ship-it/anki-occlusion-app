@@ -178,6 +178,7 @@ class OcclusionCanvas(QWidget):
         self._target_idx       = -1
         self._target_group_id  = ""
         self._review_mode_style= "hide_all"
+        self._peek_active      = False
 
         self._drawing        = False
         self._start          = QPointF()
@@ -716,6 +717,11 @@ class OcclusionCanvas(QWidget):
         self._invalidate_mask_cache()
         self.update()
 
+    def set_peek_active(self, active: bool):
+        self._peek_active = bool(active)
+        self._invalidate_mask_cache()
+        self.update()
+
     def get_target_scaled_rect(self):
         target_r = None
         if self._target_group_id:
@@ -1011,6 +1017,7 @@ class OcclusionCanvas(QWidget):
                         b.get("group_id","") == self._target_group_id)
             is_target = (i == self._target_idx) or in_tg
             hide_one  = (self._review_mode_style == "hide_one")
+            peek_red  = self._peek_active and is_target
 
             if hide_one and not is_target:
                 if not revealed:
@@ -1020,13 +1027,13 @@ class OcclusionCanvas(QWidget):
                 p.restore(); return
 
             if not revealed:
-                color    = QColor(C_GREEN if is_target else C_MASK)
+                color    = QColor("#D64545" if peek_red else (C_GREEN if is_target else C_MASK))
                 text_col = "#1E1E2E" if is_target else "#FFF"
                 p.setBrush(QBrush(color))
                 p.setPen(QPen(QColor(text_col), 2))
                 (p.drawEllipse if shape=="ellipse" else p.drawRect)(local)
             else:
-                p.setPen(QPen(QColor(C_GREEN), 2)); p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(QColor("#D64545" if peek_red else C_GREEN), 2)); p.setBrush(Qt.NoBrush)
                 (p.drawEllipse if shape=="ellipse" else p.drawRect)(local)
         else:
             gid     = b.get("group_id","")
@@ -2181,6 +2188,7 @@ class _ZoomableScrollArea(QScrollArea):
         self._last_visible_emit_ts = None
         self._last_scroll_range   = None
         self._last_viewport_size  = None
+        self._scroll_direction    = 0
         self.setFocusPolicy(Qt.StrongFocus)
         self.viewport().installEventFilter(self)
 
@@ -2212,6 +2220,10 @@ class _ZoomableScrollArea(QScrollArea):
         prev_ts = self._last_scroll_ts
         delta = 0 if prev_value is None else value - prev_value
         dt_ms = 0.0 if prev_ts is None else (now - prev_ts) * 1000.0
+        if delta > 0:
+            self._scroll_direction = 1
+        elif delta < 0:
+            self._scroll_direction = -1
         page = self._canvas.get_current_page(value) + 1 if self._canvas and self._canvas._page_tops else 0
         vp = self.viewport()
         range_now = (vbar.minimum(), vbar.maximum())
@@ -2284,6 +2296,14 @@ class _ZoomableScrollArea(QScrollArea):
 
         first = max(0, min(first, total - 1))
         last  = max(0, min(last,  total - 1))
+
+        # Prefetch just one page in the scroll direction so the current page
+        # and its neighbor stay ready without adding extra render churn.
+        PREFETCH_PAGES = 1
+        if self._scroll_direction > 0:
+            last = min(total - 1, last + PREFETCH_PAGES)
+        elif self._scroll_direction < 0:
+            first = max(0, first - PREFETCH_PAGES)
 
         print(f"[DEBUG][scroll_area] 📜 scroll_y={scroll_y}  "
               f"img_range=({img_top:.0f}–{img_bottom:.0f})  "

@@ -155,6 +155,7 @@ SS = _build_ss()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 QUEUE_ROLE       = Qt.UserRole + 10
+QUEUE_INDEX_ROLE = Qt.UserRole + 11
 CARD_DRAG_MIME   = "application/x-anki-card"
 
 class QueueDelegate(QStyledItemDelegate):
@@ -163,6 +164,7 @@ class QueueDelegate(QStyledItemDelegate):
         "done":    {"bg": QColor("#2A3A2A"),  "fg": QColor("#6A8A6A")},
         "pending": {"bg": QColor(C_SURFACE),  "fg": QColor(C_TEXT)},
         "relearn": {"bg": QColor("#3A2A1A"),  "fg": QColor("#E08030")},
+        "peek":    {"bg": QColor("#B83B3B"),  "fg": QColor("#FFF1F1")},
     }
 
     def paint(self, painter, option, index):
@@ -215,6 +217,10 @@ class ReviewScreen(QWidget):
         self._external_pdf_path_hint = None
         self._external_pdf_page_hint = None
         self._pending_visible_request = None
+        self._background_fill_state = None
+        self._ondemand_kind = None
+        self._peek_idx = None
+        self._peek_origin_idx = None
         # ── O(1) box tracking ─────────────────────────────────────────────────
         # All box_ids/group_ids that entered the queue (ever seen this session)
         self._queued_ids     = set()
@@ -428,9 +434,12 @@ class ReviewScreen(QWidget):
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
             self._zoom_fit()
         elif key == Qt.Key_C:
-            # Ensure canvas has focus so it can calculate target rects
-            self._zoom_fit()
-            self._center_on_target()
+            if self._peek_idx is not None:
+                self._exit_peek()
+            else:
+                # Ensure canvas has focus so it can calculate target rects
+                self._zoom_fit()
+                self._center_on_target()
             self._debug_report("C key")
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
@@ -471,6 +480,34 @@ class ReviewScreen(QWidget):
                 self.canvas._redraw()
         self._reveal_bar.hide()
         self._show_overlay(self._rating_frame)
+
+    def _exit_peek(self):
+        if self._peek_idx is None:
+            return
+        self._peek_idx = None
+        self._peek_origin_idx = None
+        if hasattr(self.canvas, "set_peek_active"):
+            self.canvas.set_peek_active(False)
+        self._rebuild_queue()
+        self._reload_current_canvas()
+
+    def _jump_to_queue_index(self, idx, from_peek=False):
+        if not (0 <= idx < len(self._items)):
+            return
+        if self._peek_origin_idx is None:
+            self._peek_origin_idx = self._idx
+        self._peek_idx = idx
+        if hasattr(self.canvas, "set_peek_active"):
+            self.canvas.set_peek_active(True)
+        self._rebuild_queue(peek_idx=idx)
+        self._reload_current_canvas(view_idx=idx)
+        self._debug_report(f"queue jump -> {idx}")
+
+    def _on_queue_item_clicked(self, item):
+        idx = item.data(QUEUE_INDEX_ROLE)
+        if idx is None:
+            return
+        self._jump_to_queue_index(int(idx))
 
     def _set_fullscreen_ui(self, fullscreen: bool):
         self._hdr_widget.setVisible(not fullscreen)
@@ -599,6 +636,7 @@ class ReviewScreen(QWidget):
         self._queue_list = QListWidget()
         self._queue_list.setItemDelegate(QueueDelegate(self._queue_list))
         self._queue_list.setFocusPolicy(Qt.NoFocus)
+        self._queue_list.itemClicked.connect(self._on_queue_item_clicked)
         self._queue_list.setStyleSheet(
             f"QListWidget{{background:{C_SURFACE};border:none;padding:0;}}"
             f"QListWidget::item{{padding:0;}}")
@@ -960,7 +998,7 @@ class ReviewScreen(QWidget):
         except Exception as ex:
             QMessageBox.warning(self, "Could not open PDF", f"Could not open PDF:\n{ex}")
 
-    def _reload_current_canvas(self):
+    def _reload_current_canvas(self, view_idx=None):
         """
         STEP 4 — Skeleton-first lazy loading.
 
@@ -976,16 +1014,19 @@ class ReviewScreen(QWidget):
 
         Terminal prints every decision point.
         """
-        if not (0 <= self._idx < len(self._items)):
+        if view_idx is None:
+            view_idx = self._idx
+
+        if not (0 <= view_idx < len(self._items)):
             return
-        card, box_idx, _ = self._items[self._idx]
+        card, box_idx, _ = self._items[view_idx]
 
         import time
         t_start = time.perf_counter()
         fname   = os.path.basename(card.get("pdf_path", card.get("image_path", "?")))
         print(f"\n[DEBUG][reload_canvas] ─────────────────────────────────────────")
         print(f"[DEBUG][reload_canvas] card='{card.get('title','?')}'  "
-              f"file={fname}  idx={self._idx}")
+              f"file={fname}  idx={self._idx}  view_idx={view_idx}")
 
         # ── 1. IMAGE CARD ─────────────────────────────────────────────────────
         if card.get("image_path") and os.path.exists(card["image_path"]):
@@ -1090,11 +1131,14 @@ class ReviewScreen(QWidget):
 
     def _get_priority_pages(self, card, box_idx, total_pages):
         """
-        Return sorted list of page numbers that have today's due masks.
-        These pages render FIRST — user sees them immediately.
+        Return the current mask page plus its immediate neighbours.
+        These pages render FIRST so the viewport stays responsive.
 
-        Uses box['page_num'] from JSON (set by Step 1).
-        Falls back to Y-center + _page_tops if page_num missing (old cards).
+        The goal is simple:
+          1. current mask page
+          2. one page before
+          3. one page after
+        Everything else is background work.
         """
         boxes    = card.get("boxes", [])
         pages    = set()
@@ -1119,12 +1163,6 @@ class ReviewScreen(QWidget):
             else:
                 print(f"[DEBUG][priority] target box has no page_num — old card")
 
-        # All other due boxes in this card — add their pages too
-        for b in boxes:
-            pn = b.get("page_num")
-            if pn is not None and 0 <= pn < total_pages:
-                pages.add(pn)
-
         # Also add pages adjacent to priority pages (±1) for smooth scroll
         adjacent = set()
         for pn in pages:
@@ -1148,6 +1186,8 @@ class ReviewScreen(QWidget):
         stale signals are silently dropped. No more 'canvas has 0 pages'.
         """
         self._stop_ondemand_thread()
+        self._ondemand_kind = "priority"
+        self._background_fill_state = None
 
         # ── FIX 1: stamp current PDF path on canvas ───────────────────────────
         # This is the guard key — _on_page_ready compares against this.
@@ -1170,19 +1210,24 @@ class ReviewScreen(QWidget):
                 self.canvas.inject_page(pn, pg)
 
         if not to_render:
-            print(f"[DEBUG][priority_render] all priority pages cached — "
-                  f"starting background fill immediately")
-            self._start_background_fill(path, priority_pages, total_pages)
+            print(f"[DEBUG][priority_render] all priority pages cached ? waiting for scroll")
+            self._background_fill_state = None
+            self._ondemand_kind = None
             return
 
         self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
         self._ondemand_path   = path
         self._ondemand_total  = total_pages
         self._priority_pages  = set(priority_pages)
+        self._ondemand_kind   = "priority"
 
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(
-            lambda rendered: self._start_background_fill(path, priority_pages, total_pages)
+            lambda rendered: (
+                print(f"[DEBUG][priority_render] priority batch done ? waiting for scroll"),
+                setattr(self, "_background_fill_state", None),
+                setattr(self, "_ondemand_kind", None)
+            )
         )
         self._ondemand_thread.error.connect(
             lambda err: print(f"[DEBUG][priority_render] ❌ error: {err}")
@@ -1196,30 +1241,32 @@ class ReviewScreen(QWidget):
     # On-demand scroll handles anything outside this window.
     _BG_FILL_WINDOW = 15
 
+    # Background fill runs in small batches so it can yield to scroll-driven
+    # visible-page loads instead of monopolizing the render thread.
+    _BG_FILL_BATCH = 6
+    _BG_FILL_DELAY_MS = 250
+
     def _start_background_fill(self, path, already_rendered, total_pages):
         cached_pages = sum(
             1 for page_num in range(total_pages)
             if PAGE_CACHE.get(path, page_num) is not None
         )
-        self.canvas._show_toast(f"✅ Ready — {cached_pages}/{total_pages} pages cached")
-        print(f"[DEBUG][bg_fill] background fill disabled — waiting for scroll on remaining pages")
-        return
+        self.canvas._show_toast(f"? Ready ? {cached_pages}/{total_pages} pages cached")
 
-        """
-        After priority pages done — render a WINDOW of nearby pages in bg.
+        # Defer if a visible-page request is in flight. Scroll responsiveness
+        # wins over background cache completion.
+        if self._ondemand_thread and self._ondemand_thread.isRunning():
+            if getattr(self, "_ondemand_kind", None) == "visible":
+                self._background_fill_state = (path, list(already_rendered), total_pages)
+                print(f"[DEBUG][bg_fill] deferred ? visible render active")
+                return
+            if getattr(self, "_ondemand_kind", None) == "background":
+                print(f"[DEBUG][bg_fill] already running ? skipping duplicate start")
+                return
 
-        FIX 3: Old code rendered ALL remaining pages (111 pages = 35 sec!).
-        New code: render at most _BG_FILL_WINDOW pages around the current
-        position. On-demand scroll handles everything else.
-
-        Window selection strategy:
-          - Start from min(priority_pages) - buffer
-          - Take next _BG_FILL_WINDOW uncached pages in reading order
-          - This covers 'next few pages' the user will likely scroll to
-        """
-        # ── FIX 1 guard: if card switched, abort ─────────────────────────────
+        # ?? FIX 1 guard: if card switched, abort ?????????????????????????????
         if getattr(self, "_canvas_pdf_path", None) != path:
-            print(f"[DEBUG][bg_fill] 🚫 card switched — aborting bg fill for "
+            print(f"[DEBUG][bg_fill] ?? card switched ? aborting bg fill for "
                   f"{os.path.basename(path)}")
             return
 
@@ -1230,61 +1277,78 @@ class ReviewScreen(QWidget):
         remaining  = sorted(all_pages - skip)
 
         if not remaining:
-            self.canvas._show_toast(f"✅ PDF ready — {total_pages} pages")
-            print(f"[DEBUG][bg_fill] all pages already rendered ✅")
+            self.canvas._show_toast(f"? PDF ready ? {total_pages} pages")
+            print(f"[DEBUG][bg_fill] all pages already rendered ?")
+            self._background_fill_state = None
+            self._ondemand_kind = None
             return
 
-        # ── FIX 3: Cap to window ──────────────────────────────────────────────
-        # Start window from smallest priority page (current reading position)
-        anchor     = min(already_rendered) if already_rendered else 0
-        # Take pages in reading order from anchor, up to window size
-        windowed   = [p for p in remaining if p >= anchor][:self._BG_FILL_WINDOW]
-        # If window not full, also prepend pages before anchor
-        if len(windowed) < self._BG_FILL_WINDOW:
-            before   = [p for p in remaining if p < anchor]
-            before   = before[-(self._BG_FILL_WINDOW - len(windowed)):]
-            windowed = before + windowed
-
-        skipped_count = len(remaining) - len(windowed)
+        skipped_count = 0
+        windowed = remaining[: self._BG_FILL_BATCH]
+        next_rendered = sorted(set(already_rendered) | set(windowed))
 
         print(f"[DEBUG][bg_fill] remaining={len(remaining)}/{total_pages}  "
-              f"window={len(windowed)} (cap={self._BG_FILL_WINDOW})  "
-              f"skipped={skipped_count} (on-demand will handle)")
-        print(f"[DEBUG][bg_fill] window pages: {[p+1 for p in windowed]}")
+              f"background pages={len(windowed)}")
+        print(f"[DEBUG][bg_fill] background pages: {[p+1 for p in windowed]}")
 
         self._stop_ondemand_thread()
+        self._ondemand_kind = "background"
+        self._background_fill_state = (path, next_rendered, total_pages)
 
         # Verify canvas is still intact after stop (regression check for the wipe bug)
         canvas_pages_after_stop = len(self.canvas._pages)
         if canvas_pages_after_stop == 0:
-            print(f"[DEBUG][bg_fill] ❌ REGRESSION — canvas._pages=0 after "
+            print(f"[DEBUG][bg_fill] ? REGRESSION ? canvas._pages=0 after "
                   f"_stop_ondemand_thread()! Canvas was wiped. "
                   f"Aborting bg fill to avoid inject errors.")
             return
-        print(f"[DEBUG][bg_fill] 🔍 canvas._pages={canvas_pages_after_stop} after stop — ok")
+        print(f"[DEBUG][bg_fill] ?? canvas._pages={canvas_pages_after_stop} after stop ? ok")
 
         self._ondemand_thread = PdfOnDemandThread(
             path, windowed, zoom=1.5, parent=self)
         self._ondemand_path   = path
         self._ondemand_total  = total_pages
+        self._ondemand_kind   = "background"
 
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(
-            lambda rendered: (
-                self.canvas._show_toast(
-                    f"✅ Ready — {len(already_rendered) + len(rendered)} pages loaded, "
-                    f"{skipped_count} on-demand"),
-                print(f"[DEBUG][bg_fill] ✅ window fill done — "
-                      f"rendered={{[r+1 for r in rendered]}}  "
-                      f"canvas._pages={{len(self.canvas._pages)}}")
-            )
+            lambda rendered, p=path, ar=next_rendered, tp=total_pages: self._on_background_fill_batch_done(rendered, p, ar, tp)
         )
         self._ondemand_thread.error.connect(
-            lambda err: print(f"[DEBUG][bg_fill] ❌ error: {{err}}")
+            lambda err: print(f"[DEBUG][bg_fill] ? error: {err}")
         )
         self._ondemand_thread.start()
-        print(f"[DEBUG][bg_fill] ▶ background fill thread started "
+        print(f"[DEBUG][bg_fill] ? background fill thread started "
               f"({len(windowed)} pages)  canvas._pages={canvas_pages_after_stop}")
+
+    def _on_background_fill_batch_done(self, rendered, path, already_rendered, total_pages):
+        combined = sorted(set(already_rendered) | set(rendered))
+        remaining = [
+            pn for pn in range(total_pages)
+            if PAGE_CACHE.get(path, pn) is None and pn not in combined
+        ]
+
+        if path != getattr(self, "_canvas_pdf_path", None):
+            print(f"[DEBUG][bg_fill] card changed ? stopping background fill queue")
+            self._background_fill_state = None
+            self._ondemand_kind = None
+            return
+
+        if remaining:
+            print(f"[DEBUG][bg_fill] batch done ? {len(combined)}/{total_pages} cached, "
+                  f"{len(remaining)} remaining")
+            self._background_fill_state = (path, combined, total_pages)
+            self._ondemand_kind = None
+            QTimer.singleShot(
+                self._BG_FILL_DELAY_MS,
+                lambda p=path, ar=combined, tp=total_pages: self._start_background_fill(p, ar, tp)
+            )
+            return
+
+        self._background_fill_state = None
+        self._ondemand_kind = None
+        self.canvas._show_toast(f"? PDF ready ? {total_pages} pages")
+        print(f"[DEBUG][bg_fill] ? all background pages rendered")
 
     def _wire_scroll_ondemand(self, path, total_pages):
         """
@@ -1326,6 +1390,14 @@ class ReviewScreen(QWidget):
         print(f"[DEBUG][on_visible] p.{first+1}-p.{last+1} need render: {[p+1 for p in needed]}")
 
         if self._ondemand_thread and self._ondemand_thread.isRunning():
+            if getattr(self, "_ondemand_kind", None) == "background":
+                print(f"[DEBUG][on_visible] preempting background fill for visible pages "
+                      f"{[p+1 for p in needed]}")
+                self._stop_ondemand_thread()
+                self._ondemand_kind = None
+                self._start_visible_page_request(path, needed)
+                return
+
             self._pending_visible_request = (path, list(needed))
             print(f"[DEBUG][on_visible] render thread busy - queued pages {[p+1 for p in needed]}")
             return
@@ -1334,6 +1406,7 @@ class ReviewScreen(QWidget):
 
     def _start_visible_page_request(self, path, needed):
         self._pending_visible_request = None
+        self._ondemand_kind = "visible"
         self._ondemand_thread = PdfOnDemandThread(path, needed, zoom=1.5, parent=self)
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(self._on_visible_pages_batch_done)
@@ -1356,6 +1429,16 @@ class ReviewScreen(QWidget):
                 self._start_visible_page_request(path, fresh_needed)
             else:
                 print(f"[DEBUG][on_visible] queued pages already cached")
+                self._ondemand_kind = None
+        elif getattr(self, "_ondemand_kind", None) == "visible":
+            self._ondemand_kind = None
+
+        bg_state = self._background_fill_state
+        if bg_state and not (self._ondemand_thread and self._ondemand_thread.isRunning()) and not self._pending_visible_request:
+            bg_path, bg_already_rendered, bg_total = bg_state
+            if getattr(self, "_canvas_pdf_path", None) == bg_path:
+                print(f"[DEBUG][on_visible] resuming background fill")
+                self._start_background_fill(bg_path, bg_already_rendered, bg_total)
 
     def _on_page_ready(self, page_num, qpx):
         """
@@ -1627,9 +1710,11 @@ class ReviewScreen(QWidget):
             item = self._items.pop(real_j)
             self._items.insert(insert_pos + offset, item)
 
-    def _rebuild_queue(self):
+    def _rebuild_queue(self, peek_idx=None):
         """Rebuild the right-side queue list — reflects current order + states."""
         self._queue_list.clear()
+        if peek_idx is None:
+            peek_idx = getattr(self, "_peek_idx", None)
         for i, (card, box_idx, sm2_obj) in enumerate(self._items):
             # ── Page number ───────────────────────────────────────────────────
             # Derive from box Y-center vs canvas _page_tops if available
@@ -1670,7 +1755,10 @@ class ReviewScreen(QWidget):
                 label = f"{page_str}#{box_idx + 1}"
 
             item = QListWidgetItem(label)
-            if i < self._idx:
+            item.setData(QUEUE_INDEX_ROLE, i)
+            if peek_idx is not None and i == peek_idx:
+                state = "peek"
+            elif i < self._idx:
                 state = "done"
             elif i == self._idx:
                 state = "current"
