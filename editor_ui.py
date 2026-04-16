@@ -250,6 +250,19 @@ class OcclusionCanvas(QWidget):
         self._resize_canvas()
         self.update()
 
+    def _compute_layout(self):
+        """Rebuild page top offsets and total virtual height from _pages."""
+        self._page_tops = []
+        top = 0
+        max_w = 0
+        for px in self._pages:
+            self._page_tops.append(top)
+            if px and not px.isNull():
+                top += px.height()
+                max_w = max(max_w, px.width())
+        self._total_h = top
+        self._total_w = max_w
+
     def load_pages(self, pages: list):
         """File: editor_ui.py -> Class: OcclusionCanvas -> Function: load_pages"""
         self._px = None
@@ -276,6 +289,50 @@ class OcclusionCanvas(QWidget):
         self._invalidate_mask_cache()
         self._resize_canvas()
         self.update()
+
+    def has_content(self):
+        return bool(self._px is not None or self._pages)
+
+    def _canvas_wh(self):
+        if self._pages:
+            return self._total_w or 1, self._total_h or 1
+        if self._px is not None and not self._px.isNull():
+            return self._px.width(), self._px.height()
+        return 1, 1
+
+    def _sr(self, r):
+        """Scale an image-space rect into screen-space."""
+        return QRectF(r.x() * self._scale, r.y() * self._scale,
+                      r.width() * self._scale, r.height() * self._scale)
+
+    def _ip(self, p):
+        """Convert a screen-space point back to image-space."""
+        inv = 1.0 / max(self._scale, 0.01)
+        return QPointF(p.x() * inv, p.y() * inv)
+
+    def _resize_canvas(self):
+        """Resize the widget to match the current logical canvas size."""
+        w, h = self._canvas_wh()
+        w = max(int(w * self._scale), 1)
+        h = max(int(h * self._scale), 1)
+        self.setMinimumSize(w, h)
+        self.resize(w, h)
+
+    def _get_scaled_page(self, idx: int) -> QPixmap:
+        """Return a cached scaled QPixmap for the given page index."""
+        if not (0 <= idx < len(self._pages)):
+            return QPixmap()
+        page_px = self._pages[idx]
+        if not page_px or page_px.isNull():
+            return QPixmap()
+        cached_scale, cached_spx = self._spx_cache.get(idx, (None, None))
+        if cached_scale == self._scale and cached_spx is not None and not cached_spx.isNull():
+            return cached_spx
+        sw = max(int(page_px.width() * self._scale), 1)
+        sh = max(int(page_px.height() * self._scale), 1)
+        cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, Qt.FastTransformation)
+        self._spx_cache[idx] = (self._scale, cached_spx)
+        return cached_spx
 
     def inject_page(self, page_num: int, qpx):
         """
@@ -387,6 +444,64 @@ class OcclusionCanvas(QWidget):
         print(f"[DEBUG][inject_page] ✅ p.{page_num+1:>3}  "
               f"placeholder({old_w}×{old_h}) → real({new_w}×{new_h})  "
               f"dims_match={dims_match}  inject_time={t_ms:.2f}ms")
+
+    def paintEvent(self, event):
+        """File: editor_ui.py -> Class: OcclusionCanvas -> Fixed paintEvent"""
+        p = QPainter(self)
+        clip = event.rect()
+
+        p.fillRect(clip, QColor("#1E1E2E"))
+
+        if self._px and not self._px.isNull():
+            cached_scale, cached_spx = self._spx_cache.get("_px", (None, None))
+            if cached_scale != self._scale or cached_spx is None:
+                cached_spx = self._px.scaled(
+                    max(int(self._px.width() * self._scale), 1),
+                    max(int(self._px.height() * self._scale), 1),
+                    Qt.KeepAspectRatio, Qt.FastTransformation)
+                self._spx_cache["_px"] = (self._scale, cached_spx)
+            p.drawPixmap(0, 0, cached_spx)
+
+        elif self._pages:
+            sep_pen = QPen(QColor("#45475A"), 2)
+            for i, page_px in enumerate(self._pages):
+                scr_top = int(self._page_tops[i] * self._scale)
+                scr_h = int(page_px.height() * self._scale)
+                scr_bot = scr_top + scr_h
+
+                if scr_bot < clip.top():
+                    continue
+                if scr_top > clip.bottom():
+                    break
+
+                p.drawPixmap(0, scr_top, self._get_scaled_page(i))
+
+                if i < len(self._pages) - 1:
+                    sep_y = scr_bot + int(PAGE_GAP * self._scale) // 2
+                    p.setPen(sep_pen)
+                    p.drawLine(0, sep_y, self.width(), sep_y)
+
+        if self._mask_cache_layer and not self._mask_cache_layer.isNull():
+            p.drawPixmap(0, 0, self._mask_cache_layer)
+        else:
+            p.setRenderHint(QPainter.Antialiasing)
+            for i, b in enumerate(self._boxes):
+                if self._drag_op and i == self._selected_idx:
+                    continue
+                sr = self._sr(b["rect"])
+                if not clip.intersects(sr.toRect()):
+                    continue
+                self._draw_box(p, i, b)
+
+        p.setRenderHint(QPainter.Antialiasing)
+        if self._drag_op and self._selected_idx >= 0:
+            self._draw_box(p, self._selected_idx, self._boxes[self._selected_idx])
+
+        if self._drawing and not self._live_rect.isEmpty():
+            self._draw_live(p)
+
+        self._draw_ink_layer(p)
+        p.end()
 
     # =========================================================================
     #  MASK GPU CACHE

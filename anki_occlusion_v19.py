@@ -1026,18 +1026,18 @@ class ReviewScreen(QWidget):
             except Exception:
                 total_pages = 0
 
-            clean_pages = []
+            clean_pages = {}
             for i in range(total_pages):
                 pg = PAGE_CACHE.get(path, i)
                 if pg and not pg.isNull():
-                    clean_pages.append(pg)
+                    clean_pages[i] = pg
 
             if total_pages > 0 and len(clean_pages) == total_pages:
                 t_ms = (time.perf_counter() - t_start) * 1000
                 print(f"[DEBUG][reload_canvas] ⚡ full cache hit — "
                       f"{total_pages} pages in {t_ms:.1f}ms — no render needed")
                 self._canvas_pdf_path = path   # FIX 1: stamp
-                self._apply_canvas_pages(card, box_idx, clean_pages)
+                self._apply_canvas_pages(card, box_idx, [clean_pages[i] for i in range(total_pages)])
                 self._wire_scroll_ondemand(path, total_pages)
                 return
 
@@ -1054,12 +1054,14 @@ class ReviewScreen(QWidget):
 
             # Inject already-cached pages into a fresh skeleton copy immediately
             pages = list(skel.placeholders)
-            for i, pg in enumerate(clean_pages):
-                if i < len(pages):
+            for i, pg in clean_pages.items():
+                if 0 <= i < len(pages):
                     pages[i] = pg
             if clean_pages:
+                cached_idxs = sorted(clean_pages.keys())
                 print(f"[DEBUG][reload_canvas] 💉 pre-injected {len(clean_pages)} "
-                      f"cached pages into skeleton")
+                      f"cached pages into skeleton at indices {cached_idxs[:8]}"
+                      f"{'...' if len(cached_idxs) > 8 else ''}")
 
             # Canvas ready with skeleton — instant UI
             self._apply_canvas_pages(card, box_idx, pages)
@@ -1172,6 +1174,7 @@ class ReviewScreen(QWidget):
                   f"starting background fill immediately")
             self._start_background_fill(path, priority_pages, total_pages)
             return
+
         self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
         self._ondemand_path   = path
         self._ondemand_total  = total_pages
@@ -1331,7 +1334,7 @@ class ReviewScreen(QWidget):
 
     def _start_visible_page_request(self, path, needed):
         self._pending_visible_request = None
-        self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
+        self._ondemand_thread = PdfOnDemandThread(path, needed, zoom=1.5, parent=self)
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(self._on_visible_pages_batch_done)
         self._ondemand_thread.start()
@@ -1388,7 +1391,6 @@ class ReviewScreen(QWidget):
               f"canvas_pages={canvas_len}  canvas_size={canvas_wh}  "
               f"path_match=True -> inject")
         self.canvas.inject_page(page_num, qpx)
-
     def _stop_ondemand_thread(self):
         """
         Safely stop any running PdfOnDemandThread.
@@ -1465,6 +1467,7 @@ class ReviewScreen(QWidget):
     def _apply_canvas_pages(self, card, box_idx, pages):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
         path = card.get("pdf_path", "")
+        self._canvas_pdf_path = path
         self.canvas._current_pdf_path = path
 
         # 1. Load ALL pages
@@ -1504,6 +1507,9 @@ class ReviewScreen(QWidget):
 
         # 7. Rebuild queue now that _page_tops is populated with real page positions
         QTimer.singleShot(50, self._rebuild_queue)
+        # 8. Force a visible-page pass after the viewport settles so already-cached
+        #    pages show immediately when returning to review.
+        QTimer.singleShot(120, self._canvas_scroll._emit_visible_pages)
         
     def _start_review_pdf_thread(self, card, box_idx):
         path = card.get("pdf_path", "")
@@ -3439,8 +3445,6 @@ if __name__ == "__main__":
     ret = app.exec_()
     lock.unlock()
     sys.exit(ret)
-
-
 
 
 
