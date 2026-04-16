@@ -268,6 +268,117 @@ class OcclusionCanvas(QWidget):
         self._resize_canvas()
         self.update()
 
+    def inject_page(self, page_num: int, qpx):
+        """
+        STEP 3 — Replace a placeholder QPixmap with the real rendered page.
+
+        Called by PdfOnDemandThread.page_ready signal.
+        Layout (page_tops, total_h) does NOT change — placeholder was same size.
+        Only the visual content of that one page slot updates.
+
+        Terminal debug shows: which page, old size vs new size, timing.
+        """
+        import time
+        t_start = time.perf_counter()
+
+        # ── Bounds check ──────────────────────────────────────────────────────
+        if page_num < 0 or page_num >= len(self._pages):
+            print(f"[DEBUG][inject_page] ❌ page_num={page_num} out of range "
+                  f"(canvas has {len(self._pages)} pages) — ignored")
+            return
+
+        if qpx is None or qpx.isNull():
+            print(f"[DEBUG][inject_page] ❌ p.{page_num+1} — null QPixmap received — ignored")
+            return
+
+        old_px  = self._pages[page_num]
+        old_w   = old_px.width()  if old_px else 0
+        old_h   = old_px.height() if old_px else 0
+        new_w   = qpx.width()
+        new_h   = qpx.height()
+
+        # ── Dimension sanity check ────────────────────────────────────────────
+        # Skeleton aur real page same zoom se bane hain — should always match.
+        # Agar mismatch hai toh recompute layout (shouldn't happen in practice).
+        dims_match = (old_w == new_w and old_h == new_h)
+
+        # ── Inject ────────────────────────────────────────────────────────────
+        self._pages[page_num] = qpx
+
+        # Invalidate scaled cache for this page only
+        self._spx_cache.pop(page_num, None)
+
+        if not dims_match:
+            # ── JITTER MONITOR — before ──────────────────────────────────────
+            canvas_h_before = self.height()
+            tops_before     = list(self._page_tops) if self._page_tops else []
+            _scroll_before  = None
+            try:
+                _sa = self.parent()
+                while _sa and not hasattr(_sa, "verticalScrollBar"):
+                    _sa = _sa.parent()
+                if _sa:
+                    _scroll_before = _sa.verticalScrollBar().value()
+            except Exception:
+                pass
+            print(f"[JITTER][inject_page] ⚠️  p.{page_num+1} DIM MISMATCH — "
+                  f"placeholder=({old_w}×{old_h}) real=({new_w}×{new_h}) "
+                  f"delta=(Δw={new_w-old_w:+}, Δh={new_h-old_h:+})  "
+                  f"canvas_h={canvas_h_before}px  scroll_y={_scroll_before}px")
+            # ────────────────────────────────────────────────────────────────
+
+            self._compute_layout()
+            self._resize_canvas()
+            self._invalidate_mask_cache()
+
+            # ── JITTER MONITOR — after ───────────────────────────────────────
+            canvas_h_after = self.height()
+            _scroll_after  = None
+            try:
+                _sa = self.parent()
+                while _sa and not hasattr(_sa, "verticalScrollBar"):
+                    _sa = _sa.parent()
+                if _sa:
+                    _scroll_after = _sa.verticalScrollBar().value()
+            except Exception:
+                pass
+            canvas_h_delta = canvas_h_after - canvas_h_before
+            scroll_delta   = (_scroll_after - _scroll_before) if (_scroll_after is not None and _scroll_before is not None) else "N/A"
+            top_before_pg  = tops_before[page_num] if page_num < len(tops_before) else "N/A"
+            top_after_pg   = self._page_tops[page_num] if self._page_tops and page_num < len(self._page_tops) else "N/A"
+            top_delta_pg   = (top_after_pg - top_before_pg) if isinstance(top_before_pg, int) and isinstance(top_after_pg, int) else "N/A"
+            shifted_pages  = sum(
+                1 for pi in range(page_num, min(len(tops_before), len(self._page_tops)))
+                if tops_before[pi] != self._page_tops[pi]
+            ) if tops_before and self._page_tops else 0
+            print(f"[JITTER][inject_page] 📐 LAYOUT SHIFT after recompute:")
+            print(f"[JITTER][inject_page]    canvas_h : {canvas_h_before} → {canvas_h_after}  (Δ={canvas_h_delta:+}px)")
+            print(f"[JITTER][inject_page]    scroll_y : {_scroll_before} → {_scroll_after}  (Δ={scroll_delta})")
+            print(f"[JITTER][inject_page]    page_top[p.{page_num+1}] : {top_before_pg} → {top_after_pg}  (Δ={top_delta_pg})")
+            print(f"[JITTER][inject_page]    pages with shifted tops: {shifted_pages}")
+            if canvas_h_delta != 0:
+                print(f"[JITTER][inject_page] 🔴 JITTER SOURCE CONFIRMED — canvas grew {canvas_h_delta:+}px → scroll will snap")
+            else:
+                print(f"[JITTER][inject_page] 🟡 recompute ran but canvas_h unchanged — jitter source is elsewhere")
+            # ────────────────────────────────────────────────────────────────
+        else:
+            # Fast path — only repaint the dirty page region
+            # No layout recompute needed — sizes match exactly
+            if self._page_tops and page_num < len(self._page_tops):
+                top_img  = self._page_tops[page_num]
+                top_scr  = int(top_img  * self._scale)
+                h_scr    = int(new_h    * self._scale)
+                from PyQt5.QtCore import QRect
+                self.update(QRect(0, top_scr, self.width(), h_scr))
+            else:
+                self.update()
+
+        t_ms = (time.perf_counter() - t_start) * 1000
+
+        print(f"[DEBUG][inject_page] ✅ p.{page_num+1:>3}  "
+              f"placeholder({old_w}×{old_h}) → real({new_w}×{new_h})  "
+              f"dims_match={dims_match}  inject_time={t_ms:.2f}ms")
+
     # =========================================================================
     #  LAYOUT
     # =========================================================================
@@ -303,8 +414,24 @@ class OcclusionCanvas(QWidget):
         w, h = self._canvas_wh()
         new_w = max(int(w * self._scale), 1)
         new_h = max(int(h * self._scale), 1)
+        old_w = self.width()
+        old_h = self.height()
         self.resize(new_w, new_h)
         self.updateGeometry()
+        if new_h != old_h:
+            _scroll_y = None
+            try:
+                _sa = self.parent()
+                while _sa and not hasattr(_sa, "verticalScrollBar"):
+                    _sa = _sa.parent()
+                if _sa:
+                    _scroll_y = _sa.verticalScrollBar().value()
+            except Exception:
+                pass
+            print(f"[JITTER][resize_canvas] 📏 canvas resized: "
+                  f"{old_w}×{old_h} → {new_w}×{new_h}  "
+                  f"(Δh={new_h - old_h:+}px)  scroll_y={_scroll_y}px  "
+                  f"← THIS causes the viewport to jump")
 
     def has_content(self):
         return bool((self._px and not self._px.isNull()) or self._pages)
@@ -550,7 +677,42 @@ class OcclusionCanvas(QWidget):
                  "group_id": b.get("group_id","")}
             for k in SM2_KEYS:
                 if k in b: d[k] = b[k]
+
+            # ── STEP 1: page_num calculation ──────────────────────────────────
+            # Box rect Y-center se _page_tops ka reverse-lookup karke page number
+            # nikaalte hain. Yeh field lazy loading ke Phase 2 mein use hogi —
+            # bina full PDF load kiye pata chalega ki aaj ke due masks kahan hain.
+            # Agar _page_tops available nahi (single-image mode) toh page_num = 0.
+            page_num = 0
+            if self._page_tops:
+                cy = r.y() + r.height() / 2   # box ka Y-center (image-space)
+                for pi, top in enumerate(self._page_tops):
+                    if cy >= top:
+                        page_num = pi
+                    else:
+                        break
+            d["page_num"] = page_num
+
             result.append(d)
+
+        # ── DEBUG ─────────────────────────────────────────────────────────────
+        # Har get_boxes() call pe terminal mein page distribution dikhao.
+        # Production mein yeh block hata dena ya DEBUG_PAGE_NUM = False kar dena.
+        if getattr(self, "_debug_page_num", True) and result:
+            from collections import Counter
+            dist = Counter(b["page_num"] for b in result)
+            has_tops = bool(self._page_tops)
+            print(f"[DEBUG][get_boxes] total_boxes={len(result)} | "
+                  f"page_tops_available={has_tops} | "
+                  f"page_distribution={dict(sorted(dist.items()))}")
+            for b in result:
+                bid  = b.get("box_id", "no-id")[:8]
+                rect = b["rect"]
+                print(f"  box={bid}  rect_y={rect[1]:.0f}  "
+                      f"page_num={b['page_num']}  "
+                      f"group={b.get('group_id','')[:6] or 'none'}")
+        # ─────────────────────────────────────────────────────────────────────
+
         return result
 
     def set_mode(self, mode):
@@ -1884,6 +2046,10 @@ class CardEditorDialog(QDialog):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class _ZoomableScrollArea(QScrollArea):
+    # ── NEW: emitted when vertical scroll position changes ────────────────────
+    # Carries (first_visible_page, last_visible_page) — 0-based indices
+    visible_pages_changed = pyqtSignal(int, int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._canvas              = None
@@ -1898,12 +2064,70 @@ class _ZoomableScrollArea(QScrollArea):
         self.setFocusPolicy(Qt.StrongFocus)
         self.viewport().installEventFilter(self)
 
-    @property
-    def pan_mode(self): return self._pan_mode
+        # ── Scroll debounce timer — avoids firing on every pixel of scroll ───
+        self._scroll_debounce = QTimer(self)
+        self._scroll_debounce.setSingleShot(True)
+        self._scroll_debounce.setInterval(120)   # ms after scroll stops
+        self._scroll_debounce.timeout.connect(self._emit_visible_pages)
+
+        # Connect scrollbar AFTER it exists (post __init__)
+        # Done lazily in set_canvas() instead
 
     def set_canvas(self, canvas):
         self._canvas = canvas
         canvas.installEventFilter(self)
+        # Hook scrollbar valueChanged → debounce → visible_pages_changed
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        print(f"[DEBUG][scroll_area] ✅ Scrollbar hooked — will emit visible_pages_changed")
+
+    @property
+    def pan_mode(self): return self._pan_mode
+
+    def _on_scroll(self, value):
+        """Raw scroll event — debounce so we don't fire 60× per swipe."""
+        self._scroll_debounce.start()
+
+    def _emit_visible_pages(self):
+        """
+        Called 120ms after scroll stops.
+        Calculates which pages are currently visible in the viewport
+        and emits visible_pages_changed(first, last).
+        """
+        if not self._canvas or not self._canvas._page_tops:
+            return
+
+        vp_h     = self.viewport().height()
+        scroll_y = self.verticalScrollBar().value()
+        scale    = self._canvas._scale
+
+        # Convert screen coords → image-space
+        img_top    = scroll_y / max(scale, 0.01)
+        img_bottom = (scroll_y + vp_h) / max(scale, 0.01)
+
+        page_tops = self._canvas._page_tops
+        pages     = self._canvas._pages
+        total     = len(page_tops)
+
+        first = 0
+        last  = total - 1
+
+        for i, top in enumerate(page_tops):
+            h        = pages[i].height() if i < len(pages) else 0
+            page_bot = top + h
+            if page_bot < img_top:
+                first = i + 1     # this page is above viewport
+            if top > img_bottom:
+                last = i - 1      # this page is below viewport
+                break
+
+        first = max(0, min(first, total - 1))
+        last  = max(0, min(last,  total - 1))
+
+        print(f"[DEBUG][scroll_area] 📜 scroll_y={scroll_y}  "
+              f"img_range=({img_top:.0f}–{img_bottom:.0f})  "
+              f"visible_pages=p.{first+1}–p.{last+1}")
+
+        self.visible_pages_changed.emit(first, last)
 
     def eventFilter(self, obj, e):
         if obj is self.viewport() or obj is self._canvas:

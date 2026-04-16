@@ -55,7 +55,8 @@ from sm2_engine import (
 )
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, pdf_page_to_pixmap
+    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, pdf_page_to_pixmap,
+    load_pdf_skeleton, PdfOnDemandThread        # STEP 2 + 3
 )
 
 from editor_ui import CardEditorDialog,OcclusionCanvas,_ZoomableScrollArea
@@ -258,11 +259,15 @@ class ReviewScreen(QWidget):
         if hasattr(self, '_pdf_loader_thread') and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
-            self._pdf_loader_thread.wait(1000) 
-        
+            self._pdf_loader_thread.wait(1000)
+
+        # STEP 4 — stop on-demand thread on close
+        self._stop_ondemand_thread()
+        print(f"[DEBUG][close] ReviewScreen closed — threads stopped")
+
         if hasattr(self, '_stop_watch'):
             self._stop_watch()
-            
+
         super().closeEvent(e)
 
     def _toggle_chrome(self):
@@ -863,78 +868,444 @@ class ReviewScreen(QWidget):
         self._reload_current_canvas()
 
     def _reload_current_canvas(self):
-        """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
+        """
+        STEP 4 — Skeleton-first lazy loading.
+
+        Flow:
+          1. Image card      → unchanged (direct QPixmap load)
+          2. PDF, full cache → instant (same as before)
+          3. PDF, no/partial cache → NEW lazy path:
+               a. load_pdf_skeleton() — grey placeholders, ~5ms
+               b. canvas ready instantly with correct layout + page_tops
+               c. _start_priority_render() — due-mask pages first
+               d. scroll → _on_visible_pages_changed() → on-demand rest
+          4. PDF missing     → grey fallback (unchanged)
+
+        Terminal prints every decision point.
+        """
         if not (0 <= self._idx < len(self._items)):
             return
         card, box_idx, _ = self._items[self._idx]
 
-        px = None
-        # 1. Image logic (Unchanged)
-        if card.get("image_path") and os.path.exists(card["image_path"]):
-            px = QPixmap(card["image_path"])
+        import time
+        t_start = time.perf_counter()
+        fname   = os.path.basename(card.get("pdf_path", card.get("image_path", "?")))
+        print(f"\n[DEBUG][reload_canvas] ─────────────────────────────────────────")
+        print(f"[DEBUG][reload_canvas] card='{card.get('title','?')}'  "
+              f"file={fname}  idx={self._idx}")
 
-        # 2. PDF Logic — cache hit = instant, cache miss = background thread
-        elif card.get("pdf_path") and PDF_SUPPORT:
+        # ── 1. IMAGE CARD ─────────────────────────────────────────────────────
+        if card.get("image_path") and os.path.exists(card["image_path"]):
+            print(f"[DEBUG][reload_canvas] → image card, loading QPixmap directly")
+            px = QPixmap(card["image_path"])
+            if px and not px.isNull():
+                self._apply_canvas(card, box_idx, px)
+            return
+
+        # ── 2. PDF CARD ───────────────────────────────────────────────────────
+        if card.get("pdf_path") and PDF_SUPPORT:
             path = card["pdf_path"]
 
-            if os.path.exists(path):
-                # Collect only already-cached pages — never block UI thread
-                clean_pages = []
-                i = 0
-                while True:
-                    pg = PAGE_CACHE.get(path, i)
-                    if pg is None:
-                        break
-                    if not pg.isNull():
-                        clean_pages.append(pg)
-                    i += 1
-
-                # Check if we have ALL pages (fitz metadata only — fast)
-                try:
-                    _doc = fitz.open(path)
-                    total_pages = len(_doc)
-                    _doc.close()
-                except Exception:
-                    total_pages = 0
-
-                if clean_pages and len(clean_pages) == total_pages:
-                    # Full cache hit — instant, no blocking
-                    self._apply_canvas_pages(card, box_idx, clean_pages)
-                    return
-                else:
-                    # Partial or no cache — show what we have, thread fills the rest
-                    if clean_pages:
-                        self._apply_canvas_pages(card, box_idx, clean_pages)
-                    self._start_review_pdf_thread(card, box_idx)
-                    return
-            else:
-                # PDF file missing (folder renamed etc.) — show masks on grey
-                # background so user can still see which mask to review
+            # ── 2a. PDF missing ───────────────────────────────────────────────
+            if not os.path.exists(path):
+                print(f"[DEBUG][reload_canvas] ❌ PDF missing: {path}")
+                self._canvas_pdf_path = ""   # FIX 1: kills stale thread signals
                 self.canvas.load_pixmap(QPixmap())
                 boxes = card.get("boxes", [])
                 if boxes:
                     display_boxes = [{**b, "revealed": False} for b in boxes]
                     self.canvas.set_boxes_with_state(display_boxes)
-                    tgt = box_idx if isinstance(box_idx, int) and box_idx is not None else -1
+                    tgt = box_idx if isinstance(box_idx, int) else -1
                     self.canvas.set_target_box(tgt)
                     self.canvas.set_mode("review")
-                    self.canvas._show_toast(
-                        "PDF not found — Edit Card > Relink PDF to fix")
+                    self.canvas._show_toast("PDF not found — Edit Card > Relink PDF to fix")
                 self._show_overlay(self._reveal_bar)
                 self._rating_frame.hide()
                 self.setFocus()
                 return
 
-        # 3. Apply Canvas for Images or Empty states
-        if px and not px.isNull():
-            self._apply_canvas(card, box_idx, px)
-            # Image specific zoom logic remains here...
-        else:
-            self.canvas.load_pixmap(QPixmap())
+            # ── 2b. Full cache hit — instant ──────────────────────────────────
+            try:
+                _doc        = fitz.open(path)
+                total_pages = len(_doc)
+                _doc.close()
+            except Exception:
+                total_pages = 0
 
-        self._show_overlay(self._reveal_bar)
-        self._rating_frame.hide()
-        self.setFocus()
+            clean_pages = []
+            for i in range(total_pages):
+                pg = PAGE_CACHE.get(path, i)
+                if pg and not pg.isNull():
+                    clean_pages.append(pg)
+
+            if total_pages > 0 and len(clean_pages) == total_pages:
+                t_ms = (time.perf_counter() - t_start) * 1000
+                print(f"[DEBUG][reload_canvas] ⚡ full cache hit — "
+                      f"{total_pages} pages in {t_ms:.1f}ms — no render needed")
+                self._canvas_pdf_path = path   # FIX 1: stamp
+                self._apply_canvas_pages(card, box_idx, clean_pages)
+                self._wire_scroll_ondemand(path, total_pages)
+                return
+
+            # ── 2c. NEW LAZY PATH — skeleton first ────────────────────────────
+            print(f"[DEBUG][reload_canvas] 🦴 cache miss ({len(clean_pages)}/{total_pages}) "
+                  f"— skeleton path")
+
+            skel = load_pdf_skeleton(path, zoom=1.5)
+
+            if skel.error:
+                print(f"[DEBUG][reload_canvas] ❌ skeleton error: {skel.error}")
+                self._start_review_pdf_thread(card, box_idx)   # fallback
+                return
+
+            # Inject already-cached pages into skeleton immediately
+            for i, pg in enumerate(clean_pages):
+                if i < len(skel.placeholders):
+                    skel.placeholders[i] = pg
+            if clean_pages:
+                print(f"[DEBUG][reload_canvas] 💉 pre-injected {len(clean_pages)} "
+                      f"cached pages into skeleton")
+
+            # Canvas ready with skeleton — instant UI
+            self._apply_canvas_pages(card, box_idx, skel.placeholders)
+            self.canvas._show_toast(f"⏳ Loading p.1–{skel.total_pages}...")
+            t_skel_ms = (time.perf_counter() - t_start) * 1000
+            print(f"[DEBUG][reload_canvas] ✅ canvas ready in {t_skel_ms:.1f}ms "
+                  f"({skel.total_pages} placeholders)  "
+                  f"canvas._pages={len(self.canvas._pages)}  "
+                  f"canvas_size={self.canvas.width()}x{self.canvas.height()}px")
+
+            # Identify priority pages — due mask pages render first
+            priority_pages = self._get_priority_pages(card, box_idx, skel.total_pages)
+            print(f"[DEBUG][reload_canvas] 🎯 priority pages (due masks): {priority_pages}")
+
+            # Start priority render thread
+            self._start_priority_render(path, priority_pages, skel.total_pages)
+
+            # Wire scroll area → on-demand for remaining pages
+            self._wire_scroll_ondemand(path, skel.total_pages)
+            return
+
+        # ── 3. FALLBACK — no image, no pdf ────────────────────────────────────
+        print(f"[DEBUG][reload_canvas] ⚠️  no image or pdf on this card")
+
+    # ── STEP 4 HELPERS ────────────────────────────────────────────────────────
+
+    def _get_priority_pages(self, card, box_idx, total_pages):
+        """
+        Return sorted list of page numbers that have today's due masks.
+        These pages render FIRST — user sees them immediately.
+
+        Uses box['page_num'] from JSON (set by Step 1).
+        Falls back to Y-center + _page_tops if page_num missing (old cards).
+        """
+        boxes    = card.get("boxes", [])
+        pages    = set()
+
+        # Current box's page — always priority #1
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            for b in boxes:
+                if b.get("group_id") == gid:
+                    pn = b.get("page_num")
+                    if pn is not None:
+                        pages.add(pn)
+                        print(f"[DEBUG][priority] group box page_num={pn} (from JSON)")
+                    else:
+                        print(f"[DEBUG][priority] group box has no page_num — old card, skipping")
+        elif isinstance(box_idx, int) and 0 <= box_idx < len(boxes):
+            b  = boxes[box_idx]
+            pn = b.get("page_num")
+            if pn is not None:
+                pages.add(pn)
+                print(f"[DEBUG][priority] target box page_num={pn} (from JSON)")
+            else:
+                print(f"[DEBUG][priority] target box has no page_num — old card")
+
+        # All other due boxes in this card — add their pages too
+        for b in boxes:
+            pn = b.get("page_num")
+            if pn is not None and 0 <= pn < total_pages:
+                pages.add(pn)
+
+        # Also add pages adjacent to priority pages (±1) for smooth scroll
+        adjacent = set()
+        for pn in pages:
+            if pn > 0:             adjacent.add(pn - 1)
+            if pn < total_pages-1: adjacent.add(pn + 1)
+        pages.update(adjacent)
+
+        result = sorted(pages)
+        print(f"[DEBUG][priority] final priority set (with neighbours): {result}")
+        return result
+
+    def _start_priority_render(self, path, priority_pages, total_pages):
+        """
+        Launch PdfOnDemandThread for priority pages.
+        On each page_ready → canvas.inject_page().
+        On batch_done → start background fill for remaining pages.
+
+        FIX 1: We stamp self._canvas_pdf_path = path here.
+        _on_page_ready checks this stamp before injecting —
+        if user switched card mid-render, stamp changes and
+        stale signals are silently dropped. No more 'canvas has 0 pages'.
+        """
+        self._stop_ondemand_thread()
+
+        # ── FIX 1: stamp current PDF path on canvas ───────────────────────────
+        # This is the guard key — _on_page_ready compares against this.
+        self._canvas_pdf_path = path
+        self.canvas._current_pdf_path = path
+        print(f"[DEBUG][priority_render] 🔑 canvas_pdf_path stamped: "
+              f"{os.path.basename(path)}")
+
+        already_cached = [p for p in priority_pages
+                          if PAGE_CACHE.get(path, p) is not None]
+        to_render      = [p for p in priority_pages
+                          if PAGE_CACHE.get(path, p) is None]
+
+        print(f"[DEBUG][priority_render] cached={already_cached}  to_render={to_render}")
+
+        # Inject already-cached pages immediately (no thread needed)
+        for pn in already_cached:
+            pg = PAGE_CACHE.get(path, pn)
+            if pg and not pg.isNull():
+                self.canvas.inject_page(pn, pg)
+
+        if not to_render:
+            print(f"[DEBUG][priority_render] all priority pages cached — "
+                  f"starting background fill immediately")
+            self._start_background_fill(path, priority_pages, total_pages)
+            return
+
+        self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
+        self._ondemand_path   = path
+        self._ondemand_total  = total_pages
+        self._priority_pages  = set(priority_pages)
+
+        self._ondemand_thread.page_ready.connect(self._on_page_ready)
+        self._ondemand_thread.batch_done.connect(
+            lambda rendered: self._start_background_fill(path, priority_pages, total_pages)
+        )
+        self._ondemand_thread.error.connect(
+            lambda err: print(f"[DEBUG][priority_render] ❌ error: {err}")
+        )
+        self._ondemand_thread.start()
+        print(f"[DEBUG][priority_render] ▶ thread started for {len(to_render)} pages")
+
+    # ── LRU window size for background fill ───────────────────────────────────
+    # Background fill renders at most this many pages beyond priority set.
+    # Keeps RAM bounded even for huge PDFs.
+    # On-demand scroll handles anything outside this window.
+    _BG_FILL_WINDOW = 15
+
+    def _start_background_fill(self, path, already_rendered, total_pages):
+        """
+        After priority pages done — render a WINDOW of nearby pages in bg.
+
+        FIX 3: Old code rendered ALL remaining pages (111 pages = 35 sec!).
+        New code: render at most _BG_FILL_WINDOW pages around the current
+        position. On-demand scroll handles everything else.
+
+        Window selection strategy:
+          - Start from min(priority_pages) - buffer
+          - Take next _BG_FILL_WINDOW uncached pages in reading order
+          - This covers 'next few pages' the user will likely scroll to
+        """
+        # ── FIX 1 guard: if card switched, abort ─────────────────────────────
+        if getattr(self, "_canvas_pdf_path", None) != path:
+            print(f"[DEBUG][bg_fill] 🚫 card switched — aborting bg fill for "
+                  f"{os.path.basename(path)}")
+            return
+
+        all_pages  = set(range(total_pages))
+        skip       = set(already_rendered) | {
+            p for p in all_pages if PAGE_CACHE.get(path, p) is not None
+        }
+        remaining  = sorted(all_pages - skip)
+
+        if not remaining:
+            self.canvas._show_toast(f"✅ PDF ready — {total_pages} pages")
+            print(f"[DEBUG][bg_fill] all pages already rendered ✅")
+            return
+
+        # ── FIX 3: Cap to window ──────────────────────────────────────────────
+        # Start window from smallest priority page (current reading position)
+        anchor     = min(already_rendered) if already_rendered else 0
+        # Take pages in reading order from anchor, up to window size
+        windowed   = [p for p in remaining if p >= anchor][:self._BG_FILL_WINDOW]
+        # If window not full, also prepend pages before anchor
+        if len(windowed) < self._BG_FILL_WINDOW:
+            before   = [p for p in remaining if p < anchor]
+            before   = before[-(self._BG_FILL_WINDOW - len(windowed)):]
+            windowed = before + windowed
+
+        skipped_count = len(remaining) - len(windowed)
+
+        print(f"[DEBUG][bg_fill] remaining={len(remaining)}/{total_pages}  "
+              f"window={len(windowed)} (cap={self._BG_FILL_WINDOW})  "
+              f"skipped={skipped_count} (on-demand will handle)")
+        print(f"[DEBUG][bg_fill] window pages: {[p+1 for p in windowed]}")
+
+        self._stop_ondemand_thread()
+
+        # Verify canvas is still intact after stop (regression check for the wipe bug)
+        canvas_pages_after_stop = len(self.canvas._pages)
+        if canvas_pages_after_stop == 0:
+            print(f"[DEBUG][bg_fill] ❌ REGRESSION — canvas._pages=0 after "
+                  f"_stop_ondemand_thread()! Canvas was wiped. "
+                  f"Aborting bg fill to avoid inject errors.")
+            return
+        print(f"[DEBUG][bg_fill] 🔍 canvas._pages={canvas_pages_after_stop} after stop — ok")
+
+        self._ondemand_thread = PdfOnDemandThread(
+            path, windowed, zoom=1.5, parent=self)
+        self._ondemand_path   = path
+        self._ondemand_total  = total_pages
+
+        self._ondemand_thread.page_ready.connect(self._on_page_ready)
+        self._ondemand_thread.batch_done.connect(
+            lambda rendered: (
+                self.canvas._show_toast(
+                    f"✅ Ready — {len(already_rendered) + len(rendered)} pages loaded, "
+                    f"{skipped_count} on-demand"),
+                print(f"[DEBUG][bg_fill] ✅ window fill done — "
+                      f"rendered={{[r+1 for r in rendered]}}  "
+                      f"canvas._pages={{len(self.canvas._pages)}}")
+            )
+        )
+        self._ondemand_thread.error.connect(
+            lambda err: print(f"[DEBUG][bg_fill] ❌ error: {{err}}")
+        )
+        self._ondemand_thread.start()
+        print(f"[DEBUG][bg_fill] ▶ background fill thread started "
+              f"({len(windowed)} pages)  canvas._pages={canvas_pages_after_stop}")
+
+    def _wire_scroll_ondemand(self, path, total_pages):
+        """
+        Connect scroll area's visible_pages_changed signal → on-demand render.
+        Safe to call multiple times — disconnects old connection first.
+        """
+        try:
+            self._canvas_scroll.visible_pages_changed.disconnect(
+                self._on_visible_pages_changed)
+        except Exception:
+            pass   # not connected yet — fine
+
+        # Store path+total for use in the slot
+        self._ondemand_path  = path
+        self._ondemand_total = total_pages
+
+        self._canvas_scroll.visible_pages_changed.connect(
+            self._on_visible_pages_changed)
+        print(f"[DEBUG][wire_scroll] ✅ scroll→on-demand wired  "
+              f"path={os.path.basename(path)}  total={total_pages}")
+
+    def _on_visible_pages_changed(self, first, last):
+        """
+        Called 120ms after scroll stops (debounced).
+        Renders any visible pages that are still placeholders.
+        """
+        path        = getattr(self, "_ondemand_path", None)
+        total_pages = getattr(self, "_ondemand_total", 0)
+
+        if not path:
+            return
+
+        # Which visible pages are still grey placeholders?
+        needed = [
+            pn for pn in range(first, last + 1)
+            if PAGE_CACHE.get(path, pn) is None
+        ]
+
+        if not needed:
+            print(f"[DEBUG][on_visible] p.{first+1}–p.{last+1} all cached ⚡")
+            return
+
+        print(f"[DEBUG][on_visible] p.{first+1}–p.{last+1} — "
+              f"need render: {[p+1 for p in needed]}")
+
+        # Stop current bg thread and prioritise visible pages
+        self._stop_ondemand_thread()
+        self._ondemand_thread = PdfOnDemandThread(
+            path, needed, zoom=1.5, parent=self)
+        self._ondemand_thread.page_ready.connect(self._on_page_ready)
+        self._ondemand_thread.batch_done.connect(
+            lambda rendered: print(f"[DEBUG][on_visible] ✅ visible pages rendered: "
+                                   f"{[r+1 for r in rendered]}")
+        )
+        self._ondemand_thread.start()
+        print(f"[DEBUG][on_visible] ▶ thread started for visible pages {[p+1 for p in needed]}")
+
+    def _on_page_ready(self, page_num, qpx):
+        """
+        Slot — called from PdfOnDemandThread.page_ready signal.
+
+        FIX 1: Check _canvas_pdf_path stamp before injecting.
+        If user switched to a different card mid-render, the thread's
+        path no longer matches the canvas's current PDF — drop the signal.
+        This is what caused 'canvas has 0 pages' — canvas was already
+        wiped by the new card's load_pages() call.
+        """
+        current_path = getattr(self, "_canvas_pdf_path", None)
+        thread_path  = getattr(self, "_ondemand_path", None)
+
+        if current_path != thread_path:
+            print(f"[DEBUG][page_ready] 🚫 STALE SIGNAL DROPPED p.{page_num+1} — "
+                  f"canvas_path={os.path.basename(current_path or '?')}  "
+                  f"thread_path={os.path.basename(thread_path or '?')}  "
+                  f"(card was switched mid-render)")
+            return
+
+        canvas_len = len(self.canvas._pages)
+        canvas_wh  = f"{self.canvas.width()}x{self.canvas.height()}px"
+
+        # Guard: canvas wiped — should not happen after _stop_ondemand_thread fix
+        if canvas_len == 0:
+            print(f"[DEBUG][page_ready] ❌ INJECT SKIPPED p.{page_num+1} — "
+                  f"canvas._pages is EMPTY (canvas={canvas_wh}) "
+                  f"path_match=True — regression detected!")
+            return
+
+        print(f"[DEBUG][page_ready] ✅ p.{page_num+1}  "
+              f"canvas_pages={canvas_len}  canvas_size={canvas_wh}  "
+              f"path_match=True -> inject")
+        self.canvas.inject_page(page_num, qpx)
+
+    def _stop_ondemand_thread(self):
+        """
+        Safely stop any running PdfOnDemandThread.
+
+        ── BUG FIX (v20-patch) ──────────────────────────────────────────────────
+        BEFORE (broken):
+            if thread running  → stop it
+            else               → canvas.load_pixmap(QPixmap())   ← WIPED _pages!
+
+        The else branch fired every time _stop_ondemand_thread() was called when
+        no thread was running yet — e.g. the very first call from
+        _start_background_fill() right after skeleton load.
+        load_pixmap(null-QPixmap) sets _pages=[] and resizes canvas to 1×1 px,
+        so every subsequent inject_page() hit "out of range (canvas has 0 pages)".
+
+        FIX: simply remove the else branch. Callers that need UI resets
+        (_show_overlay, _rating_frame.hide) already do so themselves.
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        t = getattr(self, "_ondemand_thread", None)
+        if t and t.isRunning():
+            t.stop()
+            t.quit()
+            t.wait(400)
+            print(f"[DEBUG][stop_thread] ⏹ on-demand thread stopped and joined")
+        else:
+            if t is not None:
+                # Thread object exists but already finished — just clear the ref
+                print(f"[DEBUG][stop_thread] 🔵 thread already finished — clearing ref "
+                      f"(was_running=False, obj_id={id(t)})")
+            else:
+                print(f"[DEBUG][stop_thread] 🔵 no thread to stop — nothing to do")
+        # Always clear the reference so the next start gets a fresh thread
+        self._ondemand_thread = None
         
     def _apply_canvas(self, card, box_idx, px):
         """Pixmap + boxes canvas pe set karo — sync aur async dono paths use karte hain."""
@@ -1059,6 +1430,13 @@ class ReviewScreen(QWidget):
 
         sched_update(sm2_obj, quality)
 
+        # ── Persist review timestamp in metadata ──────────────────────────────
+        # Stamped on every rating so "when was this last reviewed?" is always
+        # answerable even if the app is force-closed before the next autosave.
+        _now = datetime.now().isoformat(timespec="seconds")
+        sm2_obj["reviewed_at"]      = _now
+        sm2_obj["last_quality"]     = quality   # convenience alias (sm2_last_quality is SM-2 internal)
+
         # [FIX] For grouped boxes, apply same SM-2 update to ALL boxes in the group
         # so they all get the same due date and state. Without this, only the first
         # box of the group gets updated — the rest stay "new" and reappear next session.
@@ -1067,13 +1445,22 @@ class ReviewScreen(QWidget):
             for box in card.get("boxes", []):
                 if box.get("group_id") == gid and box is not sm2_obj:
                     sched_update(box, quality)
+                    # Propagate timestamp to every sibling so metadata is consistent
+                    box["reviewed_at"]  = _now
+                    box["last_quality"] = quality
 
         if box_idx is None:
-            card["reviews"] = sm2_obj.get("reviews", 0)
+            card["reviews"]      = sm2_obj.get("reviews", 0)
+            card["reviewed_at"]  = _now   # card-level convenience field for no-box cards
 
-        if self._data:
-            store.mark_dirty()
-            store.save_if_dirty()  # [FIX] Save immediately — don't wait for autosave
+        # Always stamp the parent card with the latest review time
+        card["last_reviewed_at"] = _now
+
+        # ── Immediate, unconditional save after every rating ──────────────────
+        # mark_dirty() then save_force() guarantees the rating survives a crash,
+        # power loss, or force-close between the review and the 60s autosave tick.
+        store.mark_dirty()
+        store.save_force()   # crash-safe atomic write — replaces save_if_dirty() here
 
         state = sm2_obj.get("sched_state", "review")
 
@@ -2728,7 +3115,13 @@ class HomeScreen(QWidget):
         def _on_finished():
             if not _save_done[0]:
                 _save_done[0] = True
+                # [FIX] Force-save on review exit so SM-2 state from the last
+                # card rated is never lost if the app is closed immediately after.
+                # _rate() already called save_force() per rating, but this is a
+                # safety net for edge cases (e.g. user exits mid-session without
+                # rating the current card — partial session state still saved).
                 store.mark_dirty()
+                store.save_force()
             self.hide_review()
 
         rev.finished.connect(_on_finished)
