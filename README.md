@@ -73,6 +73,12 @@ On Windows PowerShell with spaces in the path:
 python "C:\path with spaces\anki_occlusion_v18.pyw"
 ```
 
+**Run tests:**
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ---
 
 ## 📖 How to Use

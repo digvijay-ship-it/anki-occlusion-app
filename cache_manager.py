@@ -84,15 +84,18 @@ QScrollBar::handle:vertical {{ background:{C_BORDER}; border-radius:3px; }}
 """
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  UNLIMITED LRU PAGE CACHE  (replaces the 15-page limited one)
+#  BOUNDED LRU PAGE CACHE
 # ═══════════════════════════════════════════════════════════════════════════════
+
+DEFAULT_MAX_RAM_PAGES = 100
 
 class LRUPageCache:
     """
-    UNLIMITED in-RAM page cache.
-    No max_pages cap — stores every rendered page until explicitly cleared.
+    Bounded in-RAM page cache.
+    Keeps recently used rendered pages and evicts older pages at max_pages.
     """
-    def __init__(self):
+    def __init__(self, max_pages: int = DEFAULT_MAX_RAM_PAGES):
+        self.max_pages = max(1, int(max_pages))
         self._cache = OrderedDict()     # (path, page_num) → QPixmap
 
     def get(self, path: str, page_num: int):
@@ -106,7 +109,11 @@ class LRUPageCache:
         key = (path, page_num)
         self._cache[key] = pixmap
         self._cache.move_to_end(key)
-        # No eviction — unlimited
+        self._evict_if_needed()
+
+    def _evict_if_needed(self):
+        while len(self._cache) > self.max_pages:
+            self._cache.popitem(last=False)
 
     def invalidate_pdf(self, path: str):
         keys = [k for k in self._cache if k[0] == path]
@@ -172,7 +179,8 @@ class DiskCombinedCache:
         if not os.path.exists(cache_file) or not os.path.exists(meta_file):
             return None
         try:
-            total_pages = int(open(meta_file).read().strip())
+            with open(meta_file, "r", encoding="utf-8") as f:
+                total_pages = int(f.read().strip())
         except Exception:
             return None
         from PyQt5.QtGui import QPixmap
@@ -192,7 +200,8 @@ class DiskCombinedCache:
         meta_file  = cache_file + ".meta"
         try:
             combined.save(cache_file, "PNG")
-            open(meta_file, "w").write(str(total_pages))
+            with open(meta_file, "w", encoding="utf-8") as f:
+                f.write(str(total_pages))
         except Exception:
             return
         self._index.pop(pdf_path, None)

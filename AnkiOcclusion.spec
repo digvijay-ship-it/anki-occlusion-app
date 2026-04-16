@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['anki_occlusion_v17.py'],
+    ['anki_occlusion_v19.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['app_icon.ico'],
+    icon=None,
 )
