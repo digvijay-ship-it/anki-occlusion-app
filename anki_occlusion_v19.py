@@ -219,6 +219,11 @@ class ReviewScreen(QWidget):
         self._pending_visible_request = None
         self._background_fill_state = None
         self._ondemand_kind = None
+        self._bg_pending_inserts = {}
+        self._ui_idle_timer = QTimer(self)
+        self._ui_idle_timer.setSingleShot(True)
+        self._ui_idle_timer.setInterval(220)
+        self._ui_idle_timer.timeout.connect(self._flush_pending_background_inserts)
         self._peek_idx = None
         self._peek_origin_idx = None
         # ── O(1) box tracking ─────────────────────────────────────────────────
@@ -269,6 +274,12 @@ class ReviewScreen(QWidget):
         self._idx  = 0
         self._done = 0
         self._setup_ui()
+        for w in (self, self.canvas, self._canvas_scroll.viewport(), self._queue_list.viewport()):
+            try:
+                w.setMouseTracking(True)
+                w.installEventFilter(self)
+            except Exception:
+                pass
         self._load_item()
 
     def closeEvent(self, e):
@@ -285,6 +296,15 @@ class ReviewScreen(QWidget):
             self._stop_watch()
 
         super().closeEvent(e)
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if et in (QEvent.MouseMove, QEvent.HoverMove, QEvent.Wheel):
+            self._note_user_activity()
+        return super().eventFilter(obj, event)
+
+    def _note_user_activity(self):
+        self._ui_idle_timer.start()
 
     def _watch_pdf(self, path: str):
         self._stop_watch()
@@ -406,6 +426,17 @@ class ReviewScreen(QWidget):
     def keyPressEvent(self, e):
         key  = e.key()
         mods = e.modifiers()
+        if getattr(self, "canvas", None) is not None and getattr(self.canvas, "_mode", "") == "edit":
+            if mods & Qt.ControlModifier and key == Qt.Key_A:
+                if mods & Qt.AltModifier:
+                    self.canvas.select_all_on_pdf()
+                elif mods & Qt.ShiftModifier:
+                    self.canvas.select_all_in_view()
+                else:
+                    self.canvas.select_visible_only()
+                self.canvas.setFocus()
+                e.accept()
+                return
         if key == Qt.Key_F11:
             win = self.window()
             if win.isFullScreen():
@@ -620,6 +651,12 @@ class ReviewScreen(QWidget):
         self.canvas.right_clicked.connect(self._toggle_chrome)
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
+        self._canvas_scroll.horizontalScrollBar().valueChanged.connect(
+            lambda *_: self._note_user_activity()
+        )
+        self._canvas_scroll.verticalScrollBar().valueChanged.connect(
+            lambda *_: self._note_user_activity()
+        )
 
         # ── Queue panel (right sidebar) ──────────────────────────────────
         queue_panel = QWidget()
@@ -891,8 +928,10 @@ class ReviewScreen(QWidget):
         before_ids = {b.get("box_id", ""): b.get("group_id", "")
                       for b in card.get("boxes", []) if b.get("box_id")}
 
-        dlg = CardEditorDialog(None, card=dict(card), data=self._data,
+        dlg = CardEditorDialog(self, card=dict(card), data=self._data,
                                initial_scroll=scroll_pos, initial_page=current_page)
+        self._active_editor = dlg
+        dlg.finished.connect(lambda *_: setattr(self, "_active_editor", None))
         result = dlg.exec_()
 
         if result != QDialog.Accepted:
@@ -1020,6 +1059,7 @@ class ReviewScreen(QWidget):
         if not (0 <= view_idx < len(self._items)):
             return
         card, box_idx, _ = self._items[view_idx]
+        self._bg_pending_inserts.clear()
 
         import time
         t_start = time.perf_counter()
@@ -1188,6 +1228,7 @@ class ReviewScreen(QWidget):
         self._stop_ondemand_thread()
         self._ondemand_kind = "priority"
         self._background_fill_state = None
+        self._bg_pending_inserts.clear()
 
         # ── FIX 1: stamp current PDF path on canvas ───────────────────────────
         # This is the guard key — _on_page_ready compares against this.
@@ -1210,9 +1251,10 @@ class ReviewScreen(QWidget):
                 self.canvas.inject_page(pn, pg)
 
         if not to_render:
-            print(f"[DEBUG][priority_render] all priority pages cached ? waiting for scroll")
+            print(f"[DEBUG][priority_render] all priority pages cached ? starting background fill")
             self._background_fill_state = None
             self._ondemand_kind = None
+            self._start_background_fill(path, priority_pages, total_pages)
             return
 
         self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
@@ -1223,11 +1265,7 @@ class ReviewScreen(QWidget):
 
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(
-            lambda rendered: (
-                print(f"[DEBUG][priority_render] priority batch done ? waiting for scroll"),
-                setattr(self, "_background_fill_state", None),
-                setattr(self, "_ondemand_kind", None)
-            )
+            lambda rendered: self._start_background_fill(path, priority_pages, total_pages)
         )
         self._ondemand_thread.error.connect(
             lambda err: print(f"[DEBUG][priority_render] ❌ error: {err}")
@@ -1243,15 +1281,52 @@ class ReviewScreen(QWidget):
 
     # Background fill runs in small batches so it can yield to scroll-driven
     # visible-page loads instead of monopolizing the render thread.
-    _BG_FILL_BATCH = 6
+    _BG_FILL_BATCH = 2
     _BG_FILL_DELAY_MS = 250
+
+    def _queue_background_ready(self, path, rendered):
+        ready = [pn for pn in rendered if PAGE_CACHE.get(path, pn) is not None]
+        if not ready:
+            return
+        for pn in ready:
+            cached = PAGE_CACHE.get(path, pn)
+            if cached and not cached.isNull():
+                self._bg_pending_inserts[pn] = cached
+        msg = "BG ready: " + ", ".join(f"p.{pn+1}" for pn in sorted(ready))
+        self.canvas._show_toast(msg)
+        print(f"[DEBUG][bg_fill] {msg}")
+        self._note_user_activity()
+
+    def _flush_pending_background_inserts(self):
+        if not self._bg_pending_inserts:
+            return
+        current_path = getattr(self, "_canvas_pdf_path", None)
+        if not current_path:
+            self._bg_pending_inserts.clear()
+            return
+        if self._pending_visible_request:
+            self._ui_idle_timer.start()
+            return
+        if self._ondemand_thread and self._ondemand_thread.isRunning() and getattr(self, "_ondemand_kind", None) == "visible":
+            self._ui_idle_timer.start()
+            return
+        if self._ondemand_thread and self._ondemand_thread.isRunning() and getattr(self, "_ondemand_kind", None) == "background":
+            # let the background render continue, but flush only on idle timeout
+            return
+        ready_items = sorted(self._bg_pending_inserts.items())
+        self._bg_pending_inserts.clear()
+        for pn, pg in ready_items:
+            self.canvas.inject_page(pn, pg)
+        if ready_items:
+            self.canvas._show_toast("Inserted " + ", ".join(f"p.{pn+1}" for pn, _ in ready_items))
+            print(f"[DEBUG][bg_fill] inserted ready pages {[pn+1 for pn, _ in ready_items]}")
 
     def _start_background_fill(self, path, already_rendered, total_pages):
         cached_pages = sum(
             1 for page_num in range(total_pages)
             if PAGE_CACHE.get(path, page_num) is not None
         )
-        self.canvas._show_toast(f"? Ready ? {cached_pages}/{total_pages} pages cached")
+        self.canvas._show_toast(f"Ready: {cached_pages}/{total_pages} pages cached")
 
         # Defer if a visible-page request is in flight. Scroll responsiveness
         # wins over background cache completion.
@@ -1277,14 +1352,14 @@ class ReviewScreen(QWidget):
         remaining  = sorted(all_pages - skip)
 
         if not remaining:
-            self.canvas._show_toast(f"? PDF ready ? {total_pages} pages")
+            self.canvas._show_toast(f"PDF ready: {total_pages} pages")
             print(f"[DEBUG][bg_fill] all pages already rendered ?")
             self._background_fill_state = None
             self._ondemand_kind = None
             return
 
         skipped_count = 0
-        windowed = remaining[: self._BG_FILL_BATCH]
+        windowed = remaining
         next_rendered = sorted(set(already_rendered) | set(windowed))
 
         print(f"[DEBUG][bg_fill] remaining={len(remaining)}/{total_pages}  "
@@ -1323,6 +1398,7 @@ class ReviewScreen(QWidget):
 
     def _on_background_fill_batch_done(self, rendered, path, already_rendered, total_pages):
         combined = sorted(set(already_rendered) | set(rendered))
+        self._queue_background_ready(path, rendered)
         remaining = [
             pn for pn in range(total_pages)
             if PAGE_CACHE.get(path, pn) is None and pn not in combined
@@ -1347,7 +1423,7 @@ class ReviewScreen(QWidget):
 
         self._background_fill_state = None
         self._ondemand_kind = None
-        self.canvas._show_toast(f"? PDF ready ? {total_pages} pages")
+        self.canvas._show_toast(f"PDF ready: {total_pages} pages")
         print(f"[DEBUG][bg_fill] ? all background pages rendered")
 
     def _wire_scroll_ondemand(self, path, total_pages):
@@ -1375,6 +1451,7 @@ class ReviewScreen(QWidget):
         Called 120ms after scroll stops (debounced).
         Renders any visible pages that are still placeholders.
         """
+        self._note_user_activity()
         path        = getattr(self, "_ondemand_path", None)
         total_pages = getattr(self, "_ondemand_total", 0)
 
@@ -1418,6 +1495,7 @@ class ReviewScreen(QWidget):
             print(f"[DEBUG][on_visible] visible pages rendered: {[r+1 for r in rendered]}")
         else:
             print(f"[DEBUG][on_visible] visible pages rendered: []")
+        self._note_user_activity()
 
         pending = self._pending_visible_request
         self._pending_visible_request = None
@@ -1473,6 +1551,10 @@ class ReviewScreen(QWidget):
         print(f"[DEBUG][page_ready] ✅ p.{page_num+1}  "
               f"canvas_pages={canvas_len}  canvas_size={canvas_wh}  "
               f"path_match=True -> inject")
+        if getattr(self, "_ondemand_kind", None) == "background":
+            self._bg_pending_inserts[page_num] = qpx
+            print(f"[DEBUG][page_ready] background page queued p.{page_num+1}")
+            return
         self.canvas.inject_page(page_num, qpx)
     def _stop_ondemand_thread(self):
         """
@@ -2649,6 +2731,7 @@ class DeckView(QWidget):
         self._deck_id      = None
         self._data         = {}
         self._thumb_cache  = {}
+        self._undo_stack   = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -2705,12 +2788,48 @@ class DeckView(QWidget):
 
     def _card_list_key_press(self, e):
         key = e.key()
+        mods = e.modifiers()
+        if mods & Qt.ControlModifier and key == Qt.Key_Z:
+            self.undo()
+            return
         if key == Qt.Key_E:
             self._edit_card(self.card_list.currentItem())
         elif key == Qt.Key_R:
             self._review_selected()
         else:
             QListWidget.keyPressEvent(self.card_list, e)
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        mods = e.modifiers()
+        if mods & Qt.ControlModifier and key == Qt.Key_Z:
+            self.undo()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def _push_undo(self):
+        if not self._data:
+            return
+        self._undo_stack.append((copy.deepcopy(self._data), self._deck_id))
+        if len(self._undo_stack) > 50:
+            self._undo_stack.pop(0)
+
+    def undo(self):
+        if not self._undo_stack:
+            return
+        data_snapshot, deck_id = self._undo_stack.pop()
+        self._data = data_snapshot
+        self._deck_id = deck_id
+        fresh = find_deck_by_id(deck_id, self._data.get("decks", [])) if deck_id else None
+        self.deck = fresh
+        if fresh:
+            self.lbl_deck.setText(fresh.get("name", "?"))
+            self._refresh()
+        else:
+            self.card_list.clear()
+            self.lbl_deck.setText("← Select a deck")
+        store.mark_dirty()
 
     def _start_card_drag(self, _actions):
         row = self.card_list.currentRow()
@@ -2732,6 +2851,7 @@ class DeckView(QWidget):
             return
         # [PERF FIX] Thumb cache sirf tab clear karo jab deck badla ho
         self._thumb_cache.clear()
+        self._undo_stack.clear()
         self._deck_id = new_id
         self.deck     = deck
         self.lbl_deck.setText(deck.get("name", "?"))
@@ -2827,8 +2947,10 @@ class DeckView(QWidget):
     def _add_card(self):
         if not self.deck:
             return
+        self._push_undo()
         dlg = CardEditorDialog(self, data=self._data, deck=self.deck)
         if dlg.exec_() != QDialog.Accepted:
+            self._undo_stack.pop() if self._undo_stack else None
             return
         card         = dlg.get_card()
         subdeck_name = card.pop("_auto_subdeck", None)
@@ -2874,6 +2996,7 @@ class DeckView(QWidget):
         cards = self.deck.get("cards", [])
         if not 0 <= idx < len(cards):
             return
+        self._push_undo()
         dlg = CardEditorDialog(self, card=dict(cards[idx]), data=self._data, deck=self.deck)
         if dlg.exec_() == QDialog.Accepted:
             c = dlg.get_card()
@@ -2893,6 +3016,8 @@ class DeckView(QWidget):
             cards[idx] = c
             self._refresh()
             store.mark_dirty()
+        else:
+            self._undo_stack.pop() if self._undo_stack else None
 
     def _delete_card(self):
         if not self.deck:
@@ -2903,6 +3028,7 @@ class DeckView(QWidget):
             return
         if QMessageBox.question(self, "Delete", "Delete this card?",
             QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            self._push_undo()
             cards.pop(idx)
             self._refresh()
             store.mark_dirty()  # 🔒 DirtyStore
@@ -3232,6 +3358,7 @@ class HomeScreen(QWidget):
         super().__init__(parent)
         self._data = data
         self._preload_thread = None   # background PDF preload thread
+        self._active_editor = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -3435,6 +3562,23 @@ class HomeScreen(QWidget):
         if isinstance(win, MainWindow):
             win.change_font_size(direction)
 
+    def keyPressEvent(self, e):
+        key = e.key()
+        mods = e.modifiers()
+        if mods & Qt.ControlModifier and key == Qt.Key_Z:
+            if getattr(self, "_active_review", None) is None:
+                self.deck_view.undo()
+                e.accept()
+                return
+        super().keyPressEvent(e)
+
+    def closeEvent(self, e):
+        active_editor = getattr(self, "_active_editor", None)
+        if active_editor is not None:
+            active_editor.close()
+            self._active_editor = None
+        super().closeEvent(e)
+
     def refresh(self):
         self.deck_tree.refresh()
         sel = self.deck_tree.get_selected_deck()
@@ -3505,6 +3649,11 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(e)
 
     def closeEvent(self, e):
+        home = self.centralWidget()
+        if home is not None:
+            active_editor = getattr(home, "_active_editor", None)
+            if active_editor is not None:
+                active_editor.close()
         store.stop_autosave()           # 🔒 Final force-save + background thread stop
         super().closeEvent(e)
 

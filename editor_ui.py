@@ -175,6 +175,7 @@ class OcclusionCanvas(QWidget):
         self._scale            = 1.0
         self._selected_idx     = -1
         self._selected_indices = set()
+        self._selection_scope  = ""
         self._target_idx       = -1
         self._target_group_id  = ""
         self._review_mode_style= "hide_all"
@@ -188,6 +189,7 @@ class OcclusionCanvas(QWidget):
         self._drag_handle    = -1
         self._drag_start_pos = QPointF()
         self._drag_orig_box  = None
+        self._drag_orig_boxes = None
 
         self._undo_stack = []
         self._redo_stack = []
@@ -256,11 +258,13 @@ class OcclusionCanvas(QWidget):
         self._page_tops = []
         top = 0
         max_w = 0
-        for px in self._pages:
+        for i, px in enumerate(self._pages):
             self._page_tops.append(top)
             if px and not px.isNull():
                 top += px.height()
                 max_w = max(max_w, px.width())
+                if i < len(self._pages) - 1:
+                    top += PAGE_GAP
         self._total_h = top
         self._total_w = max_w
 
@@ -487,7 +491,7 @@ class OcclusionCanvas(QWidget):
         else:
             p.setRenderHint(QPainter.Antialiasing)
             for i, b in enumerate(self._boxes):
-                if self._drag_op and i == self._selected_idx:
+                if self._drag_op and (i == self._selected_idx or i in self._selected_indices):
                     continue
                 sr = self._sr(b["rect"])
                 if not clip.intersects(sr.toRect()):
@@ -495,7 +499,18 @@ class OcclusionCanvas(QWidget):
                 self._draw_box(p, i, b)
 
         p.setRenderHint(QPainter.Antialiasing)
-        if self._drag_op and self._selected_idx >= 0:
+        if self._drag_op == "move" and self._drag_orig_boxes:
+            drag_pos = self._drag_current_pos or self._drag_start_pos
+            delta = (drag_pos - self._drag_start_pos) / self._scale
+            for i, orig_box in self._drag_orig_boxes.items():
+                live_rect = QRectF(
+                    orig_box["rect"].x() + delta.x(),
+                    orig_box["rect"].y() + delta.y(),
+                    orig_box["rect"].width(),
+                    orig_box["rect"].height())
+                if clip.intersects(self._sr(live_rect).toRect()):
+                    self._draw_box_at_rect(p, i, orig_box, live_rect)
+        elif self._drag_op and self._selected_idx >= 0:
             self._draw_box(p, self._selected_idx, self._boxes[self._selected_idx])
 
         if self._drawing and not self._live_rect.isEmpty():
@@ -565,6 +580,13 @@ class OcclusionCanvas(QWidget):
         if w < 1 or h < 1:
             return
         self._scale = min(viewport_w / w, viewport_h / h)
+        self._on_zoom()
+
+    def zoom_fit_width(self, viewport_w):
+        w, h = self._canvas_wh()
+        if w < 1 or h < 1:
+            return
+        self._scale = max(viewport_w / w, 0.05)
         self._on_zoom()
 
     def _on_zoom(self):
@@ -786,7 +808,33 @@ class OcclusionCanvas(QWidget):
         if not self._boxes: return
         self._selected_indices = set(range(len(self._boxes)))
         self._selected_idx     = len(self._boxes) - 1
+        self._selection_scope  = "pdf"
         self.update()
+
+    def select_all_in_view(self):
+        if not self._boxes: return
+        sc = self._scroll_area()
+        if sc:
+            vp = sc.viewport()
+            inv = 1.0 / self._scale
+            sx = sc.horizontalScrollBar().value()
+            sy = sc.verticalScrollBar().value()
+            vf = QRectF(sx * inv, sy * inv, vp.width() * inv, vp.height() * inv)
+        else:
+            vr = self.visibleRegion().boundingRect()
+            inv = 1.0 / self._scale
+            vf = QRectF(vr.x() * inv, vr.y() * inv, vr.width() * inv, vr.height() * inv)
+        self._selected_indices = {i for i, b in enumerate(self._boxes)
+                                  if vf.intersects(b["rect"])}
+        self._selected_idx = (max(self._selected_indices)
+                              if self._selected_indices else -1)
+        self._selection_scope = "view"
+        self._invalidate_mask_cache()
+        self.update()
+        self.boxes_changed.emit(self.get_boxes())
+
+    def select_all_on_pdf(self):
+        self.select_all()
 
     def select_visible_only(self):
         if not self._boxes: return
@@ -797,6 +845,7 @@ class OcclusionCanvas(QWidget):
                                   if vf.intersects(b["rect"])}
         self._selected_idx = (max(self._selected_indices)
                               if self._selected_indices else -1)
+        self._selection_scope = ""
         self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
@@ -881,6 +930,7 @@ class OcclusionCanvas(QWidget):
         self._redo_stack.append(copy.deepcopy(self._boxes))
         self._boxes = self._undo_stack.pop()
         self._selected_idx = -1; self._selected_indices = set()
+        self._selection_scope = ""
         self._invalidate_mask_cache(); self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -889,6 +939,7 @@ class OcclusionCanvas(QWidget):
         self._undo_stack.append(copy.deepcopy(self._boxes))
         self._boxes = self._redo_stack.pop()
         self._selected_idx = -1; self._selected_indices = set()
+        self._selection_scope = ""
         self._invalidate_mask_cache(); self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -960,6 +1011,7 @@ class OcclusionCanvas(QWidget):
     def _select_box(self, hit: int, add_to_selection: bool = False):
         if hit < 0:
             self._selected_idx = -1; self._selected_indices = set()
+            self._selection_scope = ""
             self._invalidate_mask_cache(); self.update(); return
         gid = self._boxes[hit].get("group_id","")
         if gid:
@@ -1049,6 +1101,60 @@ class OcclusionCanvas(QWidget):
             p.setFont(QFont("Segoe UI", 9))
             dlbl = (f"[{gid[:4]}] {lbl}" if gid and lbl
                     else f"[{gid[:4]}]" if gid else lbl)
+            p.drawText(local, Qt.AlignCenter, dlbl)
+
+        p.restore()
+        if self._mode == "edit" and i == self._selected_idx:
+            self._draw_handles(p, i)
+
+    def _draw_box_at_rect(self, p: QPainter, i: int, b: dict, rect: QRectF):
+        sr    = self._sr(rect)
+        cx, cy = sr.center().x(), sr.center().y()
+        ang   = b.get("angle", 0.0)
+        lbl   = b.get("label") or f"#{i+1}"
+        shape = b.get("shape","rect")
+        sel   = (i == self._selected_idx) or (i in self._selected_indices)
+
+        p.save()
+        p.translate(cx, cy); p.rotate(ang)
+        local = QRectF(-sr.width()/2, -sr.height()/2, sr.width(), sr.height())
+
+        if self._mode == "review":
+            revealed = b.get("revealed", False)
+            in_tg    = (bool(self._target_group_id) and
+                        b.get("group_id","") == self._target_group_id)
+            is_target = (i == self._target_idx) or in_tg
+            hide_one  = (self._review_mode_style == "hide_one")
+            peek_red  = self._peek_active and is_target
+
+            if hide_one and not is_target:
+                color    = QColor("#3A3A4F")
+                p.setBrush(QBrush(color))
+                p.setPen(QPen(QColor(color), 2, Qt.SolidLine))
+                (p.drawEllipse if shape=="ellipse" else p.drawRect)(local)
+            else:
+                color    = QColor("#D64545" if peek_red else (C_GREEN if is_target else C_MASK))
+                p.setBrush(QBrush(color))
+                p.setPen(QPen(QColor("#D64545" if peek_red else C_GREEN), 2))
+                (p.drawEllipse if shape=="ellipse" else p.drawRect)(local)
+                if revealed:
+                    p.setBrush(Qt.NoBrush)
+                    p.setPen(QPen(QColor("#4CAF50"), 2, Qt.DashLine))
+                    (p.drawEllipse if shape=="ellipse" else p.drawRect)(local.adjusted(2,2,-2,-2))
+        else:
+            gid     = b.get("group_id","")
+            grouped = bool(gid)
+            fill    = QColor("#50FA7B" if sel else "#6EB5FF" if grouped else C_MASK)
+            fill.setAlpha(155)
+            p.setBrush(QBrush(fill))
+            border_col = QColor(C_GREEN if sel else "#2288FF" if grouped else "#FFF")
+            p.setPen(QPen(border_col, 2,
+                          Qt.DashLine if not grouped else Qt.SolidLine))
+            (p.drawEllipse if shape=="ellipse" else p.drawRect)(local)
+            p.setPen(QPen(border_col, 1))
+            p.setFont(QFont("Segoe UI", 9))
+            dlbl = (f"[{gid[:4]}] {lbl}" if gid and lbl
+                    else (f"[{gid[:4]}]" if gid else lbl))
             p.drawText(local, Qt.AlignCenter, dlbl)
 
         p.restore()
@@ -1192,8 +1298,18 @@ class OcclusionCanvas(QWidget):
 
         hit = self._hit_box(ip)
         if hit >= 0:
-            self._select_box(hit, add_to_selection=bool(mods & Qt.ControlModifier))
+            if self._selection_scope and hit in self._selected_indices:
+                self._selected_idx = hit
+                self._invalidate_mask_cache()
+                self.update()
+            else:
+                self._selection_scope = ""
+                self._select_box(hit, add_to_selection=bool(mods & Qt.ControlModifier))
             self._drag_op = "move"; self._drag_start_pos = sp
+            selected = self._get_all_selected()
+            if not selected:
+                selected = [hit]
+            self._drag_orig_boxes = {i: copy.deepcopy(self._boxes[i]) for i in selected}
             self._drag_orig_box = copy.deepcopy(self._boxes[hit])
             self._push_undo(); return
 
@@ -1211,6 +1327,7 @@ class OcclusionCanvas(QWidget):
         if sc and sc._pan_active: e.ignore(); return
 
         sp = QPointF(e.pos()); ip = self._ip(e.pos())
+        self._drag_current_pos = sp
 
         if self._drawing:
             x0,y0 = self._start.x(), self._start.y()
@@ -1223,13 +1340,27 @@ class OcclusionCanvas(QWidget):
 
         if self._drag_op == "move" and self._selected_idx >= 0:
             delta = (sp - self._drag_start_pos) / self._scale
-            orig  = self._drag_orig_box["rect"]
-            old_sr = self._sr(self._boxes[self._selected_idx]["rect"])
-            self._boxes[self._selected_idx]["rect"] = QRectF(
-                orig.x()+delta.x(), orig.y()+delta.y(), orig.width(), orig.height())
-            new_sr = self._sr(self._boxes[self._selected_idx]["rect"])
+            orig_map = self._drag_orig_boxes or {}
+            if not orig_map:
+                return
+
+            dirty = None
+            for i, orig_box in orig_map.items():
+                old_sr = self._sr(orig_box["rect"])
+                new_rect = QRectF(
+                    orig_box["rect"].x() + delta.x(),
+                    orig_box["rect"].y() + delta.y(),
+                    orig_box["rect"].width(),
+                    orig_box["rect"].height())
+                self._boxes[i]["rect"] = new_rect
+                new_sr = self._sr(new_rect)
+                box_dirty = old_sr.united(new_sr).adjusted(-20, -20, 20, 20)
+                dirty = box_dirty if dirty is None else dirty.united(box_dirty)
+
+            if dirty is None:
+                dirty = self.rect()
+
             # ⚡ FIX: Only repaint union of old+new box position + handle padding
-            dirty = old_sr.united(new_sr).adjusted(-20, -20, 20, 20)
             self.update(dirty.toRect()); return
 
         if self._drag_op == "resize" and self._selected_idx >= 0:
@@ -1269,7 +1400,7 @@ class OcclusionCanvas(QWidget):
             self._invalidate_mask_cache(); self.update()
 
         if self._drag_op:
-            self._drag_op = None; self._drag_handle = -1; self._drag_orig_box = None
+            self._drag_op = None; self._drag_handle = -1; self._drag_orig_box = None; self._drag_orig_boxes = None; self._drag_current_pos = None
             self._invalidate_mask_cache()
             self.boxes_changed.emit(self.get_boxes()); self.update()
 
@@ -1301,7 +1432,12 @@ class OcclusionCanvas(QWidget):
         elif mods & Qt.ControlModifier and key == Qt.Key_Z:    self.undo()
         elif mods & Qt.ControlModifier and key == Qt.Key_Y:    self.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_A:
-            self.select_all() if mods & Qt.ShiftModifier else self.select_visible_only()
+            if mods & Qt.AltModifier:
+                self.select_all_on_pdf()
+            elif mods & Qt.ShiftModifier:
+                self.select_all_in_view()
+            else:
+                self.select_visible_only()
         elif key == Qt.Key_G and not (mods & Qt.ControlModifier):
             self.ungroup_selected() if mods & Qt.ShiftModifier else self.group_selected()
         else: super().keyPressEvent(e)
@@ -1462,6 +1598,11 @@ class CardEditorDialog(QDialog):
     def exec_(self):
         self.showMaximized()
         return super().exec_()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if getattr(self, "canvas", None) and self.canvas._pages:
+            QTimer.singleShot(0, self._zoom_fit)
 
     def _setup_ui(self):
         self.setStyleSheet("""
@@ -1671,7 +1812,7 @@ class CardEditorDialog(QDialog):
 
     def _zoom_fit(self):
         vp = self._sc.viewport()
-        self.canvas.zoom_fit(vp.width(), vp.height())
+        self.canvas.zoom_fit_width(vp.width())
 
     def _center_on_mask(self, row):
         if not (0 <= row < len(self.canvas._boxes)): return
@@ -1787,6 +1928,7 @@ class CardEditorDialog(QDialog):
 
         self.canvas._current_pdf_path = path
         self.canvas.load_pages(pages)
+        QTimer.singleShot(0, self._zoom_fit)
 
         if not self.inp_title.text():
             self.inp_title.setText(self._auto_subdeck_name or "")
@@ -1902,6 +2044,7 @@ class CardEditorDialog(QDialog):
         # First chunk → call load_pages (resets layout); subsequent → append_pages
         if loaded <= len(pages) and loaded - len(pages) < 6:
             self.canvas.load_pages(pages)
+            QTimer.singleShot(0, self._zoom_fit)
         else:
             self.canvas.append_pages(pages[loaded - (loaded % 5 or 5):])
 
@@ -1933,6 +2076,7 @@ class CardEditorDialog(QDialog):
         # Priority: _pending_boxes (relink/reload) > canvas current > card data
         existing_boxes = self.canvas.get_boxes()
         self.canvas.load_pages(pages)
+        QTimer.singleShot(0, self._zoom_fit)
 
         try:
             _doc = fitz.open(path); n = len(_doc); _doc.close()
