@@ -77,6 +77,14 @@ def _get_skeleton_placeholder(w_px: int, h_px: int) -> QPixmap:
     return qpx
 
 
+def build_skeleton_placeholders(page_dims: list[tuple[int, int]]) -> list[QPixmap]:
+    """
+    Build reusable placeholder pixmaps on the GUI thread from page dimensions.
+    This keeps QPixmap creation out of worker threads.
+    """
+    return [_get_skeleton_placeholder(w_px, h_px) for (w_px, h_px) in page_dims]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  STEP 2 — PDF SKELETON LOADER
 #  Zero rendering. Sirf page dimensions padhta hai, grey placeholders banata hai.
@@ -101,6 +109,41 @@ class PdfSkeletonResult:
         self.error        = error
 
 
+class PdfSkeletonThread(QThread):
+    """
+    Build the lightweight skeleton off the UI thread.
+
+    The returned PdfSkeletonResult is the same object load_pdf_skeleton()
+    produces, but the expensive file scan / placeholder construction no longer
+    blocks the Qt event loop.
+    """
+    done = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, path: str, zoom: float = 1.5, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._zoom = zoom
+        self._stop_flag = False
+
+    def stop(self):
+        self._stop_flag = True
+
+    def run(self):
+        try:
+            if self._stop_flag:
+                return
+            result = _compute_pdf_skeleton_dims(self._path, zoom=self._zoom)
+            if self._stop_flag:
+                return
+            if result.error:
+                self.error.emit(result.error)
+                return
+            self.done.emit(result)
+        except Exception as ex:
+            self.error.emit(str(ex))
+
+
 def _skeleton_cache_key(path: str, zoom: float):
     st = os.stat(path)
     return (os.path.abspath(path), int(st.st_mtime_ns), st.st_size, float(zoom))
@@ -113,6 +156,70 @@ def _clone_skeleton_result(result: PdfSkeletonResult) -> PdfSkeletonResult:
         result.total_pages,
         result.error,
     )
+
+
+def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
+    """
+    Worker-safe skeleton scan. Computes page sizes only, without creating QPixmaps.
+    """
+    t_start = time.perf_counter()
+
+    if not PDF_SUPPORT:
+        print("[DEBUG][skeleton] ❌ PyMuPDF not installed")
+        return PdfSkeletonResult([], [], 0, "PyMuPDF not installed")
+
+    if not os.path.exists(path):
+        print(f"[DEBUG][skeleton] ❌ File not found: {path}")
+        return PdfSkeletonResult([], [], 0, f"File not found: {path}")
+
+    try:
+        doc = fitz.open(path)
+        if doc.is_encrypted:
+            doc.close()
+            print(f"[DEBUG][skeleton] ❌ PDF is password-protected: {path}")
+            return PdfSkeletonResult([], [], 0, "PDF is password-protected")
+
+        total = len(doc)
+        page_dims = []
+
+        print(f"[DEBUG][skeleton] Starting skeleton load: {os.path.basename(path)}")
+        print(f"[DEBUG][skeleton] total_pages={total}  zoom={zoom}")
+
+        _mat0 = fitz.Matrix(zoom, zoom)
+        _pix0 = doc[0].get_pixmap(matrix=_mat0, alpha=False)
+        _ref_w = _pix0.width
+        _ref_h = _pix0.height
+
+        for i in range(total):
+            if i == 0:
+                w_px, h_px = _ref_w, _ref_h
+            else:
+                _r = doc[i].rect
+                if abs(_r.width - doc[0].rect.width) < 0.5 and abs(_r.height - doc[0].rect.height) < 0.5:
+                    w_px, h_px = _ref_w, _ref_h
+                else:
+                    _pix_i = doc[i].get_pixmap(matrix=_mat0, alpha=False)
+                    w_px, h_px = _pix_i.width, _pix_i.height
+            page_dims.append((max(1, w_px), max(1, h_px)))
+
+        doc.close()
+
+        t_ms = (time.perf_counter() - t_start) * 1000
+        print(f"[DEBUG][skeleton] ✅ Done in {t_ms:.1f}ms")
+        print(f"[DEBUG][skeleton] page_dims (first 5): {page_dims[:5]}")
+        if len(page_dims) > 5:
+            print(f"[DEBUG][skeleton]   ... and {len(page_dims)-5} more pages")
+
+        full_ram_kb = sum(w * h * 4 for w, h in page_dims) / 1024
+        unique_dims = sorted(set(page_dims))
+        shared_ram_kb = sum(w * h * 4 for w, h in unique_dims) / 1024
+        print(f"[DEBUG][skeleton] Placeholder RAM: ~{shared_ram_kb/1024:.1f} MB "
+              f"shared across {len(unique_dims)} unique sizes "
+              f"(vs ~{full_ram_kb/1024:.1f} MB full render — created in {t_ms:.1f}ms instead of seconds)")
+        return PdfSkeletonResult([], page_dims, total, None)
+    except Exception as ex:
+        print(f"[DEBUG][skeleton] ❌ Exception: {ex}")
+        return PdfSkeletonResult([], [], 0, str(ex))
 
 
 def invalidate_pdf_skeleton(path: str):

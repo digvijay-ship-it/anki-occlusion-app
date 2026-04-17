@@ -60,3 +60,4 @@ test_anki_occlusion_v14.py
 *_old.py
 temp/
 swift_render/
+benchmarks/

@@ -55,8 +55,10 @@ from sm2_engine import (
 )
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, pdf_page_to_pixmap,
-    load_pdf_skeleton, PdfOnDemandThread, invalidate_pdf_skeleton        # STEP 2 + 3
+    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
+    pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
+    build_skeleton_placeholders,
+    invalidate_pdf_skeleton        # STEP 2 + 3
 )
 
 from editor_ui import CardEditorDialog,OcclusionCanvas,_ZoomableScrollArea
@@ -68,7 +70,7 @@ from data_manager import (
     DATA_FILE, store
 )
 
-import sys, os, copy, uuid, math
+import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
@@ -217,13 +219,15 @@ class ReviewScreen(QWidget):
         self._external_pdf_path_hint = None
         self._external_pdf_page_hint = None
         self._pending_visible_request = None
+        self._pending_skeleton_result = None
         self._background_fill_state = None
         self._ondemand_kind = None
         self._bg_pending_inserts = {}
+        self._skeleton_thread = None
         self._ui_idle_timer = QTimer(self)
         self._ui_idle_timer.setSingleShot(True)
         self._ui_idle_timer.setInterval(220)
-        self._ui_idle_timer.timeout.connect(self._flush_pending_background_inserts)
+        self._ui_idle_timer.timeout.connect(self._on_ui_idle_timeout)
         self._peek_idx = None
         self._peek_origin_idx = None
         # ── O(1) box tracking ─────────────────────────────────────────────────
@@ -283,6 +287,7 @@ class ReviewScreen(QWidget):
         self._load_item()
 
     def closeEvent(self, e):
+        self._stop_skeleton_thread()
         if hasattr(self, '_pdf_loader_thread') and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
@@ -305,6 +310,21 @@ class ReviewScreen(QWidget):
 
     def _note_user_activity(self):
         self._ui_idle_timer.start()
+
+    def _on_ui_idle_timeout(self):
+        self._flush_pending_background_inserts()
+        bg_state = self._background_fill_state
+        if not bg_state:
+            return
+        if self._pending_visible_request:
+            return
+        if self._ondemand_thread and self._ondemand_thread.isRunning():
+            return
+        bg_path, bg_already_rendered, bg_total = bg_state
+        if getattr(self, "_canvas_pdf_path", None) != bg_path:
+            self._background_fill_state = None
+            return
+        self._start_background_fill(bg_path, bg_already_rendered, bg_total)
 
     def _watch_pdf(self, path: str):
         self._stop_watch()
@@ -1060,6 +1080,8 @@ class ReviewScreen(QWidget):
             return
         card, box_idx, _ = self._items[view_idx]
         self._bg_pending_inserts.clear()
+        self._pending_skeleton_result = None
+        self._stop_skeleton_thread()
 
         import time
         t_start = time.perf_counter()
@@ -1126,42 +1148,14 @@ class ReviewScreen(QWidget):
             print(f"[DEBUG][reload_canvas] 🦴 cache miss ({len(clean_pages)}/{total_pages}) "
                   f"— skeleton path")
 
-            skel = load_pdf_skeleton(path, zoom=1.5)
-
-            if skel.error:
-                print(f"[DEBUG][reload_canvas] ❌ skeleton error: {skel.error}")
-                self._start_review_pdf_thread(card, box_idx)   # fallback
-                return
-
-            # Inject already-cached pages into a fresh skeleton copy immediately
-            pages = list(skel.placeholders)
-            for i, pg in clean_pages.items():
-                if 0 <= i < len(pages):
-                    pages[i] = pg
-            if clean_pages:
-                cached_idxs = sorted(clean_pages.keys())
-                print(f"[DEBUG][reload_canvas] 💉 pre-injected {len(clean_pages)} "
-                      f"cached pages into skeleton at indices {cached_idxs[:8]}"
-                      f"{'...' if len(cached_idxs) > 8 else ''}")
-
-            # Canvas ready with skeleton — instant UI
-            self._apply_canvas_pages(card, box_idx, pages)
-            self.canvas._show_toast(f"⏳ Loading p.1–{skel.total_pages}...")
-            t_skel_ms = (time.perf_counter() - t_start) * 1000
-            print(f"[DEBUG][reload_canvas] ✅ canvas ready in {t_skel_ms:.1f}ms "
-                  f"({skel.total_pages} placeholders)  "
-                  f"canvas._pages={len(self.canvas._pages)}  "
-                  f"canvas_size={self.canvas.width()}x{self.canvas.height()}px")
-
-            # Identify priority pages — due mask pages render first
-            priority_pages = self._get_priority_pages(card, box_idx, skel.total_pages)
-            print(f"[DEBUG][reload_canvas] 🎯 priority pages (due masks): {priority_pages}")
-
-            # Start priority render thread
-            self._start_priority_render(path, priority_pages, skel.total_pages)
-
-            # Wire scroll area → on-demand for remaining pages
-            self._wire_scroll_ondemand(path, skel.total_pages)
+            self._pending_skeleton_result = {
+                "card": card,
+                "box_idx": box_idx,
+                "clean_pages": clean_pages,
+                "path": path,
+                "t_start": t_start,
+            }
+            self._start_review_skeleton_thread(path)
             return
 
         # ── 3. FALLBACK — no image, no pdf ────────────────────────────────────
@@ -1214,6 +1208,72 @@ class ReviewScreen(QWidget):
         print(f"[DEBUG][priority] final priority set (with neighbours): {result}")
         return result
 
+    def _stop_skeleton_thread(self):
+        if self._skeleton_thread and self._skeleton_thread.isRunning():
+            self._skeleton_thread.stop()
+            self._skeleton_thread.quit()
+            self._skeleton_thread.wait(500)
+        self._skeleton_thread = None
+
+    def _start_review_skeleton_thread(self, path):
+        self._stop_skeleton_thread()
+        self._skeleton_thread = PdfSkeletonThread(path, zoom=1.5, parent=self)
+        self._skeleton_thread.done.connect(lambda skel, p=path: self._on_review_skeleton_ready(p, skel))
+        self._skeleton_thread.error.connect(lambda err, p=path: self._on_review_skeleton_error(p, err))
+        self._skeleton_thread.start()
+
+    def _on_review_skeleton_error(self, path, err):
+        pending = self._pending_skeleton_result
+        if not pending or pending.get("path") != path:
+            return
+        print(f"[DEBUG][reload_canvas] ❌ skeleton error: {err}")
+        card = pending.get("card")
+        box_idx = pending.get("box_idx")
+        self._pending_skeleton_result = None
+        self._start_review_pdf_thread(card, box_idx)
+
+    def _on_review_skeleton_ready(self, path, skel):
+        pending = self._pending_skeleton_result
+        if not pending or pending.get("path") != path:
+            return
+        self._pending_skeleton_result = None
+        if not skel or getattr(skel, "error", None):
+            self._on_review_skeleton_error(path, getattr(skel, "error", "Could not build PDF skeleton"))
+            return
+        self._apply_review_skeleton_result(
+            pending["card"],
+            pending["box_idx"],
+            pending["clean_pages"],
+            path,
+            skel,
+            pending["t_start"],
+        )
+
+    def _apply_review_skeleton_result(self, card, box_idx, clean_pages, path, skel, t_start):
+        pages = list(skel.placeholders) if getattr(skel, "placeholders", None) else \
+                build_skeleton_placeholders(getattr(skel, "page_dims", []))
+        for i, pg in clean_pages.items():
+            if 0 <= i < len(pages):
+                pages[i] = pg
+        if clean_pages:
+            cached_idxs = sorted(clean_pages.keys())
+            print(f"[DEBUG][reload_canvas] 💉 pre-injected {len(clean_pages)} "
+                  f"cached pages into skeleton at indices {cached_idxs[:8]}"
+                  f"{'...' if len(cached_idxs) > 8 else ''}")
+
+        self._apply_canvas_pages(card, box_idx, pages)
+        self.canvas._show_toast(f"⏳ Loading p.1–{skel.total_pages}...")
+        t_skel_ms = (time.perf_counter() - t_start) * 1000
+        print(f"[DEBUG][reload_canvas] ✅ canvas ready in {t_skel_ms:.1f}ms "
+              f"({skel.total_pages} placeholders)  "
+              f"canvas._pages={len(self.canvas._pages)}  "
+              f"canvas_size={self.canvas.width()}x{self.canvas.height()}px")
+
+        priority_pages = self._get_priority_pages(card, box_idx, skel.total_pages)
+        print(f"[DEBUG][reload_canvas] 🎯 priority pages (due masks): {priority_pages}")
+        self._start_priority_render(path, priority_pages, skel.total_pages)
+        self._wire_scroll_ondemand(path, skel.total_pages)
+
     def _start_priority_render(self, path, priority_pages, total_pages):
         """
         Launch PdfOnDemandThread for priority pages.
@@ -1252,9 +1312,9 @@ class ReviewScreen(QWidget):
 
         if not to_render:
             print(f"[DEBUG][priority_render] all priority pages cached ? starting background fill")
-            self._background_fill_state = None
+            self._background_fill_state = (path, list(priority_pages), total_pages)
             self._ondemand_kind = None
-            self._start_background_fill(path, priority_pages, total_pages)
+            self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
             return
 
         self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
@@ -1265,13 +1325,18 @@ class ReviewScreen(QWidget):
 
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(
-            lambda rendered: self._start_background_fill(path, priority_pages, total_pages)
+            lambda rendered: self._on_priority_batch_done(path, priority_pages, total_pages)
         )
         self._ondemand_thread.error.connect(
             lambda err: print(f"[DEBUG][priority_render] ❌ error: {err}")
         )
         self._ondemand_thread.start()
         print(f"[DEBUG][priority_render] ▶ thread started for {len(to_render)} pages")
+
+    def _on_priority_batch_done(self, path, priority_pages, total_pages):
+        self._background_fill_state = (path, list(priority_pages), total_pages)
+        self._ondemand_kind = None
+        self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
 
     # ── LRU window size for background fill ───────────────────────────────────
     # Background fill renders at most this many pages beyond priority set.
@@ -1415,10 +1480,7 @@ class ReviewScreen(QWidget):
                   f"{len(remaining)} remaining")
             self._background_fill_state = (path, combined, total_pages)
             self._ondemand_kind = None
-            QTimer.singleShot(
-                self._BG_FILL_DELAY_MS,
-                lambda p=path, ar=combined, tp=total_pages: self._start_background_fill(p, ar, tp)
-            )
+            self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
             return
 
         self._background_fill_state = None

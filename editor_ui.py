@@ -92,7 +92,9 @@ from sm2_engine import sm2_init
 from pdf_engine import (
     PDF_SUPPORT,
     PdfLoaderThread,
+    PdfSkeletonThread,
     PdfOnDemandThread,
+    build_skeleton_placeholders,
     invalidate_pdf_skeleton,
     load_pdf_skeleton,
     pdf_page_to_pixmap,
@@ -1587,11 +1589,15 @@ class CardEditorDialog(QDialog):
         self._reload_timer.timeout.connect(self._reload_pdf)
         self._watcher.fileChanged.connect(self._on_file_changed)
         self._pdf_loader_thread = None
+        self._skeleton_thread   = None
         self._ondemand_thread   = None
         self._ondemand_path     = None
         self._pending_visible_request = None
         self._pdf_total_pages   = 0
         self._pending_boxes     = []
+        self._fit_timer         = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._zoom_fit)
         self._setup_ui()
         if card: self._load_card(card)
 
@@ -1601,8 +1607,7 @@ class CardEditorDialog(QDialog):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if getattr(self, "canvas", None) and self.canvas._pages:
-            QTimer.singleShot(0, self._zoom_fit)
+        self._schedule_zoom_fit()
 
     def _setup_ui(self):
         self.setStyleSheet("""
@@ -1814,6 +1819,10 @@ class CardEditorDialog(QDialog):
         vp = self._sc.viewport()
         self.canvas.zoom_fit_width(vp.width())
 
+    def _schedule_zoom_fit(self, delay_ms=120):
+        if getattr(self, "canvas", None) and self.canvas._pages:
+            self._fit_timer.start(delay_ms)
+
     def _center_on_mask(self, row):
         if not (0 <= row < len(self.canvas._boxes)): return
         r    = self.canvas._sr(self.canvas._boxes[row]["rect"])
@@ -1887,6 +1896,12 @@ class CardEditorDialog(QDialog):
         self._load_pdf_lazily(path)
 
     def _stop_pdf_threads(self):
+        if self._skeleton_thread and self._skeleton_thread.isRunning():
+            self._skeleton_thread.stop()
+            self._skeleton_thread.quit()
+            self._skeleton_thread.wait(500)
+        self._skeleton_thread = None
+
         if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
@@ -1907,18 +1922,32 @@ class CardEditorDialog(QDialog):
         self._pdf_loader_thread.done.connect(self._on_pdf_done)
         self._pdf_loader_thread.start()
 
-    def _load_pdf_lazily(self, path: str):
+    def _start_skeleton_thread(self, path: str):
         self._stop_pdf_threads()
-        self._ondemand_path = path
+        self._skeleton_thread = PdfSkeletonThread(path, zoom=EDITOR_PDF_ZOOM, parent=self)
+        self._skeleton_thread.done.connect(lambda skel, p=path: self._on_skeleton_ready(p, skel))
+        self._skeleton_thread.error.connect(lambda err: self._on_skeleton_error(path, err))
+        self._skeleton_thread.start()
 
-        skel = load_pdf_skeleton(path, zoom=EDITOR_PDF_ZOOM)
+    def _on_skeleton_error(self, path: str, err: str):
+        if path != self.card.get("pdf_path", ""):
+            return
+        self._show_pdf_loading(False)
+        self._start_pdf_thread(path)
 
-        if skel.error:
-            self._start_pdf_thread(path)
+    def _on_skeleton_ready(self, path: str, skel):
+        if path != self.card.get("pdf_path", ""):
+            return
+        if not skel or getattr(skel, "error", None):
+            self._on_skeleton_error(path, getattr(skel, "error", "Could not build PDF skeleton"))
             return
 
+        self._apply_skeleton_result(path, skel)
+
+    def _apply_skeleton_result(self, path: str, skel):
         self._pdf_total_pages = skel.total_pages
-        pages = list(skel.placeholders)
+        pages = list(skel.placeholders) if getattr(skel, "placeholders", None) else \
+                build_skeleton_placeholders(getattr(skel, "page_dims", []))
         cached_count = 0
         for i in range(skel.total_pages):
             pg = PAGE_CACHE.get(path, i)
@@ -1928,7 +1957,7 @@ class CardEditorDialog(QDialog):
 
         self.canvas._current_pdf_path = path
         self.canvas.load_pages(pages)
-        QTimer.singleShot(0, self._zoom_fit)
+        self._schedule_zoom_fit(80)
 
         if not self.inp_title.text():
             self.inp_title.setText(self._auto_subdeck_name or "")
@@ -1951,6 +1980,11 @@ class CardEditorDialog(QDialog):
             self.lbl_sync.setText(f"⏳ Loading visible pages… ({cached_count}/{skel.total_pages} cached)")
             self.lbl_sync.setStyleSheet(
                 f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+
+    def _load_pdf_lazily(self, path: str):
+        self._stop_pdf_threads()
+        self._ondemand_path = path
+        self._start_skeleton_thread(path)
         self._show_pdf_loading(False)
         self._watch_pdf(path)
 
@@ -2044,7 +2078,7 @@ class CardEditorDialog(QDialog):
         # First chunk → call load_pages (resets layout); subsequent → append_pages
         if loaded <= len(pages) and loaded - len(pages) < 6:
             self.canvas.load_pages(pages)
-            QTimer.singleShot(0, self._zoom_fit)
+            self._schedule_zoom_fit(80)
         else:
             self.canvas.append_pages(pages[loaded - (loaded % 5 or 5):])
 
@@ -2076,7 +2110,7 @@ class CardEditorDialog(QDialog):
         # Priority: _pending_boxes (relink/reload) > canvas current > card data
         existing_boxes = self.canvas.get_boxes()
         self.canvas.load_pages(pages)
-        QTimer.singleShot(0, self._zoom_fit)
+        self._schedule_zoom_fit(80)
 
         try:
             _doc = fitz.open(path); n = len(_doc); _doc.close()
