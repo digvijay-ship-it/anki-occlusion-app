@@ -95,29 +95,72 @@ class LRUPageCache:
     If a PDF has not been touched for idle_minutes, all its cached pages are cleared.
     """
     def __init__(self, idle_minutes: float = DEFAULT_PDF_IDLE_MINUTES):
-        self.idle_seconds = max(1.0, float(idle_minutes) * 60.0)
-        self._cache = OrderedDict()     # (path, page_num) → QPixmap
-        self._pdf_last_access = {}
+        self._cache = OrderedDict()
+        self._hashes = {}   
+        self._pdf_last_access  = {}   
 
-    def _touch(self, path: str, now: float | None = None):
-        self._pdf_last_access[path] = time.monotonic() if now is None else now
+    def _touch(self, path: str, now=None):
+        pass   # No longer needed
 
-    def expire_stale(self, now: float | None = None):
-        now = time.monotonic() if now is None else now
-        stale_paths = [
-            path for path, last_access in self._pdf_last_access.items()
-            if now - last_access > self.idle_seconds
-        ]
-        for path in stale_paths:
-            self.invalidate_pdf(path)
+    def expire_stale(self, now=None):
+        pass   # Auto-clean removed — disk cache handles persistence
+
+    # ── Disk helpers ──────────────────────────────────────────────────────────
+
+    def _disk_page_path(self, path: str, page_num: int) -> str:
+        """Return the PNG file path for a given PDF + page in the disk cache."""
+        h = hashlib.md5(path.encode("utf-8")).hexdigest()
+        # Use COMBINED_CACHE._dir at call time (not import time) so the
+        # user-chosen location is always respected.
+        cache_dir = COMBINED_CACHE._dir if "COMBINED_CACHE" in globals() else os.path.join(
+            os.path.expanduser("~"), ".cache", "anki_occlusion"
+        )
+        page_dir = os.path.join(cache_dir, f"vcache_{h}")
+        return os.path.join(page_dir, f"page_{page_num:04d}.png")
+
+    def _save_to_disk(self, path: str, page_num: int, pixmap) -> None:
+        """Save a QPixmap as PNG to disk. Silent on failure."""
+        try:
+            fpath = self._disk_page_path(path, page_num)
+            os.makedirs(os.path.dirname(fpath), exist_ok=True)
+            if not os.path.exists(fpath):   # already saved → skip
+                pixmap.save(fpath, "PNG")
+        except Exception as e:
+            print
+
+    def _load_from_disk(self, path: str, page_num: int):
+        """Try to load a QPixmap from disk. Returns None on miss."""
+        try:
+            fpath = self._disk_page_path(path, page_num)
+            if not os.path.exists(fpath):
+                return None
+            from PyQt5.QtGui import QPixmap
+            px = QPixmap(fpath)
+            return px if not px.isNull() else None
+        except Exception:
+            return None
+
+    # ── Main API ──────────────────────────────────────────────────────────────
 
     def get(self, path: str, page_num: int):
         self.expire_stale()
         key = (path, page_num)
+
+        # 1. RAM hit — fastest
         if key in self._cache:
             self._cache.move_to_end(key)
             self._touch(path)
             return self._cache[key]
+
+        # 2. Disk hit — load PNG → put back in RAM
+        px = self._load_from_disk(path, page_num)
+        if px is not None:
+            self._cache[key] = px
+            self._cache.move_to_end(key)
+            self._touch(path)
+            print(f"[cache][disk_hit] ⚡ p.{page_num+1}")
+            return px
+
         return None
 
     def put(self, path: str, page_num: int, pixmap):
@@ -126,17 +169,66 @@ class LRUPageCache:
         self._cache[key] = pixmap
         self._cache.move_to_end(key)
         self._touch(path)
+        # Save to disk asynchronously — silent, non-blocking
+        self._save_to_disk(path, page_num, pixmap)
 
     def invalidate_pdf(self, path: str):
+        # RAM
         keys = [k for k in self._cache if k[0] == path]
         for k in keys:
             del self._cache[k]
-        self._pdf_last_access.pop(path, None)
+        # Disk
+        try:
+            cache_dir = COMBINED_CACHE._dir if "COMBINED_CACHE" in globals() else ""
+            if cache_dir:
+                h = hashlib.md5(path.encode("utf-8")).hexdigest()
+                v_dir = os.path.join(cache_dir, f"vcache_{h}")
+                if os.path.exists(v_dir):
+                    import shutil
+                    shutil.rmtree(v_dir, ignore_errors=True)
+        except Exception:
+            pass
+    def get_page_hash(self, path, page_num):
+        return self._hashes.get((path, page_num))
 
+    def set_page_hash(self, path, page_num, h):
+        self._hashes[(path, page_num)] = h
+
+    def invalidate_pages(self, path, page_nums):
+        for pn in page_nums:
+            key = (path, pn)
+            self._cache.pop(key, None)
+            try:
+                fpath = self._disk_page_path(path, pn)
+                if os.path.exists(fpath):
+                    os.unlink(fpath)
+            except Exception:
+                pass
+            
     def clear(self):
+        ram_count = len(self._cache)
         self._cache.clear()
         self._pdf_last_access.clear()
-
+        # Wipe all vcache_ folders from disk
+        disk_deleted = 0
+        try:
+            cache_dir = COMBINED_CACHE._dir if "COMBINED_CACHE" in globals() else ""
+            if cache_dir and os.path.exists(cache_dir):
+                import shutil
+                for name in os.listdir(cache_dir):
+                    if name.startswith("vcache_"):
+                        folder = os.path.join(cache_dir, name)
+                        file_list = os.listdir(folder)
+                        disk_deleted += len(file_list)
+                        shutil.rmtree(folder, ignore_errors=True)
+        except Exception as e:
+            print(f"[cache][clear] ⚠ disk error: {e}")
+        print(f"[cache][clear] 🗑 RAM cleared — {ram_count} pages | Disk cleared — {disk_deleted} PNG files deleted")
+    def clear_ram_only(self):
+        """Sirf RAM clear karo — disk PNG files safe rehte hain."""
+        ram_count = len(self._cache)
+        self._cache.clear()
+        print(f"[cache][clear_ram_only] ✅ RAM cleared — {ram_count} pages removed, disk untouched")
     # ── Inspector helpers ─────────────────────────────────────────────────────
 
     def ram_bytes_for_pdf(self, path: str) -> int:
@@ -160,11 +252,13 @@ class DiskCombinedCache:
     UNLIMITED disk cache for combined PDF pixmaps.
     No LRU cap, no TTL — files persist until invalidated or Clear All.
     """
-    def __init__(self):
-        self._dir  = os.path.join(tempfile.gettempdir(), "anki_occlusion_cache")
+    def __init__(self, cache_dir: str = ""):
+        self._dir = cache_dir if cache_dir else os.path.join(
+            os.path.expanduser("~"), ".cache", "anki_occlusion"
+        )
         self._index = OrderedDict()   # pdf_path → cache_png_path  (LRU order for display only)
         os.makedirs(self._dir, exist_ok=True)
-        self._rebuild_index()         # pick up files from previous run
+        self._rebuild_index()
 
     def _cache_path(self, pdf_path: str) -> str:
         h = hashlib.md5(pdf_path.encode("utf-8")).hexdigest()
@@ -274,7 +368,15 @@ class DiskCombinedCache:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PAGE_CACHE     = LRUPageCache()
-COMBINED_CACHE = DiskCombinedCache()
+def _load_cache_dir() -> str:
+    try:
+        from PyQt5.QtCore import QSettings
+        s = QSettings("AnkiOcclusion", "App")
+        return s.value("cache_dir", "")
+    except Exception:
+        return ""
+
+COMBINED_CACHE = DiskCombinedCache(cache_dir=_load_cache_dir())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -463,7 +565,37 @@ class CacheManagerPanel(QWidget):
         self.refresh()
 
     # ── UI Construction ───────────────────────────────────────────────────────
+    def _update_location_label(self):
+        self._lbl_location.setText(f"📂 {COMBINED_CACHE._dir}")
 
+    def _change_cache_location(self):
+        from PyQt5.QtWidgets import QFileDialog
+        new_dir = QFileDialog.getExistingDirectory(
+            self, "Select Cache Folder", COMBINED_CACHE._dir
+        )
+        if not new_dir:
+            return
+
+        # Save to settings
+        from PyQt5.QtCore import QSettings
+        QSettings("AnkiOcclusion", "App").setValue("cache_dir", new_dir)
+
+        # Move existing cache files to new location
+        import shutil
+        old_dir = COMBINED_CACHE._dir
+        try:
+            if os.path.exists(old_dir):
+                for f in os.listdir(old_dir):
+                    shutil.move(os.path.join(old_dir, f), new_dir)
+        except Exception as e:
+            print(f"[cache] move warning: {e}")
+
+        # Update cache object
+        COMBINED_CACHE._dir = new_dir
+        COMBINED_CACHE._rebuild_index()
+        self._update_location_label()
+        self.refresh()
+        
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -493,6 +625,20 @@ class CacheManagerPanel(QWidget):
         btn_clear.setObjectName("clr")
         btn_clear.clicked.connect(self._clear_all)
         root.addWidget(btn_clear)
+        # Cache location row
+        loc_row = QHBoxLayout()
+        self._lbl_location = QLabel("")
+        self._lbl_location.setObjectName("sub")
+        self._lbl_location.setWordWrap(True)
+        loc_row.addWidget(self._lbl_location, stretch=1)
+
+        btn_location = QPushButton("📁 Change")
+        btn_location.setFixedWidth(90)
+        btn_location.clicked.connect(self._change_cache_location)
+        loc_row.addWidget(btn_location)
+        root.addLayout(loc_row)
+
+        self._update_location_label()
 
         sep = QFrame(); sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet(f"background:{C_BORDER}; max-height:1px;")
@@ -534,6 +680,7 @@ class CacheManagerPanel(QWidget):
                 item.widget().deleteLater()
 
         total_bytes = 0
+        visible_count = 0
         for pdf_path in sorted(known):
             disk_b   = COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
             ram_b    = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
@@ -541,13 +688,22 @@ class CacheManagerPanel(QWidget):
             hidden_b = PIXMAP_REGISTRY.bytes_for_pdf(pdf_path)
             hidden_detail = PIXMAP_REGISTRY.breakdown(pdf_path)
             total    = disk_b + ram_b + mask_b + hidden_b
-            total_bytes += total
 
+            # Only show PDFs that are actually holding RAM right now.
+            # disk_b is excluded from this check — disk cache persists
+            # after Ctrl+C RAM clear, so a PDF with only disk_b > 0
+            # is not consuming any active memory and should not appear.
+            active_ram = ram_b + mask_b + hidden_b
+            if active_ram == 0:
+                continue
+
+            total_bytes += total
+            visible_count += 1
             card = self._make_card(pdf_path, disk_b, ram_b, mask_b,
                                    hidden_b, hidden_detail, total)
             self._list_layout.insertWidget(self._list_layout.count() - 1, card)
 
-        if not known:
+        if not visible_count:
             empty = QLabel("No cached PDFs yet.")
             empty.setObjectName("sub")
             empty.setAlignment(Qt.AlignCenter)
@@ -555,7 +711,7 @@ class CacheManagerPanel(QWidget):
 
         self._lbl_total.setText(
             f"Total cache: {_fmt_bytes(total_bytes)}  "
-            f"({len(known)} PDF{'s' if len(known) != 1 else ''})"
+            f"({visible_count} PDF{'s' if visible_count != 1 else ''} in RAM)"
         )
         self._lbl_status.setText(
             f"Last refresh: {time.strftime('%H:%M:%S')}  •  Auto: every 5s"
@@ -650,7 +806,7 @@ class CacheManagerPanel(QWidget):
 
     def _clear_all(self):
         COMBINED_CACHE.clear()
-        PAGE_CACHE.clear()
+        PAGE_CACHE.clear_ram_only()
         # Invalidate all registered mask caches
         for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):
             MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)

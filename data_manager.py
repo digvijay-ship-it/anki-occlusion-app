@@ -172,3 +172,63 @@ def next_deck_id(data):
 
 def new_box_id():
     return str(uuid.uuid4())
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DECK HISTORY  — Deck reorder / rename / delete / create ke liye Undo / Redo
+#  Usage:
+#      deck_history.push(store.get())   # mutate se PEHLE call karo
+#      deck_history.undo(store)         # Ctrl+Z
+#      deck_history.redo(store)         # Ctrl+Shift+Z
+# ═══════════════════════════════════════════════════════════════════════════════
+import copy
+
+class _DeckHistory:
+    MAX = 50
+
+    def __init__(self):
+        self._undo_stack = []
+        self._redo_stack = []
+        self._lock       = threading.Lock()
+
+    def push(self, data: dict):
+        """Mutate se PEHLE call karo."""
+        with self._lock:
+            self._undo_stack.append(copy.deepcopy(data))
+            if len(self._undo_stack) > self.MAX:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
+            print(f"[DeckHistory][push] ✅ snapshot saved — "
+                  f"undo={len(self._undo_stack)}, redo=0")
+
+    def undo(self, store_ref) -> bool:
+        with self._lock:
+            if not self._undo_stack:
+                print("[DeckHistory][undo] ⚠ stack empty")
+                return False
+            self._redo_stack.append(copy.deepcopy(store_ref.get()))
+            snap = self._undo_stack.pop()
+            store_ref.set(snap)
+            print(f"[DeckHistory][undo] ↩ restored — "
+                  f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}")
+            return True
+
+    def redo(self, store_ref) -> bool:
+        with self._lock:
+            if not self._redo_stack:
+                print("[DeckHistory][redo] ⚠ stack empty")
+                return False
+            self._undo_stack.append(copy.deepcopy(store_ref.get()))
+            snap = self._redo_stack.pop()
+            store_ref.set(snap)
+            print(f"[DeckHistory][redo] ↪ re-applied — "
+                  f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}")
+            return True
+
+    @property
+    def can_undo(self): return bool(self._undo_stack)
+
+    @property
+    def can_redo(self): return bool(self._redo_stack)
+
+
+deck_history = _DeckHistory()

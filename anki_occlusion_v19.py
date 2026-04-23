@@ -66,7 +66,7 @@ from editor_ui import CardEditorDialog,OcclusionCanvas,_ZoomableScrollArea
 import fitz
 
 from data_manager import (
-    load_data, save_data, find_deck_by_id, next_deck_id, new_box_id,
+    load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
 
@@ -111,7 +111,9 @@ C_BORDER  = "#45475A"
 C_MASK    = "#F7916A"
 C_GROUP   = "#BD93F9"
 
+
 BASE_FONT_SIZE = 11
+
 
 def _build_ss(font_size: int = BASE_FONT_SIZE) -> str:
     return f"""
@@ -205,6 +207,7 @@ class ReviewScreen(QWidget):
     def __init__(self, cards, data=None, parent=None):
         super().__init__(parent)
         self._data           = data
+        self._cache_panel = None
         self._items          = []
         self._pdf_cache      = {}
         self._current_pixmap = None
@@ -222,7 +225,13 @@ class ReviewScreen(QWidget):
         self._pending_skeleton_result = None
         self._background_fill_state = None
         self._ondemand_kind = None
+        self._ondemand_thread = None
         self._bg_pending_inserts = {}
+        self._bg_accept_mode = False
+        self._bg_prefetch_dialog = None
+        self._bg_prefetch_total_pages = 0
+        self._bg_prefetch_cached_count = 0
+        self._bg_prefetch_rendered_count = 0
         self._skeleton_thread = None
         self._ui_idle_timer = QTimer(self)
         self._ui_idle_timer.setSingleShot(True)
@@ -277,6 +286,11 @@ class ReviewScreen(QWidget):
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
         self._idx  = 0
         self._done = 0
+        # ── Review undo/redo stacks ───────────────────────────────────────────
+        # Each entry saves full state before a rating so Ctrl+Z can reverse it.
+        # "Reset" = restore SM-2 fields to pre-rating values, not full history wipe.
+        self._review_undo_stack = []   # list of state snapshots
+        self._review_redo_stack = []   # cleared on new rating, filled on undo
         self._setup_ui()
         for w in (self, self.canvas, self._canvas_scroll.viewport(), self._queue_list.viewport()):
             try:
@@ -286,7 +300,17 @@ class ReviewScreen(QWidget):
                 pass
         self._load_item()
 
+    def _toggle_cache_panel(self):
+        from cache_manager import CacheManagerPanel
+        if self._cache_panel is None:
+            self._cache_panel = CacheManagerPanel(parent=self)
+        if self._cache_panel.isVisible():
+            self._cache_panel.hide()
+        else:
+            self._cache_panel.show()
+            self._cache_panel.refresh()
     def closeEvent(self, e):
+        self._close_bg_prefetch_dialog()
         self._stop_skeleton_thread()
         if hasattr(self, '_pdf_loader_thread') and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
@@ -295,7 +319,6 @@ class ReviewScreen(QWidget):
 
         # STEP 4 — stop on-demand thread on close
         self._stop_ondemand_thread()
-        print(f"[DEBUG][close] ReviewScreen closed — threads stopped")
 
         if hasattr(self, '_stop_watch'):
             self._stop_watch()
@@ -326,6 +349,26 @@ class ReviewScreen(QWidget):
             return
         self._start_background_fill(bg_path, bg_already_rendered, bg_total)
 
+    def _close_bg_prefetch_dialog(self):
+        """Removed — BackgroundPrefetchDialog no longer used."""
+        self._bg_accept_mode = False
+        self._bg_prefetch_total_pages = 0
+        self._bg_prefetch_cached_count = 0
+        self._bg_prefetch_rendered_count = 0
+
+    def _show_bg_prefetch_dialog(self, path: str, total_pages: int):
+        """Removed — BackgroundPrefetchDialog no longer used."""
+        pass
+
+    def _sync_bg_prefetch_dialog(self, path: str, total_pages: int, done: bool = False):
+        """Removed — BackgroundPrefetchDialog no longer used."""
+        pass
+
+    def _accept_bg_prefetch(self):
+        """Removed — BackgroundPrefetchDialog no longer used."""
+        self._bg_accept_mode = True
+        self._flush_pending_background_inserts()
+
     def _watch_pdf(self, path: str):
         self._stop_watch()
         self._watched_pdf_path = path
@@ -344,7 +387,6 @@ class ReviewScreen(QWidget):
     def _on_pdf_file_changed(self, path: str):
         if not path:
             return
-        print(f"[DEBUG][watch] change detected: {os.path.basename(path)}")
         self.canvas._show_toast("PDF changed on disk — refreshing…")
         self._reload_timer.start()
 
@@ -363,10 +405,16 @@ class ReviewScreen(QWidget):
         if self._external_pdf_path_hint == path and self._external_pdf_page_hint is not None:
             target_page = self._external_pdf_page_hint
 
-        PAGE_CACHE.invalidate_pdf(path)
-        invalidate_pdf_skeleton(path)
+        # NAYA — ye daalo:
+        from pdf_engine import get_changed_pages
+        changed = get_changed_pages(path)
+        if changed is None:
+            PAGE_CACHE.invalidate_pdf(path)
+            invalidate_pdf_skeleton(path)
+        else:
+            PAGE_CACHE.invalidate_pages(path, changed)
+            invalidate_pdf_skeleton(path)
         self._pending_reload_page = target_page
-        print(f"[DEBUG][watch] refreshing PDF after save — target page p.{target_page + 1}")
         self._reload_current_canvas()
 
     def _toggle_chrome(self):
@@ -439,10 +487,49 @@ class ReviewScreen(QWidget):
             icon = parts[1] if len(parts) > 1 else ""
             btn.setText(f"{parts[0]} {icon}  {val}  {color_lbl}")
 
-        self._reload_current_canvas()
-        self.canvas.setFocus() # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
-        QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
+        current_path = getattr(self.canvas, "_current_pdf_path", "") or getattr(self, "_canvas_pdf_path", "")
+        new_path = card.get("pdf_path", "")
+        same_pdf = bool(current_path and new_path and os.path.abspath(current_path) == os.path.abspath(new_path))
 
+        if same_pdf and getattr(self.canvas, "_pages", None):
+            self._canvas_pdf_path = new_path
+            self.canvas._current_pdf_path = new_path
+            if hasattr(self.canvas, "clear_peek_target"):
+                self.canvas.clear_peek_target()
+            boxes = card.get("boxes", [])
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                display_boxes = [{**b, "revealed": False} for b in boxes]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(-1)
+                self.canvas.set_mode("review")
+                self.canvas.set_target_group(gid)
+            elif box_idx is None:
+                self.canvas.set_boxes_with_state([{**b, "revealed": False} for b in boxes])
+                self.canvas.set_target_box(-1)
+                self.canvas.set_mode("review")
+            else:
+                display_boxes = [{**b, "revealed": False} for b in boxes]
+                self.canvas.set_boxes_with_state(display_boxes)
+                self.canvas.set_target_box(box_idx if isinstance(box_idx, int) else -1)
+                self.canvas.set_mode("review")
+            QTimer.singleShot(0, self._center_on_target)
+        else:
+            self._reload_current_canvas()
+
+        # ── Reset ink on every card change ────────────────────────────────────────────
+        # Ink state must not carry over from the previous card.
+        # ink_toggle() turns ink OFF and resets cursor to arrow.
+        # ink_clear() wipes drawn strokes from the previous card.
+        # _update_ink_hint() syncs the icon to reflect OFF state.
+        if getattr(self.canvas, "_ink_active", False):
+            self.canvas.ink_toggle()   # turns OFF → resets cursor
+        self.canvas.ink_clear()        # wipe strokes from previous card
+        self._update_ink_hint()        # sync icon to OFF state
+
+        self.canvas.setFocus() # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
+        self._rating_frame.hide()   # ← rating frame explicitly hide karo
+        QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
     def keyPressEvent(self, e):
         key  = e.key()
         mods = e.modifiers()
@@ -468,8 +555,16 @@ class ReviewScreen(QWidget):
         elif key == Qt.Key_Escape:
             self.finished.emit()
         elif key == Qt.Key_Space:
-            self._reveal_current()
-            self._debug_report("Space (reveal)")
+            if self._rating_frame.isVisible():
+                # Already revealed — hide karo (toggle back)
+                self._rating_frame.hide()
+                self._show_overlay(self._reveal_bar)
+                # Masks wapas hide karo
+                for b in self.canvas._boxes:
+                    b["revealed"] = False
+                self.canvas._redraw()
+            else:
+                self._reveal_current()
         elif key == Qt.Key_1 and self._rating_frame.isVisible():
             self._rate(1)
         elif key == Qt.Key_2 and self._rating_frame.isVisible():
@@ -494,6 +589,10 @@ class ReviewScreen(QWidget):
             self._debug_report("C key")
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
+        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
+            self._review_undo()
+        elif mods & Qt.ControlModifier and key == Qt.Key_X:
+            self._review_redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_E:
             self._open_current_pdf_in_reader()
         elif key == Qt.Key_E:
@@ -539,8 +638,10 @@ class ReviewScreen(QWidget):
         self._peek_origin_idx = None
         if hasattr(self.canvas, "set_peek_active"):
             self.canvas.set_peek_active(False)
+        if hasattr(self.canvas, "clear_peek_target"):
+            self.canvas.clear_peek_target()
         self._rebuild_queue()
-        self._reload_current_canvas()
+        self._center_on_target()
 
     def _jump_to_queue_index(self, idx, from_peek=False):
         if not (0 <= idx < len(self._items)):
@@ -548,10 +649,16 @@ class ReviewScreen(QWidget):
         if self._peek_origin_idx is None:
             self._peek_origin_idx = self._idx
         self._peek_idx = idx
+        card, box_idx, _ = self._items[idx]
+        if hasattr(self.canvas, "set_peek_target_box"):
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                self.canvas.set_peek_target_group(box_idx[1])
+            else:
+                self.canvas.set_peek_target_box(box_idx if isinstance(box_idx, int) else -1)
         if hasattr(self.canvas, "set_peek_active"):
             self.canvas.set_peek_active(True)
         self._rebuild_queue(peek_idx=idx)
-        self._reload_current_canvas(view_idx=idx)
+        self._center_on_target()
         self._debug_report(f"queue jump -> {idx}")
 
     def _on_queue_item_clicked(self, item):
@@ -621,7 +728,16 @@ class ReviewScreen(QWidget):
             f"border-radius:6px;padding:4px 14px;font-size:12px;font-weight:bold;}}"
             f"QPushButton:hover{{background:#6A58E0;}}")
         b_edit.clicked.connect(self._edit_current_card)
+        # Cache location button — toolbar mein b_edit ke baad
+        b_cache = QPushButton("💾 Cache")
+        b_cache.setStyleSheet(
+            f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
+            f"border:1px solid {C_BORDER};border-radius:6px;"
+            f"padding:4px 14px;font-size:12px;}}"
+            f"QPushButton:hover{{background:{C_SURFACE};}}")
+        b_cache.clicked.connect(self._toggle_cache_panel)
         hdr.addWidget(b_edit)
+        hdr.addWidget(b_cache)
 
         self._btn_mode = QPushButton("🟧 Hide All, Guess One")
         self._btn_mode.setCheckable(True)
@@ -941,15 +1057,17 @@ class ReviewScreen(QWidget):
         if not (0 <= idx < len(self._items)):
             return
         card, box_idx, sm2_obj = self._items[idx]
-        scroll_pos   = self._canvas_scroll.verticalScrollBar().value()
-        current_page = self.canvas.get_current_page(scroll_pos)
+        scroll_pos = self._canvas_scroll.verticalScrollBar().value()
+        review_scale = self.canvas._scale
+        img_y = scroll_pos / max(review_scale, 0.01)
 
         # ── O(1) snapshot: box_ids before edit ────────────────────────────────
         before_ids = {b.get("box_id", ""): b.get("group_id", "")
                       for b in card.get("boxes", []) if b.get("box_id")}
 
         dlg = CardEditorDialog(self, card=dict(card), data=self._data,
-                               initial_scroll=scroll_pos, initial_page=current_page)
+                       initial_scroll=0, initial_page=None,
+                       initial_img_y=img_y)
         self._active_editor = dlg
         dlg.finished.connect(lambda *_: setattr(self, "_active_editor", None))
         result = dlg.exec_()
@@ -1032,28 +1150,54 @@ class ReviewScreen(QWidget):
             self.canvas._show_toast("No PDF loaded for this card")
             return
 
-        scroll_pos = self._canvas_scroll.verticalScrollBar().value()
+        scroll_pos        = self._canvas_scroll.verticalScrollBar().value()
         current_page_zero = self.canvas.get_current_page(scroll_pos)
-        current_page = current_page_zero + 1
+        current_page      = current_page_zero + 1
         self._external_pdf_path_hint = path
         self._external_pdf_page_hint = current_page_zero
 
         try:
-            pdf_url = QUrl.fromLocalFile(path)
-            pdf_url.setFragment(f"page={current_page}")
-            if QDesktopServices.openUrl(pdf_url):
-                self.canvas._show_toast(f"Opened PDF on p.{current_page}")
-                return
+            import subprocess
 
             if sys.platform == "win32":
+                # PDF-XChange Editor — page jump via /A page=N
+                xchange_paths = [
+                    r"C:\Program Files\Tracker Software\PDF Editor\PDFXEdit.exe",
+                    r"C:\Program Files (x86)\Tracker Software\PDF Editor\PDFXEdit.exe",
+                    r"C:\Program Files\PDF-XChange\PDF-XChange Editor\PDFXEdit.exe",
+                    r"C:\Program Files (x86)\PDF-XChange\PDF-XChange Editor\PDFXEdit.exe",
+                ]
+                for exe in xchange_paths:
+                    if os.path.exists(exe):
+                        subprocess.Popen([exe, f"/A", f"page={current_page}", path])
+                        self.canvas._show_toast(f"📄 Opened p.{current_page} in PDF-XChange")
+                        return
+
+                # PDF-XChange not found at known paths — try via registry
+                try:
+                    import winreg
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                        r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\PDFXEdit.exe")
+                    exe = winreg.QueryValue(key, None)
+                    winreg.CloseKey(key)
+                    if exe and os.path.exists(exe):
+                        subprocess.Popen([exe, f"/A", f"page={current_page}", path])
+                        self.canvas._show_toast(f"📄 Opened p.{current_page} in PDF-XChange")
+                        return
+                except Exception:
+                    pass
+
+                # Final fallback — open without page number
                 os.startfile(path)
+                self.canvas._show_toast(f"📄 Opened PDF (page jump not supported by this reader)")
+
             elif sys.platform == "darwin":
-                import subprocess
                 subprocess.Popen(["open", path])
+                self.canvas._show_toast(f"📄 Opened PDF p.{current_page}")
             else:
-                import subprocess
                 subprocess.Popen(["xdg-open", path])
-            self.canvas._show_toast(f"Opened PDF for p.{current_page}")
+                self.canvas._show_toast(f"📄 Opened PDF p.{current_page}")
+
         except Exception as ex:
             QMessageBox.warning(self, "Could not open PDF", f"Could not open PDF:\n{ex}")
 
@@ -1081,18 +1225,15 @@ class ReviewScreen(QWidget):
         card, box_idx, _ = self._items[view_idx]
         self._bg_pending_inserts.clear()
         self._pending_skeleton_result = None
+        self._close_bg_prefetch_dialog()
         self._stop_skeleton_thread()
 
         import time
         t_start = time.perf_counter()
         fname   = os.path.basename(card.get("pdf_path", card.get("image_path", "?")))
-        print(f"\n[DEBUG][reload_canvas] ─────────────────────────────────────────")
-        print(f"[DEBUG][reload_canvas] card='{card.get('title','?')}'  "
-              f"file={fname}  idx={self._idx}  view_idx={view_idx}")
 
         # ── 1. IMAGE CARD ─────────────────────────────────────────────────────
         if card.get("image_path") and os.path.exists(card["image_path"]):
-            print(f"[DEBUG][reload_canvas] → image card, loading QPixmap directly")
             px = QPixmap(card["image_path"])
             if px and not px.isNull():
                 self._apply_canvas(card, box_idx, px)
@@ -1105,7 +1246,6 @@ class ReviewScreen(QWidget):
 
             # ── 2a. PDF missing ───────────────────────────────────────────────
             if not os.path.exists(path):
-                print(f"[DEBUG][reload_canvas] ❌ PDF missing: {path}")
                 self._canvas_pdf_path = ""   # FIX 1: kills stale thread signals
                 self.canvas.load_pixmap(QPixmap())
                 boxes = card.get("boxes", [])
@@ -1137,17 +1277,12 @@ class ReviewScreen(QWidget):
 
             if total_pages > 0 and len(clean_pages) == total_pages:
                 t_ms = (time.perf_counter() - t_start) * 1000
-                print(f"[DEBUG][reload_canvas] ⚡ full cache hit — "
-                      f"{total_pages} pages in {t_ms:.1f}ms — no render needed")
                 self._canvas_pdf_path = path   # FIX 1: stamp
                 self._apply_canvas_pages(card, box_idx, [clean_pages[i] for i in range(total_pages)])
                 self._wire_scroll_ondemand(path, total_pages)
                 return
 
             # ── 2c. NEW LAZY PATH — skeleton first ────────────────────────────
-            print(f"[DEBUG][reload_canvas] 🦴 cache miss ({len(clean_pages)}/{total_pages}) "
-                  f"— skeleton path")
-
             self._pending_skeleton_result = {
                 "card": card,
                 "box_idx": box_idx,
@@ -1159,44 +1294,50 @@ class ReviewScreen(QWidget):
             return
 
         # ── 3. FALLBACK — no image, no pdf ────────────────────────────────────
-        print(f"[DEBUG][reload_canvas] ⚠️  no image or pdf on this card")
 
     # ── STEP 4 HELPERS ────────────────────────────────────────────────────────
 
-    def _get_priority_pages(self, card, box_idx, total_pages):
+    def _get_priority_pages(self, card, box_idx, total_pages, path=None):
         """
-        Return the current mask page plus its immediate neighbours.
-        These pages render FIRST so the viewport stays responsive.
+        Return the current mask page, every other due page from the same PDF,
+        plus immediate neighbours. These pages render FIRST so the viewport
+        stays responsive while the current review session is warming up.
 
         The goal is simple:
           1. current mask page
-          2. one page before
-          3. one page after
-        Everything else is background work.
+          2. other review pages from the same PDF
+          3. one page before / after each priority page
+        Everything else stays lazy and scroll-driven.
         """
         boxes    = card.get("boxes", [])
         pages    = set()
+        card_path = path or card.get("pdf_path", "")
+
+        def _add_pages_from_card(c, box_ref):
+            c_boxes = c.get("boxes", [])
+            if isinstance(box_ref, tuple) and box_ref[0] == "group":
+                gid = box_ref[1]
+                for b in c_boxes:
+                    if b.get("group_id") == gid:
+                        pn = b.get("page_num")
+                        if pn is not None:
+                            pages.add(pn)
+            elif isinstance(box_ref, int) and 0 <= box_ref < len(c_boxes):
+                pn = c_boxes[box_ref].get("page_num")
+                if pn is not None:
+                    pages.add(pn)
+
+        # Preload every due page from the same PDF that is already in this
+        # review session. This keeps the current PDF warm without fanning out
+        # into a full-document background fill.
+        if card_path:
+            for c, box_ref, _sm2 in self._items:
+                if c.get("pdf_path", "") != card_path:
+                    continue
+                _add_pages_from_card(c, box_ref)
 
         # Current box's page — always priority #1
-        if isinstance(box_idx, tuple) and box_idx[0] == "group":
-            gid = box_idx[1]
-            for b in boxes:
-                if b.get("group_id") == gid:
-                    pn = b.get("page_num")
-                    if pn is not None:
-                        pages.add(pn)
-                        print(f"[DEBUG][priority] group box page_num={pn} (from JSON)")
-                    else:
-                        print(f"[DEBUG][priority] group box has no page_num — old card, skipping")
-        elif isinstance(box_idx, int) and 0 <= box_idx < len(boxes):
-            b  = boxes[box_idx]
-            pn = b.get("page_num")
-            if pn is not None:
-                pages.add(pn)
-                print(f"[DEBUG][priority] target box page_num={pn} (from JSON)")
-            else:
-                print(f"[DEBUG][priority] target box has no page_num — old card")
-
+        _add_pages_from_card(card, box_idx)
         # Also add pages adjacent to priority pages (±1) for smooth scroll
         adjacent = set()
         for pn in pages:
@@ -1205,7 +1346,6 @@ class ReviewScreen(QWidget):
         pages.update(adjacent)
 
         result = sorted(pages)
-        print(f"[DEBUG][priority] final priority set (with neighbours): {result}")
         return result
 
     def _stop_skeleton_thread(self):
@@ -1226,7 +1366,6 @@ class ReviewScreen(QWidget):
         pending = self._pending_skeleton_result
         if not pending or pending.get("path") != path:
             return
-        print(f"[DEBUG][reload_canvas] ❌ skeleton error: {err}")
         card = pending.get("card")
         box_idx = pending.get("box_idx")
         self._pending_skeleton_result = None
@@ -1257,20 +1396,11 @@ class ReviewScreen(QWidget):
                 pages[i] = pg
         if clean_pages:
             cached_idxs = sorted(clean_pages.keys())
-            print(f"[DEBUG][reload_canvas] 💉 pre-injected {len(clean_pages)} "
-                  f"cached pages into skeleton at indices {cached_idxs[:8]}"
-                  f"{'...' if len(cached_idxs) > 8 else ''}")
-
         self._apply_canvas_pages(card, box_idx, pages)
         self.canvas._show_toast(f"⏳ Loading p.1–{skel.total_pages}...")
         t_skel_ms = (time.perf_counter() - t_start) * 1000
-        print(f"[DEBUG][reload_canvas] ✅ canvas ready in {t_skel_ms:.1f}ms "
-              f"({skel.total_pages} placeholders)  "
-              f"canvas._pages={len(self.canvas._pages)}  "
-              f"canvas_size={self.canvas.width()}x{self.canvas.height()}px")
 
-        priority_pages = self._get_priority_pages(card, box_idx, skel.total_pages)
-        print(f"[DEBUG][reload_canvas] 🎯 priority pages (due masks): {priority_pages}")
+        priority_pages = self._get_priority_pages(card, box_idx, skel.total_pages, path)
         self._start_priority_render(path, priority_pages, skel.total_pages)
         self._wire_scroll_ondemand(path, skel.total_pages)
 
@@ -1294,15 +1424,12 @@ class ReviewScreen(QWidget):
         # This is the guard key — _on_page_ready compares against this.
         self._canvas_pdf_path = path
         self.canvas._current_pdf_path = path
-        print(f"[DEBUG][priority_render] 🔑 canvas_pdf_path stamped: "
-              f"{os.path.basename(path)}")
 
         already_cached = [p for p in priority_pages
                           if PAGE_CACHE.get(path, p) is not None]
         to_render      = [p for p in priority_pages
                           if PAGE_CACHE.get(path, p) is None]
 
-        print(f"[DEBUG][priority_render] cached={already_cached}  to_render={to_render}")
 
         # Inject already-cached pages immediately (no thread needed)
         for pn in already_cached:
@@ -1311,10 +1438,9 @@ class ReviewScreen(QWidget):
                 self.canvas.inject_page(pn, pg)
 
         if not to_render:
-            print(f"[DEBUG][priority_render] all priority pages cached ? starting background fill")
-            self._background_fill_state = (path, list(priority_pages), total_pages)
+            self._background_fill_state = None
             self._ondemand_kind = None
-            self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
+            self._start_background_fill(path, priority_pages, total_pages)
             return
 
         self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
@@ -1327,16 +1453,14 @@ class ReviewScreen(QWidget):
         self._ondemand_thread.batch_done.connect(
             lambda rendered: self._on_priority_batch_done(path, priority_pages, total_pages)
         )
-        self._ondemand_thread.error.connect(
-            lambda err: print(f"[DEBUG][priority_render] ❌ error: {err}")
-        )
+        self._ondemand_thread.error.connect(lambda err: None)
         self._ondemand_thread.start()
-        print(f"[DEBUG][priority_render] ▶ thread started for {len(to_render)} pages")
 
     def _on_priority_batch_done(self, path, priority_pages, total_pages):
-        self._background_fill_state = (path, list(priority_pages), total_pages)
+        self._background_fill_state = None
         self._ondemand_kind = None
-        self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
+        if getattr(self, "_canvas_pdf_path", None) == path:
+            self._start_background_fill(path, priority_pages, total_pages)
 
     # ── LRU window size for background fill ───────────────────────────────────
     # Background fill renders at most this many pages beyond priority set.
@@ -1357,13 +1481,17 @@ class ReviewScreen(QWidget):
             cached = PAGE_CACHE.get(path, pn)
             if cached and not cached.isNull():
                 self._bg_pending_inserts[pn] = cached
+        self._bg_prefetch_rendered_count += len(ready)
+        total = self._bg_prefetch_total_pages or max(self._bg_prefetch_rendered_count, 1)
+        self._bg_prefetch_cached_count = min(self._bg_prefetch_cached_count + len(ready), total)
         msg = "BG ready: " + ", ".join(f"p.{pn+1}" for pn in sorted(ready))
         self.canvas._show_toast(msg)
-        print(f"[DEBUG][bg_fill] {msg}")
         self._note_user_activity()
 
     def _flush_pending_background_inserts(self):
         if not self._bg_pending_inserts:
+            return
+        if not self._bg_accept_mode:
             return
         current_path = getattr(self, "_canvas_pdf_path", None)
         if not current_path:
@@ -1384,13 +1512,18 @@ class ReviewScreen(QWidget):
             self.canvas.inject_page(pn, pg)
         if ready_items:
             self.canvas._show_toast("Inserted " + ", ".join(f"p.{pn+1}" for pn, _ in ready_items))
-            print(f"[DEBUG][bg_fill] inserted ready pages {[pn+1 for pn, _ in ready_items]}")
 
     def _start_background_fill(self, path, already_rendered, total_pages):
         cached_pages = sum(
             1 for page_num in range(total_pages)
             if PAGE_CACHE.get(path, page_num) is not None
         )
+        self._bg_accept_mode = False
+        self._bg_prefetch_total_pages = total_pages
+        self._bg_prefetch_cached_count = cached_pages
+        self._bg_prefetch_rendered_count = len(already_rendered)
+        self._show_bg_prefetch_dialog(path, total_pages)
+        self._sync_bg_prefetch_dialog(path, total_pages, done=False)
         self.canvas._show_toast(f"Ready: {cached_pages}/{total_pages} pages cached")
 
         # Defer if a visible-page request is in flight. Scroll responsiveness
@@ -1398,7 +1531,6 @@ class ReviewScreen(QWidget):
         if self._ondemand_thread and self._ondemand_thread.isRunning():
             if getattr(self, "_ondemand_kind", None) == "visible":
                 self._background_fill_state = (path, list(already_rendered), total_pages)
-                print(f"[DEBUG][bg_fill] deferred ? visible render active")
                 return
             if getattr(self, "_ondemand_kind", None) == "background":
                 print(f"[DEBUG][bg_fill] already running ? skipping duplicate start")
@@ -1406,8 +1538,6 @@ class ReviewScreen(QWidget):
 
         # ?? FIX 1 guard: if card switched, abort ?????????????????????????????
         if getattr(self, "_canvas_pdf_path", None) != path:
-            print(f"[DEBUG][bg_fill] ?? card switched ? aborting bg fill for "
-                  f"{os.path.basename(path)}")
             return
 
         all_pages  = set(range(total_pages))
@@ -1418,18 +1548,15 @@ class ReviewScreen(QWidget):
 
         if not remaining:
             self.canvas._show_toast(f"PDF ready: {total_pages} pages")
-            print(f"[DEBUG][bg_fill] all pages already rendered ?")
             self._background_fill_state = None
             self._ondemand_kind = None
+            self._bg_accept_mode = True
+            self._sync_bg_prefetch_dialog(path, total_pages, done=True)
             return
 
         skipped_count = 0
         windowed = remaining
         next_rendered = sorted(set(already_rendered) | set(windowed))
-
-        print(f"[DEBUG][bg_fill] remaining={len(remaining)}/{total_pages}  "
-              f"background pages={len(windowed)}")
-        print(f"[DEBUG][bg_fill] background pages: {[p+1 for p in windowed]}")
 
         self._stop_ondemand_thread()
         self._ondemand_kind = "background"
@@ -1438,11 +1565,7 @@ class ReviewScreen(QWidget):
         # Verify canvas is still intact after stop (regression check for the wipe bug)
         canvas_pages_after_stop = len(self.canvas._pages)
         if canvas_pages_after_stop == 0:
-            print(f"[DEBUG][bg_fill] ? REGRESSION ? canvas._pages=0 after "
-                  f"_stop_ondemand_thread()! Canvas was wiped. "
-                  f"Aborting bg fill to avoid inject errors.")
             return
-        print(f"[DEBUG][bg_fill] ?? canvas._pages={canvas_pages_after_stop} after stop ? ok")
 
         self._ondemand_thread = PdfOnDemandThread(
             path, windowed, zoom=1.5, parent=self)
@@ -1454,12 +1577,8 @@ class ReviewScreen(QWidget):
         self._ondemand_thread.batch_done.connect(
             lambda rendered, p=path, ar=next_rendered, tp=total_pages: self._on_background_fill_batch_done(rendered, p, ar, tp)
         )
-        self._ondemand_thread.error.connect(
-            lambda err: print(f"[DEBUG][bg_fill] ? error: {err}")
-        )
+        self._ondemand_thread.error.connect(lambda err: None)
         self._ondemand_thread.start()
-        print(f"[DEBUG][bg_fill] ? background fill thread started "
-              f"({len(windowed)} pages)  canvas._pages={canvas_pages_after_stop}")
 
     def _on_background_fill_batch_done(self, rendered, path, already_rendered, total_pages):
         combined = sorted(set(already_rendered) | set(rendered))
@@ -1470,23 +1589,22 @@ class ReviewScreen(QWidget):
         ]
 
         if path != getattr(self, "_canvas_pdf_path", None):
-            print(f"[DEBUG][bg_fill] card changed ? stopping background fill queue")
             self._background_fill_state = None
             self._ondemand_kind = None
             return
 
         if remaining:
-            print(f"[DEBUG][bg_fill] batch done ? {len(combined)}/{total_pages} cached, "
-                  f"{len(remaining)} remaining")
             self._background_fill_state = (path, combined, total_pages)
             self._ondemand_kind = None
+            self._sync_bg_prefetch_dialog(path, total_pages, done=False)
             self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
             return
 
         self._background_fill_state = None
         self._ondemand_kind = None
+        self._bg_accept_mode = True
+        self._sync_bg_prefetch_dialog(path, total_pages, done=True)
         self.canvas._show_toast(f"PDF ready: {total_pages} pages")
-        print(f"[DEBUG][bg_fill] ? all background pages rendered")
 
     def _wire_scroll_ondemand(self, path, total_pages):
         """
@@ -1505,8 +1623,6 @@ class ReviewScreen(QWidget):
 
         self._canvas_scroll.visible_pages_changed.connect(
             self._on_visible_pages_changed)
-        print(f"[DEBUG][wire_scroll] ✅ scroll→on-demand wired  "
-              f"path={os.path.basename(path)}  total={total_pages}")
 
     def _on_visible_pages_changed(self, first, last):
         """
@@ -1523,15 +1639,11 @@ class ReviewScreen(QWidget):
         needed = [pn for pn in range(first, last + 1) if PAGE_CACHE.get(path, pn) is None]
 
         if not needed:
-            print(f"[DEBUG][on_visible] p.{first+1}-p.{last+1} all cached")
             return
 
-        print(f"[DEBUG][on_visible] p.{first+1}-p.{last+1} need render: {[p+1 for p in needed]}")
 
         if self._ondemand_thread and self._ondemand_thread.isRunning():
             if getattr(self, "_ondemand_kind", None) == "background":
-                print(f"[DEBUG][on_visible] preempting background fill for visible pages "
-                      f"{[p+1 for p in needed]}")
                 self._stop_ondemand_thread()
                 self._ondemand_kind = None
                 self._start_visible_page_request(path, needed)
@@ -1550,13 +1662,9 @@ class ReviewScreen(QWidget):
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(self._on_visible_pages_batch_done)
         self._ondemand_thread.start()
-        print(f"[DEBUG][on_visible] started visible pages {[p+1 for p in needed]}")
+        
 
     def _on_visible_pages_batch_done(self, rendered):
-        if rendered:
-            print(f"[DEBUG][on_visible] visible pages rendered: {[r+1 for r in rendered]}")
-        else:
-            print(f"[DEBUG][on_visible] visible pages rendered: []")
         self._note_user_activity()
 
         pending = self._pending_visible_request
@@ -1565,10 +1673,8 @@ class ReviewScreen(QWidget):
             path, needed = pending
             fresh_needed = [pn for pn in needed if PAGE_CACHE.get(path, pn) is None]
             if fresh_needed:
-                print(f"[DEBUG][on_visible] draining queued pages {[p+1 for p in fresh_needed]}")
                 self._start_visible_page_request(path, fresh_needed)
             else:
-                print(f"[DEBUG][on_visible] queued pages already cached")
                 self._ondemand_kind = None
         elif getattr(self, "_ondemand_kind", None) == "visible":
             self._ondemand_kind = None
@@ -1577,7 +1683,6 @@ class ReviewScreen(QWidget):
         if bg_state and not (self._ondemand_thread and self._ondemand_thread.isRunning()) and not self._pending_visible_request:
             bg_path, bg_already_rendered, bg_total = bg_state
             if getattr(self, "_canvas_pdf_path", None) == bg_path:
-                print(f"[DEBUG][on_visible] resuming background fill")
                 self._start_background_fill(bg_path, bg_already_rendered, bg_total)
 
     def _on_page_ready(self, page_num, qpx):
@@ -1594,10 +1699,6 @@ class ReviewScreen(QWidget):
         thread_path  = getattr(self, "_ondemand_path", None)
 
         if current_path != thread_path:
-            print(f"[DEBUG][page_ready] 🚫 STALE SIGNAL DROPPED p.{page_num+1} — "
-                  f"canvas_path={os.path.basename(current_path or '?')}  "
-                  f"thread_path={os.path.basename(thread_path or '?')}  "
-                  f"(card was switched mid-render)")
             return
 
         canvas_len = len(self.canvas._pages)
@@ -1605,14 +1706,8 @@ class ReviewScreen(QWidget):
 
         # Guard: canvas wiped — should not happen after _stop_ondemand_thread fix
         if canvas_len == 0:
-            print(f"[DEBUG][page_ready] ❌ INJECT SKIPPED p.{page_num+1} — "
-                  f"canvas._pages is EMPTY (canvas={canvas_wh}) "
-                  f"path_match=True — regression detected!")
             return
 
-        print(f"[DEBUG][page_ready] ✅ p.{page_num+1}  "
-              f"canvas_pages={canvas_len}  canvas_size={canvas_wh}  "
-              f"path_match=True -> inject")
         if getattr(self, "_ondemand_kind", None) == "background":
             self._bg_pending_inserts[page_num] = qpx
             print(f"[DEBUG][page_ready] background page queued p.{page_num+1}")
@@ -1642,14 +1737,6 @@ class ReviewScreen(QWidget):
             t.stop()
             t.quit()
             t.wait(400)
-            print(f"[DEBUG][stop_thread] ⏹ on-demand thread stopped and joined")
-        else:
-            if t is not None:
-                # Thread object exists but already finished — just clear the ref
-                print(f"[DEBUG][stop_thread] 🔵 thread already finished — clearing ref "
-                      f"(was_running=False, obj_id={id(t)})")
-            else:
-                print(f"[DEBUG][stop_thread] 🔵 no thread to stop — nothing to do")
         # Always clear the reference so the next start gets a fresh thread
         self._ondemand_thread = None
         
@@ -1696,6 +1783,8 @@ class ReviewScreen(QWidget):
         path = card.get("pdf_path", "")
         self._canvas_pdf_path = path
         self.canvas._current_pdf_path = path
+        if hasattr(self.canvas, "clear_peek_target"):
+            self.canvas.clear_peek_target()
 
         # 1. Load ALL pages
         self.canvas.load_pages(pages)
@@ -1783,6 +1872,37 @@ class ReviewScreen(QWidget):
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
 
+        # ── Save snapshot BEFORE rating so Ctrl+Z can restore it ─────────────
+        _SM2_KEYS = ("sched_state", "sched_step", "sm2_interval", "sm2_ease",
+                     "sm2_due", "sm2_last_quality", "sm2_repetitions", "reviews",
+                     "reviewed_at", "last_quality")
+
+        def _sm2_snapshot(obj):
+            return {k: obj.get(k) for k in _SM2_KEYS}
+
+        # Snapshot all sm2 objects affected by this rating
+        sibling_snapshots = []
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            for box in card.get("boxes", []):
+                if box.get("group_id") == gid and box is not sm2_obj:
+                    sibling_snapshots.append((box, _sm2_snapshot(box)))
+
+        snapshot = {
+            "idx":               self._idx,
+            "done":              self._done,
+            "items_order":       list(self._items),   # shallow copy of order
+            "sm2_obj":           sm2_obj,
+            "sm2_state":         _sm2_snapshot(sm2_obj),
+            "sibling_snapshots": sibling_snapshots,
+            "card_reviewed_at":  card.get("last_reviewed_at"),
+        }
+        self._review_undo_stack.append(snapshot)
+        if len(self._review_undo_stack) > 50:
+            self._review_undo_stack.pop(0)
+        # New rating clears redo stack
+        self._review_redo_stack.clear()
+
         sched_update(sm2_obj, quality)
 
         # ── Persist review timestamp in metadata ──────────────────────────────
@@ -1837,6 +1957,121 @@ class ReviewScreen(QWidget):
         # ── NEW: after every rating, bubble any expired learning cards to front ──
         self._promote_expired_learning(self._idx)
 
+        self._load_item()
+
+    def _review_undo(self):
+        """
+        Undo last rating — restore card to pre-rating SM-2 state.
+        Does NOT hard-reset the card — only reverses the last sched_update() call.
+        """
+        if not self._review_undo_stack:
+            self.canvas._show_toast("⚠ Nothing to undo")
+            return
+
+        snap = self._review_undo_stack.pop()
+
+        # Save current state to redo stack before restoring
+        card, box_idx, sm2_obj = self._items[self._idx] if self._idx < len(self._items) \
+            else self._items[-1] if self._items else (None, None, None)
+
+        _SM2_KEYS = ("sched_state", "sched_step", "sm2_interval", "sm2_ease",
+                     "sm2_due", "sm2_last_quality", "sm2_repetitions", "reviews",
+                     "reviewed_at", "last_quality")
+
+        if sm2_obj is not None:
+            redo_snap = {
+                "idx":               self._idx,
+                "done":              self._done,
+                "items_order":       list(self._items),
+                "sm2_obj":           sm2_obj,
+                "sm2_state":         {k: sm2_obj.get(k) for k in _SM2_KEYS},
+                "sibling_snapshots": [],
+                "card_reviewed_at":  card.get("last_reviewed_at") if card else None,
+            }
+            self._review_redo_stack.append(redo_snap)
+
+        # Restore items order (undo any reinsert from learning/relearn)
+        self._items = list(snap["items_order"])
+        self._idx   = snap["idx"]
+        self._done  = snap["done"]
+
+        # Restore SM-2 state of main box
+        sm2_obj = snap["sm2_obj"]
+        for k, v in snap["sm2_state"].items():
+            if v is None:
+                sm2_obj.pop(k, None)
+            else:
+                sm2_obj[k] = v
+
+        # Restore sibling boxes (grouped cards)
+        for box, state in snap["sibling_snapshots"]:
+            for k, v in state.items():
+                if v is None:
+                    box.pop(k, None)
+                else:
+                    box[k] = v
+
+        # Restore card-level reviewed_at
+        card = self._items[self._idx][0] if self._idx < len(self._items) else None
+        if card is not None:
+            if snap["card_reviewed_at"] is None:
+                card.pop("last_reviewed_at", None)
+            else:
+                card["last_reviewed_at"] = snap["card_reviewed_at"]
+
+        store.mark_dirty()
+        store.save_force()
+
+        self.canvas._show_toast(f"↩ Undo — back to card {self._idx + 1}")
+        self._load_item()
+
+    def _review_redo(self):
+        """
+        Redo — re-apply the rating that was undone.
+        """
+        if not self._review_redo_stack:
+            self.canvas._show_toast("⚠ Nothing to redo")
+            return
+
+        snap = self._review_redo_stack.pop()
+
+        # Save current state back to undo stack
+        self._review_undo_stack.append({
+            "idx":               self._idx,
+            "done":              self._done,
+            "items_order":       list(self._items),
+            "sm2_obj":           snap["sm2_obj"],
+            "sm2_state":         {k: snap["sm2_obj"].get(k) for k in
+                                  ("sched_state","sched_step","sm2_interval","sm2_ease",
+                                   "sm2_due","sm2_last_quality","sm2_repetitions","reviews",
+                                   "reviewed_at","last_quality")},
+            "sibling_snapshots": [],
+            "card_reviewed_at":  self._items[self._idx][0].get("last_reviewed_at")
+                                  if self._idx < len(self._items) else None,
+        })
+
+        self._items = list(snap["items_order"])
+        self._idx   = snap["idx"]
+        self._done  = snap["done"]
+
+        sm2_obj = snap["sm2_obj"]
+        for k, v in snap["sm2_state"].items():
+            if v is None:
+                sm2_obj.pop(k, None)
+            else:
+                sm2_obj[k] = v
+
+        card = self._items[self._idx][0] if self._idx < len(self._items) else None
+        if card is not None:
+            if snap["card_reviewed_at"] is None:
+                card.pop("last_reviewed_at", None)
+            else:
+                card["last_reviewed_at"] = snap["card_reviewed_at"]
+
+        store.mark_dirty()
+        store.save_force()
+
+        self.canvas._show_toast(f"↪ Redo — card {self._idx + 1}")
         self._load_item()
 
     def _promote_expired_learning(self, insert_pos):
@@ -2324,6 +2559,8 @@ class DeckTree(QWidget):
             "children": [],
             "created":  datetime.now().isoformat()
         }
+        print(f"[DeckTree][new_deck] ➕ creating '{name.strip()}' parent={parent_id}")
+        deck_history.push(self._data)   # ← undo snapshot
         if parent_id is None:
             self._data.setdefault("decks", []).append(new_deck)
         else:
@@ -2366,6 +2603,8 @@ class DeckTree(QWidget):
                 else:
                     return
             # ─────────────────────────────────────────────────────────────────
+            print(f"[DeckTree][rename] ✏ '{deck.get('name')}' → '{name.strip()}'")
+            deck_history.push(self._data)   # ← undo snapshot
             deck["name"] = name.strip()
             store.mark_dirty()
             self.refresh()
@@ -2428,6 +2667,8 @@ class DeckTree(QWidget):
             f"Delete '{deck['name']}' and ALL its cards / sub-decks?",
             QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
+        print(f"[DeckTree][delete] 🗑 deleting '{deck['name']}' id={deck_id}")
+        deck_history.push(self._data)   # ← undo snapshot
         self._remove_from_tree(deck_id, self._data.get("decks", []))
         store.mark_dirty()  # 🔒 DirtyStore
         self.refresh()
@@ -2511,7 +2752,9 @@ class DeckTree(QWidget):
             row   = int(row_str)
             if not (0 <= row < len(cards)):
                 event.ignore(); return
-
+            
+            print(f"[DeckTree][drop] 🃏 card row={row} moved to '{target_deck.get('name')}'")
+            deck_history.push(self._data)   # ← undo snapshot
             card = cards.pop(row)
             target_deck.setdefault("cards", []).append(card)
             store.mark_dirty()
@@ -2529,7 +2772,8 @@ class DeckTree(QWidget):
         dragged_id  = self._get_selected_id()
         if dragged_id is None:
             event.ignore(); return
-
+        print(f"[DeckTree][drop] 🗂 reordering id={dragged_id}, ctrl={ctrl}")
+        deck_history.push(self._data)   # ← undo snapshot
         deck = self._detach_deck(dragged_id, self._data["decks"])
         if deck is None:
             event.ignore(); return
@@ -2661,7 +2905,7 @@ class CacheWidget(QFrame):
         root.addWidget(scroll, stretch=1)
 
         # Clear All button at bottom
-        btn_all = QPushButton("🧹 Clear All Caches")
+        btn_all = QPushButton("🧹 Clear All Ram Caches")
         btn_all.setStyleSheet(
             f"background:#444460;color:{C_TEXT};border:none;"
             f"border-top:1px solid {C_BORDER};"
@@ -2775,7 +3019,7 @@ class CacheWidget(QFrame):
     def _clear_all(self):
         from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
         COMBINED_CACHE.clear()
-        PAGE_CACHE.clear()
+        PAGE_CACHE.clear_ram_only()
         MASK_REGISTRY._map.clear()
         # [FIX] Also clear PIXMAP_REGISTRY so all boxes disappear
         for label in list(PIXMAP_REGISTRY._entries.keys()):
@@ -3625,11 +3869,36 @@ class HomeScreen(QWidget):
             win.change_font_size(direction)
 
     def keyPressEvent(self, e):
-        key = e.key()
+        key  = e.key()
         mods = e.modifiers()
-        if mods & Qt.ControlModifier and key == Qt.Key_Z:
+        ctrl  = bool(mods & Qt.ControlModifier)
+        shift = bool(mods & Qt.ShiftModifier)
+
+        if ctrl and key == Qt.Key_Z:
             if getattr(self, "_active_review", None) is None:
-                self.deck_view.undo()
+                if shift:
+                    # Ctrl+Shift+Z → deck redo
+                    ok = deck_history.redo(store)
+                    if ok:
+                        self.deck_tree.refresh()
+                        self.canvas._show_toast("↪ Deck redo") if hasattr(self, 'canvas') else None
+                    print(f"[HomeScreen][key] Ctrl+Shift+Z — deck redo, ok={ok}")
+                else:
+                    # Ctrl+Z → try deck undo first, else mask undo
+                    ok = deck_history.undo(store)
+                    if ok:
+                        # deck_tree ka sahi attribute name use karo
+                        dt = getattr(self, 'deck_tree', None) or getattr(self, '_deck_tree', None)
+                        if dt:
+                            dt._data = store.get()   # ← data bhi sync karo
+                            dt.refresh()
+                            print("[HomeScreen][key] Ctrl+Z — deck_tree refreshed ✅")
+                        else:
+                            print("[HomeScreen][key] ⚠ deck_tree attribute nahi mila")
+                        print("[HomeScreen][key] Ctrl+Z — deck undo done")
+                    else:
+                        self.deck_view.undo()
+                        print("[HomeScreen][key] Ctrl+Z — fell through to mask undo")
                 e.accept()
                 return
         super().keyPressEvent(e)
@@ -3707,6 +3976,16 @@ class MainWindow(QMainWindow):
             self.change_font_size(-1)
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
             self.change_font_size(0)
+        elif mods & Qt.ControlModifier and key == Qt.Key_C:
+            # Ctrl+C → RAM + masks + pixmap clear (disk untouched)
+            from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+            PAGE_CACHE.clear_ram_only()
+            MASK_REGISTRY._map.clear()
+            for label in list(PIXMAP_REGISTRY._entries.keys()):
+                PIXMAP_REGISTRY.unregister(label)
+            home = self.centralWidget()
+            if home and hasattr(home, "_cache_widget"):
+                home._cache_widget.refresh()
         else:
             super().keyPressEvent(e)
 
@@ -3744,6 +4023,3 @@ if __name__ == "__main__":
     ret = app.exec_()
     lock.unlock()
     sys.exit(ret)
-
-
-

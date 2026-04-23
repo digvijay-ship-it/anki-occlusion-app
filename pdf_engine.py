@@ -29,10 +29,11 @@
 import os
 import time
 import math
+import hashlib 
 from collections import OrderedDict
 
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
-from PyQt5.QtGui import QPixmap, QColor, QPainter
+from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter
 
 from cache_manager import PAGE_CACHE
 
@@ -182,8 +183,6 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
         total = len(doc)
         page_dims = []
 
-        print(f"[DEBUG][skeleton] Starting skeleton load: {os.path.basename(path)}")
-        print(f"[DEBUG][skeleton] total_pages={total}  zoom={zoom}")
 
         _mat0 = fitz.Matrix(zoom, zoom)
         _pix0 = doc[0].get_pixmap(matrix=_mat0, alpha=False)
@@ -204,18 +203,6 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
 
         doc.close()
 
-        t_ms = (time.perf_counter() - t_start) * 1000
-        print(f"[DEBUG][skeleton] ✅ Done in {t_ms:.1f}ms")
-        print(f"[DEBUG][skeleton] page_dims (first 5): {page_dims[:5]}")
-        if len(page_dims) > 5:
-            print(f"[DEBUG][skeleton]   ... and {len(page_dims)-5} more pages")
-
-        full_ram_kb = sum(w * h * 4 for w, h in page_dims) / 1024
-        unique_dims = sorted(set(page_dims))
-        shared_ram_kb = sum(w * h * 4 for w, h in unique_dims) / 1024
-        print(f"[DEBUG][skeleton] Placeholder RAM: ~{shared_ram_kb/1024:.1f} MB "
-              f"shared across {len(unique_dims)} unique sizes "
-              f"(vs ~{full_ram_kb/1024:.1f} MB full render — created in {t_ms:.1f}ms instead of seconds)")
         return PdfSkeletonResult([], page_dims, total, None)
     except Exception as ex:
         print(f"[DEBUG][skeleton] ❌ Exception: {ex}")
@@ -265,7 +252,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         if cached is not None:
             _SKELETON_CACHE.move_to_end(cache_key)
             t_ms = (time.perf_counter() - t_start) * 1000
-            print(f"[DEBUG][skeleton] ⚡ cache hit: {os.path.basename(path)}  zoom={zoom}  total_pages={cached.total_pages}  {t_ms:.1f}ms")
             return _clone_skeleton_result(cached)
 
         doc = fitz.open(path)
@@ -278,9 +264,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         total        = len(doc)
         placeholders = []
         page_dims    = []
-
-        print(f"[DEBUG][skeleton] Starting skeleton load: {os.path.basename(path)}")
-        print(f"[DEBUG][skeleton] total_pages={total}  zoom={zoom}")
 
         # ── Render page 0 once to get EXACT fitz pixel dimensions ────────────
         # int(rect * zoom) truncates differently than fitz's internal rounding,
@@ -322,20 +305,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 
         t_ms = (time.perf_counter() - t_start) * 1000
 
-        # ── DEBUG ─────────────────────────────────────────────────────────────
-        print(f"[DEBUG][skeleton] ✅ Done in {t_ms:.1f}ms")
-        print(f"[DEBUG][skeleton] page_dims (first 5): {page_dims[:5]}")
-        if len(page_dims) > 5:
-            print(f"[DEBUG][skeleton]   ... and {len(page_dims)-5} more pages")
-
-        # Estimate RAM saved vs full render
-        # Full render: w*h*4 bytes (RGBA) per page
-        full_ram_kb  = sum(w * h * 4 for w, h in page_dims) / 1024
-        unique_dims = sorted(set(page_dims))
-        shared_ram_kb = sum(w * h * 4 for w, h in unique_dims) / 1024
-        print(f"[DEBUG][skeleton] Placeholder RAM: ~{shared_ram_kb/1024:.1f} MB "
-              f"shared across {len(unique_dims)} unique sizes "
-              f"(vs ~{full_ram_kb/1024:.1f} MB full render — created in {t_ms:.1f}ms instead of seconds)")
         # ─────────────────────────────────────────────────────────────────────
 
         result = PdfSkeletonResult(placeholders, page_dims, total, None)
@@ -356,22 +325,33 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def pdf_page_to_pixmap(page, mat, clip=None) -> QPixmap:
-    """Render one fitz page → QPixmap directly from bytes (no disk I/O).
+    """Render one fitz page → QPixmap (GUI thread only).
 
-    OLD: fitz → save PNG to disk → QPixmap(file) → delete file
-    NEW: fitz → PNG bytes in RAM → QPixmap.loadFromData()
+    NOTE: Call this ONLY from the GUI thread.
+    For worker threads, use pdf_page_to_image() instead.
+    """
+    return QPixmap.fromImage(pdf_page_to_image(page, mat, clip))
 
-    For a 50-page PDF this eliminates 150 disk read/write/delete ops
-    which was the primary cause of UI freeze during PDF loading.
+
+def pdf_page_to_image(page, mat, clip=None) -> QImage:
+    """Render one fitz page → QImage (thread-safe).
+
+    QImage = raw pixel data only — safe to create in any thread.
+    QPixmap = screen-optimized — GUI thread only.
+
+    Worker threads use this. UI thread converts via QPixmap.fromImage().
+
+    OLD: fitz → PNG bytes → QPixmap.loadFromData()  [not thread-safe]
+    NEW: fitz → PNG bytes → QImage.loadFromData()   [thread-safe]
     """
     if clip is None:
         pix = page.get_pixmap(matrix=mat, alpha=False)
     else:
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
     png_bytes = pix.tobytes("png")
-    qpx = QPixmap()
-    qpx.loadFromData(png_bytes, "PNG")
-    return qpx
+    img = QImage()
+    img.loadFromData(png_bytes, "PNG")
+    return img
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -395,7 +375,7 @@ class PdfOnDemandThread(QThread):
         t.start()
     """
 
-    page_ready = pyqtSignal(int, object)   # (page_num, QPixmap)
+    page_ready = pyqtSignal(int, object)   # (page_num, QImage) — QImage is thread-safe
     batch_done = pyqtSignal(list)          # list[int] - rendered page nums
     error      = pyqtSignal(str)
 
@@ -468,22 +448,27 @@ class PdfOnDemandThread(QThread):
                 if cached and not cached.isNull():
                     t_ms = (time.perf_counter() - t_page_start) * 1000
                     print(f"[DEBUG][on_demand]   p.{page_num+1:>3} cache hit  ({t_ms:.1f}ms)  {cached.width()}x{cached.height()}px")
-                    self.page_ready.emit(page_num, cached)
+                    # PAGE_CACHE stores QPixmap — convert to QImage for thread-safe emit
+                    self.page_ready.emit(page_num, cached.toImage())
                     rendered.append(page_num)
                     continue
 
                 try:
-                    qpx = pdf_page_to_pixmap(doc.load_page(page_num), mat)
+                    # Use pdf_page_to_image (returns QImage — thread-safe)
+                    # UI thread will convert to QPixmap via QPixmap.fromImage()
+                    img = pdf_page_to_image(doc.load_page(page_num), mat)
                     t_ms = (time.perf_counter() - t_page_start) * 1000
 
-                    if qpx.isNull():
-                        print(f"[DEBUG][on_demand]   p.{page_num+1:>3} render returned null pixmap")
+                    if img.isNull():
+                        print(f"[DEBUG][on_demand]   p.{page_num+1:>3} render returned null image")
                         continue
 
+                    # Store as QPixmap in cache (cache is GUI-thread-read only)
+                    qpx = QPixmap.fromImage(img)
                     PAGE_CACHE.put(self._path, page_num, qpx)
 
-                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} rendered   ({t_ms:.1f}ms)  {qpx.width()}x{qpx.height()}px")
-                    self.page_ready.emit(page_num, qpx)
+                    print(f"[DEBUG][on_demand]   p.{page_num+1:>3} rendered   ({t_ms:.1f}ms)  {img.width()}x{img.height()}px")
+                    self.page_ready.emit(page_num, img)   # emit QImage — thread-safe
                     rendered.append(page_num)
 
                 except Exception as ex:
@@ -502,7 +487,26 @@ class PdfOnDemandThread(QThread):
             print(f"[DEBUG][on_demand] Fatal exception: {ex}")
             self.error.emit(str(ex))
 
-
+def get_changed_pages(path: str):
+    if not PDF_SUPPORT or not os.path.exists(path):
+        return None
+    try:
+        doc = fitz.open(path)
+        changed = []
+        mat = fitz.Matrix(0.2, 0.2)   # 20% zoom — sirf hash ke liye
+        for i in range(len(doc)):
+            pix = doc[i].get_pixmap(matrix=mat, alpha=False)
+            new_hash = hashlib.md5(pix.samples).hexdigest()
+            old_hash = PAGE_CACHE.get_page_hash(path, i)
+            if old_hash is None or old_hash != new_hash:
+                changed.append(i)
+            PAGE_CACHE.set_page_hash(path, i, new_hash)
+        doc.close()
+        return changed
+    except Exception as ex:
+        print(f"[changed_pages] error: {ex}")
+        return None
+    
 class PdfLoaderThread(QThread):
     # Emitted every CHUNK_SIZE pages:  (pages_so_far, loaded_count, total_count)
     pages_ready = pyqtSignal(object, int, int)   # object = list[QPixmap]
@@ -573,5 +577,3 @@ class PdfLoaderThread(QThread):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
