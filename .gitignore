@@ -61,3 +61,4 @@ test_anki_occlusion_v14.py
 temp/
 swift_render/
 benchmarks/
+debug_log.txt
