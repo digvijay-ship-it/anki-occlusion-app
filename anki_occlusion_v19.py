@@ -195,7 +195,8 @@ class QueueDelegate(QStyledItemDelegate):
 
 
 class ReviewScreen(QWidget):
-    finished = pyqtSignal()
+    finished   = pyqtSignal()
+    cancelled  = pyqtSignal()
 
     RATINGS = [
         ("1  🔁 Again", "danger",  1),
@@ -553,7 +554,7 @@ class ReviewScreen(QWidget):
                 win.showFullScreen()
                 self._set_fullscreen_ui(True)
         elif key == Qt.Key_Escape:
-            self.finished.emit()
+            self.cancelled.emit()
         elif key == Qt.Key_Space:
             if self._rating_frame.isVisible():
                 # Already revealed — hide karo (toggle back)
@@ -756,7 +757,7 @@ class ReviewScreen(QWidget):
         b_exit.setStyleSheet(
             f"background:{C_CARD};color:{C_TEXT};border:1px solid {C_BORDER};"
             f"border-radius:6px;padding:4px 14px;font-size:12px;")
-        b_exit.clicked.connect(self.finished.emit)
+        b_exit.clicked.connect(self.cancelled.emit)
         hdr.addWidget(b_exit)
         L.addWidget(hdr_w)
         self._hdr_widget = hdr_w
@@ -2905,7 +2906,7 @@ class CacheWidget(QFrame):
         root.addWidget(scroll, stretch=1)
 
         # Clear All button at bottom
-        btn_all = QPushButton("🧹 Clear All Ram Caches")
+        btn_all = QPushButton("🧹 Clear All Caches")
         btn_all.setStyleSheet(
             f"background:#444460;color:{C_TEXT};border:none;"
             f"border-top:1px solid {C_BORDER};"
@@ -3339,35 +3340,60 @@ class DeckView(QWidget):
             self._refresh()
             store.mark_dirty()  # 🔒 DirtyStore
 
+    def _card_has_due_today(self, card):
+        boxes = card.get("boxes", [])
+        if not boxes:
+            sm2_init(card)
+            return is_due_today(card)
+        seen_gids = set()
+        for b in boxes:
+            sm2_init(b)
+            gid = b.get("group_id", "")
+            if gid:
+                if gid not in seen_gids:
+                    seen_gids.add(gid)
+                    if is_due_today(b):
+                        return True
+            else:
+                if is_due_today(b):
+                    return True
+        return False
+
+    def _collect_due_by_pdf(self, deck):
+        """Recursively collect due cards from deck+children, grouped by pdf_path.
+        Returns a list of card-lists, one per unique PDF, in DFS order."""
+        from collections import OrderedDict
+        groups = OrderedDict()
+        def _walk(d):
+            for card in d.get("cards", []):
+                if self._card_has_due_today(card):
+                    key = card.get("pdf_path") or card.get("image_path") or "__no_path__"
+                    groups.setdefault(key, []).append(card)
+            for child in d.get("children", []):
+                _walk(child)
+        _walk(deck)
+        return list(groups.values())
+
     def _review_due(self):
         if not self.deck:
             return
-
-        def _card_has_due_today(card):
-            boxes = card.get("boxes", [])
-            if not boxes:
-                sm2_init(card)
-                return is_due_today(card)
-            seen_gids = set()
-            for b in boxes:
-                sm2_init(b)
-                gid = b.get("group_id", "")
-                if gid:
-                    if gid not in seen_gids:
-                        seen_gids.add(gid)
-                        if is_due_today(b):
-                            return True
-                else:
-                    if is_due_today(b):
-                        return True
-            return False
-
-        due = [c for c in self.deck.get("cards", []) if _card_has_due_today(c)]
-        if not due:
-            QMessageBox.information(self, "✅ All clear!",
-                "No cards due today.\nCome back tomorrow! 🌙")
-            return
-        self._start_review(due)
+        if self.deck.get("children"):
+            # Parent deck: group due cards by PDF and review sequentially
+            groups = self._collect_due_by_pdf(self.deck)
+            if not groups:
+                QMessageBox.information(self, "✅ All clear!",
+                    "No cards due today.\nCome back tomorrow! 🌙")
+                return
+            home = self._find_home()
+            if home:
+                home.show_review_sequential(groups, self._data)
+        else:
+            due = [c for c in self.deck.get("cards", []) if self._card_has_due_today(c)]
+            if not due:
+                QMessageBox.information(self, "✅ All clear!",
+                    "No cards due today.\nCome back tomorrow! 🌙")
+                return
+            self._start_review(due)
 
     def _review_all(self):
         if not self.deck:
@@ -3745,7 +3771,7 @@ class HomeScreen(QWidget):
         split.setSizes([340, 760, 220])           # ← CHANGE (was [340, 860])
         L.addWidget(split, stretch=1)
 
-    def show_review(self, cards, data):
+    def show_review(self, cards, data, _on_batch_done=None):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
         split = self._get_splitter()
@@ -3772,8 +3798,19 @@ class HomeScreen(QWidget):
                 store.mark_dirty()
                 store.save_force()
             self.hide_review()
+            if _on_batch_done:
+                _on_batch_done()
 
         rev.finished.connect(_on_finished)
+
+        def _on_cancelled():
+            if not _save_done[0]:
+                _save_done[0] = True
+                store.mark_dirty()
+                store.save_force()
+            self.hide_review()  # stop the sequential chain — no _on_batch_done
+
+        rev.cancelled.connect(_on_cancelled)
 
         # Replace index 1 (deck_view) with the ReviewScreen
         split.replaceWidget(1, rev)
@@ -3782,6 +3819,32 @@ class HomeScreen(QWidget):
         split.setSizes([0, split.width(), 0])
         # Give keyboard focus to canvas immediately so Space works without clicking
         QTimer.singleShot(0, rev.canvas.setFocus)
+
+
+    def show_review_sequential(self, groups, data):
+        """Review card groups one PDF at a time.
+        After each group finishes: clear RAM + masks + pixmap, then load next group."""
+        groups = list(groups)
+
+        def _clear_ram():
+            from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+            PAGE_CACHE.clear_ram_only()
+            MASK_REGISTRY._map.clear()
+            for label in list(PIXMAP_REGISTRY._entries.keys()):
+                PIXMAP_REGISTRY.unregister(label)
+
+        def _on_done():
+            _clear_ram()
+            if groups:
+                QTimer.singleShot(0, _launch_next)
+
+        def _launch_next():
+            if not groups:
+                return
+            batch = groups.pop(0)
+            self.show_review(batch, data, _on_batch_done=_on_done)
+
+        _launch_next()
 
     def hide_review(self):
         """Restore DeckView after review ends."""
@@ -3977,15 +4040,17 @@ class MainWindow(QMainWindow):
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
             self.change_font_size(0)
         elif mods & Qt.ControlModifier and key == Qt.Key_C:
-            # Ctrl+C → RAM + masks + pixmap clear (disk untouched)
-            from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+            # Ctrl+C → RAM cache clear (disk untouched)
+            from cache_manager import PAGE_CACHE, MASK_REGISTRY
+            before = len(PAGE_CACHE._cache)
             PAGE_CACHE.clear_ram_only()
-            MASK_REGISTRY._map.clear()
-            for label in list(PIXMAP_REGISTRY._entries.keys()):
-                PIXMAP_REGISTRY.unregister(label)
-            home = self.centralWidget()
-            if home and hasattr(home, "_cache_widget"):
-                home._cache_widget.refresh()
+            for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):
+                MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
+            print(f"[MainWindow][Ctrl+C] 🧹 RAM cache cleared — "
+                  f"{before} pages evicted, mask layers invalidated, disk untouched")
+            sb = self.statusBar()
+            if sb:
+                sb.showMessage(f"🧹 RAM cache cleared — {before} pages freed", 3000)
         else:
             super().keyPressEvent(e)
 
