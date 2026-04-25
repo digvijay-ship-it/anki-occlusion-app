@@ -4,6 +4,7 @@ import tempfile
 import uuid
 import threading
 import time
+import copy
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG
@@ -78,15 +79,20 @@ class DirtyStore:
         with self._lock:
             if not self._dirty:
                 return False
-            self._write_to_disk(self._data)
-            self._dirty = False
-            return True
+            # ── FIX: snapshot inside lock so json.dump never races with _rate() ──
+            snapshot = copy.deepcopy(self._data)
+            self._dirty = False          # clear flag while we still hold the lock
+        # json.dump outside the lock — slow I/O should never block _rate()
+        self._write_to_disk(snapshot)
+        return True
 
     def save_force(self):
         """Force write regardless of dirty flag (use on app exit)."""
         with self._lock:
-            self._write_to_disk(self._data)
+            # ── FIX: snapshot inside lock so json.dump never races with _rate() ──
+            snapshot = copy.deepcopy(self._data)
             self._dirty = False
+        self._write_to_disk(snapshot)
 
     # ── Auto-save background thread ───────────────────────────────────────────
 

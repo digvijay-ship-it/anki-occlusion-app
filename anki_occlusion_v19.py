@@ -54,6 +54,13 @@ from sm2_engine import (
     _fmt_due_interval, sm2_simulate, sm2_badge
 )
 
+# SM-2 debug logger — safe import (no crash if file missing)
+try:
+    from sm2_debug_log import log_session, log_rate, log_due, log_queue
+    _DEBUG_LOG = True
+except ImportError:
+    _DEBUG_LOG = False
+
 from pdf_engine import (
     PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
     pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
@@ -240,6 +247,8 @@ class ReviewScreen(QWidget):
         self._ui_idle_timer.timeout.connect(self._on_ui_idle_timeout)
         self._peek_idx = None
         self._peek_origin_idx = None
+        # ── User zoom tracking — None = no manual zoom set yet ────────────────
+        self._user_zoom_scale = None
         # ── O(1) box tracking ─────────────────────────────────────────────────
         # All box_ids/group_ids that entered the queue (ever seen this session)
         self._queued_ids     = set()
@@ -247,6 +256,11 @@ class ReviewScreen(QWidget):
         self._deleted_ids    = set()
 
         seen_item_keys = set()
+
+        # ── SM-2 Debug Logger ─────────────────────────────────────────────────
+        if _DEBUG_LOG:
+            try: log_session()
+            except Exception: pass
 
         for card in cards:
             boxes = card.get("boxes", [])
@@ -272,7 +286,11 @@ class ReviewScreen(QWidget):
                         item_key = (card_key, ("group", gid))
                         if item_key not in seen_item_keys:
                             seen_item_keys.add(item_key)
-                            if is_due_today(box):
+                            _due_result = is_due_today(box)
+                            if _DEBUG_LOG:
+                                try: log_due(box, card, _due_result)
+                                except Exception: pass
+                            if _due_result:
                                 self._items.append((card, ("group", gid), box))
                                 self._queued_ids.add(gid)          # O(1) track
                 else:
@@ -280,11 +298,18 @@ class ReviewScreen(QWidget):
                     item_key = (card_key, box_id)
                     if item_key not in seen_item_keys:
                         seen_item_keys.add(item_key)
-                        if is_due_today(box):
+                        _due_result = is_due_today(box)
+                        if _DEBUG_LOG:
+                            try: log_due(box, card, _due_result)
+                            except Exception: pass
+                        if _due_result:
                             self._items.append((card, i, box))
                             self._queued_ids.add(box_id)           # O(1) track
 
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
+        if _DEBUG_LOG:
+            try: log_queue(self._items)
+            except Exception: pass
         self._idx  = 0
         self._done = 0
         # ── Review undo/redo stacks ───────────────────────────────────────────
@@ -514,7 +539,13 @@ class ReviewScreen(QWidget):
                 self.canvas.set_boxes_with_state(display_boxes)
                 self.canvas.set_target_box(box_idx if isinstance(box_idx, int) else -1)
                 self.canvas.set_mode("review")
-            QTimer.singleShot(0, self._center_on_target)
+            # FIX: retain user-set zoom on same-PDF card switch too
+            def _same_pdf_zoom_center():
+                if self._user_zoom_scale is not None:
+                    self.canvas._scale = self._user_zoom_scale
+                    self.canvas._on_zoom()
+                self._center_on_target()
+            QTimer.singleShot(0, _same_pdf_zoom_center)
         else:
             self._reload_current_canvas()
 
@@ -576,10 +607,13 @@ class ReviewScreen(QWidget):
             self._rate(5)
         elif mods & Qt.ControlModifier and key in (Qt.Key_Equal, Qt.Key_Plus):
             self.canvas.zoom_in()
+            self._user_zoom_scale = self.canvas._scale
         elif mods & Qt.ControlModifier and key == Qt.Key_Minus:
             self.canvas.zoom_out()
+            self._user_zoom_scale = self.canvas._scale
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
             self._zoom_fit()
+            self._user_zoom_scale = None   # reset to auto-fit
         elif key == Qt.Key_C:
             if self._peek_idx is not None:
                 self._exit_peek()
@@ -587,6 +621,7 @@ class ReviewScreen(QWidget):
                 # Ensure canvas has focus so it can calculate target rects
                 self._zoom_fit()
                 self._center_on_target()
+                self._user_zoom_scale = self.canvas._scale  # C = user set zoom
             self._debug_report("C key")
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
@@ -788,6 +823,8 @@ class ReviewScreen(QWidget):
         self.canvas.right_clicked.connect(self._toggle_chrome)
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
+        # Track Ctrl+scroll zoom so we retain it across cards
+        self.canvas._zoom_timer.timeout.connect(self._on_canvas_zoom_settled)
         self._canvas_scroll.horizontalScrollBar().valueChanged.connect(
             lambda *_: self._note_user_activity()
         )
@@ -924,6 +961,10 @@ class ReviewScreen(QWidget):
         else:
             self._btn_mode.setText("🟧 Hide All, Guess One")
             self.canvas.set_review_style("hide_all")
+
+    def _on_canvas_zoom_settled(self):
+        """Ctrl+scroll zoom settle hone ke baad — user zoom yaad rakho."""
+        self._user_zoom_scale = self.canvas._scale
 
     def _zoom_fit(self):
         vp = self._canvas_scroll.viewport()
@@ -1170,7 +1211,7 @@ class ReviewScreen(QWidget):
                 ]
                 for exe in xchange_paths:
                     if os.path.exists(exe):
-                        subprocess.Popen([exe, f"/A", f"page={current_page}", path])
+                        subprocess.Popen([exe, "/A", f"page={current_page}", path])
                         self.canvas._show_toast(f"📄 Opened p.{current_page} in PDF-XChange")
                         return
 
@@ -1182,7 +1223,7 @@ class ReviewScreen(QWidget):
                     exe = winreg.QueryValue(key, None)
                     winreg.CloseKey(key)
                     if exe and os.path.exists(exe):
-                        subprocess.Popen([exe, f"/A", f"page={current_page}", path])
+                        subprocess.Popen([exe, "/A", f"page={current_page}", path])
                         self.canvas._show_toast(f"📄 Opened p.{current_page} in PDF-XChange")
                         return
                 except Exception:
@@ -1190,7 +1231,7 @@ class ReviewScreen(QWidget):
 
                 # Final fallback — open without page number
                 os.startfile(path)
-                self.canvas._show_toast(f"📄 Opened PDF (page jump not supported by this reader)")
+                self.canvas._show_toast("📄 Opened PDF (page jump not supported by this reader)")
 
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", path])
@@ -1534,7 +1575,7 @@ class ReviewScreen(QWidget):
                 self._background_fill_state = (path, list(already_rendered), total_pages)
                 return
             if getattr(self, "_ondemand_kind", None) == "background":
-                print(f"[DEBUG][bg_fill] already running ? skipping duplicate start")
+                print("[DEBUG][bg_fill] already running ? skipping duplicate start")
                 return
 
         # ?? FIX 1 guard: if card switched, abort ?????????????????????????????
@@ -1779,6 +1820,17 @@ class ReviewScreen(QWidget):
             self.canvas.set_target_box(box_idx)
             self.canvas.set_mode("review")
 
+        # FIX: retain user-set zoom for image cards too
+        from PyQt5.QtCore import QTimer
+        def _apply_zoom_and_center_img():
+            if self._user_zoom_scale is not None:
+                self.canvas._scale = self._user_zoom_scale
+                self.canvas._on_zoom()
+            else:
+                self._zoom_fit()
+            self._center_on_target()
+        QTimer.singleShot(0, _apply_zoom_and_center_img)
+
     def _apply_canvas_pages(self, card, box_idx, pages):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
         path = card.get("pdf_path", "")
@@ -1820,7 +1872,15 @@ class ReviewScreen(QWidget):
             self._pending_reload_page = None
             QTimer.singleShot(0, lambda pg=reload_page: (self._zoom_fit(), self.canvas.scroll_to_page(pg, self._canvas_scroll)))
         else:
-            QTimer.singleShot(0, lambda: (self._zoom_fit(), self._center_on_target()))
+            # FIX: retain user-set zoom across cards
+            def _apply_zoom_and_center():
+                if self._user_zoom_scale is not None:
+                    self.canvas._scale = self._user_zoom_scale
+                    self.canvas._on_zoom()
+                else:
+                    self._zoom_fit()
+                self._center_on_target()
+            QTimer.singleShot(0, _apply_zoom_and_center)
 
         # 7. Rebuild queue now that _page_tops is populated with real page positions
         QTimer.singleShot(50, self._rebuild_queue)
@@ -1904,7 +1964,13 @@ class ReviewScreen(QWidget):
         # New rating clears redo stack
         self._review_redo_stack.clear()
 
+        if _DEBUG_LOG:
+            try: log_rate("BEFORE", sm2_obj, quality, card)
+            except Exception: pass
         sched_update(sm2_obj, quality)
+        if _DEBUG_LOG:
+            try: log_rate("AFTER", sm2_obj, quality, card)
+            except Exception: pass
 
         # ── Persist review timestamp in metadata ──────────────────────────────
         # Stamped on every rating so "when was this last reviewed?" is always

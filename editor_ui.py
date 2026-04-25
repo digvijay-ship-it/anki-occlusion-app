@@ -315,10 +315,19 @@ class OcclusionCanvas(QWidget):
         return QPointF(p.x() * inv, p.y() * inv)
 
     def _resize_canvas(self):
-        """Resize the widget to match the current logical canvas size."""
+        """Resize the widget to match the current logical canvas size.
+        Canvas is always at least as large as the viewport so ink strokes
+        can be drawn in the grey area outside the image/PDF.
+        """
         w, h = self._canvas_wh()
         w = max(int(w * self._scale), 1)
         h = max(int(h * self._scale), 1)
+        # Extend to fill viewport so grey area is also drawable
+        sc = self._scroll_area()
+        if sc is not None:
+            vp = sc.viewport()
+            w = max(w, vp.width())
+            h = max(h, vp.height())
         self.setMinimumSize(w, h)
         self.resize(w, h)
 

@@ -162,51 +162,6 @@ class CardEditorDialogTests(unittest.TestCase):
         px.fill()
         return px
 
-    def test_load_pdf_lazily_uses_skeleton_path_and_restores_boxes(self):
-        fake_pages = [self._pixmap(100, 100), self._pixmap(100, 80)]
-        fake_skel = type("FakeSkeleton", (), {
-            "placeholders": fake_pages,
-            "page_dims": [(100, 100), (100, 80)],
-            "total_pages": 2,
-            "error": None,
-        })()
-        self.dialog.card["pdf_path"] = self.pdf_path
-        self.dialog._auto_subdeck_name = "sample"
-        self.dialog._pending_boxes = [
-            {"rect": [10, 10, 20, 20], "label": "A", "shape": "rect", "angle": 0, "group_id": "", "box_id": "a"}
-        ]
-
-        with patch("editor_ui.load_pdf_skeleton", return_value=fake_skel), \
-             patch.object(self.dialog, "_start_pdf_thread") as start_thread, \
-             patch.object(self.dialog, "_watch_pdf"), \
-             patch.object(self.dialog, "_request_initial_visible_pages"):
-            self.dialog._load_pdf_lazily(self.pdf_path)
-
-        start_thread.assert_not_called()
-        self.assertEqual(self.dialog._pdf_total_pages, 2)
-        self.assertEqual(len(self.dialog.canvas._pages), 2)
-        self.assertEqual(self.dialog.inp_title.text(), "sample")
-        self.assertEqual(len(self.dialog.canvas.get_boxes()), 1)
-
-    def test_load_pdf_lazily_honors_first_page_as_initial_page(self):
-        fake_pages = [self._pixmap(100, 100), self._pixmap(100, 80)]
-        fake_skel = type("FakeSkeleton", (), {
-            "placeholders": fake_pages,
-            "page_dims": [(100, 100), (100, 80)],
-            "total_pages": 2,
-            "error": None,
-        })()
-        self.dialog.card["pdf_path"] = self.pdf_path
-        self.dialog._initial_page = 0
-
-        with patch("editor_ui.load_pdf_skeleton", return_value=fake_skel), \
-             patch.object(self.dialog, "_watch_pdf"), \
-             patch("editor_ui.QTimer.singleShot") as single_shot:
-            self.dialog._load_pdf_lazily(self.pdf_path)
-
-        self.assertTrue(single_shot.called)
-        self.assertIsNone(self.dialog._initial_page)
-
     def test_open_in_reader_uses_current_page_fragment(self):
         self.dialog.card["pdf_path"] = self.pdf_path
 

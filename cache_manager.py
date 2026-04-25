@@ -126,7 +126,7 @@ class LRUPageCache:
             if not os.path.exists(fpath):   # already saved → skip
                 pixmap.save(fpath, "PNG")
         except Exception as e:
-            print
+            print(f"[cache][_save_to_disk] ⚠ failed to save p.{page_num+1} → {e}")
 
     def _load_from_disk(self, path: str, page_num: int):
         """Try to load a QPixmap from disk. Returns None on miss."""

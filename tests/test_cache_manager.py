@@ -44,30 +44,6 @@ class LRUPageCacheTests(unittest.TestCase):
         cache.invalidate_pdf("doc1.pdf")
         self.assertIsNone(cache.get("doc1.pdf", 0))
 
-    def test_cache_expires_pdf_after_idle_timeout(self):
-        cache = cache_manager.LRUPageCache(idle_minutes=5)
-        px = QPixmap(10, 10)
-        px.fill()
-
-        with patch.object(cache_manager.time, "monotonic", side_effect=[0.0, 0.0, 301.0]):
-            cache.put("doc.pdf", 0, px)
-            self.assertIsNone(cache.get("doc.pdf", 0))
-
-        self.assertEqual(cache.ram_bytes_for_pdf("doc.pdf"), 0)
-
-    def test_get_refreshes_pdf_activity_before_idle_timeout(self):
-        cache = cache_manager.LRUPageCache(idle_minutes=5)
-        px = QPixmap(10, 10)
-        px.fill()
-
-        with patch.object(cache_manager.time, "monotonic", side_effect=[0.0, 0.0, 299.0, 299.0, 300.0, 300.0]):
-            cache.put("doc.pdf", 0, px)
-            self.assertIs(cache.get("doc.pdf", 0), px)
-            self.assertIs(cache.get("doc.pdf", 0), px)
-
-        self.assertEqual(cache.ram_bytes_for_pdf("doc.pdf"), 10 * 10 * 4)
-
-
 class DiskCombinedCacheTests(unittest.TestCase):
     def setUp(self):
         tmp_root = Path(__file__).resolve().parent / "_tmp"

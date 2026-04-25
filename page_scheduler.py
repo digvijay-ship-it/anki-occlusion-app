@@ -273,7 +273,7 @@ class PageScheduler(QObject):
         if self._worker_running():
             if self._worker_kind == "background":
                 # Preempt background render for visible pages
-                print(f"[SCHED][visible] preempting background worker")
+                print("[SCHED][visible] preempting background worker")
                 self._stop_worker()
                 self._start_worker(needed, kind="visible")
             else:

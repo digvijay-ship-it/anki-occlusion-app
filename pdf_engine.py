@@ -388,13 +388,13 @@ class PdfOnDemandThread(QThread):
 
     def stop(self):
         self._stop_flag = True
-        print(f"[DEBUG][on_demand] stop() called - will exit after current page")
+        print("[DEBUG][on_demand] stop() called - will exit after current page")
 
     def run(self):
         t_thread_start = time.perf_counter()
         fname = os.path.basename(self._path)
 
-        print(f"[DEBUG][on_demand] -> Thread started")
+        print("[DEBUG][on_demand] -> Thread started")
         print(f"[DEBUG][on_demand]   file      : {fname}")
         print(f"[DEBUG][on_demand]   pages     : {self._page_nums}")
         print(f"[DEBUG][on_demand]   zoom      : {self._zoom}")
@@ -412,7 +412,7 @@ class PdfOnDemandThread(QThread):
             return
 
         if not self._page_nums:
-            print(f"[DEBUG][on_demand] warning: page_nums is empty - nothing to render")
+            print("[DEBUG][on_demand] warning: page_nums is empty - nothing to render")
             self.batch_done.emit([])
             return
 
@@ -431,7 +431,7 @@ class PdfOnDemandThread(QThread):
             rendered     = []
 
             print(f"[DEBUG][on_demand]   doc_pages : {total_in_doc}")
-            print(f"[DEBUG][on_demand] ------------------------------------------------")
+            print("[DEBUG][on_demand] ------------------------------------------------")
 
             for page_num in self._page_nums:
                 if self._stop_flag:
@@ -478,7 +478,7 @@ class PdfOnDemandThread(QThread):
             doc.close()
 
             t_total_ms = (time.perf_counter() - t_thread_start) * 1000
-            print(f"[DEBUG][on_demand] ------------------------------------------------")
+            print("[DEBUG][on_demand] ------------------------------------------------")
             print(f"[DEBUG][on_demand] batch_done  rendered={len(rendered)}/{len(self._page_nums)}  total_time={t_total_ms:.1f}ms")
 
             self.batch_done.emit(rendered)
