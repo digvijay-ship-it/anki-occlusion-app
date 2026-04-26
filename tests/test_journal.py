@@ -20,13 +20,13 @@ class JournalDialogFocusTimeTests(unittest.TestCase):
             "2026-04-23": {"focus_seconds": 0},     # 0s (should hide)
         }
         
-        with patch('journal.date') as mock_date:
+        with patch('journal.date') as mock_date, patch('os.path.exists', return_value=False):
             # Set today's date so it loads 2026-04-26 by default
             mock_date.today.return_value.isoformat.return_value = "2026-04-26"
             
             dialog = JournalDialog()
             
-            # Initially it should load 2026-04-26
+            # Initially it should load 2026-04-26 (today). It will show >0 or 0s
             self.assertFalse(dialog._lbl_focus.isHidden())
             self.assertEqual(dialog._lbl_focus.text(), "⏱ 1h 01m")
             
@@ -40,7 +40,7 @@ class JournalDialogFocusTimeTests(unittest.TestCase):
             self.assertFalse(dialog._lbl_focus.isHidden())
             self.assertEqual(dialog._lbl_focus.text(), "⏱ 45s")
             
-            # Switch to 2026-04-23 (0 seconds)
+            # Switch to 2026-04-23 (0 seconds, NOT today)
             dialog._load_date("2026-04-23")
             self.assertTrue(dialog._lbl_focus.isHidden())
             

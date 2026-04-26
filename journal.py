@@ -781,7 +781,21 @@ class JournalDialog(QDialog):
             entry = {"strokes": entry, "texts": []}
 
         focus_secs = entry.get("focus_seconds", 0) if isinstance(entry, dict) else 0
-        if focus_secs > 0:
+        
+        # Override with live timer state if viewing today
+        if date_str == date.today().isoformat():
+            state_file = os.path.join(os.path.expanduser("~"), "anki_timer_state.json")
+            if os.path.exists(state_file):
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        timer_data = json.load(f)
+                    if timer_data.get("date") == date_str:
+                        focus_secs = max(focus_secs, int(timer_data.get("seconds", 0)))
+                except Exception:
+                    pass
+
+        # Show 0s for today so the UI element is always discoverable
+        if focus_secs > 0 or date_str == date.today().isoformat():
             h, rem = divmod(focus_secs, 3600)
             m, s = divmod(rem, 60)
             if h:
