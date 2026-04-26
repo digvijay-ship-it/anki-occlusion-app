@@ -46,6 +46,29 @@ class DirtyStoreTests(unittest.TestCase):
         self.assertFalse(store.is_dirty())
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
 
+    def test_save_if_dirty_uses_snapshot_to_prevent_race_conditions(self):
+        store = data_manager.DirtyStore()
+        payload = {"decks": [{"_id": 1, "name": "Biology"}]}
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            import copy
+            store.set(copy.deepcopy(payload))
+
+            original_write = store._write_to_disk
+            def side_effect_write(data_snapshot):
+                # Modify the in-memory data during the write to simulate a race condition
+                store._data["decks"][0]["name"] = "Hacked"
+                original_write(data_snapshot)
+
+            with patch.object(store, "_write_to_disk", side_effect=side_effect_write):
+                saved = store.save_if_dirty()
+
+        self.assertTrue(saved)
+        # Disk should have the original payload because a deep copy was used
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
+        # The in-memory data should be modified
+        self.assertEqual(store._data["decks"][0]["name"], "Hacked")
+
     def test_save_force_writes_even_without_dirty_flag(self):
         store = data_manager.DirtyStore()
         payload = {"decks": [{"_id": 2, "name": "Chemistry"}]}
@@ -53,6 +76,25 @@ class DirtyStoreTests(unittest.TestCase):
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
             store._data = payload
             store.save_force()
+
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
+
+    def test_save_force_uses_snapshot_to_prevent_race_conditions(self):
+        store = data_manager.DirtyStore()
+        payload = {"decks": [{"_id": 2, "name": "Chemistry"}]}
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            import copy
+            store._data = copy.deepcopy(payload)
+            store._dirty = True
+
+            original_write = store._write_to_disk
+            def side_effect_write(data_snapshot):
+                store._data["decks"][0]["name"] = "Hacked"
+                original_write(data_snapshot)
+
+            with patch.object(store, "_write_to_disk", side_effect=side_effect_write):
+                store.save_force()
 
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
 

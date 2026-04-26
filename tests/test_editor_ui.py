@@ -90,6 +90,20 @@ class OcclusionCanvasTests(unittest.TestCase):
 
         self.assertEqual([box["page_num"] for box in boxes], [0, 1])
 
+    def test_resize_canvas_extends_to_viewport_if_scroll_area_exists(self):
+        mock_viewport = type("MockViewport", (), {"width": lambda self: 500, "height": lambda self: 600})()
+        mock_scroll_area = type("MockScrollArea", (), {"viewport": lambda self: mock_viewport})()
+
+        with patch.object(self.canvas, "_scroll_area", return_value=mock_scroll_area):
+            # Load a small 100x100 pixmap
+            self.canvas.load_pixmap(self._pixmap(100, 100))
+            
+            # The canvas minimum size should be 500x600 based on the viewport mock
+            self.assertEqual(self.canvas.minimumWidth(), 500)
+            self.assertEqual(self.canvas.minimumHeight(), 600)
+            self.assertEqual(self.canvas.width(), 500)
+            self.assertEqual(self.canvas.height(), 600)
+
     def test_group_ungroup_undo_and_redo_restore_box_state(self):
         self.canvas._debug_page_num = False
         self.canvas.load_pixmap(self._pixmap(100, 100))
