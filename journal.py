@@ -561,12 +561,17 @@ class JournalDialog(QDialog):
         self._btn_date.setToolTip("Click to pick a date")
         self._btn_date.clicked.connect(self._open_date_picker)
 
+        self._lbl_focus = QLabel("")
+        self._lbl_focus.setStyleSheet(f"color:{C_SUBTEXT};font-size:13px;font-weight:bold;padding-left:12px;padding-right:12px;")
+        self._lbl_focus.hide()
+
         btn_today = QPushButton("Today")
         btn_today.setFixedHeight(36)
         btn_today.clicked.connect(self._go_today)
 
         tl.addWidget(self._btn_prev)
         tl.addWidget(self._btn_date)
+        tl.addWidget(self._lbl_focus)
         tl.addWidget(self._btn_next)
         tl.addSpacing(4)
         tl.addWidget(btn_today)
@@ -774,6 +779,21 @@ class JournalDialog(QDialog):
         # Backward compat — old format was a plain list of strokes
         if isinstance(entry, list):
             entry = {"strokes": entry, "texts": []}
+
+        focus_secs = entry.get("focus_seconds", 0) if isinstance(entry, dict) else 0
+        if focus_secs > 0:
+            h, rem = divmod(focus_secs, 3600)
+            m, s = divmod(rem, 60)
+            if h:
+                self._lbl_focus.setText(f"⏱ {h}h {m:02d}m")
+            elif m:
+                self._lbl_focus.setText(f"⏱ {m}m")
+            else:
+                self._lbl_focus.setText(f"⏱ {s}s")
+            self._lbl_focus.show()
+        else:
+            self._lbl_focus.hide()
+
         strokes = _strokes_from_json(entry.get("strokes", []))
         texts   = _texts_from_json(entry.get("texts", []))
         self._canvas.set_content(strokes, texts)
