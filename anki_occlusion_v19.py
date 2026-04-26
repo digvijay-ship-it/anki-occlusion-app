@@ -68,6 +68,13 @@ try:
 except ImportError:
     _JOURNAL_AVAILABLE = False
 
+# Session Timer — safe import
+try:
+    from session_timer import SessionTimer
+    _TIMER_AVAILABLE = True
+except ImportError:
+    _TIMER_AVAILABLE = False
+
 from pdf_engine import (
     PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
     pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
@@ -324,6 +331,14 @@ class ReviewScreen(QWidget):
         # "Reset" = restore SM-2 fields to pre-rating values, not full history wipe.
         self._review_undo_stack = []   # list of state snapshots
         self._review_redo_stack = []   # cleared on new rating, filled on undo
+
+        # ── Session Timer ─────────────────────────────────────────────────────
+        if _TIMER_AVAILABLE:
+            self._stimer = SessionTimer(self)
+            self._stimer.start()
+        else:
+            self._stimer = None
+
         self._setup_ui()
         for w in (self, self.canvas, self._canvas_scroll.viewport(), self._queue_list.viewport()):
             try:
@@ -355,6 +370,11 @@ class ReviewScreen(QWidget):
 
         if hasattr(self, '_stop_watch'):
             self._stop_watch()
+
+        # Stop timer and write focus time to today's journal
+        if self._stimer:
+            self._stimer.stop()
+            self._stimer.flush_to_journal()
 
         super().closeEvent(e)
 
@@ -846,6 +866,31 @@ class ReviewScreen(QWidget):
         qp_l = QVBoxLayout(queue_panel)
         qp_l.setContentsMargins(6, 8, 6, 8)
         qp_l.setSpacing(4)
+
+        # ── Timer block — sits above the queue list ───────────────────────
+        if self._stimer:
+            timer_frame = QFrame()
+            timer_frame.setStyleSheet(
+                f"QFrame{{background:{C_CARD};"
+                f"border-radius:8px;"
+                f"border:1px solid {C_BORDER};}}")
+            tf_l = QVBoxLayout(timer_frame)
+            tf_l.setContentsMargins(8, 6, 8, 6)
+            tf_l.setSpacing(2)
+            tf_top = QLabel("⏱  Today's focus")
+            tf_top.setStyleSheet(
+                f"color:{C_SUBTEXT};font-size:10px;"
+                f"font-weight:bold;background:transparent;border:none;")
+            self._stimer.label.setStyleSheet(
+                f"background:transparent;color:#CDD6F4;"
+                f"font-size:18px;font-weight:bold;"
+                f"font-family:'Segoe UI Mono','Courier New',monospace;"
+                f"border:none;")
+            tf_l.addWidget(tf_top)
+            tf_l.addWidget(self._stimer.label)
+            qp_l.addWidget(timer_frame)
+            qp_l.addSpacing(6)
+
         qp_hdr = QLabel("📋  Queue")
         qp_hdr.setStyleSheet(
             f"color:{C_SUBTEXT};font-size:11px;font-weight:bold;"
@@ -2277,7 +2322,7 @@ class ReviewScreen(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Session Complete")
-        dlg.setFixedSize(340, 320)
+        dlg.setFixedSize(340, 345)
         dlg.setStyleSheet(f"QDialog{{background:{C_BG};}}")
         L = QVBoxLayout(dlg)
         L.setContentsMargins(24, 24, 24, 24)
@@ -2331,6 +2376,9 @@ class ReviewScreen(QWidget):
         L.addWidget(_stat_row("Retention", f"{retention}%",
             C_GREEN if retention >= 80 else C_YELLOW if retention >= 60 else C_RED))
         L.addWidget(_stat_row("Total reviewed", self._done, C_TEXT))
+
+        if self._stimer:
+            L.addWidget(_stat_row("⏱  Time spent", self._stimer.elapsed_str(), C_SUBTEXT))
 
         btn = QPushButton("Close  ✓")
         btn.setStyleSheet(
