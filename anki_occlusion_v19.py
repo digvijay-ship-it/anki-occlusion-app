@@ -61,6 +61,13 @@ try:
 except ImportError:
     _DEBUG_LOG = False
 
+# Daily Journal — safe import
+try:
+    from journal import JournalDialog
+    _JOURNAL_AVAILABLE = True
+except ImportError:
+    _JOURNAL_AVAILABLE = False
+
 from pdf_engine import (
     PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
     pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
@@ -3790,10 +3797,12 @@ class HomeScreen(QWidget):
                 f"QPushButton:hover{{background:{C_CARD};color:{C_TEXT};}}")
             return b
 
-        btn_help  = _topbtn("❓ Help",  "Show quick-start guide")
-        btn_about = _topbtn("ℹ About", "About Anki Occlusion")
+        btn_help    = _topbtn("❓ Help",    "Show quick-start guide")
+        btn_about   = _topbtn("ℹ About",   "About Anki Occlusion")
+        btn_journal = _topbtn("📓 Journal", "Open Daily Journal")
         btn_help.clicked.connect(self._show_help)
         btn_about.clicked.connect(self._show_about)
+        btn_journal.clicked.connect(self._show_journal)
 
         def _fontbtn(text, tip):
             b = QPushButton(text)
@@ -3819,6 +3828,7 @@ class HomeScreen(QWidget):
         tl.addWidget(btn_fr)
         tl.addWidget(btn_fi)
         tl.addSpacing(4)
+        tl.addWidget(btn_journal)
         tl.addWidget(btn_help)
         tl.addWidget(btn_about)
         self._top_bar = top
@@ -3985,6 +3995,14 @@ class HomeScreen(QWidget):
             if p:
                 return p
         return None
+
+    def _show_journal(self):
+        if _JOURNAL_AVAILABLE:
+            JournalDialog(self).exec_()
+        else:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Journal",
+                "journal.py not found!\nPlace journal.py next to anki_occlusion_v19.py")
 
     def _show_about(self):
         AboutDialog(self).exec_()
