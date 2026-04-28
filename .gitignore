@@ -62,3 +62,12 @@ temp/
 swift_render/
 benchmarks/
 debug_log.txt
+
+# Refactoring and temporary files
+README copy.md
+_refactoring_scripts/
+test.html
+tests/_tmp_files/
+*.new
+*.bak
+*.orig

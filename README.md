@@ -52,6 +52,34 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 
 ---
 
+## 📂 Project Structure
+
+Following the recent refactoring, the application is highly modularised:
+
+### Main Entry & Core Engines (Root)
+- `anki_occlusion_v19.py`: The main entry point that boots up the app.
+- `editor_ui.py`: Shared editor UI elements (`ToolBar`, `MaskPanel`).
+- `pdf_engine.py`: Handles reading and rendering PDFs via `pymupdf`.
+- `sm2_engine.py`: The core Spaced Repetition (SM-2) scheduling algorithm.
+- `page_scheduler.py`: Logic for scheduling specific pages within documents.
+- `sm2_debug_log.py`: Debugging utilities for the scheduling algorithm.
+
+### Data & Performance Management (Root)
+- `data_manager.py`: Handles saving/loading data to disk safely (Atomic writes).
+- `models.py`: Foundational data structures (`Deck`, `Card`, `Box`).
+- `cache_manager.py`: Manages LRU and disk caching for performance.
+- `thread_manager.py` / `session_timer.py`: Background tasks and study statistics.
+
+### Theming & Assets (Root)
+- `theme_manager.py` / `dojo_assets.py`: Application-wide stylesheets and embedded assets.
+
+### Extracted Modules
+- **`ui/`**: All visual components (`home_screen.py`, `deck_tree.py`, `deck_view.py`, `editor_dialog.py`, `review_screen.py`, `journal.py`).
+- **`ui/canvas/`**: The core drawing canvas, broken into mixins (`core.py`, `state.py`, `renderer.py`, `interaction.py`).
+- **`services/`**: Background business logic (`review_manager.py`, `pdf_watcher.py`, `journal_manager.py`).
+
+---
+
 ## 🚀 Installation
 
 **Requirements:** Python 3.8+

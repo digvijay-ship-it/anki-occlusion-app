@@ -12,12 +12,12 @@ from PyQt5.QtWidgets import QApplication
 
 from cache_manager import MASK_REGISTRY
 from editor_ui import (
-    CardEditorDialog,
     PAGE_GAP,
     OcclusionCanvas,
     _point_in_rotated_box,
     _point_in_rotated_ellipse,
 )
+from ui.editor_dialog import CardEditorDialog
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -180,7 +180,7 @@ class CardEditorDialogTests(unittest.TestCase):
         self.dialog.card["pdf_path"] = self.pdf_path
 
         with patch.object(self.dialog, "_current_visible_page", return_value=3), \
-             patch("editor_ui.QDesktopServices.openUrl", return_value=True) as open_url:
+             patch("ui.editor_dialog.QDesktopServices.openUrl", return_value=True) as open_url:
             self.dialog._open_in_reader()
 
         url = open_url.call_args[0][0]

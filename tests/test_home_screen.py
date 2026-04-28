@@ -15,8 +15,8 @@ class HomeScreenJournalTests(unittest.TestCase):
     def setUp(self):
         self.home_screen = HomeScreen.__new__(HomeScreen)
 
-    @patch('anki_occlusion_v19.JournalDialog')
-    @patch('anki_occlusion_v19._JOURNAL_AVAILABLE', True)
+    @patch('ui.home_screen.JournalDialog')
+    @patch('ui.home_screen._JOURNAL_AVAILABLE', True)
     def test_show_journal_opens_dialog_when_available(self, mock_journal_dialog_class):
         # Setup mock dialog instance
         mock_dialog_instance = MagicMock()
@@ -30,7 +30,7 @@ class HomeScreenJournalTests(unittest.TestCase):
         mock_dialog_instance.exec_.assert_called_once()
 
     @patch('PyQt5.QtWidgets.QMessageBox.warning')
-    @patch('anki_occlusion_v19._JOURNAL_AVAILABLE', False)
+    @patch('ui.home_screen._JOURNAL_AVAILABLE', False)
     def test_show_journal_shows_warning_when_not_available(self, mock_warning):
         # Call the method
         self.home_screen._show_journal()

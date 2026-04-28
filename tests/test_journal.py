@@ -7,10 +7,10 @@ from PyQt5.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication([])
 
-from journal import JournalDialog
+from ui.journal import JournalDialog
 
 class JournalDialogFocusTimeTests(unittest.TestCase):
-    @patch('journal._load_journal')
+    @patch('ui.journal._load_journal')
     def test_focus_time_displays_correctly(self, mock_load_journal):
         # Mock the journal data with different focus times
         mock_load_journal.return_value = {
@@ -20,7 +20,7 @@ class JournalDialogFocusTimeTests(unittest.TestCase):
             "2026-04-23": {"focus_seconds": 0},     # 0s (should hide)
         }
         
-        with patch('journal.date') as mock_date, patch('os.path.exists', return_value=False):
+        with patch('ui.journal.date') as mock_date, patch('os.path.exists', return_value=False):
             # Set today's date so it loads 2026-04-26 by default
             mock_date.today.return_value.isoformat.return_value = "2026-04-26"
             
