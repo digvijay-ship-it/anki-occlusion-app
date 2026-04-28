@@ -181,6 +181,13 @@ SS = _build_ss()
 from .deck_tree import DeckTree, CacheWidget
 from .deck_view import DeckView
 
+# Math Trainer — safe import
+try:
+    from .math_trainer import MathTrainerPage
+    _MATH_AVAILABLE = True
+except ImportError:
+    _MATH_AVAILABLE = False
+
 #  HOME SCREEN
 # ══════════════════════════════════════════════════════════════
 def make_app_icon() -> QIcon:
@@ -485,9 +492,11 @@ class HomeScreen(QWidget):
         btn_help    = _topbtn("❓ Help",    "Show quick-start guide")
         btn_about   = _topbtn("ℹ About",   "About Anki Occlusion")
         btn_journal = _topbtn("📓 Journal", "Open Daily Journal")
+        btn_math    = _topbtn("🧮 Math Trainer", "Practice Tables, Squares & Cubes")
         btn_help.clicked.connect(self._show_help)
         btn_about.clicked.connect(self._show_about)
         btn_journal.clicked.connect(self._show_journal)
+        btn_math.clicked.connect(self._show_math_trainer)
         # ── Theme Toggle ──────────────────────────────────────────────────────
         self._current_theme = "classic"  # start state
 
@@ -526,6 +535,7 @@ class HomeScreen(QWidget):
         tl.addWidget(btn_fi)
         tl.addSpacing(4)
         tl.addWidget(self._btn_theme)
+        tl.addWidget(btn_math)
         tl.addWidget(btn_journal)
         tl.addWidget(btn_help)
         tl.addWidget(btn_about)
@@ -701,6 +711,45 @@ class HomeScreen(QWidget):
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Journal",
                 "journal.py not found!\nPlace journal.py next to anki_occlusion_v19.py")
+
+    def _show_math_trainer(self):
+        # ── Single-instance guard ─────────────────────────────────────────────
+        if getattr(self, "_math_trainer", None) is not None:
+            return   # already open — do nothing
+
+        if not _MATH_AVAILABLE:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Math Trainer",
+                "math_trainer.py not found!\n\nPlace math_trainer.py inside the ui/ folder.")
+            return
+
+        split = self._get_splitter()
+        if split is None:
+            return
+
+        mt = MathTrainerPage(parent=self)
+        mt.closed.connect(self._hide_math_trainer)
+        self._math_trainer = mt
+
+        # Swap DeckView → MathTrainerPage (index 1 in splitter)
+        self._pre_math_sizes = split.sizes()
+        split.replaceWidget(1, mt)
+        mt.show()
+        split.setSizes([split.sizes()[0], split.width(), 0])
+
+    def _hide_math_trainer(self):
+        split = self._get_splitter()
+        if split is None:
+            return
+        mt = getattr(self, "_math_trainer", None)
+        if mt:
+            split.replaceWidget(1, self.deck_view)
+            mt.setParent(None)
+            mt.deleteLater()
+            self._math_trainer = None
+        sizes = getattr(self, "_pre_math_sizes", [340, 760, 220])
+        split.setSizes(sizes)
+        self.refresh()
 
     def _show_about(self):
         AboutDialog(self).exec_()
