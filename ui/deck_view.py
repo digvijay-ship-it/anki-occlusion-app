@@ -176,6 +176,133 @@ QMenu::item:selected{{background:{C_ACCENT};}}
 SS = _build_ss()
 
 
+class DojoStatsCard(QFrame):
+    def __init__(self, title, subtitle, color_hex, parent=None):
+        super().__init__(parent)
+        self.setObjectName("dojo_stats_card")
+        self.setFixedHeight(100)
+        self.setStyleSheet(f"""
+            QFrame#dojo_stats_card {{
+                background: #181825;
+                border-radius: 8px;
+                border: 1px solid #1E1E2E;
+            }}
+        """)
+        l = QHBoxLayout(self)
+        l.setContentsMargins(20, 16, 20, 16)
+        l.setSpacing(16)
+        
+        self.icon_lbl = QLabel("★")
+        self.icon_lbl.setStyleSheet(f"color: {color_hex}; font-size: 32px;")
+        self.icon_lbl.setAlignment(Qt.AlignCenter)
+        l.addWidget(self.icon_lbl)
+        
+        text_l = QVBoxLayout()
+        text_l.setSpacing(2)
+        text_l.setAlignment(Qt.AlignVCenter)
+        
+        self.val_lbl = QLabel("0")
+        self.val_lbl.setStyleSheet(f"color: {color_hex}; font-size: 32px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: -1px;")
+        
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet(f"color: #A6ADC8; font-size: 10px; font-weight: 800; font-family: 'Orbitron'; letter-spacing: 1px;")
+        
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setStyleSheet(f"color: #5F627D; font-size: 11px;")
+        
+        text_l.addWidget(self.val_lbl)
+        text_l.addWidget(title_lbl)
+        text_l.addWidget(sub_lbl)
+        l.addLayout(text_l)
+        l.addStretch()
+
+    def set_value(self, val):
+        self.val_lbl.setText(str(val))
+
+class DojoMissionBanner(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("dojo_mission_banner")
+        self.setMinimumHeight(140)
+        self.setStyleSheet(f"""
+            QFrame#dojo_mission_banner {{
+                background: #181825;
+                border-radius: 8px;
+                border: 1px solid #1E1E2E;
+            }}
+        """)
+        l = QHBoxLayout(self)
+        l.setContentsMargins(24, 20, 24, 20)
+        
+        left_l = QVBoxLayout()
+        left_l.setSpacing(6)
+        
+        title = QLabel("⚔ TRAINING MISSION")
+        title.setStyleSheet("color: #BD93F9; font-size: 12px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+        
+        desc = QLabel("Continue your training and defeat the due cards!")
+        desc.setStyleSheet("color: #CDD6F4; font-size: 14px;")
+        
+        quote = QLabel("> Cowabunga! 🐢_")
+        quote.setStyleSheet("color: #50FA7B; font-size: 12px; font-weight: bold; font-family: monospace;")
+        
+        left_l.addWidget(title)
+        left_l.addWidget(desc)
+        left_l.addWidget(quote)
+        left_l.addStretch()
+        l.addLayout(left_l)
+        
+        l.addStretch()
+        
+        right_l = QVBoxLayout()
+        right_l.setSpacing(8)
+        right_l.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        
+        self.btn_train = QPushButton("▶ START TRAINING\nREVIEW DUE CARDS")
+        self.btn_train.setStyleSheet("""
+            QPushButton {
+                background: #50FA7B;
+                color: #0F0F17;
+                border-radius: 6px;
+                font-weight: 900;
+                font-family: 'Orbitron';
+                font-size: 14px;
+                min-height: 52px;
+                padding: 0px 32px;
+                text-align: center;
+            }
+            QPushButton:hover {
+                background: #72FF4F;
+            }
+        """)
+        
+        self.btn_all = QPushButton("  TRAIN EVERYTHING — ALL CARDS")
+        from dojo_assets import DojoAssets
+        self.btn_all.setIcon(QIcon(DojoAssets.get().get_ui_icon(2, 32)))
+        self.btn_all.setIconSize(QSize(20, 20))
+        self.btn_all.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #50FA7B;
+                border: 1px solid #50FA7B;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 900;
+                font-family: 'Orbitron';
+                letter-spacing: 1px;
+                min-height: 38px;
+                padding: 0px 20px;
+                text-align: center;
+            }
+            QPushButton:hover {
+                background: rgba(80, 250, 123, 0.1);
+            }
+        """)
+        
+        right_l.addWidget(self.btn_train)
+        right_l.addWidget(self.btn_all)
+        l.addLayout(right_l)
+
 
 #  DECK VIEW
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -195,10 +322,28 @@ class DeckView(QWidget):
         L.setContentsMargins(12, 12, 12, 12)
         L.setSpacing(10)
 
-        hdr = QHBoxLayout()
+        self.hdr_w = QFrame()
+        self.hdr_w.setObjectName("deck_header")
+        hdr = QHBoxLayout(self.hdr_w)
+        hdr.setContentsMargins(16, 16, 16, 16)
+        hdr.setAlignment(Qt.AlignVCenter)
+
+        self.lbl_deck_icon = QLabel()
+        self.lbl_deck_icon.hide()
+        hdr.addWidget(self.lbl_deck_icon)
+        
+        title_l = QVBoxLayout()
+        title_l.setSpacing(4)
+        title_l.setAlignment(Qt.AlignVCenter)
         self.lbl_deck = QLabel("← Select a deck")
         self.lbl_deck.setFont(QFont("Segoe UI", 15, QFont.Bold))
-        hdr.addWidget(self.lbl_deck)
+        self.lbl_deck_sub = QLabel("")
+        self.lbl_deck_sub.setStyleSheet("color: #5F627D; font-size: 11px; font-weight: bold; font-family: 'Orbitron'; letter-spacing: 1px;")
+        self.lbl_deck_sub.hide()
+        title_l.addWidget(self.lbl_deck)
+        title_l.addWidget(self.lbl_deck_sub)
+        hdr.addLayout(title_l)
+        
         hdr.addStretch()
         self.btn_add = QPushButton("＋ Add Card")
         self.btn_add.clicked.connect(self._add_card)
@@ -211,11 +356,45 @@ class DeckView(QWidget):
         hdr.addWidget(self.btn_add)
         hdr.addWidget(self.btn_due)
         hdr.addWidget(self.btn_all)
-        L.addLayout(hdr)
+        L.addWidget(self.hdr_w)
 
         self.lbl_stats = QLabel("")
         self.lbl_stats.setStyleSheet(f"color:{C_SUBTEXT};")
         L.addWidget(self.lbl_stats)
+
+        # --- Container for Stats & Banner ---
+        self.dojo_container = QFrame()
+        self.dojo_container.setObjectName("dojo_container")
+        self.dojo_container.setStyleSheet("""
+            QFrame#dojo_container {
+                background: #0F0F17;
+                border-radius: 12px;
+                border: 1px solid #1E1E2E;
+            }
+        """)
+        self.dojo_container.hide()
+        dc_layout = QVBoxLayout(self.dojo_container)
+        dc_layout.setContentsMargins(16, 16, 16, 16)
+        dc_layout.setSpacing(16)
+
+        self.dojo_stats_w = QWidget()
+        sl = QHBoxLayout(self.dojo_stats_w)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(16)
+        self.stat_missions = DojoStatsCard("REMAINING MISSIONS", "Cards due for review", "#FF5555")
+        self.stat_scrolls = DojoStatsCard("NEW TECHNIQUES", "Total active scrolls", "#BD93F9")
+        self.stat_battles = DojoStatsCard("BATTLES WON", "Reviews completed", "#50FA7B")
+        sl.addWidget(self.stat_missions)
+        sl.addWidget(self.stat_scrolls)
+        sl.addWidget(self.stat_battles)
+        dc_layout.addWidget(self.dojo_stats_w)
+
+        self.dojo_banner = DojoMissionBanner()
+        self.dojo_banner.btn_train.clicked.connect(self._review_due)
+        self.dojo_banner.btn_all.clicked.connect(self._review_all)
+        dc_layout.addWidget(self.dojo_banner)
+
+        L.addWidget(self.dojo_container)
 
         self.card_list = QListWidget()
         self.card_list.setIconSize(QSize(64, 48))
@@ -238,6 +417,60 @@ class DeckView(QWidget):
         bot.addWidget(bd)
         bot.addStretch()
         L.addLayout(bot)
+
+    def set_theme(self, theme):
+        from dojo_assets import DojoAssets
+        self._theme = theme
+        if theme == "dojo":
+            self.lbl_deck_sub.show()
+            self.lbl_deck_icon.show()
+            self.dojo_container.show()
+            self.dojo_stats_w.show()
+            self.dojo_banner.show()
+            self.lbl_stats.hide()
+            
+            self.btn_due.hide()
+            self.btn_all.hide()
+            
+            self.lbl_deck.setStyleSheet("color: #72FF4F; font-size: 24px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+            
+            deck_icon_px = DojoAssets.get().get_ui_icon(0, 48)
+            self.lbl_deck_icon.setPixmap(deck_icon_px.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+            self.btn_add.setText(" FORGE SCROLL")
+            self.btn_add.setIcon(QIcon(DojoAssets.get().get_ui_icon(0, 32)))
+            self.btn_add.setIconSize(QSize(24, 24))
+            self.btn_add.setStyleSheet(f"QPushButton{{background:transparent;border:2px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:12px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
+            
+        else:
+            self.lbl_deck_sub.hide()
+            self.lbl_deck_icon.hide()
+            self.dojo_container.hide()
+            self.dojo_stats_w.hide()
+            self.dojo_banner.hide()
+            self.lbl_stats.show()
+            
+            self.btn_due.show()
+            self.btn_all.show()
+            
+            self.lbl_deck.setStyleSheet("")
+            self.lbl_deck.setFont(QFont("Segoe UI", 15, QFont.Bold))
+
+            self.btn_add.setText("＋ Add Card")
+            self.btn_add.setIcon(QIcon())
+            self.btn_add.setStyleSheet("")
+            
+            self.btn_all.setText("▶ Review")
+            self.btn_all.setIcon(QIcon())
+            self.btn_all.setStyleSheet("")
+            self.btn_all.setObjectName("success")
+            
+            self.btn_due.setText("🔴 Review Due")
+            self.btn_due.setIcon(QIcon())
+            self.btn_due.setStyleSheet("")
+            self.btn_due.setObjectName("danger")
+            
+        self._refresh()
 
     def _card_list_key_press(self, e):
         key = e.key()
@@ -394,6 +627,20 @@ class DeckView(QWidget):
         total_rev = sum(c.get("reviews", 0) for c in cards)
         self.lbl_stats.setText(
             f"Cards:{len(cards)}  🔴Due:{due_c}  Reviews:{total_rev}")
+        
+        self.lbl_deck_sub.setText(f"SCROLLS: {len(cards)} ❖ DUE: {due_c}")
+        self.stat_missions.set_value(due_c)
+        self.stat_scrolls.set_value(len(cards))
+        self.stat_battles.set_value(total_rev)
+
+        if not cards and getattr(self, '_theme', 'classic') == 'dojo':
+            # Empty state for Dojo mode
+            item = QListWidgetItem()
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setFont(QFont('Orbitron', 14, QFont.Bold))
+            item.setForeground(QBrush(QColor("#45475A")))
+            item.setText("\n\n★\n- SELECT A SCROLL TO BEGIN -\n")
+            self.card_list.addItem(item)
 
     def _add_card(self):
         if not self.deck:

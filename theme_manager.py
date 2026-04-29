@@ -100,9 +100,15 @@ def get_label(key, mode="dojo"):
 
 def build_stylesheet(mode="dojo", font_size=14):
     p = get_palette(mode)
+
     hf = p["header_font"]
     bf = p["body_font"]
-    
+
+    if mode == "dojo":
+        import ui.home_screen
+        hf = f"'{ui.home_screen.NARUTO_FONT_FAMILY}', {hf}"
+        bf = f"'{ui.home_screen.NARUTO_FONT_FAMILY}', {bf}"
+
     # UI Constants
     btn_radius = "0px" if mode == "dojo" else "6px"
     btn_border = "2px" if mode == "dojo" else "1px"
@@ -526,5 +532,45 @@ QStatusBar {{
     font-size: 8px;
     letter-spacing: 1px;
     padding-left: 10px;
+}}
+
+/* Scrollbars */
+QScrollBar:vertical {{
+    background: {p['C_BG']};
+    width: 8px;
+    margin: 0px;
+    border-left: 1px solid {p['C_BORDER']};
+}}
+QScrollBar::handle:vertical {{
+    background: {p['C_BORDER'] if mode == 'classic' else 'rgba(114, 255, 79, 0.3)'};
+    border-radius: 4px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {p['C_SUBTEXT'] if mode == 'classic' else 'rgba(114, 255, 79, 0.6)'};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: none;
+}}
+QScrollBar:horizontal {{
+    background: {p['C_BG']};
+    height: 8px;
+    margin: 0px;
+    border-top: 1px solid {p['C_BORDER']};
+}}
+QScrollBar::handle:horizontal {{
+    background: {p['C_BORDER'] if mode == 'classic' else 'rgba(114, 255, 79, 0.3)'};
+    border-radius: 4px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {p['C_SUBTEXT'] if mode == 'classic' else 'rgba(114, 255, 79, 0.6)'};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: none;
 }}
 """

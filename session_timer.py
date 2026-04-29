@@ -148,10 +148,14 @@ class SessionTimer:
 
     def __init__(self, parent=None):
         self._elapsed = _load_state()
+        self._session_elapsed = 0
         self._running = False
 
         self.label = QLabel(self._make_text(), parent)
         self.label.setToolTip("Time studied today  \u2022  resets at midnight")
+        
+        self.label_session = QLabel(self._fmt(self._session_elapsed), parent)
+        self.label_today = QLabel(self._fmt(self._elapsed), parent)
 
         self._tick_timer = QTimer(parent)
         self._tick_timer.setInterval(1000)
@@ -187,7 +191,10 @@ class SessionTimer:
 
     def _tick(self):
         self._elapsed += 1
+        self._session_elapsed += 1
         self.label.setText(self._make_text())
+        self.label_session.setText(self._fmt(self._session_elapsed))
+        self.label_today.setText(self._fmt(self._elapsed))
 
     def _make_text(self) -> str:
         return self._fmt(self._elapsed)

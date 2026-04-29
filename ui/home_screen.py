@@ -108,10 +108,26 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices
+    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices,
+    QFontDatabase
 )
 
 import tempfile
+
+# ── LOAD CUSTOM FONTS ────────────────────────────────────────────────────────
+NARUTO_FONT_FAMILY = "Segoe UI" # Global variable for easy access
+
+def load_custom_fonts():
+    """Safe font loading. Only runs if QApplication instance exists."""
+    global NARUTO_FONT_FAMILY
+    if not QApplication.instance():
+        return
+    
+    font_path = os.path.join(os.path.dirname(__file__), "..", "ninja-naruto-font", "njnaruto.ttf")
+    if os.path.exists(font_path):
+        fid = QFontDatabase.addApplicationFont(font_path)
+        if fid != -1:
+            NARUTO_FONT_FAMILY = QFontDatabase.applicationFontFamilies(fid)[0]
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
@@ -450,9 +466,80 @@ class _PreloadThread(QThread):
         except Exception:
             pass
 
+class MentorWidget(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("mentor_widget")
+        self.setFixedHeight(50)  
+        l = QHBoxLayout(self)
+        l.setContentsMargins(10, 2, 12, 2)
+        l.setSpacing(12)
+
+        # ── CIRCULAR AVATAR (Fixed Clipping) ──────────────────────────────────
+        self.av_lbl = QLabel()
+        self.av_lbl.setFixedSize(38, 38)
+        self.av_lbl.setObjectName("mentor_avatar")
+        
+        av_path = "assets/themes/dojo/Cyber_ninja_turtle_202604270705.jpeg_clean.png"
+        if os.path.exists(av_path):
+            original_px = QPixmap(av_path)
+            # Create circular mask
+            size = 38
+            rounded_px = QPixmap(size, size)
+            rounded_px.fill(Qt.transparent)
+            
+            painter = QPainter(rounded_px)
+            painter.setRenderHint(QPainter.Antialiasing)
+            path = QPainterPath()
+            path.addEllipse(0, 0, size, size)
+            painter.setClipPath(path)
+            
+            painter.drawPixmap(0, 0, size, size, original_px.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            painter.end()
+            
+            self.av_lbl.setPixmap(rounded_px)
+        else:
+            self.av_lbl.setStyleSheet("background: #A86CFF; border-radius: 19px; border: 2px solid #A86CFF;")
+
+        txt_l = QVBoxLayout()
+        txt_l.setSpacing(0)
+        txt_l.setAlignment(Qt.AlignCenter)
+        
+        self.q_lbl = QLabel('"FOCUS. TRAIN. MASTER."')
+        self.q_lbl.setObjectName("mentor_quote")
+        # +1.5px (was 10px -> 11.5px)
+        self.q_lbl.setStyleSheet("font-family: 'Orbitron'; font-size: 11.5px; font-weight: 900; color: #A86CFF;")
+        
+        self.n_lbl = QLabel("— DONATELLO")
+        self.n_lbl.setObjectName("mentor_name")
+        # +1px (was 7px -> 8px)
+        self.n_lbl.setStyleSheet("font-family: 'Orbitron'; font-size: 8px; font-weight: 700; color: #A86CFF; opacity: 0.8;")
+        
+        txt_l.addWidget(self.q_lbl)
+        txt_l.addWidget(self.n_lbl)
+        
+        # Swapped layout: Image LEFT, Text RIGHT
+        l.addWidget(self.av_lbl)
+        l.addLayout(txt_l)
+
+    def set_style(self, theme):
+        if theme == "dojo":
+            self.show()
+            self.setStyleSheet("""
+                QFrame#mentor_widget {
+                    background: rgba(168, 108, 255, 0.1);
+                    border: 1px solid #A86CFF;
+                    border-radius: 6px;
+                }
+            """)
+        else:
+            self.hide()
+
+
 class HomeScreen(QWidget):
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
+        load_custom_fonts() # ── SAFE FONT LOAD ──
         self._data = data
         self._preload_thread = None   # background PDF preload thread
         self._active_editor = None
@@ -462,88 +549,94 @@ class HomeScreen(QWidget):
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
-        top = QFrame()
-        top.setFixedHeight(56)
-        top.setStyleSheet(
-            f"QFrame{{background:{C_SURFACE};border-radius:0px;"
-            f"border-bottom:1px solid {C_BORDER};}}")
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(20, 0, 20, 0)
-        ttl = QLabel("🃏  Anki Occlusion")
-        ttl.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        ttl.setStyleSheet(f"color:{C_ACCENT};")
-        sub = QLabel("Recall More. Forget Less⭐")
-        sub.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
-        tl.addWidget(ttl)
-        tl.addSpacing(16)
-        tl.addWidget(sub)
+
+        # ── TOP BAR (Container) ───────────────────────────────────────────────
+        self.top_frame = QFrame()
+        self.top_frame.setFixedHeight(60)  # Larger height
+        self.top_frame.setObjectName("topbar")
+        
+        tl = QHBoxLayout(self.top_frame)
+        tl.setContentsMargins(14, 0, 14, 0)
+        tl.setSpacing(12)
+
+        # Logo Section
+        logo_layout = QHBoxLayout()
+        logo_layout.setSpacing(12)
+        
+        self.l_box = QLabel("猿")
+        self.l_box.setObjectName("logo_box")
+        self.l_box.setFixedSize(42, 42) # Significantly larger
+        self.l_box.setAlignment(Qt.AlignCenter)
+        
+        self.l_text = QLabel("ANKI OCCLUSION")
+        self.l_text.setObjectName("logo_text")
+        
+        logo_layout.addWidget(self.l_box)
+        logo_layout.addWidget(self.l_text)
+        tl.addLayout(logo_layout)
+
         tl.addStretch()
 
         def _topbtn(text, tip):
             b = QPushButton(text)
             b.setToolTip(tip)
-            b.setStyleSheet(
-                f"QPushButton{{background:transparent;color:{C_SUBTEXT};"
-                f"border:1px solid {C_BORDER};border-radius:6px;"
-                f"padding:4px 14px;font-size:12px;}}"
-                f"QPushButton:hover{{background:{C_CARD};color:{C_TEXT};}}")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setObjectName("nav_btn")
             return b
 
-        btn_help    = _topbtn("❓ Help",    "Show quick-start guide")
-        btn_about   = _topbtn("ℹ About",   "About Anki Occlusion")
-        btn_journal = _topbtn("📓 Journal", "Open Daily Journal")
-        btn_math    = _topbtn("🧮 Math Trainer", "Practice Tables, Squares & Cubes")
+        btn_math    = _topbtn("🧮 MATH",    "Practice Tables, Squares & Cubes")
+        btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
+        btn_help    = _topbtn("❓ HELP",    "Show quick-start guide")
+        btn_about   = _topbtn("ℹ ABOUT",   "About Anki Occlusion")
+        
+        btn_math.clicked.connect(self._show_math_trainer)
+        btn_journal.clicked.connect(self._show_journal)
         btn_help.clicked.connect(self._show_help)
         btn_about.clicked.connect(self._show_about)
-        btn_journal.clicked.connect(self._show_journal)
-        btn_math.clicked.connect(self._show_math_trainer)
-        # ── Theme Toggle ──────────────────────────────────────────────────────
-        self._current_theme = "classic"  # start state
 
-        self._btn_theme = QPushButton("🥷 Ninja Mode")
-        self._btn_theme.setToolTip("Switch between Classic and Ninja Turtle theme")
-        self._btn_theme.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{C_SUBTEXT};"
-            f"border:1px solid {C_BORDER};border-radius:6px;"
-            f"padding:4px 14px;font-size:12px;}}"
-            f"QPushButton:hover{{background:{C_CARD};color:{C_TEXT};}}"
-        )
+        # Theme Toggle Button
+        self._current_theme = self._data.get("_theme", "classic")
+        btn_text = "🥷 NINJA MODE" if self._current_theme == "classic" else "📚 CLASSIC MODE"
+        self._btn_theme = _topbtn(btn_text, "Switch Theme")
         self._btn_theme.clicked.connect(self._toggle_theme)
 
+        # Font Buttons
         def _fontbtn(text, tip):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.setFixedWidth(30)
-            b.setStyleSheet(
-                f"QPushButton{{background:transparent;color:{C_SUBTEXT};"
-                f"border:1px solid {C_BORDER};border-radius:6px;"
-                f"padding:2px 4px;font-size:12px;font-weight:bold;}}"
-                f"QPushButton:hover{{background:{C_CARD};color:{C_TEXT};}}")
+            b.setObjectName("font_btn")
             return b
 
-        btn_fa = _fontbtn("A−", "Decrease font size  (Ctrl+−)")
-        btn_fr = _fontbtn("A",  "Reset font size  (Ctrl+0)")
-        btn_fi = _fontbtn("A+", "Increase font size  (Ctrl++)")
-        btn_fr.setFixedWidth(24)
+        btn_fa = _fontbtn("A−", "Decrease font size")
+        btn_fr = _fontbtn("A",  "Reset font size")
+        btn_fi = _fontbtn("A+", "Increase font size")
+        
         btn_fa.clicked.connect(lambda: self._emit_font(-1))
         btn_fr.clicked.connect(lambda: self._emit_font(0))
         btn_fi.clicked.connect(lambda: self._emit_font(+1))
 
-        tl.addSpacing(8)
+        tl.addWidget(btn_math)
+        tl.addWidget(btn_journal)
+        tl.addWidget(self._btn_theme)
+        tl.addWidget(btn_help)
+        tl.addWidget(btn_about)
+        tl.addSpacing(6)
         tl.addWidget(btn_fa)
         tl.addWidget(btn_fr)
         tl.addWidget(btn_fi)
-        tl.addSpacing(4)
-        tl.addWidget(self._btn_theme)
-        tl.addWidget(btn_math)
-        tl.addWidget(btn_journal)
-        tl.addWidget(btn_help)
-        tl.addWidget(btn_about)
-        self._top_bar = top
-        L.addWidget(top)
+
+        # Mentor Section (Aligned with Cache Bar width ~220px)
+        self.mentor = MentorWidget()
+        self.mentor.setFixedWidth(220)
+        tl.addWidget(self.mentor)
+        
+        self._top_bar = self.top_frame
+        self._apply_topbar_style()  # Initial style
+        L.addWidget(self.top_frame)
 
         split = QSplitter(Qt.Horizontal)
-        self.deck_tree = DeckTree(self._data)
+        self.deck_tree = DeckTree(self._data, theme=self._current_theme)
         self.deck_tree.setMinimumWidth(260)
         self.deck_tree.setMaximumWidth(420)
         self.deck_tree.deck_selected.connect(self._on_deck_selected)
@@ -761,10 +854,19 @@ class HomeScreen(QWidget):
 
         if self._current_theme == "classic":
             self._current_theme = "dojo"
-            self._btn_theme.setText("📚 Classic Mode")
+            self._btn_theme.setText("📚 CLASSIC MODE")
         else:
             self._current_theme = "classic"
-            self._btn_theme.setText("🥷 Ninja Mode")
+            self._btn_theme.setText("🥷 NINJA MODE")
+
+        self._data["_theme"] = self._current_theme
+        store.mark_dirty()
+
+        self.deck_tree.set_theme(self._current_theme)
+        self.deck_view.set_theme(self._current_theme)
+
+        # Update top bar styling
+        self._apply_topbar_style()
 
         app = QApplication.instance()
         if app:
@@ -819,6 +921,118 @@ class HomeScreen(QWidget):
             active_editor.close()
             self._active_editor = None
         super().closeEvent(e)
+
+    def _apply_topbar_style(self):
+        """Apply top bar styling based on current theme."""
+        self.mentor.set_style(self._current_theme)
+        if self._current_theme == "dojo":
+            # Ninja Mode Style
+            self.top_frame.setStyleSheet(f"""
+                QFrame#topbar {{
+                    background: #0F0F17;
+                    border-bottom: 1px solid #1A1A26;
+                }}
+                QLabel#logo_box {{
+                    border: 2.5px solid #72FF4F;
+                    border-radius: 8px;
+                    color: #72FF4F;
+                    font-family: '{NARUTO_FONT_FAMILY}';
+                    font-weight: bold;
+                    font-size: 26px;
+                }}
+                QLabel#logo_text {{
+                    font-family: '{NARUTO_FONT_FAMILY}';
+                    font-weight: 900;
+                    font-size: 20px;
+                    color: #72FF4F;
+                    letter-spacing: 3px;
+                }}
+                QPushButton#nav_btn {{
+                    background: transparent;
+                    color: #5F627D;
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    font-family: '{NARUTO_FONT_FAMILY}';
+                    font-size: 14px;
+                    font-weight: 900;
+                    padding: 8px 18px;
+                    letter-spacing: 1px;
+                }}
+                QPushButton#nav_btn:hover {{
+                    color: #72FF4F;
+                    border-bottom: 3px solid #72FF4F;
+                    background: rgba(114, 255, 79, 0.08);
+                }}
+                QPushButton#font_btn {{
+                    background: #14141F;
+                    color: #5F627D;
+                    border: 1px solid #1A1A26;
+                    border-radius: 4px;
+                    font-family: 'Segoe UI';
+                    font-size: 11px;
+                    font-weight: bold;
+                }}
+                QPushButton#font_btn:hover {{
+                    background: #1E1E2E;
+                    color: #E0E0FF;
+                    border: 1px solid #72FF4F;
+                }}
+            """)
+        else:
+            # Classic Mode Style
+            self.top_frame.setStyleSheet(f"""
+                QFrame#topbar {{
+                    background: {C_SURFACE};
+                    border-bottom: 1px solid {C_BORDER};
+                }}
+                QLabel#logo_box {{
+                    border: 2px solid {C_ACCENT};
+                    border-radius: 6px;
+                    color: {C_ACCENT};
+                    font-family: 'Segoe UI';
+                    font-weight: bold;
+                    font-size: 20px;
+                }}
+                QLabel#logo_text {{
+                    font-family: 'Segoe UI';
+                    font-weight: bold;
+                    font-size: 18px;
+                    color: {C_TEXT};
+                }}
+                QLabel#logo_sub {{
+                    font-family: 'Segoe UI';
+                    font-size: 12px;
+                    color: {C_SUBTEXT};
+                }}
+                QPushButton#nav_btn {{
+                    background: transparent;
+                    color: {C_SUBTEXT};
+                    border: 1px solid {C_BORDER};
+                    border-radius: 6px;
+                    font-family: 'Segoe UI';
+                    font-size: 13px;
+                    font-weight: bold;
+                    padding: 6px 16px;
+                }}
+                QPushButton#nav_btn:hover {{
+                    background: {C_CARD};
+                    color: {C_TEXT};
+                    border: 1px solid {C_ACCENT};
+                }}
+                QPushButton#font_btn {{
+                    background: transparent;
+                    color: {C_SUBTEXT};
+                    border: 1px solid {C_BORDER};
+                    border-radius: 6px;
+                    font-family: 'Segoe UI';
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+                QPushButton#font_btn:hover {{
+                    background: {C_CARD};
+                    color: {C_TEXT};
+                }}
+            """)
 
     def refresh(self):
         self.deck_tree.refresh()

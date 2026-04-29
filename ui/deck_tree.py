@@ -216,12 +216,103 @@ class _DeckTreeWidget(QTreeWidget):
         p.end()
 
 
+from dojo_assets import DojoAssets
+import ui.home_screen
+
+class DeckItemDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None, theme="classic"):
+        super().__init__(parent)
+        self.theme = theme
+
+    def paint(self, painter, option, index):
+        if self.theme != "dojo":
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        is_selected = option.state & QStyle.State_Selected
+        is_hovered = option.state & QStyle.State_MouseOver
+        rect = option.rect
+        
+        # Background
+        if is_selected:
+            painter.fillRect(rect, QColor(168, 108, 255, 38))  # rgba(168,108,255, 0.15)
+            painter.setPen(QPen(QColor("#A86CFF"), 2))
+            painter.drawLine(rect.topLeft(), rect.bottomLeft())
+        elif is_hovered:
+            painter.setBrush(QColor(80, 250, 123, 20))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 6, 6)
+            painter.setPen(QPen(QColor("#50FA7B"), 4))
+            painter.drawLine(rect.left() + 2, rect.top() + 4, rect.left() + 2, rect.bottom() - 4)
+            
+        name = index.data(Qt.UserRole + 2) or "Unknown"
+        due_str = index.data(Qt.UserRole + 1)
+        due = int(due_str) if due_str else 0
+        
+        icon = DojoAssets.get().get_clan_icon(name, 32)
+        
+        # Draw Icon (Centered vertically)
+        icon_rect = QRect(rect.left() + 8, rect.top() + (rect.height() - 32) // 2, 32, 32)
+        if not icon.isNull():
+            # Clip icon to rounded rect to remove artifacts
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(icon_rect), 6, 6)
+            painter.setClipPath(path)
+            painter.drawPixmap(icon_rect, icon)
+            painter.setClipping(False)
+            
+            # Subtle border around icon
+            painter.setPen(QPen(QColor("#45475A"), 1))
+            painter.drawRoundedRect(icon_rect, 6, 6)
+            
+        # Draw Text
+        painter.setPen(QColor("#A86CFF" if is_selected else "#CDD6F4"))
+        font = QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold)
+        painter.setFont(font)
+        text_rect = QRect(icon_rect.right() + 12, rect.top(), rect.width() - icon_rect.width() - 60, rect.height())
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, name.upper())
+        
+        # Draw Badge
+        badge_w = 24
+        badge_h = 20
+        badge_rect = QRect(rect.right() - badge_w - 12, rect.top() + (rect.height() - badge_h) // 2, badge_w, badge_h)
+        
+        if due > 0:
+            painter.setBrush(QColor("#FF5555"))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(badge_rect, 4, 4)
+            painter.setPen(QColor("#FFFFFF"))
+            font = QFont("Segoe UI", 9, QFont.Bold)
+            painter.setFont(font)
+            painter.drawText(badge_rect, Qt.AlignCenter, str(due))
+        else:
+            painter.setPen(QColor("#50FA7B"))
+            font = QFont("Segoe UI", 12, QFont.Bold)
+            painter.setFont(font)
+            painter.drawText(badge_rect, Qt.AlignCenter, "✓")
+            
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        if self.theme != "dojo":
+            return super().sizeHint(option, index)
+        name = index.data(Qt.UserRole + 2) or "Unknown"
+        font = QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold)
+        from PyQt5.QtGui import QFontMetrics
+        fm = QFontMetrics(font)
+        w = fm.horizontalAdvance(name.upper())
+        return QSize(w + 100, 48)
+
 class DeckTree(QWidget):
     deck_selected = pyqtSignal(object)
 
-    def __init__(self, data: dict, parent=None):
+    def __init__(self, data: dict, theme="classic", parent=None):
         super().__init__(parent)
         self._data = data
+        self._theme = theme
         self._last_drop_pos  = None
         self._last_drop_item = None
         self._last_drop_ctrl = False
@@ -243,7 +334,10 @@ class DeckTree(QWidget):
                 name  = item.data(0, Qt.UserRole + 2)
                 due   = int(due_str)
                 badge = f"🔴{due}" if self._blink_state else f"⭕{due}"
-                item.setText(0, f"  📂  {name}  {badge}")
+                if getattr(self, '_theme', 'classic') == "classic":
+                    item.setText(0, f"  📂  {name}  {badge}")
+                else:
+                    item.setText(0, "")
             for i in range(item.childCount()):
                 _walk(item.child(i))
         for i in range(self.tree.topLevelItemCount()):
@@ -259,14 +353,99 @@ class DeckTree(QWidget):
                 _walk(d.get("children", []))
         _walk(self._data.get("decks", []))
 
+    def _on_search(self, text):
+        query = text.strip().lower()
+        def _filter_item(item):
+            match = False
+            name = item.data(0, Qt.UserRole + 2) or ""
+            if query in name.lower():
+                match = True
+            for i in range(item.childCount()):
+                child_match = _filter_item(item.child(i))
+                if child_match:
+                    match = True
+            item.setHidden(not match and bool(query))
+            if query and match:
+                item.setExpanded(True)
+            return match
+        
+        for i in range(self.tree.topLevelItemCount()):
+            _filter_item(self.tree.topLevelItem(i))
+
+    def set_theme(self, theme):
+        self._theme = theme
+        self._delegate.theme = theme
+        if theme == "dojo":
+            self._classic_hdr.hide()
+            self._classic_btns_w.hide()
+            self._dojo_hdr_w.show()
+            self._dojo_btns_w.show()
+            self.layout().setContentsMargins(0, 0, 0, 0)
+        else:
+            self._dojo_hdr_w.hide()
+            self._dojo_btns_w.hide()
+            self._classic_hdr.show()
+            self._classic_btns_w.show()
+            self.layout().setContentsMargins(0, 0, 0, 0)
+        self.refresh()
+
     def _setup_ui(self):
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(6)
-        hdr = QLabel("📚  Decks")
-        hdr.setFont(QFont("Segoe UI", 13, QFont.Bold))
-        L.addWidget(hdr)
+
+        # --- Classic Header ---
+        self._classic_hdr = QLabel("📚  Decks")
+        self._classic_hdr.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        L.addWidget(self._classic_hdr)
+
+        # --- Dojo Header ---
+        self._dojo_hdr_w = QWidget()
+        dhl = QVBoxLayout(self._dojo_hdr_w)
+        dhl.setContentsMargins(12, 16, 12, 0)
+        dhl.setSpacing(10)
+        
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+        logo = QLabel("⛩") 
+        logo.setStyleSheet(f"color:{C_GREEN};font-size:18px;")
+        top_row.addWidget(logo)
+        title = QLabel("DOJO CAVA")
+        title.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 14, QFont.Bold))
+        title.setStyleSheet(f"color:{C_GREEN};letter-spacing:2px;")
+        top_row.addWidget(title)
+        top_row.addStretch()
+        dhl.addLayout(top_row)
+        dhl.addSpacing(4)
+        
+        search_box = QFrame()
+        search_box.setStyleSheet(f"background:transparent;border:1px solid {C_BORDER};border-radius:4px;")
+        search_box.setFixedHeight(32)
+        sh_l = QHBoxLayout(search_box)
+        sh_l.setContentsMargins(8, 0, 8, 0)
+        search_icon = QLabel("⌕")
+        search_icon.setStyleSheet(f"color:{C_SUBTEXT};border:none;")
+        sh_l.addWidget(search_icon)
+        self.search_in = QLineEdit()
+        self.search_in.setPlaceholderText("Search scrolls...")
+        self.search_in.setStyleSheet(f"background:transparent;border:none;color:{C_TEXT};")
+        self.search_in.textChanged.connect(self._on_search)
+        sh_l.addWidget(self.search_in)
+        shortcut_badge = QLabel("CTRL+K")
+        shortcut_badge.setStyleSheet(f"color:{C_SUBTEXT};background:rgba(255,255,255,0.05);border-radius:3px;padding:2px 4px;font-size:9px;border:none;")
+        sh_l.addWidget(shortcut_badge)
+        dhl.addWidget(search_box)
+        dhl.addSpacing(6)
+        
+        hdr_dojo = QLabel("— YOUR DOJOS —")
+        hdr_dojo.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9))
+        hdr_dojo.setStyleSheet(f"color:{C_SUBTEXT};letter-spacing:2px;background:transparent;")
+        dhl.addWidget(hdr_dojo)
+        L.addWidget(self._dojo_hdr_w)
+
         self.tree = _DeckTreeWidget()
+        self._delegate = DeckItemDelegate(self.tree, getattr(self, '_theme', 'classic'))
+        self.tree.setItemDelegate(self._delegate)
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -286,32 +465,54 @@ class DeckTree(QWidget):
         self.tree.dragMoveEvent  = self._on_drag_move
         self.tree.dragLeaveEvent = self._on_drag_leave
         L.addWidget(self.tree, stretch=1)
-        btn_row = QHBoxLayout()
-        b_new = QPushButton("＋ Deck")
-        b_new.clicked.connect(lambda: self._new_deck(None))
-        b_sub = QPushButton("＋ Sub")
-        b_sub.clicked.connect(self._new_subdeck)
-        b_del = QPushButton("🗑")
-        b_del.setObjectName("danger")
-        b_del.setFixedWidth(36)
-        b_del.clicked.connect(self._delete_selected)
-        btn_row.addWidget(b_new)
-        btn_row.addWidget(b_sub)
-        btn_row.addStretch()
-        btn_row.addWidget(b_del)
-        L.addLayout(btn_row)
-        # Drop hint — shows during drag to guide user
+        
+        # --- Classic Buttons ---
+        self._classic_btns_w = QWidget()
+        cbl = QHBoxLayout(self._classic_btns_w)
+        cbl.setContentsMargins(0,0,0,0)
+        cb_new = QPushButton("＋ Deck")
+        cb_new.clicked.connect(lambda: self._new_deck(None))
+        cb_sub = QPushButton("＋ Sub")
+        cb_sub.clicked.connect(self._new_subdeck)
+        cb_del = QPushButton("🗑")
+        cb_del.setObjectName("danger")
+        cb_del.setFixedWidth(36)
+        cb_del.clicked.connect(self._delete_selected)
+        cbl.addWidget(cb_new)
+        cbl.addWidget(cb_sub)
+        cbl.addStretch()
+        cbl.addWidget(cb_del)
+        L.addWidget(self._classic_btns_w)
+        
+        # --- Dojo Buttons ---
+        self._dojo_btns_w = QWidget()
+        dbl = QHBoxLayout(self._dojo_btns_w)
+        dbl.setContentsMargins(12,0,12,12)
+        db_new = QPushButton("⊕ NEW DOJO")
+        db_new.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold))
+        db_new.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
+        db_new.clicked.connect(lambda: self._new_deck(None))
+        db_sub = QPushButton("⊕ SUB")
+        db_sub.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold))
+        db_sub.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
+        db_sub.clicked.connect(self._new_subdeck)
+        db_del = QPushButton("⚙")
+        db_del.setFixedSize(32, 32)
+        db_del.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_BORDER};color:{C_SUBTEXT};border-radius:4px;font-size:16px;}} QPushButton:hover{{background:rgba(255,255,255,0.05);}}")
+        dbl.addWidget(db_new)
+        dbl.addWidget(db_sub)
+        dbl.addStretch()
+        dbl.addWidget(db_del)
+        L.addWidget(self._dojo_btns_w)
+        
+        # Drop hint
         self._drop_hint = QLabel("↕ Reorder — hold Ctrl to nest inside")
-        self._drop_hint.setStyleSheet(
-            "background:#534AB7;color:white;font-size:11px;"
-            "padding:4px 8px;border-radius:4px;")
+        self._drop_hint.setStyleSheet("background:#534AB7;color:white;font-size:11px;padding:4px 8px;border-radius:4px;")
         self._drop_hint.setAlignment(Qt.AlignCenter)
         self._drop_hint.setVisible(False)
         L.addWidget(self._drop_hint)
-        hint = QLabel("Double-click to open  •  Right-click for menu")
-        hint.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;")
-        hint.setAlignment(Qt.AlignCenter)
-        L.addWidget(hint)
+        
+        self.set_theme(getattr(self, '_theme', 'classic'))
 
     def refresh(self):
         sel_id = self._get_selected_id()
@@ -346,10 +547,11 @@ class DeckTree(QWidget):
 
         due   = _total_due(deck)
         badge = f"🔴{due}" if due else "✅"
-        item  = QTreeWidgetItem([f"  📂  {deck['name']}  {badge}"])
+        text = f"  📂  {deck['name']}  {badge}" if getattr(self, '_theme', 'classic') == "classic" else ""
+        item  = QTreeWidgetItem([text])
         item.setData(0, Qt.UserRole,     deck.get("_id"))
-        item.setData(0, Qt.UserRole + 1, str(due))           # for blink timer
-        item.setData(0, Qt.UserRole + 2, deck['name'])       # for blink timer
+        item.setData(0, Qt.UserRole + 1, str(due))           
+        item.setData(0, Qt.UserRole + 2, deck['name'])       
         for child in deck.get("children", []):
             item.addChild(self._make_item(child))
         return item

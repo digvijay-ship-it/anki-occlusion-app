@@ -56,27 +56,76 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 
 Following the recent refactoring, the application is highly modularised:
 
-### Main Entry & Core Engines (Root)
-- `anki_occlusion_v19.py`: The main entry point that boots up the app.
-- `editor_ui.py`: Shared editor UI elements (`ToolBar`, `MaskPanel`).
-- `pdf_engine.py`: Handles reading and rendering PDFs via `pymupdf`.
-- `sm2_engine.py`: The core Spaced Repetition (SM-2) scheduling algorithm.
-- `page_scheduler.py`: Logic for scheduling specific pages within documents.
-- `sm2_debug_log.py`: Debugging utilities for the scheduling algorithm.
+### 🏛️ Core Architecture
+These are the foundational files that run the application, manage data, and handle the core spaced repetition logic.
 
-### Data & Performance Management (Root)
-- `data_manager.py`: Handles saving/loading data to disk safely (Atomic writes).
-- `models.py`: Foundational data structures (`Deck`, `Card`, `Box`).
-- `cache_manager.py`: Manages LRU and disk caching for performance.
-- `thread_manager.py` / `session_timer.py`: Background tasks and study statistics.
+```text
+Anki Occlusion/
+├── 🚀 anki_occlusion_v19.py   Main entry point that launches the application
+├── 📦 models.py               Defines core data structures (Decks, Cards, Occlusions)
+├── 💾 data_manager.py         Handles loading, saving, and managing the local database
+├── 🧠 sm2_engine.py           Implements the SuperMemo-2 (SM-2) spaced repetition algorithm
+├── 🐛 sm2_debug_log.py        Utilities for logging and debugging SM-2 interval calculations
+├── 📄 pdf_engine.py           Parses and renders PDF pages into images for occlusion
+├── ⚡ cache_manager.py        Caches rendered PDFs and images for lightning-fast loading
+├── ⏱️ session_timer.py        Tracks active focus and study time during review sessions
+├── 🎨 theme_manager.py        Manages application themes, colors, and styling modes
+├── ⚙️ thread_manager.py       Orchestrates background workers (keeps the UI responsive)
+└── 🏗️ AnkiOcclusion.spec      Build specification for compiling the executable
+```
 
-### Theming & Assets (Root)
-- `theme_manager.py` / `dojo_assets.py`: Application-wide stylesheets and embedded assets.
+### 🖥️ User Interface (`ui/`)
+This folder contains the presentation layer and all the interactive Qt widgets you see on the screen.
 
-### Extracted Modules
-- **`ui/`**: All visual components (`home_screen.py`, `deck_tree.py`, `deck_view.py`, `editor_dialog.py`, `review_screen.py`, `journal.py`).
-- **`ui/canvas/`**: The core drawing canvas, broken into mixins (`core.py`, `state.py`, `renderer.py`, `interaction.py`).
-- **`services/`**: Background business logic (`review_manager.py`, `pdf_watcher.py`, `journal_manager.py`).
+```text
+ui/
+├── 🏠 home_screen.py          The main dashboard (integrates navigation & sidebars)
+├── 🗂️ deck_tree.py            Sidebar widget displaying your hierarchy of decks
+├── 📊 deck_view.py            Central view showing stats and options for the selected deck
+├── ✏️ editor_dialog.py        The studio where you create cards and draw occlusion masks
+├── 🎓 review_screen.py        The study interface (flipping cards, grading your memory)
+├── 📓 journal.py              Displays daily study logs, streaks, and focus times
+├── 🧮 math_trainer.py         Standalone module for practicing tables, squares, and cubes
+│
+└── 🖌️ canvas/                 Specialized module for the image occlusion drawing area
+    ├── 🧩 core.py             Base definitions and core structures for the canvas
+    ├── 🕹️ interaction.py      Handles mouse/keyboard events (drawing, panning, zooming)
+    ├── 🖼️ renderer.py         Paints the background image and draws masks on top
+    └── 🧠 state.py            Manages canvas state, selected shapes, and undo/redo history
+```
+
+### ⚙️ Background Services (`services/`)
+These modules run behind the scenes to orchestrate complex logic away from the UI.
+
+```text
+services/
+├── 🔄 review_manager.py       Orchestrates review sessions (fetching due cards, processing answers)
+├── 📈 journal_manager.py      Handles data storage for the daily journal and focus stats
+└── 👁️ pdf_watcher.py          Monitors imported PDF files for external modifications
+```
+
+### 🖼️ Assets (`assets/`)
+Static resources like images, icons, and theme files.
+
+```text
+assets/
+└── 🎨 themes/
+    └── 🥷 dojo/               Backgrounds and UI elements for the specialized "Ninja" theme
+        ├── Cyber_ninja_turtle...
+        ├── Fantasy_ninja_UI...
+        └── panel_overlay.png
+```
+
+### 🧪 Tests (`tests/`)
+Automated test suites to ensure the application remains stable as new features are added.
+
+```text
+tests/
+├── ⏱️ test_session_timer.py   Verifies that focus time is tracked accurately
+├── 🧠 test_sm2_engine.py      Ensures the SM-2 algorithm calculates intervals correctly
+├── 📄 test_pdf_engine.py      Checks that PDFs are parsed and rendered properly
+└── 🏗️ test_packaging.py       Verifies the application builds correctly
+```
 
 ---
 

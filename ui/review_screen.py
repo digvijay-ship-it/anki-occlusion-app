@@ -95,6 +95,7 @@ from data_manager import (
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
+import ui.home_screen
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
@@ -176,6 +177,37 @@ QMenu::item:selected{{background:{C_ACCENT};}}
 SS = _build_ss()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NINJA DOJO THEME PALETTE  (matches test.html / dojo theme)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+DOJO = {
+    "bg":        "#07070B",
+    "surface":   "#0F0F17",
+    "card":      "#14141F",
+    "accent":    "#72FF4F",   # neon green
+    "accent2":   "#A86CFF",   # purple
+    "green":     "#72FF4F",
+    "red":       "#FF4444",
+    "yellow":    "#FFD700",
+    "text":      "#E0E0FF",
+    "subtext":   "#5F627D",
+    "border":    "#1A1A26",
+    "font":      "'Orbitron', 'Share Tech Mono', monospace",
+    "font_body": "'Rajdhani', 'Segoe UI', sans-serif",
+}
+
+
+def _is_dojo() -> bool:
+    """Return True if the Ninja Dojo theme is currently active."""
+    app = QApplication.instance()
+    return getattr(app, "_active_theme", "classic") == "dojo"
+
+
+def _tc(classic_val: str, dojo_val: str) -> str:
+    """Theme-conditional: return dojo_val if dojo active, else classic_val."""
+    return dojo_val if _is_dojo() else classic_val
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  REVIEW SCREEN
@@ -186,6 +218,7 @@ QUEUE_INDEX_ROLE = Qt.UserRole + 11
 CARD_DRAG_MIME   = "application/x-anki-card"
 
 class QueueDelegate(QStyledItemDelegate):
+    # Classic colors
     COLORS = {
         "current": {"bg": QColor(C_GREEN),    "fg": QColor("#1E1E2E")},
         "done":    {"bg": QColor("#2A3A2A"),  "fg": QColor("#6A8A6A")},
@@ -193,10 +226,18 @@ class QueueDelegate(QStyledItemDelegate):
         "relearn": {"bg": QColor("#3A2A1A"),  "fg": QColor("#E08030")},
         "peek":    {"bg": QColor("#B83B3B"),  "fg": QColor("#FFF1F1")},
     }
+    # Ninja Dojo colors
+    COLORS_DOJO = {
+        "current": {"bg": QColor("#72FF4F"),  "fg": QColor("#07070B")},
+        "done":    {"bg": QColor("#0A0A12"),  "fg": QColor("#3A3A5A")},
+        "pending": {"bg": QColor("#0F0F17"),  "fg": QColor("#E0E0FF")},
+        "relearn": {"bg": QColor("#1A0A05"),  "fg": QColor("#FF8040")},
+        "peek":    {"bg": QColor("#2A0505"),  "fg": QColor("#FF6060")},
+    }
 
     def paint(self, painter, option, index):
         state = index.data(QUEUE_ROLE) or "pending"
-        cols  = self.COLORS[state]
+        cols  = (self.COLORS_DOJO if _is_dojo() else self.COLORS)[state]
         painter.save()
         r = option.rect.adjusted(2, 2, -2, -2)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -742,47 +783,93 @@ class ReviewScreen(QWidget):
         self._hint_label.setVisible(not fullscreen)
 
     def _setup_ui(self):
+        dojo = _is_dojo()
+        D    = DOJO
+
+        # ── resolved palette ──────────────────────────────────────────────────
+        bg      = D["bg"]        if dojo else C_BG
+        surface = D["surface"]   if dojo else C_SURFACE
+        card    = D["card"]      if dojo else C_CARD
+        accent  = D["accent"]    if dojo else C_ACCENT
+        accent2 = D["accent2"]   if dojo else C_ACCENT
+        text    = D["text"]      if dojo else C_TEXT
+        subtext = D["subtext"]   if dojo else C_SUBTEXT
+        border  = D["border"]    if dojo else C_BORDER
+        font    = D["font"]      if dojo else "'Segoe UI'"
+
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
 
+        # ── Header bar ────────────────────────────────────────────────────────
         hdr_w = QFrame()
-        hdr_w.setFixedHeight(46)
-        hdr_w.setStyleSheet(
-            f"QFrame{{background:{C_SURFACE};"
-            f"border-bottom:1px solid {C_BORDER};border-radius:0;}}")
+        hdr_w.setFixedHeight(52 if dojo else 46)
+        if dojo:
+            hdr_w.setStyleSheet(
+                f"QFrame{{background:{surface};"
+                f"border-bottom:2px solid {accent};border-radius:0;}}")
+        else:
+            hdr_w.setStyleSheet(
+                f"QFrame{{background:{surface};"
+                f"border-bottom:1px solid {border};border-radius:0;}}")
         hdr = QHBoxLayout(hdr_w)
         hdr.setContentsMargins(14, 0, 14, 0); hdr.setSpacing(10)
 
         self.lbl_prog = QLabel("Card 1/1")
-        self.lbl_prog.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        if dojo:
+            self.lbl_prog.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold))
+            self.lbl_prog.setStyleSheet(
+                f"color:{accent};letter-spacing:2px;font-family:{font};")
+        else:
+            self.lbl_prog.setFont(QFont("Segoe UI", 12, QFont.Bold))
         hdr.addWidget(self.lbl_prog)
 
         self.prog = QProgressBar()
-        self.prog.setFixedHeight(8)
+        self.prog.setFixedHeight(6 if dojo else 8)
         self.prog.setTextVisible(False)
-        self.prog.setStyleSheet(
-            f"QProgressBar{{background:{C_CARD};border-radius:4px;}}"
-            f"QProgressBar::chunk{{background:{C_ACCENT};border-radius:4px;}}")
+        if dojo:
+            self.prog.setStyleSheet(
+                f"QProgressBar{{background:{card};border-radius:3px;"
+                f"border:1px solid {border};}}"
+                f"QProgressBar::chunk{{background:{accent};border-radius:3px;}}")
+        else:
+            self.prog.setStyleSheet(
+                f"QProgressBar{{background:{card};border-radius:4px;}}"
+                f"QProgressBar::chunk{{background:{accent};border-radius:4px;}}")
         hdr.addWidget(self.prog, stretch=1)
 
         self.lbl_sm2 = QLabel("")
-        self.lbl_sm2.setStyleSheet(
-            f"background:{C_CARD};color:{C_SUBTEXT};"
-            f"border-radius:6px;padding:3px 10px;font-size:11px;")
+        if dojo:
+            self.lbl_sm2.setStyleSheet(
+                f"background:{card};color:{accent2};"
+                f"border:1px solid {accent2};border-radius:2px;"
+                f"padding:2px 8px;font-size:9px;font-family:{font};"
+                f"letter-spacing:1px;")
+        else:
+            self.lbl_sm2.setStyleSheet(
+                f"background:{card};color:{subtext};"
+                f"border-radius:6px;padding:3px 10px;font-size:11px;")
         hdr.addWidget(self.lbl_sm2)
 
         def _zb(txt, tip):
             b = QPushButton(txt); b.setToolTip(tip)
             b.setFixedSize(28, 28)
-            b.setStyleSheet(
-                f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
-                f"border:1px solid {C_BORDER};border-radius:5px;font-size:13px;}}"
-                f"QPushButton:hover{{background:{C_SURFACE};}}")
+            if dojo:
+                b.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{accent};"
+                    f"border:1px solid {border};border-radius:2px;font-size:13px;}}"
+                    f"QPushButton:hover{{background:rgba(114,255,79,0.12);"
+                    f"border:1px solid {accent};}}")
+            else:
+                b.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{text};"
+                    f"border:1px solid {border};border-radius:5px;font-size:13px;}}"
+                    f"QPushButton:hover{{background:{surface};}}")
             return b
-        b_zin  = _zb("+", "Zoom In  Ctrl++")
-        b_zout = _zb("−", "Zoom Out  Ctrl+−")
-        b_zfit = _zb("⊡", "Zoom Fit  Ctrl+0")
+
+        b_zin    = _zb("+", "Zoom In  Ctrl++")
+        b_zout   = _zb("−", "Zoom Out  Ctrl+−")
+        b_zfit   = _zb("⊡", "Zoom Fit  Ctrl+0")
         b_center = _zb("⊕", "Center on active mask")
         b_zin.clicked.connect(lambda: self.canvas.zoom_in())
         b_zout.clicked.connect(lambda: self.canvas.zoom_out())
@@ -791,123 +878,200 @@ class ReviewScreen(QWidget):
         hdr.addWidget(b_zin); hdr.addWidget(b_zout)
         hdr.addWidget(b_zfit); hdr.addWidget(b_center)
 
-        b_edit = QPushButton("✏ Edit Card")
-        b_edit.setStyleSheet(
-            f"QPushButton{{background:{C_ACCENT};color:white;border:none;"
-            f"border-radius:6px;padding:4px 14px;font-size:12px;font-weight:bold;}}"
-            f"QPushButton:hover{{background:#6A58E0;}}")
+        def _hdr_btn(label, primary=False):
+            b = QPushButton(label)
+            if dojo:
+                if primary:
+                    b.setStyleSheet(
+                        f"QPushButton{{background:{accent};color:{bg};"
+                        f"border:none;border-radius:2px;padding:4px 14px;"
+                        f"font-size:7.5px;font-weight:900;font-family:{font};"
+                        f"letter-spacing:0.5px;}}"
+                        f"QPushButton:hover{{background:white;color:{bg};}}")
+                else:
+                    b.setStyleSheet(
+                        f"QPushButton{{background:{card};color:{text};"
+                        f"border:1px solid {border};border-radius:2px;"
+                        f"padding:4px 14px;font-size:7.5px;"
+                        f"font-family:{font};letter-spacing:0.5px;}}"
+                        f"QPushButton:hover{{background:rgba(114,255,79,0.08);"
+                        f"border:1px solid {accent};}}")
+            else:
+                if primary:
+                    b.setStyleSheet(
+                        f"QPushButton{{background:{accent};color:white;border:none;"
+                        f"border-radius:6px;padding:4px 14px;"
+                        f"font-size:12px;font-weight:bold;}}"
+                        f"QPushButton:hover{{background:#6A58E0;}}")
+                else:
+                    b.setStyleSheet(
+                        f"QPushButton{{background:{card};color:{text};"
+                        f"border:1px solid {border};border-radius:6px;"
+                        f"padding:4px 14px;font-size:12px;}}"
+                        f"QPushButton:hover{{background:{surface};}}")
+            return b
+
+        b_edit = _hdr_btn("✏ Edit Card", primary=True)
         b_edit.clicked.connect(self._edit_current_card)
-        # Cache location button — toolbar mein b_edit ke baad
-        b_cache = QPushButton("💾 Cache")
-        b_cache.setStyleSheet(
-            f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
-            f"border:1px solid {C_BORDER};border-radius:6px;"
-            f"padding:4px 14px;font-size:12px;}}"
-            f"QPushButton:hover{{background:{C_SURFACE};}}")
+        b_cache = _hdr_btn("💾 Cache")
         b_cache.clicked.connect(self._toggle_cache_panel)
         hdr.addWidget(b_edit)
         hdr.addWidget(b_cache)
 
-        self._btn_mode = QPushButton("🟧 Hide All, Guess One")
+        self._btn_mode = _hdr_btn("🟧 Hide All, Guess One")
         self._btn_mode.setCheckable(True)
         self._btn_mode.setChecked(False)
-        self._btn_mode.setStyleSheet(
-            f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
-            f"border:1px solid {C_BORDER};border-radius:6px;"
-            f"padding:4px 14px;font-size:12px;}}"
-            f"QPushButton:checked{{background:#6A3FBF;color:white;"
-            f"border:1px solid {C_ACCENT};}}"
-            f"QPushButton:hover{{background:{C_SURFACE};}}")
+        if dojo:
+            self._btn_mode.setStyleSheet(
+                self._btn_mode.styleSheet() +
+                f"QPushButton:checked{{background:{accent2};color:white;"
+                f"border:1px solid {accent2};}}")
+        else:
+            self._btn_mode.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:6px;"
+                f"padding:4px 14px;font-size:12px;}}"
+                f"QPushButton:checked{{background:#6A3FBF;color:white;"
+                f"border:1px solid {accent};}}"
+                f"QPushButton:hover{{background:{surface};}}")
         self._btn_mode.clicked.connect(self._toggle_review_mode)
         hdr.addWidget(self._btn_mode)
 
-        b_exit = QPushButton("✕ Exit")
-        b_exit.setStyleSheet(
-            f"background:{C_CARD};color:{C_TEXT};border:1px solid {C_BORDER};"
-            f"border-radius:6px;padding:4px 14px;font-size:12px;")
+        b_exit = _hdr_btn("✕ Exit")
         b_exit.clicked.connect(self.cancelled.emit)
         hdr.addWidget(b_exit)
+
         L.addWidget(hdr_w)
         self._hdr_widget = hdr_w
-        self._hdr_widget.hide()          # hidden by default, right-click to toggle
+        self._hdr_widget.hide()
 
         self.lbl_title = QLabel("")
-        self.lbl_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        self.lbl_title.setStyleSheet(
-            f"color:{C_ACCENT};background:{C_BG};"
-            f"padding:4px 16px;border-bottom:1px solid {C_BORDER};")
+        self.lbl_title.setFont(QFont(
+            ui.home_screen.NARUTO_FONT_FAMILY if dojo else "Segoe UI", 10 if dojo else 12, QFont.Bold))
+        if dojo:
+            self.lbl_title.setStyleSheet(
+                f"color:{accent};background:{bg};"
+                f"padding:4px 16px;border-bottom:2px solid {accent};"
+                f"letter-spacing:3px;font-family:{font};")
+        else:
+            self.lbl_title.setStyleSheet(
+                f"color:{accent};background:{bg};"
+                f"padding:4px 16px;border-bottom:1px solid {border};")
         self.lbl_title.setFixedHeight(30)
         self.lbl_title.hide()
         L.addWidget(self.lbl_title)
 
+        # ── Canvas scroll area ────────────────────────────────────────────────
         self._canvas_scroll = _ZoomableScrollArea()
-        # setWidgetResizable(False) — canvas apni natural size maintain kare,
-        # scroll area use stretch na kare (otherwise PDF too wide dikhta hai)
         self._canvas_scroll.setWidgetResizable(False)
         self._canvas_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self._canvas_scroll.setStyleSheet(
-            f"QScrollArea{{border:none;background:{C_BG};}}"
-            f"QScrollBar:vertical{{background:{C_SURFACE};width:8px;border-radius:4px;}}"
-            f"QScrollBar::handle:vertical{{background:{C_BORDER};border-radius:4px;}}"
-            f"QScrollBar:horizontal{{background:{C_SURFACE};height:8px;border-radius:4px;}}"
-            f"QScrollBar::handle:horizontal{{background:{C_BORDER};border-radius:4px;}}")
+            f"QScrollArea{{border:none;background:{bg};}}"
+            f"QScrollBar:vertical{{background:{surface};width:8px;border-radius:4px;}}"
+            f"QScrollBar::handle:vertical{{background:{border};border-radius:4px;}}"
+            f"QScrollBar:horizontal{{background:{surface};height:8px;border-radius:4px;}}"
+            f"QScrollBar::handle:horizontal{{background:{border};border-radius:4px;}}")
         self.canvas = OcclusionCanvas()
         self.canvas.set_mode("review")
         self.canvas.right_clicked.connect(self._toggle_chrome)
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
-        # Track Ctrl+scroll zoom so we retain it across cards
         self.canvas._zoom_timer.timeout.connect(self._on_canvas_zoom_settled)
         self._canvas_scroll.horizontalScrollBar().valueChanged.connect(
-            lambda *_: self._note_user_activity()
-        )
+            lambda *_: self._note_user_activity())
         self._canvas_scroll.verticalScrollBar().valueChanged.connect(
-            lambda *_: self._note_user_activity()
-        )
+            lambda *_: self._note_user_activity())
 
-        # ── Queue panel (right sidebar) ──────────────────────────────────
+        # ── Queue panel (right sidebar) ───────────────────────────────────────
         queue_panel = QWidget()
         queue_panel.setFixedWidth(200)
-        queue_panel.setStyleSheet(f"background:{C_SURFACE};")
+        if dojo:
+            queue_panel.setStyleSheet(
+                f"background:{surface};border-left:1px solid {border};")
+        else:
+            queue_panel.setStyleSheet(f"background:{surface};")
         qp_l = QVBoxLayout(queue_panel)
         qp_l.setContentsMargins(6, 8, 6, 8)
         qp_l.setSpacing(4)
 
-        # ── Timer block — sits above the queue list ───────────────────────
         if self._stimer:
             timer_frame = QFrame()
-            timer_frame.setStyleSheet(
-                f"QFrame{{background:{C_CARD};"
-                f"border-radius:8px;"
-                f"border:1px solid {C_BORDER};}}")
+            if dojo:
+                timer_frame.setStyleSheet(
+                    f"QFrame{{background:{card};border-radius:2px;"
+                    f"border:1px solid {border};}}")
+            else:
+                timer_frame.setStyleSheet(
+                    f"QFrame{{background:{card};border-radius:8px;"
+                    f"border:1px solid {border};}}")
             tf_l = QVBoxLayout(timer_frame)
             tf_l.setContentsMargins(8, 6, 8, 6)
             tf_l.setSpacing(2)
-            tf_top = QLabel("⏱  Today's focus")
-            tf_top.setStyleSheet(
-                f"color:{C_SUBTEXT};font-size:10px;"
-                f"font-weight:bold;background:transparent;border:none;")
-            self._stimer.label.setStyleSheet(
-                f"background:transparent;color:#CDD6F4;"
-                f"font-size:18px;font-weight:bold;"
-                f"font-family:'Segoe UI Mono','Courier New',monospace;"
-                f"border:none;")
+            
+            tf_top = QLabel("⏱  CURRENT SESSION" if dojo else "⏱  Current session")
+            tf_bot = QLabel("📅  TODAY'S FOCUS" if dojo else "📅  Today's focus")
+            if dojo:
+                tf_top.setStyleSheet(
+                    f"color:{subtext};font-size:7px;font-weight:bold;"
+                    f"background:transparent;border:none;"
+                    f"font-family:{font};letter-spacing:1.5px;")
+                tf_bot.setStyleSheet(
+                    f"color:{subtext};font-size:7px;font-weight:bold;"
+                    f"background:transparent;border:none;"
+                    f"font-family:{font};letter-spacing:1.5px;margin-top:6px;")
+                
+                self._stimer.label_session.setStyleSheet(
+                    f"background:transparent;color:{accent};"
+                    f"font-size:18px;font-weight:bold;"
+                    f"font-family:{font};border:none;")
+                self._stimer.label_today.setStyleSheet(
+                    f"background:transparent;color:{accent2};"
+                    f"font-size:14px;font-weight:bold;"
+                    f"font-family:{font};border:none;")
+            else:
+                tf_top.setStyleSheet(
+                    f"color:{subtext};font-size:10px;"
+                    f"font-weight:bold;background:transparent;border:none;")
+                tf_bot.setStyleSheet(
+                    f"color:{subtext};font-size:10px;"
+                    f"font-weight:bold;background:transparent;border:none;margin-top:6px;")
+                
+                self._stimer.label_session.setStyleSheet(
+                    f"background:transparent;color:#CDD6F4;"
+                    f"font-size:18px;font-weight:bold;"
+                    f"font-family:'Segoe UI Mono','Courier New',monospace;"
+                    f"border:none;")
+                self._stimer.label_today.setStyleSheet(
+                    f"background:transparent;color:{subtext};"
+                    f"font-size:14px;font-weight:bold;"
+                    f"font-family:'Segoe UI Mono','Courier New',monospace;"
+                    f"border:none;")
+                
             tf_l.addWidget(tf_top)
-            tf_l.addWidget(self._stimer.label)
+            tf_l.addWidget(self._stimer.label_session)
+            tf_l.addWidget(tf_bot)
+            tf_l.addWidget(self._stimer.label_today)
             qp_l.addWidget(timer_frame)
             qp_l.addSpacing(6)
 
-        qp_hdr = QLabel("📋  Queue")
-        qp_hdr.setStyleSheet(
-            f"color:{C_SUBTEXT};font-size:11px;font-weight:bold;"
-            f"padding-bottom:4px;border-bottom:1px solid {C_BORDER};")
+        qp_hdr = QLabel("▸  QUEUE" if dojo else "📋  Queue")
+        if dojo:
+            qp_hdr.setStyleSheet(
+                f"color:{accent};font-size:8px;font-weight:bold;"
+                f"font-family:{font};letter-spacing:2px;"
+                f"padding-bottom:4px;border-bottom:1px solid {border};")
+        else:
+            qp_hdr.setStyleSheet(
+                f"color:{subtext};font-size:11px;font-weight:bold;"
+                f"padding-bottom:4px;border-bottom:1px solid {border};")
         qp_l.addWidget(qp_hdr)
+
         self._queue_list = QListWidget()
         self._queue_list.setItemDelegate(QueueDelegate(self._queue_list))
         self._queue_list.setFocusPolicy(Qt.NoFocus)
         self._queue_list.itemClicked.connect(self._on_queue_item_clicked)
         self._queue_list.setStyleSheet(
-            f"QListWidget{{background:{C_SURFACE};border:none;padding:0;}}"
+            f"QListWidget{{background:{surface};border:none;padding:0;}}"
             f"QListWidget::item{{padding:0;}}")
         qp_l.addWidget(self._queue_list, stretch=1)
 
@@ -918,41 +1082,63 @@ class ReviewScreen(QWidget):
         mid_split.setHandleWidth(1)
         L.addWidget(mid_split, stretch=1)
 
+        # ── Bottom bar ────────────────────────────────────────────────────────
         bottom_w = QWidget()
-        bottom_w.setStyleSheet(f"background:{C_SURFACE};")
+        if dojo:
+            bottom_w.setStyleSheet(
+                f"background:{surface};border-top:1px solid {border};")
+        else:
+            bottom_w.setStyleSheet(f"background:{surface};")
         bl = QVBoxLayout(bottom_w)
-        bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(0)
 
-        hint = QLabel(
-            "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  Ctrl+Scroll = zoom  •  H = pan  •  Alt = pen  •  X = color  •  Del = clear ink  •  F11")
+        hint_text = (
+            "SPACE=REVEAL  •  1/2/3/4=RATE  •  C=FIT  •  D=DEBUG  •  "
+            "CTRL+SCROLL=ZOOM  •  H=PAN  •  ALT=PEN  •  X=COLOR  •  DEL=CLEAR  •  F11"
+            if dojo else
+            "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  "
+            "Ctrl+Scroll = zoom  •  H = pan  •  Alt = pen  •  X = color  •  Del = clear ink  •  F11"
+        )
+        hint = QLabel(hint_text)
         hint.setAlignment(Qt.AlignCenter)
         hint.setFixedHeight(22)
-        hint.setStyleSheet(
-            f"color:{C_SUBTEXT};font-size:11px;"
-            f"border-top:1px solid {C_BORDER};padding:2px;")
+        if dojo:
+            hint.setStyleSheet(
+                f"color:{subtext};font-size:7px;"
+                f"font-family:{font};letter-spacing:0.5px;"
+                f"border-top:1px solid {border};padding:2px;")
+        else:
+            hint.setStyleSheet(
+                f"color:{subtext};font-size:11px;"
+                f"border-top:1px solid {border};padding:2px;")
         bl.addWidget(hint)
         self._hint_label = hint
-        self._hint_label.hide()          # hidden by default, right-click to toggle
+        self._hint_label.hide()
 
-        # ── Waiting state bar (shown when learning cards are pending) ──
+        # ── Waiting state bar ─────────────────────────────────────────────────
         self._wait_bar = QFrame()
-        self._wait_bar.setStyleSheet(f"QFrame{{background:{C_BG};}}")
+        self._wait_bar.setStyleSheet(f"QFrame{{background:{bg};}}")
         wb_l = QVBoxLayout(self._wait_bar)
         wb_l.setContentsMargins(0, 16, 0, 16)
         wb_l.setSpacing(6)
         self._wait_lbl_count = QLabel("")
         self._wait_lbl_count.setAlignment(Qt.AlignCenter)
-        self._wait_lbl_count.setStyleSheet(
-            f"color:{C_TEXT};font-size:14px;font-weight:bold;background:transparent;")
+        if dojo:
+            self._wait_lbl_count.setStyleSheet(
+                f"color:{accent};font-size:11px;font-weight:bold;"
+                f"background:transparent;font-family:{font};letter-spacing:1px;")
+        else:
+            self._wait_lbl_count.setStyleSheet(
+                f"color:{text};font-size:14px;font-weight:bold;background:transparent;")
         self._wait_lbl_countdown = QLabel("")
         self._wait_lbl_countdown.setAlignment(Qt.AlignCenter)
         self._wait_lbl_countdown.setStyleSheet(
-            f"color:{C_SUBTEXT};font-size:12px;background:transparent;")
+            f"color:{subtext};font-size:12px;background:transparent;")
         wb_l.addWidget(self._wait_lbl_count)
         wb_l.addWidget(self._wait_lbl_countdown)
         self._wait_bar.hide()
         bl.addWidget(self._wait_bar)
-
         L.addWidget(bottom_w)
 
         # ── Floating overlay: Show Answer button ──────────────────────────────
@@ -962,15 +1148,22 @@ class ReviewScreen(QWidget):
         rb_l.setContentsMargins(0, 0, 0, 20)
         rb_l.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
         b_rev = QPushButton("👁  Show Answer  [Space]")
-        b_rev.setStyleSheet(
-            f"background:rgba(42,42,62,220);color:{C_TEXT};"
-            f"border:1px solid {C_BORDER};border-radius:8px;"
-            f"padding:8px 40px;font-size:13px;font-weight:bold;")
+        if dojo:
+            b_rev.setStyleSheet(
+                f"background:rgba(7,7,11,210);color:{accent};"
+                f"border:1px solid {accent};border-radius:2px;"
+                f"padding:8px 40px;font-size:9px;font-weight:900;"
+                f"font-family:{font};letter-spacing:1px;")
+        else:
+            b_rev.setStyleSheet(
+                f"background:rgba(42,42,62,220);color:{text};"
+                f"border:1px solid {border};border-radius:8px;"
+                f"padding:8px 40px;font-size:13px;font-weight:bold;")
         b_rev.clicked.connect(self._reveal_current)
         rb_l.addWidget(b_rev)
         self._reveal_bar.hide()
 
-        # ── Floating overlay: Rating buttons ─────────────────────────────────
+        # ── Floating overlay: Rating buttons ──────────────────────────────────
         self._rating_frame = QFrame(self._canvas_scroll)
         self._rating_frame.setStyleSheet("QFrame{background:transparent;border:none;}")
         rfl = QHBoxLayout(self._rating_frame)
@@ -984,28 +1177,42 @@ class ReviewScreen(QWidget):
             "success": ("#50FA7B", "#80FFB0", "#20C040"),
             "warning": ("#4DC4FF", "#88DDFF", "#1A88CC"),
         }
+        RATING_COLORS_DOJO = {
+            "danger":  ("#FF4444", "#FF7777", "#CC1111"),
+            "hard":    ("#FF8C00", "#FFB347", "#CC6600"),
+            "success": ("#72FF4F", "#A0FF80", "#44CC20"),
+            "warning": ("#A86CFF", "#C899FF", "#7040CC"),
+        }
 
         self._rating_btns = []
         self._prev_lbls   = []
         LABELS = ["Again", "Hard", "Good", "Easy"]
+        color_map = RATING_COLORS_DOJO if dojo else RATING_COLORS
         for (orig_lbl, obj, q), color_lbl in zip(self.RATINGS, LABELS):
-            bg, fg_hover, hv = RATING_COLORS.get(obj, ("#555","#FFF","#333"))
-            # Extract icon+number prefix from orig_lbl e.g. "1  🔁 Again"
-            btn = QPushButton(f"{orig_lbl.split()[0]}  {orig_lbl.split()[1]}  ?  {color_lbl}")
-            btn.setFixedHeight(40)
+            bg_r, fg_hover, _ = color_map.get(obj, ("#555", "#FFF", "#333"))
+            btn = QPushButton(
+                f"{orig_lbl.split()[0]}  {orig_lbl.split()[1]}  ?  {color_lbl}")
+            btn.setFixedHeight(44 if dojo else 40)
             btn.setMinimumWidth(140)
-            btn.setStyleSheet(
-                f"QPushButton{{background:{bg};color:#1E1E2E;"
-                f"border:none;border-radius:8px;"
-                f"font-size:13px;font-weight:bold;padding:0 16px;}}"
-                f"QPushButton:hover{{background:{fg_hover};color:#111;}}")
+            if dojo:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:rgba(7,7,11,200);color:{bg_r};"
+                    f"border:1px solid {bg_r};border-radius:2px;"
+                    f"font-size:14px;font-weight:900;padding:0 16px;"
+                    f"font-family:{font};letter-spacing:0.5px;}}"
+                    f"QPushButton:hover{{background:{bg_r};color:{bg};}}")
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{bg_r};color:#1E1E2E;"
+                    f"border:none;border-radius:8px;"
+                    f"font-size:13px;font-weight:bold;padding:0 16px;}}"
+                    f"QPushButton:hover{{background:{fg_hover};color:#111;}}")
             btn.clicked.connect(lambda _, qq=q: self._rate(qq))
             rfl.addWidget(btn)
             self._rating_btns.append(btn)
             self._prev_lbls.append((btn, q))
 
         self._rating_frame.hide()
-
         self._mid_row_widget = self._reveal_bar
 
     def _update_ink_hint(self):
@@ -2030,6 +2237,21 @@ class ReviewScreen(QWidget):
 
     def _show_session_summary(self):
         """Session khatam — stats dialog dikhao."""
+        dojo = _is_dojo()
+        D    = DOJO
+
+        bg      = D["bg"]      if dojo else C_BG
+        surface = D["surface"] if dojo else C_SURFACE
+        card    = D["card"]    if dojo else C_CARD
+        accent  = D["accent"]  if dojo else C_ACCENT
+        green   = D["green"]   if dojo else C_GREEN
+        red     = D["red"]     if dojo else C_RED
+        yellow  = D["yellow"]  if dojo else C_YELLOW
+        text    = D["text"]    if dojo else C_TEXT
+        subtext = D["subtext"] if dojo else C_SUBTEXT
+        border  = D["border"]  if dojo else C_BORDER
+        font    = D["font"]    if dojo else "'Segoe UI'"
+
         again = hard = good = easy = 0
         for _, _, sm2_obj in self._items:
             q = sm2_obj.get("sm2_last_quality", -1)
@@ -2042,69 +2264,129 @@ class ReviewScreen(QWidget):
         retention = round((good + easy) / total * 100) if total else 0
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Session Complete")
-        dlg.setFixedSize(340, 345)
-        dlg.setStyleSheet(f"QDialog{{background:{C_BG};}}")
+        dlg.setWindowTitle("Mission Complete" if dojo else "Session Complete")
+        dlg.setFixedSize(360, 380 if dojo else 345)
+        if dojo:
+            dlg.setStyleSheet(
+                f"QDialog{{background:{bg};border:1px solid {accent};}}"
+                f"QWidget{{background:{bg};}}"
+                f"QLabel{{background:transparent;}}")
+        else:
+            dlg.setStyleSheet(f"QDialog{{background:{bg};}}")
         L = QVBoxLayout(dlg)
         L.setContentsMargins(24, 24, 24, 24)
         L.setSpacing(12)
 
-        title = QLabel("🎉  Session Complete")
-        title.setFont(QFont("Segoe UI", 15, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(f"color:{C_ACCENT};background:transparent;")
+        # Title
+        if dojo:
+            title = QLabel("🥷  MISSION COMPLETE")
+            title.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 12, QFont.Bold))
+            title.setAlignment(Qt.AlignCenter)
+            title.setStyleSheet(
+                f"color:{accent};background:transparent;"
+                f"letter-spacing:3px;font-family:{font};"
+                f"border-bottom:1px solid {border};padding-bottom:8px;")
+        else:
+            title = QLabel("🎉  Session Complete")
+            title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+            title.setAlignment(Qt.AlignCenter)
+            title.setStyleSheet(f"color:{accent};background:transparent;")
         L.addWidget(title)
 
         # Retention bar
         bar_w = QWidget()
         bar_l = QHBoxLayout(bar_w)
-        bar_l.setContentsMargins(0,0,0,0); bar_l.setSpacing(0)
-        colors = [(again, C_RED), (hard, "#E08030"), (good, C_GREEN), (easy, C_YELLOW)]
-        for count, color in colors:
+        bar_l.setContentsMargins(0, 0, 0, 0); bar_l.setSpacing(0)
+        ret_colors = [
+            (again, D["red"]    if dojo else C_RED),
+            (hard,  "#FF8C00"   if dojo else "#E08030"),
+            (good,  D["green"]  if dojo else C_GREEN),
+            (easy,  D["yellow"] if dojo else C_YELLOW),
+        ]
+        for count, color in ret_colors:
             if count and total:
                 seg = QFrame()
-                seg.setFixedHeight(10)
+                seg.setFixedHeight(6 if dojo else 10)
                 seg.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 seg.setStyleSheet(f"background:{color};border-radius:0px;")
                 bar_l.addWidget(seg, stretch=count)
         L.addWidget(bar_w)
 
-        # Stats grid
+        # Stats rows
         def _stat_row(label, value, color):
             row = QWidget()
             row.setStyleSheet("background:transparent;")
-            rl  = QHBoxLayout(row)
-            rl.setContentsMargins(0,0,0,0)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label)
-            lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;background:transparent;")
+            if dojo:
+                lbl.setStyleSheet(
+                    f"color:{subtext};font-size:8px;background:transparent;"
+                    f"font-family:{font};letter-spacing:1px;")
+            else:
+                lbl.setStyleSheet(
+                    f"color:{subtext};font-size:12px;background:transparent;")
             val = QLabel(str(value))
-            val.setStyleSheet(f"color:{color};font-size:13px;font-weight:bold;background:transparent;")
+            if dojo:
+                val.setStyleSheet(
+                    f"color:{color};font-size:13px;font-weight:bold;"
+                    f"background:transparent;font-family:{font};")
+            else:
+                val.setStyleSheet(
+                    f"color:{color};font-size:13px;font-weight:bold;background:transparent;")
             val.setAlignment(Qt.AlignRight)
             rl.addWidget(lbl); rl.addWidget(val)
             return row
 
-        L.addWidget(_stat_row("🔁  Again",  again, C_RED))
-        L.addWidget(_stat_row("😓  Hard",   hard,  "#E08030"))
-        L.addWidget(_stat_row("✅  Good",   good,  C_GREEN))
-        L.addWidget(_stat_row("⚡  Easy",   easy,  C_YELLOW))
+        L.addWidget(_stat_row("🔁  AGAIN" if dojo else "🔁  Again",
+                              again, D["red"]   if dojo else C_RED))
+        L.addWidget(_stat_row("😓  HARD"  if dojo else "😓  Hard",
+                              hard,  "#FF8C00"  if dojo else "#E08030"))
+        L.addWidget(_stat_row("✅  GOOD"  if dojo else "✅  Good",
+                              good,  D["green"] if dojo else C_GREEN))
+        L.addWidget(_stat_row("⚡  EASY"  if dojo else "⚡  Easy",
+                              easy,  D["yellow"] if dojo else C_YELLOW))
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"background:{C_BORDER};")
+        sep.setStyleSheet(f"background:{border};")
         sep.setFixedHeight(1)
         L.addWidget(sep)
 
-        L.addWidget(_stat_row("Retention", f"{retention}%",
-            C_GREEN if retention >= 80 else C_YELLOW if retention >= 60 else C_RED))
-        L.addWidget(_stat_row("Total reviewed", self._done, C_TEXT))
+        ret_color = (green if retention >= 80 else yellow if retention >= 60 else red)
+        L.addWidget(_stat_row(
+            "RETENTION" if dojo else "Retention",
+            f"{retention}%", ret_color))
+        L.addWidget(_stat_row(
+            "TOTAL REVIEWED" if dojo else "Total reviewed",
+            self._done, text))
 
         if self._stimer:
-            L.addWidget(_stat_row("⏱  Time spent", self._stimer.elapsed_str(), C_SUBTEXT))
+            L.addWidget(_stat_row(
+                "⏱  TIME SPENT" if dojo else "⏱  Time spent",
+                self._stimer.elapsed_str(), subtext))
 
-        btn = QPushButton("Close  ✓")
-        btn.setStyleSheet(
-            f"background:{C_ACCENT};color:white;border:none;border-radius:8px;"
-            f"padding:8px 24px;font-size:13px;font-weight:bold;")
+        # Ninja motivational quote for dojo
+        if dojo and retention >= 80:
+            q_lbl = QLabel("\"COWABUNGA! EXCELLENT WORK, NINJA.\"")
+            q_lbl.setAlignment(Qt.AlignCenter)
+            q_lbl.setWordWrap(True)
+            q_lbl.setStyleSheet(
+                f"color:{accent};font-size:7px;font-family:{font};"
+                f"letter-spacing:1px;background:transparent;")
+            L.addWidget(q_lbl)
+
+        # Close button
+        btn = QPushButton("✕  CLOSE" if dojo else "Close  ✓")
+        if dojo:
+            btn.setStyleSheet(
+                f"background:{accent};color:{bg};border:none;border-radius:2px;"
+                f"padding:8px 24px;font-size:9px;font-weight:900;"
+                f"font-family:{font};letter-spacing:1px;")
+        else:
+            btn.setStyleSheet(
+                f"background:{accent};color:white;border:none;border-radius:8px;"
+                f"padding:8px 24px;font-size:13px;font-weight:bold;")
         btn.clicked.connect(dlg.accept)
         L.addWidget(btn, alignment=Qt.AlignCenter)
 

@@ -203,8 +203,20 @@ class MainWindow(QMainWindow):
             "PyMuPDF loaded — PDF support active"
             if PDF_SUPPORT else "⚠ pip install pymupdf  for PDF support"))
         self.setStatusBar(sb)
-        if self._font_size != BASE_FONT_SIZE:
-            self._apply_font_size(self._font_size)
+        
+        # Apply initial theme and font
+        theme = self._data.get("_theme", "classic")
+        app = QApplication.instance()
+        if app:
+            app._active_theme = theme
+            from theme_manager import build_stylesheet
+            if theme == 'classic':
+                app.setStyleSheet(_build_ss(self._font_size))
+                self.setStyleSheet("")
+            else:
+                app.setStyleSheet(build_stylesheet(theme, self._font_size))
+                self.setStyleSheet(build_stylesheet(theme, self._font_size))
+
         if not self._data.get("_onboarding_done"):
             QTimer.singleShot(200, self._run_onboarding)
 
