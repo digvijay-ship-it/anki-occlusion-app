@@ -191,31 +191,30 @@ class DojoStatsCard(QFrame):
         l = QHBoxLayout(self)
         l.setContentsMargins(20, 16, 20, 16)
         l.setSpacing(16)
-        
+
         self.icon_lbl = QLabel("★")
         self.icon_lbl.setStyleSheet(f"color: {color_hex}; font-size: 32px;")
         self.icon_lbl.setAlignment(Qt.AlignCenter)
         l.addWidget(self.icon_lbl)
-        
+
         text_l = QVBoxLayout()
-        text_l.setSpacing(2)
+        text_l.setSpacing(0) # Reduce spacing
         text_l.setAlignment(Qt.AlignVCenter)
-        
+
         self.val_lbl = QLabel("0")
-        self.val_lbl.setStyleSheet(f"color: {color_hex}; font-size: 32px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: -1px;")
-        
+        self.val_lbl.setStyleSheet(f"color: {color_hex}; font-size: 38px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: -2px;")
+
         title_lbl = QLabel(title)
         title_lbl.setStyleSheet(f"color: #A6ADC8; font-size: 10px; font-weight: 800; font-family: 'Orbitron'; letter-spacing: 1px;")
-        
+
         sub_lbl = QLabel(subtitle)
         sub_lbl.setStyleSheet(f"color: #5F627D; font-size: 11px;")
-        
+
         text_l.addWidget(self.val_lbl)
         text_l.addWidget(title_lbl)
         text_l.addWidget(sub_lbl)
         l.addLayout(text_l)
         l.addStretch()
-
     def set_value(self, val):
         self.val_lbl.setText(str(val))
 
@@ -258,7 +257,7 @@ class DojoMissionBanner(QFrame):
         right_l.setSpacing(8)
         right_l.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         
-        self.btn_train = QPushButton("▶ START TRAINING\nREVIEW DUE CARDS")
+        self.btn_train = QPushButton("▶ START TRAINING\nREVIEW DUE SCROLLS")
         self.btn_train.setStyleSheet("""
             QPushButton {
                 background: #50FA7B;
@@ -276,7 +275,7 @@ class DojoMissionBanner(QFrame):
             }
         """)
         
-        self.btn_all = QPushButton("  TRAIN EVERYTHING — ALL CARDS")
+        self.btn_all = QPushButton("  TRAIN SELECTED SCROLL")
         from dojo_assets import DojoAssets
         self.btn_all.setIcon(QIcon(DojoAssets.get().get_ui_icon(2, 32)))
         self.btn_all.setIconSize(QSize(20, 20))
@@ -302,6 +301,52 @@ class DojoMissionBanner(QFrame):
         right_l.addWidget(self.btn_train)
         right_l.addWidget(self.btn_all)
         l.addLayout(right_l)
+
+        self._glow_timer = QTimer(self)
+        self._glow_timer.timeout.connect(self._animate_glow)
+        self._glow_step = 0
+        
+        from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setOffset(0, 0)
+        self.btn_train.setGraphicsEffect(self._shadow)
+        
+        self._glow_timer.start(50)
+
+    def _animate_glow(self):
+        import math
+        self._glow_step += 1
+        progress = (math.sin(self._glow_step * math.pi / 20.0) + 1.0) / 2.0
+        
+        r = int(32 + (114 - 32) * progress)
+        g = int(106 + (255 - 106) * progress)
+        b = int(50 + (79 - 50) * progress)
+        
+        color = f"#{r:02X}{g:02X}{b:02X}"
+        self.btn_train.setStyleSheet(f"""
+            QPushButton {{
+                background: {color};
+                color: #0F0F17;
+                border-radius: 6px;
+                font-weight: 900;
+                font-family: 'Orbitron';
+                font-size: 14px;
+                min-height: 52px;
+                padding: 0px 32px;
+                text-align: center;
+                border: 1px solid {color};
+            }}
+            QPushButton:hover {{
+                background: #8BFF6B;
+                border: 1px solid #8BFF6B;
+            }}
+        """)
+        
+        from PyQt5.QtGui import QColor
+        blur_radius = 5 + 35 * progress  # bleeds up to 40px when brightest
+        shadow_alpha = int(80 + 175 * progress)  # gets more opaque as it brightens
+        self._shadow.setBlurRadius(blur_radius)
+        self._shadow.setColor(QColor(r, g, b, shadow_alpha))
 
 
 #  DECK VIEW
@@ -381,9 +426,9 @@ class DeckView(QWidget):
         sl = QHBoxLayout(self.dojo_stats_w)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(16)
-        self.stat_missions = DojoStatsCard("REMAINING MISSIONS", "Cards due for review", "#FF5555")
-        self.stat_scrolls = DojoStatsCard("NEW TECHNIQUES", "Total active scrolls", "#BD93F9")
-        self.stat_battles = DojoStatsCard("BATTLES WON", "Reviews completed", "#50FA7B")
+        self.stat_missions = DojoStatsCard("REMAINING MISSIONS", "CARDS DUE FOR REVIEW", "#FF5555")
+        self.stat_scrolls = DojoStatsCard("NEW TECHNIQUES", "TOTAL ACTIVE SCROLLS", "#BD93F9")
+        self.stat_battles = DojoStatsCard("BATTLES WON", "REVIEWS COMPLETED", "#50FA7B")
         sl.addWidget(self.stat_missions)
         sl.addWidget(self.stat_scrolls)
         sl.addWidget(self.stat_battles)
@@ -433,6 +478,8 @@ class DeckView(QWidget):
             self.btn_all.hide()
             
             self.lbl_deck.setStyleSheet("color: #72FF4F; font-size: 24px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+            if not self.deck:
+                self.lbl_deck.setText("CHOOSE YOUR DOJO NINJA! 🤺")
             
             deck_icon_px = DojoAssets.get().get_ui_icon(0, 48)
             self.lbl_deck_icon.setPixmap(deck_icon_px.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -455,6 +502,8 @@ class DeckView(QWidget):
             
             self.lbl_deck.setStyleSheet("")
             self.lbl_deck.setFont(QFont("Segoe UI", 15, QFont.Bold))
+            if not self.deck:
+                self.lbl_deck.setText("← Select a deck")
 
             self.btn_add.setText("＋ Add Card")
             self.btn_add.setIcon(QIcon())
@@ -512,7 +561,10 @@ class DeckView(QWidget):
             self._refresh()
         else:
             self.card_list.clear()
-            self.lbl_deck.setText("← Select a deck")
+            if getattr(self, '_theme', 'classic') == 'dojo':
+                self.lbl_deck.setText("CHOOSE YOUR DOJO NINJA! 🤺")
+            else:
+                self.lbl_deck.setText("← Select a deck")
         store.mark_dirty()
 
     def _start_card_drag(self, _actions):
@@ -549,33 +601,61 @@ class DeckView(QWidget):
         if not self.deck:
             return
         self.card_list.clear()
-        cards  = self.deck.get("cards", [])
-        due_c  = 0
 
-        for c in cards:
+        def _get_all_cards(d):
+            res = list(d.get("cards", []))
+            for child in d.get("children", []):
+                res.extend(_get_all_cards(child))
+            return res
+
+        all_cards  = _get_all_cards(self.deck)
+        due_c  = 0
+        untouched_c = 0
+        mastered_c = 0
+
+        for c in all_cards:
             # [PERF FIX] sm2_init sirf tab call karo jab fields missing hon
             # (setdefault calls skip karna = O(1) per card instead of O(fields))
             if "sched_state" not in c:
                 sm2_init(c)
             boxes = c.get("boxes", [])
+            
+            card_due = False
+            card_untouched = True
+            card_mastered = False
+            
             if not boxes:
                 card_due = is_due_today(c)
+                if c.get("reviews", 0) > 0: card_untouched = False
+                if sm2_days_left(c) > 30: card_mastered = True
             else:
                 seen_gids = set()
-                card_due = False
+                all_mastered = True
+                has_boxes = False
                 for b in boxes:
                     gid = b.get("group_id", "")
                     if gid:
                         if gid not in seen_gids:
                             seen_gids.add(gid)
-                            if is_due_today(b):
-                                card_due = True
+                            has_boxes = True
+                            if is_due_today(b): card_due = True
+                            if b.get("reviews", 0) > 0: card_untouched = False
+                            if sm2_days_left(b) <= 30: all_mastered = False
                     else:
-                        if is_due_today(b):
-                            card_due = True
-            due_c += card_due
+                        has_boxes = True
+                        if is_due_today(b): card_due = True
+                        if b.get("reviews", 0) > 0: card_untouched = False
+                        if sm2_days_left(b) <= 30: all_mastered = False
+                if has_boxes and all_mastered:
+                    card_mastered = True
 
-            badge = "🔴 Due" if card_due else f"✅ {sm2_days_left(c)}d"
+            due_c += card_due
+            untouched_c += card_untouched
+            mastered_c += card_mastered
+
+        direct_cards = self.deck.get("cards", [])
+        for c in direct_cards:
+            badge = "🔴 Due" if self._card_has_due_today(c) else f"✅ {sm2_days_left(c)}d"
 
             # ── Pages count ───────────────────────────────────────────────────
             pdf_path = c.get("pdf_path", "")
@@ -595,6 +675,7 @@ class DeckView(QWidget):
             seen_grp  = set()
             n_grouped = 0
             n_indiv   = 0
+            boxes = c.get("boxes", [])
             for b in boxes:
                 gid = b.get("group_id", "")
                 if gid:
@@ -624,16 +705,16 @@ class DeckView(QWidget):
 
             self.card_list.addItem(item)
 
-        total_rev = sum(c.get("reviews", 0) for c in cards)
+        total_rev = sum(c.get("reviews", 0) for c in all_cards)
         self.lbl_stats.setText(
-            f"Cards:{len(cards)}  🔴Due:{due_c}  Reviews:{total_rev}")
+            f"Cards:{len(all_cards)}  🔴Due:{due_c}  Reviews:{total_rev}")
         
-        self.lbl_deck_sub.setText(f"SCROLLS: {len(cards)} ❖ DUE: {due_c}")
+        self.lbl_deck_sub.setText(f"SCROLLS: {len(all_cards)} ❖ DUE: {due_c}")
         self.stat_missions.set_value(due_c)
-        self.stat_scrolls.set_value(len(cards))
+        self.stat_scrolls.set_value(untouched_c)
         self.stat_battles.set_value(total_rev)
 
-        if not cards and getattr(self, '_theme', 'classic') == 'dojo':
+        if not direct_cards and getattr(self, '_theme', 'classic') == 'dojo':
             # Empty state for Dojo mode
             item = QListWidgetItem()
             item.setTextAlignment(Qt.AlignCenter)

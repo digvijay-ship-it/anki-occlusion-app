@@ -438,7 +438,7 @@ class DeckTree(QWidget):
         dhl.addSpacing(6)
         
         hdr_dojo = QLabel("— YOUR DOJOS —")
-        hdr_dojo.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9))
+        hdr_dojo.setFont(QFont("Orbitron", 9, QFont.Bold))
         hdr_dojo.setStyleSheet(f"color:{C_SUBTEXT};letter-spacing:2px;background:transparent;")
         dhl.addWidget(hdr_dojo)
         L.addWidget(self._dojo_hdr_w)
@@ -913,19 +913,19 @@ def _fmt_bytes(n: int) -> str:
     if n < 1024**3:  return f"{n/1024**2:.1f} MB"
     return f"{n/1024**3:.2f} GB"
 
-class CacheWidget(QFrame):
+class ClassicCacheWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("cacheFrame")
         self.setFixedWidth(220)
-        # self.setStyleSheet(f"""
-        #     QFrame#cacheFrame {{
-        #         background:{C_SURFACE};
-        #         border-left:1px solid {C_BORDER};
-        #         border-radius:0px;
-        #     }}
-        #     QLabel {{ background:transparent; }}
-        # """)
+        self.setStyleSheet(f"""
+            QFrame#cacheFrame {{
+                background:{C_SURFACE};
+                border-left:1px solid {C_BORDER};
+                border-radius:0px;
+            }}
+            QLabel {{ background:transparent; }}
+        """)
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self.refresh)
         self._auto_timer.start(4000)
@@ -1080,9 +1080,7 @@ class CacheWidget(QFrame):
         COMBINED_CACHE.invalidate(pdf_path)
         PAGE_CACHE.invalidate_pdf(pdf_path)
         MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
-        # [FIX] Remove PDF from MASK_REGISTRY map entirely so box disappears
         MASK_REGISTRY._map.pop(pdf_path, None)
-        # [FIX] Also unregister from PIXMAP_REGISTRY
         for label in [l for l, (_, _, p) in PIXMAP_REGISTRY._entries.items() if p == pdf_path]:
             PIXMAP_REGISTRY.unregister(label)
         self.refresh()
@@ -1092,9 +1090,217 @@ class CacheWidget(QFrame):
         COMBINED_CACHE.clear()
         PAGE_CACHE.clear_ram_only()
         MASK_REGISTRY._map.clear()
-        # [FIX] Also clear PIXMAP_REGISTRY so all boxes disappear
         for label in list(PIXMAP_REGISTRY._entries.keys()):
             PIXMAP_REGISTRY.unregister(label)
         self.refresh()
+
+class DojoCacheWidget(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("cacheFrame")
+        self.setFixedWidth(220)
+        self.setStyleSheet(f"""
+            QFrame#cacheFrame {{
+                background: #0F0F17;
+                border-left: 1px solid #1E1E2E;
+                border-radius: 0px;
+            }}
+            QLabel {{ background: transparent; border: none; }}
+        """)
+        self._auto_timer = QTimer(self)
+        self._auto_timer.timeout.connect(self.refresh)
+        self._auto_timer.start(4000)
+        self._build_ui()
+        self.refresh()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 24, 16, 24)
+        root.setSpacing(24)
+
+        # Header
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(0, 0, 0, 0)
+        hdr.setSpacing(8)
+        icon_lbl = QLabel("🧪")
+        icon_lbl.setStyleSheet("font-size: 16px;")
+        
+        title = QLabel("BANGA LAB")
+        title.setStyleSheet("color: #72FF4F; font-size: 13px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 1px;")
+        hdr.addWidget(icon_lbl)
+        hdr.addWidget(title)
+        hdr.addStretch()
+        root.addLayout(hdr)
+
+        # System Status
+        status_v = QVBoxLayout()
+        status_v.setSpacing(8)
+        status_hdr = QLabel("— SYSTEM STATUS —")
+        status_hdr.setStyleSheet("color: #5F627D; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+        status_v.addWidget(status_hdr)
+        
+        def _stat_row(label, val, val_color):
+            w = QWidget()
+            l = QHBoxLayout(w)
+            l.setContentsMargins(0, 0, 0, 0)
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: #5F627D; font-size: 11px; font-family: 'Orbitron'; font-weight: bold;")
+            v_lbl = QLabel(val)
+            v_lbl.setStyleSheet(f"color: {val_color}; font-size: 11px; font-weight: bold;")
+            l.addWidget(lbl)
+            l.addStretch()
+            l.addWidget(v_lbl)
+            return w
+            
+        status_v.addWidget(_stat_row("ALGORITHM", "SM-2", "#A86CFF"))
+        status_v.addWidget(_stat_row("SCHEDULER", "● ACTIVE", "#72FF4F"))
+        status_v.addWidget(_stat_row("PDF ENGINE", "PyMuPDF", "#A86CFF"))
+        status_v.addWidget(_stat_row("OCCLUSION", "● ACTIVE", "#72FF4F"))
+        root.addLayout(status_v)
+
+        # Dojo Resources
+        res_v = QVBoxLayout()
+        res_v.setSpacing(12)
+        res_hdr = QLabel("— DOJO RESOURCES —")
+        res_hdr.setStyleSheet("color: #5F627D; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+        res_v.addWidget(res_hdr)
+        
+        def _prog_row(name, color):
+            w = QWidget()
+            vl = QVBoxLayout(w)
+            vl.setContentsMargins(0, 0, 0, 0)
+            vl.setSpacing(4)
+            hl = QHBoxLayout()
+            hl.setContentsMargins(0,0,0,0)
+            lbl = QLabel(name)
+            lbl.setStyleSheet("color: #5F627D; font-size: 11px; font-family: 'Orbitron'; font-weight: bold;")
+            val_lbl = QLabel("0 MB")
+            val_lbl.setStyleSheet("color: #CDD6F4; font-size: 11px; font-family: monospace; font-weight: bold;")
+            hl.addWidget(lbl)
+            hl.addStretch()
+            hl.addWidget(val_lbl)
+            vl.addLayout(hl)
+            
+            bg_bar = QFrame()
+            bg_bar.setFixedHeight(6)
+            bg_bar.setStyleSheet("background: #1E1E2E; border-radius: 3px;")
+            bg_l = QHBoxLayout(bg_bar)
+            bg_l.setContentsMargins(0, 0, 0, 0)
+            bg_l.setAlignment(Qt.AlignLeft)
+            
+            fill_bar = QFrame()
+            fill_bar.setFixedHeight(6)
+            fill_bar.setStyleSheet(f"background: {color}; border-radius: 3px;")
+            fill_bar.setFixedWidth(0)
+            bg_l.addWidget(fill_bar)
+            
+            vl.addWidget(bg_bar)
+            return w, val_lbl, fill_bar, bg_bar
+            
+        self.w_mem, self.lbl_mem, self.bar_mem, self.bg_mem = _prog_row("MEMORY", "#A86CFF")
+        self.w_cache, self.lbl_cache, self.bar_cache, self.bg_cache = _prog_row("CACHE", "#72FF4F")
+        self.w_media, self.lbl_media, self.bar_media, self.bg_media = _prog_row("MEDIA", "#FF5555")
+        self.w_tot, self.lbl_tot, self.bar_tot, self.bg_tot = _prog_row("TOTAL", "#A86CFF")
+        
+        res_v.addWidget(self.w_mem)
+        res_v.addWidget(self.w_cache)
+        res_v.addWidget(self.w_media)
+        res_v.addWidget(self.w_tot)
+        root.addLayout(res_v)
+        
+        root.addStretch()
+        
+        # Fuel Up
+        fuel_box = QFrame()
+        fuel_box.setStyleSheet("""
+            QFrame {
+                background: transparent;
+                border: 1px solid #72FF4F;
+                border-radius: 8px;
+            }
+        """)
+        fl = QHBoxLayout(fuel_box)
+        fl.setContentsMargins(12, 12, 12, 12)
+        fl.setSpacing(12)
+        
+        pizza = QLabel("🍕")
+        pizza.setStyleSheet("font-size: 24px; border: none;")
+        fl.addWidget(pizza)
+        
+        ftl = QVBoxLayout()
+        ftl.setSpacing(4)
+        ft = QLabel("FUEL UP, NINJA!")
+        ft.setStyleSheet("color: #72FF4F; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; border: none;")
+        fd = QLabel("Take breaks.\nYour brain is\nnot a robot.")
+        fd.setStyleSheet("color: #5F627D; font-size: 10px; border: none; font-family: monospace;")
+        ftl.addWidget(ft)
+        ftl.addWidget(fd)
+        fl.addLayout(ftl)
+        
+        root.addWidget(fuel_box)
+
+    def refresh(self):
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+        
+        known = set()
+        known.update(COMBINED_CACHE.all_cached_pdfs())
+        known.update(PAGE_CACHE.all_cached_pdfs())
+        known.update(MASK_REGISTRY.all_registered_pdfs())
+
+        ram_b = 0
+        disk_b = 0
+        mask_b = 0
+        for pdf_path in known:
+            disk_b += COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
+            ram_b  += PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
+            mask_b += MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
+            
+        tot_b = ram_b + disk_b + mask_b
+        
+        ram_mb = ram_b / (1024**2)
+        disk_mb = disk_b / (1024**2)
+        mask_mb = mask_b / (1024**2)
+        tot_mb = tot_b / (1024**2)
+        
+        self.lbl_mem.setText(f"{ram_mb:.1f} MB")
+        self.lbl_cache.setText(f"{disk_mb:.1f} MB")
+        self.lbl_media.setText(f"{mask_mb:.1f} MB")
+        self.lbl_tot.setText(f"{tot_mb:.1f} MB")
+        
+        MAX_MB = 512.0
+        
+        def _w(mb, bg):
+            max_w = bg.width() if bg.width() > 0 else 188
+            return int(min(mb / MAX_MB, 1.0) * max_w)
+            
+        self.bar_mem.setFixedWidth(_w(ram_mb, self.bg_mem))
+        self.bar_cache.setFixedWidth(_w(disk_mb, self.bg_cache))
+        self.bar_media.setFixedWidth(_w(mask_mb, self.bg_media))
+        self.bar_tot.setFixedWidth(_w(tot_mb, self.bg_tot))
+
+from PyQt5.QtWidgets import QStackedWidget
+
+class CacheWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(220)
+        l = QVBoxLayout(self)
+        l.setContentsMargins(0, 0, 0, 0)
+        
+        self.stack = QStackedWidget(self)
+        self.classic_widget = ClassicCacheWidget()
+        self.dojo_widget = DojoCacheWidget()
+        
+        self.stack.addWidget(self.classic_widget)
+        self.stack.addWidget(self.dojo_widget)
+        l.addWidget(self.stack)
+
+    def set_theme(self, theme):
+        if theme == "dojo":
+            self.stack.setCurrentWidget(self.dojo_widget)
+            self.dojo_widget.refresh()
+        else:
+            self.stack.setCurrentWidget(self.classic_widget)
+            self.classic_widget.refresh()
 
 # ═══════════════════════════════════════════════════════════════════════════════

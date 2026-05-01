@@ -105,9 +105,8 @@ def build_stylesheet(mode="dojo", font_size=14):
     bf = p["body_font"]
 
     if mode == "dojo":
-        import ui.home_screen
-        hf = f"'{ui.home_screen.NARUTO_FONT_FAMILY}', {hf}"
-        bf = f"'{ui.home_screen.NARUTO_FONT_FAMILY}', {bf}"
+        hf = "'Orbitron', " + hf
+        bf = "'Orbitron', " + bf
 
     # UI Constants
     btn_radius = "0px" if mode == "dojo" else "6px"

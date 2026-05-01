@@ -103,7 +103,7 @@ from PyQt5.QtWidgets import (
     QSplitter, QStatusBar, QProgressBar, QDialog, QFormLayout,
     QLineEdit, QTextEdit, QSizePolicy, QTreeWidget,
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
-    QHeaderView
+    QHeaderView, QStackedWidget
 )
 from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
 from PyQt5.QtGui import QGuiApplication as _QGA
@@ -196,6 +196,17 @@ SS = _build_ss()
 
 from .deck_tree import DeckTree, CacheWidget
 from .deck_view import DeckView
+
+# TMNT Home Layout — safe import
+try:
+    from .tmnt_home import TMNTHomeLayout
+    _TMNT_HOME_AVAILABLE = True
+    print("[TMNT] Import OK")
+except Exception as _tmnt_err:
+    import traceback as _tb
+    print(f"[TMNT IMPORT ERROR] {type(_tmnt_err).__name__}: {_tmnt_err}")
+    _tb.print_exc()
+    _TMNT_HOME_AVAILABLE = False
 
 # Math Trainer — safe import
 try:
@@ -535,6 +546,250 @@ class MentorWidget(QFrame):
         else:
             self.hide()
 
+"""
+MUSIC WIDGET PATCH  — drop this into home_screen.py
+=====================================================
+1. Add MusicWidget class (below MentorWidget, before HomeScreen)
+2. In HomeScreen._setup_ui(), add 3 lines after mentor widget
+3. In HomeScreen.keyPressEvent(), add M / N key handlers
+
+REQUIREMENTS:
+    pip install pygame
+    Put .mp3/.ogg files in:  assets/music/   (any filenames)
+    Falls back gracefully if pygame missing or folder empty.
+"""
+
+# ── PASTE THIS IMPORT at top of home_screen.py (near other imports) ──────────
+# (already have os, sys, etc — just add these two)
+import glob
+import random
+
+# ── PASTE THIS CLASS after MentorWidget, before HomeScreen ───────────────────
+
+class MusicWidget(QFrame):
+    """
+    Compact BGM player for the top navbar.
+    - M key  → toggle mute/unmute
+    - N key  → next track
+    - Click the widget → same as M
+    Needs:  pip install pygame
+    Tracks: assets/music/*.mp3  (or .ogg)
+    """
+    MUSIC_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "music")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("music_widget")
+        self.setFixedSize(110, 38)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("BGM  [M] toggle  [N] next track")
+
+        self._playing   = False   # whether music is ON
+        self._tracks    = []
+        self._idx       = 0
+        self._pygame_ok = False
+
+        self._init_pygame()
+        self._scan_tracks()
+
+        # ── Layout ──────────────────────────────────────────────────────
+        hl = QHBoxLayout(self)
+        hl.setContentsMargins(8, 4, 8, 4)
+        hl.setSpacing(6)
+
+        self._note_lbl = QLabel("♪")
+        self._note_lbl.setObjectName("music_note")
+        self._note_lbl.setStyleSheet(
+            "font-size:16px; color:#BD93F9; background:transparent;")
+        self._note_lbl.setFixedWidth(16)
+
+        self._state_lbl = QLabel("BGM")
+        self._state_lbl.setObjectName("music_state")
+        self._state_lbl.setStyleSheet(
+            "font-size:9px; font-weight:700; letter-spacing:1.5px;"
+            "color:#7C6AF7; background:transparent;")
+
+        self._badge = QLabel("OFF")
+        self._badge.setObjectName("music_badge")
+        self._badge.setFixedWidth(28)
+        self._badge.setAlignment(Qt.AlignCenter)
+        self._badge.setStyleSheet(
+            "font-size:8px; font-weight:700; border-radius:3px; padding:1px 3px;"
+            f"background:{C_CARD}; color:{C_SUBTEXT};")
+
+        hl.addWidget(self._note_lbl)
+        hl.addWidget(self._state_lbl)
+        hl.addWidget(self._badge)
+
+        self._refresh_style(dojo=False)
+
+    # ── pygame init ─────────────────────────────────────────────────────
+    def _init_pygame(self):
+        try:
+            import pygame
+            pygame.mixer.init()
+            self._pygame = pygame
+            self._pygame_ok = True
+        except Exception as e:
+            self._pygame_ok = False
+            print(f"[MusicWidget] pygame not available: {e}")
+
+    def _scan_tracks(self):
+        if not os.path.isdir(self.MUSIC_DIR):
+            return
+        self._tracks = (
+            glob.glob(os.path.join(self.MUSIC_DIR, "*.mp3")) +
+            glob.glob(os.path.join(self.MUSIC_DIR, "*.ogg")) +
+            glob.glob(os.path.join(self.MUSIC_DIR, "*.wav"))
+        )
+        random.shuffle(self._tracks)
+
+    # ── Public API ──────────────────────────────────────────────────────
+    def toggle(self):
+        """M key handler."""
+        if not self._pygame_ok or not self._tracks:
+            return
+        if self._playing:
+            self._pygame.mixer.music.pause()
+            self._playing = False
+        else:
+            if self._pygame.mixer.music.get_busy():
+                self._pygame.mixer.music.unpause()
+            else:
+                self._load_and_play(self._idx)
+            self._playing = True
+        self._update_badge()
+
+    def next_track(self):
+        """N key handler."""
+        if not self._pygame_ok or not self._tracks:
+            return
+        self._idx = (self._idx + 1) % len(self._tracks)
+        self._load_and_play(self._idx)
+        self._playing = True
+        self._update_badge()
+
+    def _load_and_play(self, idx):
+        try:
+            self._pygame.mixer.music.load(self._tracks[idx])
+            self._pygame.mixer.music.set_volume(0.4)
+            self._pygame.mixer.music.play(-1)   # -1 = loop
+        except Exception as e:
+            print(f"[MusicWidget] play error: {e}")
+
+    # ── Visual ──────────────────────────────────────────────────────────
+    def _update_badge(self):
+        if self._playing:
+            self._badge.setText("ON")
+            self._badge.setStyleSheet(
+                "font-size:8px; font-weight:700; border-radius:3px; padding:1px 3px;"
+                f"background:{C_ACCENT}; color:white;")
+            self._note_lbl.setStyleSheet(
+                "font-size:16px; color:#50FA7B; background:transparent;")
+        else:
+            self._badge.setText("OFF")
+            self._badge.setStyleSheet(
+                "font-size:8px; font-weight:700; border-radius:3px; padding:1px 3px;"
+                f"background:{C_CARD}; color:{C_SUBTEXT};")
+            self._note_lbl.setStyleSheet(
+                "font-size:16px; color:#BD93F9; background:transparent;")
+
+    def _refresh_style(self, dojo: bool):
+        if dojo:
+            self.setStyleSheet("""
+                QFrame#music_widget {
+                    background: rgba(124, 106, 247, 0.08);
+                    border: 1.5px solid #7C6AF7;
+                    border-radius: 6px;
+                }
+                QFrame#music_widget:hover {
+                    background: rgba(124, 106, 247, 0.18);
+                    border: 1.5px solid #BD93F9;
+                }
+            """)
+        else:
+            self.setStyleSheet(f"""
+                QFrame#music_widget {{
+                    background: {C_CARD};
+                    border: 1px solid {C_BORDER};
+                    border-radius: 6px;
+                }}
+                QFrame#music_widget:hover {{
+                    background: {C_SURFACE};
+                    border: 1px solid {C_ACCENT};
+                }}
+            """)
+
+    def set_theme(self, theme: str):
+        self._refresh_style(dojo=(theme == "dojo"))
+
+    # click = toggle
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.toggle()
+        super().mousePressEvent(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATCHES INSIDE HomeScreen
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── PATCH 1: In _setup_ui(), AFTER the mentor block (line ~632), add: ─────────
+#
+#   self.music_widget = MusicWidget()
+#   tl.addSpacing(4)
+#   tl.addWidget(self.music_widget)
+#
+# Full context (replace lines 630-636):
+#
+#   self.mentor = MentorWidget()
+#   self.mentor.setFixedWidth(220)
+#   tl.addWidget(self.mentor)
+#
+#   self.music_widget = MusicWidget()          # ← ADD
+#   tl.addSpacing(4)                            # ← ADD
+#   tl.addWidget(self.music_widget)             # ← ADD
+#
+#   self._top_bar = self.top_frame
+#   self._apply_topbar_style()
+#   L.addWidget(self.top_frame)
+
+
+# ── PATCH 2: In _toggle_theme(), after deck_view.set_theme(), add: ───────────
+#
+#   self.music_widget.set_theme(self._current_theme)
+
+
+# ── PATCH 3: In keyPressEvent(), BEFORE super().keyPressEvent(e), add: ───────
+#
+#   elif key == Qt.Key_M:
+#       self.music_widget.toggle()
+#       e.accept()
+#       return
+#   elif key == Qt.Key_N:
+#       self.music_widget.next_track()
+#       e.accept()
+#       return
+
+
+# ── PATCH 4 (optional): In _apply_topbar_style(), dojo branch QPushButton#nav_btn
+#   block, no changes needed — MusicWidget has its own set_theme().
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FOLDER STRUCTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#  anki_occlusion/
+#  └── assets/
+#      └── music/
+#          ├── lofi_beat_1.mp3
+#          ├── ninja_ambient.ogg
+#          └── ... (any .mp3 / .ogg / .wav)
+#
+#  pip install pygame
+#
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class HomeScreen(QWidget):
     def __init__(self, data: dict, parent=None):
@@ -596,7 +851,8 @@ class HomeScreen(QWidget):
 
         # Theme Toggle Button
         self._current_theme = self._data.get("_theme", "classic")
-        btn_text = "🥷 NINJA MODE" if self._current_theme == "classic" else "📚 CLASSIC MODE"
+        _next_lbl = {"classic": "🥷 NINJA MODE", "dojo": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
+        btn_text = _next_lbl.get(self._current_theme, "🥷 NINJA MODE")
         self._btn_theme = _topbtn(btn_text, "Switch Theme")
         self._btn_theme.clicked.connect(self._toggle_theme)
 
@@ -626,15 +882,27 @@ class HomeScreen(QWidget):
         tl.addWidget(btn_fr)
         tl.addWidget(btn_fi)
 
+        self.music_widget = MusicWidget()   
+        tl.addSpacing(4)                    
+        tl.addWidget(self.music_widget)  
+
         # Mentor Section (Aligned with Cache Bar width ~220px)
         self.mentor = MentorWidget()
         self.mentor.setFixedWidth(220)
-        tl.addWidget(self.mentor)
+        tl.addWidget(self.mentor)   
         
         self._top_bar = self.top_frame
         self._apply_topbar_style()  # Initial style
         L.addWidget(self.top_frame)
 
+        # ── BODY STACK: index 0 = splitter (classic/dojo), index 1 = TMNT ──
+        self._body_stack = QStackedWidget()
+
+        # Splitter widget (classic + dojo)
+        self._splitter_widget = QWidget()
+        _sw_l = QVBoxLayout(self._splitter_widget)
+        _sw_l.setContentsMargins(0, 0, 0, 0)
+        _sw_l.setSpacing(0)
         split = QSplitter(Qt.Horizontal)
         self.deck_tree = DeckTree(self._data, theme=self._current_theme)
         self.deck_tree.setMinimumWidth(260)
@@ -642,24 +910,40 @@ class HomeScreen(QWidget):
         self.deck_tree.deck_selected.connect(self._on_deck_selected)
         split.addWidget(self.deck_tree)
         self.deck_view = DeckView()
+        self.deck_view.set_theme(self._current_theme)
         split.addWidget(self.deck_view)
-        self._cache_widget = CacheWidget()        # ← ADD
-        split.addWidget(self._cache_widget)       # ← ADD
-        split.setSizes([340, 760, 220])           # ← CHANGE (was [340, 860])
-        L.addWidget(split, stretch=1)
+        self._cache_widget = CacheWidget()
+        split.addWidget(self._cache_widget)
+        split.setSizes([340, 760, 220])
+        _sw_l.addWidget(split, stretch=1)
+        self._body_stack.addWidget(self._splitter_widget)   # index 0
+
+        # TMNT layout
+        self._tmnt_layout = None
+        if _TMNT_HOME_AVAILABLE:
+            self._tmnt_layout = TMNTHomeLayout(self._data, self.deck_view, parent=self)
+            self._tmnt_layout.btn_math_clicked.connect(self._show_math_trainer)
+            self._tmnt_layout.btn_journal_clicked.connect(self._show_journal)
+            self._tmnt_layout.btn_theme_clicked.connect(self._toggle_theme)
+            self._tmnt_layout.btn_help_clicked.connect(self._show_help)
+            self._tmnt_layout.btn_about_clicked.connect(self._show_about)
+            self._tmnt_layout.font_change.connect(self._emit_font)
+            self._body_stack.addWidget(self._tmnt_layout)   # index 1
+
+        L.addWidget(self._body_stack, stretch=1)
+
+        # Activate correct body for saved theme
+        if self._current_theme == "tmnt" and self._tmnt_layout:
+            self.top_frame.hide()
+            self._body_stack.setCurrentIndex(1)
+            QTimer.singleShot(100, lambda: (
+                self.window().statusBar().hide()
+                if self.window() and self.window().statusBar() else None
+            ))
 
     def show_review(self, cards, data, _on_batch_done=None):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
-        split = self._get_splitter()
-        if split is None:
-            return
-
-        # Hide deck_tree during review, store splitter sizes to restore later
-        self._pre_review_sizes = split.sizes()
-        self.deck_tree.hide()
-        self._top_bar.hide()
-        self.window().statusBar().hide()
 
         rev = ReviewScreen(cards, data=data, parent=self)
         self._active_review = rev
@@ -667,34 +951,41 @@ class HomeScreen(QWidget):
         def _on_finished():
             if not _save_done[0]:
                 _save_done[0] = True
-                # [FIX] Force-save on review exit so SM-2 state from the last
-                # card rated is never lost if the app is closed immediately after.
-                # _rate() already called save_force() per rating, but this is a
-                # safety net for edge cases (e.g. user exits mid-session without
-                # rating the current card — partial session state still saved).
                 store.mark_dirty()
                 store.save_force()
             self.hide_review()
             if _on_batch_done:
                 _on_batch_done()
 
-        rev.finished.connect(_on_finished)
-
         def _on_cancelled():
             if not _save_done[0]:
                 _save_done[0] = True
                 store.mark_dirty()
                 store.save_force()
-            self.hide_review()  # stop the sequential chain — no _on_batch_done
+            self.hide_review()
 
+        rev.finished.connect(_on_finished)
         rev.cancelled.connect(_on_cancelled)
 
-        # Replace index 1 (deck_view) with the ReviewScreen
-        split.replaceWidget(1, rev)
+        if self._current_theme == "tmnt" and self._tmnt_layout:
+            # TMNT: push review into body stack slot 2
+            self._pre_review_tmnt = True
+            self.top_frame.hide()
+            self._body_stack.addWidget(rev)
+            self._body_stack.setCurrentWidget(rev)
+        else:
+            self._pre_review_tmnt = False
+            split = self._get_splitter()
+            if split is None:
+                return
+            self._pre_review_sizes = split.sizes()
+            self.deck_tree.hide()
+            self._top_bar.hide()
+            self.window().statusBar().hide()
+            split.replaceWidget(1, rev)
+            split.setSizes([0, split.width(), 0])
+
         rev.show()
-        # Give most space to review, hide cache panel
-        split.setSizes([0, split.width(), 0])
-        # Give keyboard focus to canvas immediately so Space works without clicking
         QTimer.singleShot(0, rev.canvas.setFocus)
 
 
@@ -724,27 +1015,35 @@ class HomeScreen(QWidget):
         _launch_next()
 
     def hide_review(self):
-        """Restore DeckView after review ends."""
-        split = self._get_splitter()
-        if split is None:
-            return
+        """Restore layout after review ends."""
         rev = getattr(self, "_active_review", None)
-        if rev:
-            split.replaceWidget(1, self.deck_view)
-            rev.setParent(None)
-            rev.deleteLater()
-            self._active_review = None
-        self.deck_tree.show()
-        self._top_bar.show()
-        self.window().statusBar().show()
-        # Restore original sizes
-        sizes = getattr(self, "_pre_review_sizes", [340, 760, 220])
-        split.setSizes(sizes)
+        self._active_review = None
+
+        if getattr(self, "_pre_review_tmnt", False) and self._tmnt_layout:
+            if rev:
+                self._body_stack.removeWidget(rev)
+                rev.setParent(None)
+                rev.deleteLater()
+            self._body_stack.setCurrentIndex(1)
+            self.top_frame.hide()
+            self._tmnt_layout.refresh()
+        else:
+            split = self._get_splitter()
+            if rev and split:
+                split.replaceWidget(1, self.deck_view)
+                rev.setParent(None)
+                rev.deleteLater()
+            self.deck_tree.show()
+            self._top_bar.show()
+            self.window().statusBar().show()
+            sizes = getattr(self, "_pre_review_sizes", [340, 760, 220])
+            if split:
+                split.setSizes(sizes)
         self.refresh()
 
     def _get_splitter(self):
         """Return the main QSplitter child."""
-        for child in self.children():
+        for child in self._splitter_widget.children():
             if isinstance(child, QSplitter):
                 return child
         return None
@@ -806,42 +1105,51 @@ class HomeScreen(QWidget):
                 "journal.py not found!\nPlace journal.py next to anki_occlusion_v19.py")
 
     def _show_math_trainer(self):
-        # ── Single-instance guard ─────────────────────────────────────────────
         if getattr(self, "_math_trainer", None) is not None:
-            return   # already open — do nothing
-
+            return
         if not _MATH_AVAILABLE:
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Math Trainer",
                 "math_trainer.py not found!\n\nPlace math_trainer.py inside the ui/ folder.")
             return
-
-        split = self._get_splitter()
-        if split is None:
-            return
-
         mt = MathTrainerPage(parent=self)
         mt.closed.connect(self._hide_math_trainer)
         self._math_trainer = mt
-
-        # Swap DeckView → MathTrainerPage (index 1 in splitter)
-        self._pre_math_sizes = split.sizes()
-        split.replaceWidget(1, mt)
-        mt.show()
-        split.setSizes([split.sizes()[0], split.width(), 0])
+        if self._current_theme == "tmnt" and self._tmnt_layout:
+            self._pre_math_tmnt = True
+            self.top_frame.hide()
+            self._body_stack.addWidget(mt)
+            self._body_stack.setCurrentWidget(mt)
+        else:
+            self._pre_math_tmnt = False
+            split = self._get_splitter()
+            if split is None:
+                return
+            self._pre_math_sizes = split.sizes()
+            split.replaceWidget(1, mt)
+            mt.show()
+            split.setSizes([split.sizes()[0], split.width(), 0])
 
     def _hide_math_trainer(self):
-        split = self._get_splitter()
-        if split is None:
-            return
         mt = getattr(self, "_math_trainer", None)
-        if mt:
-            split.replaceWidget(1, self.deck_view)
+        self._math_trainer = None
+        if not mt:
+            return
+        if getattr(self, "_pre_math_tmnt", False) and self._tmnt_layout:
+            self._body_stack.removeWidget(mt)
             mt.setParent(None)
             mt.deleteLater()
-            self._math_trainer = None
-        sizes = getattr(self, "_pre_math_sizes", [340, 760, 220])
-        split.setSizes(sizes)
+            self._body_stack.setCurrentIndex(1)
+            self.top_frame.hide()
+            self._tmnt_layout.refresh()
+        else:
+            split = self._get_splitter()
+            if split:
+                split.replaceWidget(1, self.deck_view)
+                mt.setParent(None)
+                mt.deleteLater()
+                sizes = getattr(self, "_pre_math_sizes", [340, 760, 220])
+                split.setSizes(sizes)
         self.refresh()
 
     def _show_about(self):
@@ -851,30 +1159,56 @@ class HomeScreen(QWidget):
         OnboardingDialog(self).exec_()
     def _toggle_theme(self):
         from theme_manager import build_stylesheet
+        from PyQt5.QtGui import QFont
 
-        if self._current_theme == "classic":
-            self._current_theme = "dojo"
-            self._btn_theme.setText("📚 CLASSIC MODE")
-        else:
-            self._current_theme = "classic"
-            self._btn_theme.setText("🥷 NINJA MODE")
+        _cycle    = {"classic": "dojo", "dojo": "tmnt", "tmnt": "classic"}
+        _btn_next = {"classic": "🥷 NINJA MODE", "dojo": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
 
+        self._current_theme = _cycle.get(self._current_theme, "dojo")
+        self._btn_theme.setText(_btn_next.get(self._current_theme, "🥷 NINJA MODE"))
         self._data["_theme"] = self._current_theme
         store.mark_dirty()
 
-        self.deck_tree.set_theme(self._current_theme)
-        self.deck_view.set_theme(self._current_theme)
-
-        # Update top bar styling
-        self._apply_topbar_style()
-
         app = QApplication.instance()
-        if app:
-            app._active_theme = self._current_theme
-            if self._current_theme == "classic":
-                app.setStyleSheet(SS)
-            else:
-                app.setStyleSheet(build_stylesheet(self._current_theme))
+        win = self.window()
+        current_size = self._data.get("_font_size", BASE_FONT_SIZE)
+
+        if self._current_theme == "tmnt" and self._tmnt_layout:
+            # ── Swap to TMNT full layout ──────────────────────────────────────
+            self.top_frame.hide()
+            win_sb = self.window().statusBar() if self.window() else None
+            if win_sb: win_sb.hide()
+            self._tmnt_layout.refresh()
+            self._body_stack.setCurrentIndex(1)
+            if app:
+                app._active_theme = "tmnt"
+                app.setFont(QFont("Roboto Mono", current_size))
+                ss = build_stylesheet("tmnt", current_size)
+                app.setStyleSheet(ss)
+                if win: win.setStyleSheet(ss)
+        else:
+            # ── Swap back to splitter (classic / dojo) ───────────────────────
+            self.top_frame.show()
+            win_sb = self.window().statusBar() if self.window() else None
+            if win_sb: win_sb.show()
+            self._body_stack.setCurrentIndex(0)
+            self.deck_tree.set_theme(self._current_theme)
+            self.deck_view.set_theme(self._current_theme)
+            self.music_widget.set_theme(self._current_theme)
+            self._cache_widget.set_theme(self._current_theme)
+            self._apply_topbar_style()
+            if app:
+                app._active_theme = self._current_theme
+                if self._current_theme == "classic":
+                    app.setFont(QFont("Segoe UI", current_size))
+                    app.setStyleSheet(_build_ss(current_size))
+                    if win: win.setStyleSheet("")
+                else:
+                    app.setFont(QFont(NARUTO_FONT_FAMILY, current_size))
+                    ss = build_stylesheet("dojo", current_size)
+                    app.setStyleSheet(ss)
+                    if win: win.setStyleSheet(ss)
+
     def _emit_font(self, direction: int):
         win = self.window()
         if hasattr(win, "change_font_size"):
@@ -913,7 +1247,16 @@ class HomeScreen(QWidget):
                         print("[HomeScreen][key] Ctrl+Z — fell through to mask undo")
                 e.accept()
                 return
-        super().keyPressEvent(e)
+        elif key == Qt.Key_M:
+            self.music_widget.toggle()
+            e.accept()
+            return
+        elif key == Qt.Key_N:
+            self.music_widget.next_track()
+            e.accept()
+            return
+
+        super().keyPressEvent(e)   # ← yeh already hai, sirf usse pehle add karo
 
     def closeEvent(self, e):
         active_editor = getattr(self, "_active_editor", None)
@@ -952,7 +1295,7 @@ class HomeScreen(QWidget):
                     color: #5F627D;
                     border: none;
                     border-bottom: 2px solid transparent;
-                    font-family: '{NARUTO_FONT_FAMILY}';
+                    font-family: 'Orbitron';
                     font-size: 14px;
                     font-weight: 900;
                     padding: 8px 18px;
@@ -1035,10 +1378,13 @@ class HomeScreen(QWidget):
             """)
 
     def refresh(self):
-        self.deck_tree.refresh()
-        sel = self.deck_tree.get_selected_deck()
-        if sel:
-            self.deck_view.load_deck(sel, self._data)
+        if self._current_theme == "tmnt" and self._tmnt_layout:
+            self._tmnt_layout.refresh()
+        else:
+            self.deck_tree.refresh()
+            sel = self.deck_tree.get_selected_deck()
+            if sel:
+                self.deck_view.load_deck(sel, self._data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
