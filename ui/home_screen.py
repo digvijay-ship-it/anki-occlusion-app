@@ -921,13 +921,7 @@ class HomeScreen(QWidget):
         # TMNT layout
         self._tmnt_layout = None
         if _TMNT_HOME_AVAILABLE:
-            self._tmnt_layout = TMNTHomeLayout(self._data, self.deck_view, parent=self)
-            self._tmnt_layout.btn_math_clicked.connect(self._show_math_trainer)
-            self._tmnt_layout.btn_journal_clicked.connect(self._show_journal)
-            self._tmnt_layout.btn_theme_clicked.connect(self._toggle_theme)
-            self._tmnt_layout.btn_help_clicked.connect(self._show_help)
-            self._tmnt_layout.btn_about_clicked.connect(self._show_about)
-            self._tmnt_layout.font_change.connect(self._emit_font)
+            self._tmnt_layout = self._create_tmnt_layout()
             self._body_stack.addWidget(self._tmnt_layout)   # index 1
 
         L.addWidget(self._body_stack, stretch=1)
@@ -1157,6 +1151,42 @@ class HomeScreen(QWidget):
 
     def _show_help(self):
         OnboardingDialog(self).exec_()
+
+    def _create_tmnt_layout(self):
+        layout = TMNTHomeLayout(self._data, self.deck_view, parent=self)
+        layout.btn_math_clicked.connect(self._show_math_trainer)
+        layout.btn_journal_clicked.connect(self._show_journal)
+        layout.btn_theme_clicked.connect(self._toggle_theme)
+        layout.btn_help_clicked.connect(self._show_help)
+        layout.btn_about_clicked.connect(self._show_about)
+        layout.font_change.connect(self._emit_font)
+        layout.bgm_toggle.connect(self._toggle_tmnt_bgm)
+        layout.set_bgm_state(self.music_widget._playing)
+        return layout
+
+    def rebuild_tmnt_layout(self):
+        if not _TMNT_HOME_AVAILABLE or self._tmnt_layout is None:
+            return
+        current = self._body_stack.currentWidget()
+        if current is not self._tmnt_layout:
+            return
+        selected = self._tmnt_layout.get_selected_deck()
+        selected_id = selected.get("_id") if selected else None
+        old = self._tmnt_layout
+        self._tmnt_layout = self._create_tmnt_layout()
+        self._body_stack.insertWidget(1, self._tmnt_layout)
+        self._body_stack.setCurrentWidget(self._tmnt_layout)
+        self._body_stack.removeWidget(old)
+        old.setParent(None)
+        old.deleteLater()
+        if selected_id:
+            self._tmnt_layout.select_deck_by_id(selected_id)
+
+    def _toggle_tmnt_bgm(self):
+        self.music_widget.toggle()
+        if self._tmnt_layout:
+            self._tmnt_layout.set_bgm_state(self.music_widget._playing)
+
     def _toggle_theme(self):
         from theme_manager import build_stylesheet
         from PyQt5.QtGui import QFont
@@ -1179,6 +1209,7 @@ class HomeScreen(QWidget):
             win_sb = self.window().statusBar() if self.window() else None
             if win_sb: win_sb.hide()
             self._tmnt_layout.refresh()
+            self._tmnt_layout.set_bgm_state(self.music_widget._playing)
             self._body_stack.setCurrentIndex(1)
             if app:
                 app._active_theme = "tmnt"
@@ -1249,10 +1280,14 @@ class HomeScreen(QWidget):
                 return
         elif key == Qt.Key_M:
             self.music_widget.toggle()
+            if self._tmnt_layout:
+                self._tmnt_layout.set_bgm_state(self.music_widget._playing)
             e.accept()
             return
         elif key == Qt.Key_N:
             self.music_widget.next_track()
+            if self._tmnt_layout:
+                self._tmnt_layout.set_bgm_state(self.music_widget._playing)
             e.accept()
             return
 

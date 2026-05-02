@@ -10,10 +10,10 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QScrollArea, QLineEdit, QGridLayout, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QThread, pyqtSlot
+from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QThread, pyqtSlot, QEvent, QRect
 from PyQt5.QtGui import (
     QPainter, QColor, QPen, QFont, QBrush,
-    QPainterPath, QLinearGradient, QPolygonF
+    QPainterPath, QLinearGradient, QPolygonF, QCursor
 )
 
 try:
@@ -39,6 +39,81 @@ SUBTEXT = QColor("#A6ADC8")
 ORANG   = QColor("#FF4444")
 
 def _h(c): return c.name()
+
+
+# ── Scratchpad Canvas ──────────────────────────────────────────────────────────
+class MathScratchpad(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self._pen_mode = False
+        self._strokes = []
+        self._current = []
+        self._pen_color = GREEN
+        self._pen_width = 2.5
+
+    def set_pen_mode(self, enabled):
+        self._pen_mode = enabled
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, not enabled)
+        # Force cursor update
+        if enabled:
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.unsetCursor()
+        self.update()
+
+    def clear(self):
+        self._strokes = []
+        self._current = []
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        
+        # Pen indicator if active
+        if self._pen_mode:
+            p.setPen(QPen(GREEN, 1, Qt.DashLine))
+            p.drawRect(self.rect().adjusted(0,0,-1,-1))
+            p.setFont(QFont("Arial", 8))
+            p.drawText(self.rect().adjusted(10, 10, 0, 0), Qt.AlignLeft | Qt.AlignTop, "PEN ACTIVE (`)")
+
+        for stroke in self._strokes:
+            if len(stroke) < 2: continue
+            p.setPen(QPen(self._pen_color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPolyline(QPolygonF(stroke))
+            
+        if len(self._current) >= 2:
+            p.setPen(QPen(self._pen_color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPolyline(QPolygonF(self._current))
+        p.end()
+
+    def mousePressEvent(self, e):
+        if self._pen_mode and e.button() == Qt.LeftButton:
+            self._current = [e.localPos()]
+            self.update()
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._pen_mode and (e.buttons() & Qt.LeftButton):
+            self._current.append(e.localPos())
+            self.update()
+            e.accept()
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._pen_mode and e.button() == Qt.LeftButton:
+            if len(self._current) >= 2:
+                self._strokes.append(list(self._current))
+            self._current = []
+            self.update()
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
 
 
 # ── Particle Canvas ───────────────────────────────────────────────────────────
@@ -229,6 +304,9 @@ class MathTrainerPage(QWidget):
         self._particles = ParticleCanvas(self)
         self._particles.setAttribute(Qt.WA_TransparentForMouseEvents)
 
+        # Scratchpad (absolute overlay on top)
+        self._scratchpad = MathScratchpad(self)
+
         # ── Top Bar ──────────────────────────────────────────────────────────
         top = QFrame()
         top.setFixedHeight(52)
@@ -302,12 +380,38 @@ class MathTrainerPage(QWidget):
 
     def resizeEvent(self, e):
         self._particles.setGeometry(0, 52, self.width(), self.height()-78)
+        if hasattr(self, "_scratchpad"):
+            self._scratchpad.setGeometry(0, 52, self.width(), self.height()-78)
         super().resizeEvent(e)
 
     def showEvent(self, e):
         self._particles.setGeometry(0, 52, self.width(), self.height()-78)
         self._particles.raise_()
+        if hasattr(self, "_scratchpad"):
+            self._scratchpad.setGeometry(0, 52, self.width(), self.height()-78)
+            self._scratchpad.raise_()
         super().showEvent(e)
+
+    def eventFilter(self, obj, e):
+        if obj == self._ans_in and e.type() == QEvent.KeyPress:
+            if e.key() == Qt.Key_QuoteLeft:
+                self._toggle_pen()
+                return True
+        return super().eventFilter(obj, e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_QuoteLeft:
+            self._toggle_pen()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def _toggle_pen(self):
+        if hasattr(self, "_scratchpad"):
+            new_state = not self._scratchpad._pen_mode
+            self._scratchpad.set_pen_mode(new_state)
+            if not new_state:
+                self._ans_in.setFocus()
 
     # ── Page 0 ────────────────────────────────────────────────────────────────
     def _build_p0(self):
@@ -520,6 +624,7 @@ class MathTrainerPage(QWidget):
         self._ans_in.setStyleSheet(self._ANS_SS)
         self._ans_in.textChanged.connect(self._auto_check)
         self._ans_in.returnPressed.connect(self._check)
+        self._ans_in.installEventFilter(self)
         al.addWidget(self._ans_in)
 
         self._mic_btn = QPushButton("🎙"); self._mic_btn.setFixedSize(52,52)
@@ -568,6 +673,10 @@ class MathTrainerPage(QWidget):
         self._p1.setVisible(idx==1)
         self._p2.setVisible(idx==2)
         if idx==0: self._top_mode_lbl.hide()
+        if hasattr(self, "_scratchpad"):
+            self._scratchpad.setVisible(idx==2)
+            if idx != 2:
+                self._scratchpad.set_pen_mode(False)
 
     def _select_mode(self, m):
         self._mode = m
@@ -619,6 +728,10 @@ class MathTrainerPage(QWidget):
         self._ans_in.setText(""); self._ans_in.setStyleSheet(self._ANS_SS)
         self._qn += 1; self._qcount_lbl.setText(f"MISSION {self._qn}")
         self._sb_status.setText("TRAINING...")
+        
+        if hasattr(self, "_scratchpad"):
+            self._scratchpad.clear()
+
         if self._mode==1:
             sel = [k for k,v in self._tchk.items() if v]
             n1 = random.choice(sel); n2 = random.choice([2,3,4,5,6,7,8,9])

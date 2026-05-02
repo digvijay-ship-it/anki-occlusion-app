@@ -107,10 +107,33 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices
+    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices,
+    QFontDatabase
 )
 
 import tempfile
+
+NARUTO_FONT_FAMILY = "Segoe UI"
+
+
+def load_custom_fonts():
+    if not QApplication.instance():
+        return
+    global NARUTO_FONT_FAMILY
+    font_paths = [
+        os.path.join(os.path.dirname(__file__), "ninja-naruto-font", "njnaruto.ttf"),
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "PressStart2P-Regular.ttf"),
+        os.path.join(os.path.dirname(__file__), "assets", "fonts", "RobotoMono-Regular.ttf"),
+    ]
+    for font_path in font_paths:
+        if not os.path.exists(font_path):
+            continue
+        font_id = QFontDatabase.addApplicationFont(font_path)
+        if font_id == -1:
+            continue
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        if families and font_path.endswith("njnaruto.ttf"):
+            NARUTO_FONT_FAMILY = families[0]
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
@@ -236,7 +259,10 @@ class MainWindow(QMainWindow):
         else:
             app.setStyleSheet(build_stylesheet(theme, self._font_size))
             self.setStyleSheet(build_stylesheet(theme, self._font_size))
-            
+        home = self.centralWidget()
+        if home is not None and hasattr(home, "rebuild_tmnt_layout"):
+            home.rebuild_tmnt_layout()
+             
         store.mark_dirty()  # 🔒 DirtyStore
 
     def _apply_font_size(self, size: int):
@@ -301,6 +327,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     app = QApplication(sys.argv)
+    load_custom_fonts()
     app.setStyleSheet(SS)
     app.setApplicationName("Anki Occlusion")
     app.setApplicationVersion("1.0")
