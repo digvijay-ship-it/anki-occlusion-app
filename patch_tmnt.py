@@ -15,7 +15,7 @@ bgm_code = '''
                     color: {T_SUBTEXT};
                     border: 1px solid {T_BORDER};
                     border-radius: 2px;
-                    font-size: 10px;
+                    font-size: 12px;
                     font-weight: bold;
                 }}
                 QPushButton:hover {{ background: {T_CARD}; color: {T_TEXT}; border-color: {T_GREEN}; }}
@@ -69,7 +69,7 @@ old_font = '''        # ── Font buttons ──
                     color: {T_SUBTEXT};
                     border: 1px solid {T_BORDER};
                     border-radius: 2px;
-                    font-size: 10px;
+                    font-size: 12px;
                     font-weight: bold;
                 }}
                 QPushButton:hover {{ background: {T_CARD}; color: {T_TEXT}; border-color: {T_GREEN}; }}

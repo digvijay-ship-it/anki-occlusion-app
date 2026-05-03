@@ -16,19 +16,42 @@
             theme: {
                 extend: {
                     colors: {
-                        'dojo-dark': '#0b0c10',
-                        'dojo-panel': '#1f2833',
-                        'dojo-card': '#262933',
+                        'dojo-dark': '#0f150e',
+                        'dojo-panel': '#181d16',
+                        'dojo-card': '#353b33',
                         'dojo-accent-green': '#45a247',
                         'dojo-neon-green': '#66fcf1',
                         'dojo-text': '#c5c6c7',
                         'dojo-red': '#ff4d4d',
                         'dojo-purple': '#b088f9',
-                        'dojo-border': '#333b4d'
+                        'dojo-border': '#2d332b'
                     },
                     fontFamily: {
                         'dojo-display': ['"Press Start 2P"', 'cursive'],
                         'dojo-mono': ['"Roboto Mono"', 'monospace'],
+                    },
+                    animation: {
+                        'scanline': 'scanline 8s linear infinite',
+                        'flicker-in': 'flickerIn 0.5s ease-out forwards',
+                        'arcade-pulse': 'arcadePulse 1.5s infinite',
+                    },
+                    keyframes: {
+                        scanline: {
+                            '0%': { transform: 'translateY(-100%)' },
+                            '100%': { transform: 'translateY(100vh)' }
+                        },
+                        flickerIn: {
+                            '0%': { opacity: '0' },
+                            '20%': { opacity: '1' },
+                            '40%': { opacity: '0' },
+                            '60%': { opacity: '1' },
+                            '80%': { opacity: '0.5' },
+                            '100%': { opacity: '1' }
+                        },
+                        arcadePulse: {
+                            '0%, 100%': { opacity: '1', transform: 'scale(1)' },
+                            '50%': { opacity: '0.8', transform: 'scale(0.98)' }
+                        }
                     }
                 }
             }
@@ -41,11 +64,11 @@
         }
 
         ::-webkit-scrollbar-track {
-            background: #0b0c10;
+            background: #0f150e;
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #1f2833;
+            background: #181d16;
             border-radius: 4px;
         }
 
@@ -58,7 +81,7 @@
         }
 
         .panel-border {
-            border: 1px solid #333b4d;
+            border: 1px solid #2d332b;
             border-radius: 4px;
         }
 
@@ -68,55 +91,86 @@
         }
 
         .btn-green-glow:hover {
-            box-shadow: 0 0 15px rgba(69, 162, 71, 0.6);
-            transform: translateY(-1px);
+            box-shadow: 0 0 15px rgba(69, 162, 71, 0.8);
+            transform: translateY(-2px);
+        }
+
+        .btn-purple-glow:hover {
+            box-shadow: 0 0 15px rgba(176, 136, 249, 0.8);
+        }
+
+        .btn-cyan-glow:hover {
+            box-shadow: 0 0 15px rgba(102, 252, 241, 0.8);
+        }
+
+        .scanlines-overlay {
+            background: linear-gradient(to bottom,
+                    rgba(255, 255, 255, 0),
+                    rgba(255, 255, 255, 0) 50%,
+                    rgba(0, 0, 0, 0.2) 50%,
+                    rgba(0, 0, 0, 0.2));
+            background-size: 100% 4px;
+            pointer-events: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 100;
+            opacity: 0.3;
         }
     </style>
 </head>
 
-<body class="bg-dojo-dark text-dojo-text font-dojo-mono h-screen flex flex-col overflow-hidden text-sm">
+<body class="bg-dojo-dark text-dojo-text font-dojo-mono h-screen flex flex-col overflow-hidden text-sm relative">
+    <div class="scanlines-overlay"></div>
     <!-- BEGIN: Top Navigation Bar -->
-    <header class="bg-dojo-dark border-b border-dojo-border flex items-center justify-between px-4 py-2 shrink-0">
+    <header
+        class="bg-dojo-dark border-b border-dojo-border flex items-center justify-between px-4 py-2 shrink-0 animate-flicker-in z-10 relative">
         <div class="flex items-center space-x-3">
             <i class="fa-solid fa-monkey text-dojo-neon-green text-2xl"></i>
             <h1 class="text-dojo-neon-green font-dojo-display text-lg tracking-wider text-shadow-neon">ANKI OCCLUSION
             </h1>
         </div>
         <nav class="flex items-center space-x-6 text-xs text-gray-400 font-bold uppercase tracking-wider">
-            <a class="flex items-center space-x-2 hover:text-white transition-colors" href="#">
+            <a class="flex items-center space-x-2 hover:text-white hover:text-shadow-neon transition-all" href="#">
                 <span class="text-dojo-purple"><i class="fa-solid fa-book"></i></span>
                 <span>Math</span>
             </a>
-            <a class="flex items-center space-x-2 hover:text-white transition-colors" href="#">
+            <a class="flex items-center space-x-2 hover:text-white hover:text-shadow-neon transition-all" href="#">
                 <span class="text-dojo-purple"><i class="fa-solid fa-journal-whills"></i></span>
                 <span>Journal</span>
             </a>
-            <a class="flex items-center space-x-2 hover:text-white transition-colors" href="#">
+            <a class="flex items-center space-x-2 hover:text-white hover:text-shadow-neon transition-all" href="#">
                 <span class="text-blue-400"><i class="fa-solid fa-desktop"></i></span>
                 <span>Classic Mode</span>
             </a>
-            <a class="flex items-center space-x-2 hover:text-white transition-colors" href="#">
+            <a class="flex items-center space-x-2 hover:text-white hover:text-shadow-neon transition-all" href="#">
                 <span class="text-red-400"><i class="fa-solid fa-question"></i></span>
                 <span>Help</span>
             </a>
-            <a class="flex items-center space-x-2 hover:text-white transition-colors" href="#">
+            <a class="flex items-center space-x-2 hover:text-white hover:text-shadow-neon transition-all" href="#">
                 <span class="text-gray-500"><i class="fa-solid fa-info-circle"></i></span>
                 <span>About</span>
             </a>
         </nav>
         <div class="flex items-center space-x-3">
             <div class="flex space-x-1">
-                <button class="bg-dojo-panel hover:bg-gray-700 text-gray-300 px-2 py-1 rounded text-xs">A-</button>
-                <button class="bg-dojo-panel hover:bg-gray-700 text-gray-300 px-2 py-1 rounded text-xs">A</button>
-                <button class="bg-dojo-panel hover:bg-gray-700 text-gray-300 px-2 py-1 rounded text-xs">A+</button>
+                <button
+                    class="bg-dojo-panel hover:bg-gray-700 active:translate-y-1 text-gray-300 px-2 py-1 rounded text-xs transition-transform">A-</button>
+                <button
+                    class="bg-dojo-panel hover:bg-gray-700 active:translate-y-1 text-gray-300 px-2 py-1 rounded text-xs transition-transform">A</button>
+                <button
+                    class="bg-dojo-panel hover:bg-gray-700 active:translate-y-1 text-gray-300 px-2 py-1 rounded text-xs transition-transform">A+</button>
             </div>
             <button
-                class="flex items-center space-x-2 bg-dojo-panel hover:bg-gray-700 border border-dojo-border rounded px-3 py-1 text-xs">
+                class="flex items-center space-x-2 bg-dojo-panel hover:bg-gray-700 active:translate-y-1 border border-dojo-border rounded px-3 py-1 text-xs transition-all btn-purple-glow">
                 <i class="fa-solid fa-music text-dojo-purple"></i>
                 <span>BGM</span>
                 <span class="bg-gray-800 text-gray-500 px-1 rounded text-[10px]">OFF</span>
             </button>
-            <div class="flex items-center bg-dojo-panel border border-dojo-purple rounded p-1 space-x-3 pr-4">
+            <div
+                class="flex items-center bg-dojo-panel border border-dojo-purple rounded p-1 space-x-3 pr-4 hover:shadow-[0_0_10px_rgba(176,136,249,0.3)] transition-shadow">
                 <img alt="User Avatar" class="rounded-full w-8 h-8 border border-gray-600"
                     src="https://lh3.googleusercontent.com/aida-public/AB6AXuCvBfcZPQSb9BoAIh-72lp8zJZJ81lCEtDhMYEwBPnYVEi2PCnjdxpQ_S07XyI3PJnqrKYqcUkCjdy97ENN7bhG-j7-e1Ft7HANK8Coi_nYSfYHgdS9Ml4XEN6Dg7Rg5KnJ1uAozMweZnutYGh0TxgI7d-17KaRb4sPQppuFgCTAgceA7HykM6kGPgZY7cV3pEcARmlYr1lXpEV2IoeERh89tJCMThRY30BA14GNnR2Mi2M2EuTtsfuHVUIqRfyHYC280C7xIv4sgrH" />
                 <div class="text-[10px] text-gray-400 text-right leading-tight">
@@ -127,22 +181,23 @@
         </div>
     </header>
     <!-- END: Top Navigation Bar -->
-    <div class="flex flex-1 overflow-hidden">
+    <div class="flex flex-1 overflow-hidden z-10 relative">
         <!-- BEGIN: Left Sidebar (Dojos) -->
-        <aside class="w-64 bg-dojo-dark border-r border-dojo-border flex flex-col shrink-0">
+        <aside class="w-64 bg-dojo-dark border-r border-dojo-border flex flex-col shrink-0 animate-flicker-in"
+            style="animation-delay: 0.1s;">
             <div class="p-4 border-b border-dojo-border">
                 <h2 class="text-dojo-accent-green font-bold text-sm tracking-widest uppercase mb-3 flex items-center"><i
                         class="fa-solid fa-torii-gate mr-2"></i> Dojo Cava</h2>
                 <div class="relative">
                     <i class="fa-solid fa-search absolute left-3 top-2.5 text-gray-500 text-xs"></i>
                     <input
-                        class="w-full bg-dojo-dark border border-dojo-border rounded py-1.5 pl-8 pr-12 text-sm text-gray-300 focus:outline-none focus:border-dojo-accent-green placeholder-gray-600"
+                        class="w-full bg-dojo-dark border border-dojo-border rounded py-1.5 pl-8 pr-12 text-sm text-gray-300 focus:outline-none focus:border-dojo-accent-green focus:shadow-[0_0_10px_rgba(69,162,71,0.3)] transition-shadow placeholder-gray-600"
                         placeholder="Search scrolls..." type="text" />
                     <span
                         class="absolute right-2 top-2 text-[10px] text-gray-500 border border-gray-600 rounded px-1">CTRL+K</span>
                 </div>
             </div>
-            <div class="p-4 flex-1 overflow-y-auto">
+            <div class="p-4 flex-1 overflow-y-auto scroll-smooth">
                 <h3
                     class="text-gray-500 text-xs font-bold tracking-widest mb-3 flex items-center justify-center space-x-2">
                     <span>—</span>
@@ -152,11 +207,11 @@
                 <ul class="space-y-1">
                     <!-- Dojo Item -->
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors hover:shadow-[inset_0_0_10px_rgba(69,162,71,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i
-                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-gray-300"></i>
+                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-dojo-accent-green transition-colors"></i>
                                 <span class="font-bold text-gray-300 font-dojo-display text-[10px]">CALCULATION</span>
                             </div>
                             <span class="bg-dojo-red text-white text-[10px] font-bold px-1.5 rounded">6</span>
@@ -164,7 +219,7 @@
                     </li>
                     <!-- Active Dojo Item -->
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded bg-dojo-panel border-l-2 border-dojo-purple group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded bg-dojo-panel border-l-2 border-dojo-purple group transition-colors shadow-[inset_0_0_15px_rgba(176,136,249,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i class="fa-solid fa-chevron-down text-dojo-purple text-[10px]"></i>
@@ -172,18 +227,19 @@
                                     class="w-6 h-6 bg-gray-700 rounded flex items-center justify-center border border-gray-600">
                                     <i class="fa-solid fa-square-root-variable text-blue-300 text-xs"></i>
                                 </div>
-                                <span class="font-bold text-dojo-purple font-dojo-display text-[10px]">MATH</span>
+                                <span
+                                    class="font-bold text-dojo-purple font-dojo-display text-[10px] text-shadow-neon">MATH</span>
                             </div>
                             <span class="bg-dojo-red text-white text-[10px] font-bold px-1.5 rounded">14</span>
                         </a>
                     </li>
                     <!-- Completed Dojo Item -->
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors hover:shadow-[inset_0_0_10px_rgba(69,162,71,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i
-                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-gray-300"></i>
+                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-dojo-accent-green transition-colors"></i>
                                 <span class="font-bold text-gray-300 font-dojo-display text-[10px]">ENGLISH</span>
                             </div>
                             <i class="fa-solid fa-check text-dojo-accent-green text-xs"></i>
@@ -191,11 +247,11 @@
                     </li>
                     <!-- More Items -->
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors hover:shadow-[inset_0_0_10px_rgba(69,162,71,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i
-                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-gray-300"></i>
+                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-dojo-accent-green transition-colors"></i>
                                 <div
                                     class="w-6 h-6 bg-gray-700 rounded flex items-center justify-center border border-gray-600">
                                     <i class="fa-solid fa-landmark text-yellow-600 text-xs"></i>
@@ -207,11 +263,11 @@
                         </a>
                     </li>
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors hover:shadow-[inset_0_0_10px_rgba(69,162,71,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i
-                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-gray-300"></i>
+                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-dojo-accent-green transition-colors"></i>
                                 <div
                                     class="w-6 h-6 bg-gray-700 rounded flex items-center justify-center border border-gray-600">
                                     <i class="fa-solid fa-chess-knight text-gray-400 text-xs"></i>
@@ -222,33 +278,33 @@
                         </a>
                     </li>
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors hover:shadow-[inset_0_0_10px_rgba(69,162,71,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i
-                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-gray-300"></i>
+                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-dojo-accent-green transition-colors"></i>
                                 <span class="font-bold text-gray-300 font-dojo-display text-[10px]">GEOGRAPHY</span>
                             </div>
                             <span class="bg-dojo-red text-white text-[10px] font-bold px-1.5 rounded">5</span>
                         </a>
                     </li>
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors hover:shadow-[inset_0_0_10px_rgba(69,162,71,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i
-                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-gray-300"></i>
+                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-dojo-accent-green transition-colors"></i>
                                 <span class="font-bold text-gray-300 font-dojo-display text-[10px]">POLITY</span>
                             </div>
                             <i class="fa-solid fa-check text-dojo-accent-green text-xs"></i>
                         </a>
                     </li>
                     <li>
-                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors"
+                        <a class="flex items-center justify-between p-2 rounded hover:bg-dojo-panel group transition-colors hover:shadow-[inset_0_0_10px_rgba(69,162,71,0.1)] active:translate-y-0.5"
                             href="#">
                             <div class="flex items-center space-x-3">
                                 <i
-                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-gray-300"></i>
+                                    class="fa-solid fa-chevron-right text-gray-600 text-[10px] group-hover:text-dojo-accent-green transition-colors"></i>
                                 <span class="font-bold text-gray-300 font-dojo-display text-[10px]">ECO</span>
                             </div>
                             <span class="bg-dojo-red text-white text-[10px] font-bold px-1.5 rounded">3</span>
@@ -258,32 +314,35 @@
             </div>
             <div class="p-4 border-t border-dojo-border flex justify-between space-x-2">
                 <button
-                    class="flex-1 bg-transparent border border-dojo-accent-green text-dojo-accent-green hover:bg-dojo-accent-green hover:text-white font-bold py-1.5 px-2 rounded text-xs transition-colors flex items-center justify-center space-x-1">
+                    class="flex-1 bg-transparent border border-dojo-accent-green text-dojo-accent-green hover:bg-dojo-accent-green hover:text-white font-bold py-1.5 px-2 rounded text-xs transition-all active:translate-y-1 flex items-center justify-center space-x-1 btn-green-glow">
                     <i class="fa-solid fa-plus text-[10px]"></i> <span>NEW DOJO</span>
                 </button>
                 <button
-                    class="flex-1 bg-transparent border border-dojo-accent-green text-dojo-accent-green hover:bg-dojo-accent-green hover:text-white font-bold py-1.5 px-2 rounded text-xs transition-colors flex items-center justify-center space-x-1">
+                    class="flex-1 bg-transparent border border-dojo-accent-green text-dojo-accent-green hover:bg-dojo-accent-green hover:text-white font-bold py-1.5 px-2 rounded text-xs transition-all active:translate-y-1 flex items-center justify-center space-x-1 btn-green-glow">
                     <i class="fa-solid fa-plus text-[10px]"></i> <span>SUB</span>
                 </button>
                 <button
-                    class="bg-transparent border border-gray-600 text-gray-400 hover:text-white py-1.5 px-2 rounded text-xs transition-colors">
+                    class="bg-transparent border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 hover:shadow-[0_0_10px_rgba(255,255,255,0.2)] py-1.5 px-2 rounded text-xs transition-all active:translate-y-1">
                     <i class="fa-solid fa-folder-open"></i>
                 </button>
             </div>
         </aside>
         <!-- END: Left Sidebar -->
         <!-- BEGIN: Main Content Area -->
-        <main class="flex-1 bg-[#151821] flex flex-col overflow-y-auto">
+        <main class="flex-1 bg-[#121811] flex flex-col overflow-y-auto animate-flicker-in"
+            style="animation-delay: 0.2s;">
             <!-- Top Status / Title Section -->
             <div class="p-6 pb-2">
                 <div class="flex justify-between items-center mb-6">
                     <div class="flex items-center space-x-4">
                         <div
-                            class="w-10 h-10 bg-gray-700 rounded flex items-center justify-center border border-gray-500">
-                            <i class="fa-solid fa-square-root-variable text-blue-300 text-xl"></i>
+                            class="w-10 h-10 bg-gray-700 rounded flex items-center justify-center border border-gray-500 shadow-[0_0_10px_rgba(176,136,249,0.3)]">
+                            <i class="fa-solid fa-square-root-variable text-blue-300 text-xl text-shadow-neon"></i>
                         </div>
                         <div>
-                            <h2 class="text-dojo-accent-green text-2xl font-bold tracking-wider">Math</h2>
+                            <h2
+                                class="text-dojo-accent-green text-2xl font-bold tracking-wider font-dojo-display text-shadow-neon">
+                                MATH</h2>
                             <div class="text-xs text-gray-500 font-bold uppercase tracking-widest mt-1 space-x-2">
                                 <span>Scrolls: 23</span>
                                 <span class="text-gray-600">❖</span>
@@ -292,7 +351,7 @@
                         </div>
                     </div>
                     <button
-                        class="bg-transparent border border-dojo-accent-green text-dojo-accent-green hover:bg-dojo-accent-green hover:text-white px-4 py-1.5 rounded flex items-center space-x-2 text-xs font-bold transition-colors btn-green-glow">
+                        class="bg-transparent border border-dojo-accent-green text-dojo-accent-green hover:bg-dojo-accent-green hover:text-white px-4 py-1.5 rounded flex items-center space-x-2 text-xs font-bold transition-all active:translate-y-1 btn-green-glow">
                         <i class="fa-solid fa-hammer"></i>
                         <span>FORGE SCROLL</span>
                     </button>
@@ -301,13 +360,16 @@
                 <div class="grid grid-cols-3 gap-4 mb-6">
                     <!-- Card 1: Due Cards -->
                     <div
-                        class="bg-dojo-card panel-border p-4 flex items-center space-x-4 relative overflow-hidden group hover:border-dojo-red transition-colors">
+                        class="bg-dojo-card panel-border p-4 flex items-center space-x-4 relative overflow-hidden group hover:border-dojo-red hover:shadow-[0_0_15px_rgba(255,77,77,0.3)] transition-all">
                         <div
-                            class="absolute -left-4 -top-4 w-16 h-16 bg-dojo-red opacity-10 rounded-full blur-xl group-hover:opacity-20 transition-opacity">
+                            class="absolute -left-4 -top-4 w-16 h-16 bg-dojo-red opacity-10 rounded-full blur-xl group-hover:opacity-30 transition-opacity">
                         </div>
-                        <i class="fa-solid fa-star text-dojo-red text-3xl"></i>
+                        <i
+                            class="fa-solid fa-star text-dojo-red text-3xl group-hover:scale-110 transition-transform"></i>
                         <div>
-                            <div class="text-dojo-red text-4xl font-bold font-dojo-display leading-none mb-1">14</div>
+                            <div
+                                class="text-dojo-red text-4xl font-bold font-dojo-display leading-none mb-1 drop-shadow-[0_0_5px_rgba(255,77,77,0.5)]">
+                                14</div>
                             <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">
                                 Remaining Missions<br /><span class="text-gray-500 font-normal">Cards due for
                                     review</span></div>
@@ -315,13 +377,16 @@
                     </div>
                     <!-- Card 2: New Cards -->
                     <div
-                        class="bg-dojo-card panel-border p-4 flex items-center space-x-4 relative overflow-hidden group hover:border-dojo-purple transition-colors">
+                        class="bg-dojo-card panel-border p-4 flex items-center space-x-4 relative overflow-hidden group hover:border-dojo-purple hover:shadow-[0_0_15px_rgba(176,136,249,0.3)] transition-all">
                         <div
-                            class="absolute -left-4 -top-4 w-16 h-16 bg-dojo-purple opacity-10 rounded-full blur-xl group-hover:opacity-20 transition-opacity">
+                            class="absolute -left-4 -top-4 w-16 h-16 bg-dojo-purple opacity-10 rounded-full blur-xl group-hover:opacity-30 transition-opacity">
                         </div>
-                        <i class="fa-solid fa-star text-dojo-purple text-3xl"></i>
+                        <i
+                            class="fa-solid fa-star text-dojo-purple text-3xl group-hover:scale-110 transition-transform"></i>
                         <div>
-                            <div class="text-dojo-purple text-4xl font-bold font-dojo-display leading-none mb-1">0</div>
+                            <div
+                                class="text-dojo-purple text-4xl font-bold font-dojo-display leading-none mb-1 drop-shadow-[0_0_5px_rgba(176,136,249,0.5)]">
+                                0</div>
                             <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">New
                                 Techniques<br /><span class="text-gray-500 font-normal">Total active scrolls</span>
                             </div>
@@ -329,13 +394,15 @@
                     </div>
                     <!-- Card 3: Completed -->
                     <div
-                        class="bg-dojo-card panel-border p-4 flex items-center space-x-4 relative overflow-hidden group hover:border-dojo-accent-green transition-colors">
+                        class="bg-dojo-card panel-border p-4 flex items-center space-x-4 relative overflow-hidden group hover:border-dojo-accent-green hover:shadow-[0_0_15px_rgba(69,162,71,0.3)] transition-all">
                         <div
-                            class="absolute -left-4 -top-4 w-16 h-16 bg-dojo-accent-green opacity-10 rounded-full blur-xl group-hover:opacity-20 transition-opacity">
+                            class="absolute -left-4 -top-4 w-16 h-16 bg-dojo-accent-green opacity-10 rounded-full blur-xl group-hover:opacity-30 transition-opacity">
                         </div>
-                        <i class="fa-solid fa-star text-dojo-accent-green text-3xl"></i>
+                        <i
+                            class="fa-solid fa-star text-dojo-accent-green text-3xl group-hover:scale-110 transition-transform"></i>
                         <div>
-                            <div class="text-dojo-accent-green text-4xl font-bold font-dojo-display leading-none mb-1">
+                            <div
+                                class="text-dojo-accent-green text-4xl font-bold font-dojo-display leading-none mb-1 drop-shadow-[0_0_5px_rgba(69,162,71,0.5)]">
                                 101</div>
                             <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">
                                 Battles Won<br /><span class="text-gray-500 font-normal">Reviews completed</span></div>
@@ -343,25 +410,29 @@
                     </div>
                 </div>
                 <!-- Training Action Banner -->
-                <div class="bg-dojo-card panel-border p-4 flex justify-between items-center relative overflow-hidden">
-                    <div class="absolute left-0 top-0 bottom-0 w-1 bg-dojo-purple"></div>
+                <div
+                    class="bg-dojo-card panel-border p-4 flex justify-between items-center relative overflow-hidden shadow-[inset_0_0_20px_rgba(176,136,249,0.05)]">
+                    <div
+                        class="absolute left-0 top-0 bottom-0 w-1 bg-dojo-purple drop-shadow-[0_0_5px_rgba(176,136,249,0.8)]">
+                    </div>
                     <div>
-                        <h3 class="text-dojo-purple text-xs font-bold uppercase tracking-widest mb-1 flex items-center">
+                        <h3
+                            class="text-dojo-purple text-xs font-bold uppercase tracking-widest mb-1 flex items-center drop-shadow-[0_0_2px_rgba(176,136,249,0.5)]">
                             <i class="fa-solid fa-khanda mr-2"></i> Training Mission
                         </h3>
                         <p class="text-sm text-gray-300 mb-1">Continue your training and defeat the due cards!</p>
-                        <p class="text-xs text-dojo-accent-green">&gt; Cowabunga! 🐢_</p>
+                        <p class="text-xs text-dojo-accent-green font-dojo-display text-[10px]">&gt; Cowabunga! 🐢_</p>
                     </div>
                     <div class="flex flex-col space-y-2">
                         <button
-                            class="bg-dojo-accent-green hover:bg-green-600 text-dojo-dark font-bold py-2 px-6 rounded text-sm flex items-center justify-center space-x-2 transition-colors shadow-[0_0_15px_rgba(69,162,71,0.4)]">
+                            class="bg-dojo-accent-green hover:bg-green-500 text-dojo-dark font-bold py-2 px-6 rounded text-sm flex items-center justify-center space-x-2 transition-all active:translate-y-1 shadow-[0_0_15px_rgba(69,162,71,0.6)] hover:shadow-[0_0_25px_rgba(69,162,71,0.9)] animate-arcade-pulse">
                             <i class="fa-solid fa-play text-xs"></i>
-                            <span>START TRAINING<br /><span
-                                    class="text-[10px] text-green-900 block leading-none mt-0.5">REVIEW DUE
-                                    SCROLLS</span></span>
+                            <span class="font-dojo-display text-xs">START TRAINING<br /><span
+                                    class="text-[8px] text-green-900 block leading-none mt-1 font-dojo-mono">PRESS
+                                    START</span></span>
                         </button>
                         <button
-                            class="bg-transparent border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 py-1.5 px-4 rounded text-xs font-bold transition-colors flex items-center justify-center space-x-2">
+                            class="bg-transparent border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 py-1.5 px-4 rounded text-xs font-bold transition-all active:translate-y-1 flex items-center justify-center space-x-2 hover:shadow-[0_0_10px_rgba(255,255,255,0.2)]">
                             <i class="fa-solid fa-bullseye text-yellow-600"></i>
                             <span>TRAIN SELECTED SCROLL</span>
                         </button>
@@ -371,25 +442,26 @@
             <!-- Main Viewer Area (Empty State) -->
             <div class="flex-1 p-6 flex flex-col min-h-[400px]">
                 <div
-                    class="flex-1 bg-dojo-dark border border-gray-800 rounded-lg flex items-center justify-center relative overflow-hidden shadow-inner">
+                    class="flex-1 bg-[#0a1009] border border-[#2d332b] rounded-lg flex items-center justify-center relative overflow-hidden shadow-inner">
                     <div class="absolute inset-0 opacity-5"
                         style="background-image: radial-gradient(#45a247 1px, transparent 1px); background-size: 20px 20px;">
                     </div>
-                    <div class="text-center z-10">
+                    <div class="text-center z-10 animate-pulse">
                         <i class="fa-solid fa-star text-gray-700 text-2xl mb-2 block"></i>
-                        <span class="text-gray-600 font-bold uppercase tracking-widest text-sm">- SELECT A SCROLL TO
+                        <span class="text-gray-600 font-bold uppercase tracking-widest text-sm font-dojo-display">-
+                            SELECT A SCROLL TO
                             BEGIN -</span>
                     </div>
                 </div>
                 <!-- Bottom Action Bar -->
                 <div class="mt-4 flex justify-start space-x-3">
                     <button
-                        class="bg-dojo-panel border border-gray-700 text-gray-400 hover:text-white py-1.5 px-4 rounded flex items-center space-x-2 text-sm transition-colors">
+                        class="bg-dojo-panel border border-[#2d332b] text-gray-400 hover:text-white py-1.5 px-4 rounded flex items-center space-x-2 text-sm transition-all active:translate-y-1 hover:shadow-[0_0_10px_rgba(255,255,255,0.2)]">
                         <i class="fa-solid fa-pen-to-square"></i>
                         <span>Edit</span>
                     </button>
                     <button
-                        class="bg-transparent border border-dojo-red text-dojo-red hover:bg-dojo-red hover:text-white py-1.5 px-4 rounded flex items-center space-x-2 text-sm font-bold transition-colors shadow-[0_0_10px_rgba(255,77,77,0.2)]">
+                        class="bg-transparent border border-dojo-red text-dojo-red hover:bg-dojo-red hover:text-white py-1.5 px-4 rounded flex items-center space-x-2 text-sm font-bold transition-all active:translate-y-1 shadow-[0_0_10px_rgba(255,77,77,0.2)] hover:shadow-[0_0_15px_rgba(255,77,77,0.6)]">
                         <i class="fa-solid fa-trash-can"></i>
                         <span>DELETE</span>
                     </button>
@@ -398,10 +470,12 @@
         </main>
         <!-- END: Main Content Area -->
         <!-- BEGIN: Right Sidebar (System Status) -->
-        <aside class="w-64 bg-dojo-dark border-l border-dojo-border flex flex-col shrink-0 p-4">
+        <aside class="w-64 bg-dojo-dark border-l border-dojo-border flex flex-col shrink-0 p-4 animate-flicker-in"
+            style="animation-delay: 0.3s;">
             <div class="mb-8">
-                <h3 class="text-dojo-accent-green font-bold text-sm tracking-widest uppercase mb-4 flex items-center"><i
-                        class="fa-solid fa-flask mr-2"></i> Banga Lab</h3>
+                <h3
+                    class="text-dojo-accent-green font-bold text-sm tracking-widest uppercase mb-4 flex items-center drop-shadow-[0_0_5px_rgba(69,162,71,0.5)]">
+                    <i class="fa-solid fa-flask mr-2"></i> Banga Lab</h3>
                 <h4
                     class="text-gray-500 text-[10px] font-bold tracking-widest mb-2 flex items-center justify-center space-x-2 uppercase">
                     <span>—</span>
@@ -409,23 +483,33 @@
                     <span>—</span>
                 </h4>
                 <div class="space-y-2 text-xs">
-                    <div class="flex justify-between items-center">
-                        <span class="text-gray-400 uppercase tracking-wider text-[10px]">Algorithm</span>
-                        <span class="text-dojo-purple font-bold">SM-2</span>
+                    <div class="flex justify-between items-center group">
+                        <span
+                            class="text-gray-400 uppercase tracking-wider text-[10px] group-hover:text-gray-300 transition-colors">Algorithm</span>
+                        <span class="text-dojo-purple font-bold drop-shadow-[0_0_2px_rgba(176,136,249,0.5)]">SM-2</span>
                     </div>
-                    <div class="flex justify-between items-center border-t border-gray-800 pt-2">
-                        <span class="text-gray-400 uppercase tracking-wider text-[10px]">Scheduler</span>
-                        <span class="text-dojo-accent-green font-bold flex items-center"><span
-                                class="w-1.5 h-1.5 rounded-full bg-dojo-accent-green mr-1.5"></span> Active</span>
+                    <div class="flex justify-between items-center border-t border-gray-800 pt-2 group">
+                        <span
+                            class="text-gray-400 uppercase tracking-wider text-[10px] group-hover:text-gray-300 transition-colors">Scheduler</span>
+                        <span
+                            class="text-dojo-accent-green font-bold flex items-center drop-shadow-[0_0_2px_rgba(69,162,71,0.5)]"><span
+                                class="w-1.5 h-1.5 rounded-full bg-dojo-accent-green mr-1.5 shadow-[0_0_5px_#45a247]"></span>
+                            Active</span>
                     </div>
-                    <div class="flex justify-between items-center border-t border-gray-800 pt-2">
-                        <span class="text-gray-400 uppercase tracking-wider text-[10px]">PDF Engine</span>
-                        <span class="text-dojo-purple font-bold">PyMuPDF</span>
+                    <div class="flex justify-between items-center border-t border-gray-800 pt-2 group">
+                        <span
+                            class="text-gray-400 uppercase tracking-wider text-[10px] group-hover:text-gray-300 transition-colors">PDF
+                            Engine</span>
+                        <span
+                            class="text-dojo-purple font-bold drop-shadow-[0_0_2px_rgba(176,136,249,0.5)]">PyMuPDF</span>
                     </div>
-                    <div class="flex justify-between items-center border-t border-gray-800 pt-2">
-                        <span class="text-gray-400 uppercase tracking-wider text-[10px]">Occlusion</span>
-                        <span class="text-dojo-accent-green font-bold flex items-center"><span
-                                class="w-1.5 h-1.5 rounded-full bg-dojo-accent-green mr-1.5"></span> Active</span>
+                    <div class="flex justify-between items-center border-t border-gray-800 pt-2 group">
+                        <span
+                            class="text-gray-400 uppercase tracking-wider text-[10px] group-hover:text-gray-300 transition-colors">Occlusion</span>
+                        <span
+                            class="text-dojo-accent-green font-bold flex items-center drop-shadow-[0_0_2px_rgba(69,162,71,0.5)]"><span
+                                class="w-1.5 h-1.5 rounded-full bg-dojo-accent-green mr-1.5 shadow-[0_0_5px_#45a247]"></span>
+                            Active</span>
                     </div>
                 </div>
             </div>
@@ -436,33 +520,50 @@
                     <span>Dojo Resources</span>
                     <span>—</span>
                 </h4>
-                <div class="space-y-2 text-xs">
-                    <div class="flex justify-between items-center">
-                        <span class="text-gray-400 uppercase tracking-wider text-[10px]">Memory</span>
-                        <span class="text-white font-bold">0.0 MB</span>
+                <div class="space-y-3 text-xs">
+                    <!-- Added pseudo progress bars for NES life-bar aesthetic -->
+                    <div>
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-gray-400 uppercase tracking-wider text-[10px]">Memory</span>
+                            <span class="text-white font-bold text-[10px] font-dojo-mono">1.2 MB</span>
+                        </div>
+                        <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div class="h-full bg-dojo-neon-green shadow-[0_0_5px_#66fcf1] transition-all duration-1000 ease-out"
+                                style="width: 45%;"></div>
+                        </div>
                     </div>
-                    <div class="flex justify-between items-center border-t border-gray-800 pt-2">
-                        <span class="text-gray-400 uppercase tracking-wider text-[10px]">Cache</span>
-                        <span class="text-white font-bold">0.0 MB</span>
+                    <div class="border-t border-gray-800 pt-2">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-gray-400 uppercase tracking-wider text-[10px]">Cache</span>
+                            <span class="text-white font-bold text-[10px] font-dojo-mono">0.8 MB</span>
+                        </div>
+                        <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div class="h-full bg-dojo-purple shadow-[0_0_5px_#b088f9] transition-all duration-1000 ease-out"
+                                style="width: 25%;"></div>
+                        </div>
                     </div>
-                    <div class="flex justify-between items-center border-t border-gray-800 pt-2">
-                        <span class="text-gray-400 uppercase tracking-wider text-[10px]">Media</span>
-                        <span class="text-white font-bold">0.0 MB</span>
-                    </div>
-                    <div class="flex justify-between items-center border-t border-gray-800 pt-2">
-                        <span class="text-gray-500 uppercase tracking-wider text-[10px]">Total</span>
-                        <span class="text-white font-bold">0.0 MB</span>
+                    <div class="border-t border-gray-800 pt-2">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-gray-400 uppercase tracking-wider text-[10px]">Media</span>
+                            <span class="text-white font-bold text-[10px] font-dojo-mono">5.4 MB</span>
+                        </div>
+                        <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div class="h-full bg-dojo-accent-green shadow-[0_0_5px_#45a247] transition-all duration-1000 ease-out"
+                                style="width: 70%;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
             <!-- Tip Widget -->
             <div
-                class="mt-4 bg-dojo-panel border border-dojo-accent-green rounded p-3 flex items-start space-x-3 opacity-80 hover:opacity-100 transition-opacity">
+                class="mt-4 bg-dojo-panel border border-dojo-accent-green rounded p-3 flex items-start space-x-3 opacity-80 hover:opacity-100 transition-all hover:shadow-[0_0_15px_rgba(69,162,71,0.2)] hover:-translate-y-1">
                 <span class="text-xl">🍕</span>
                 <div>
-                    <h5 class="text-dojo-accent-green text-[10px] font-bold uppercase tracking-widest mb-1">Fuel Up,
-                        Ninja!</h5>
-                    <p class="text-gray-400 text-[9px] leading-tight">Take breaks.<br />Your brain is<br />not a robot.
+                    <h5
+                        class="text-dojo-accent-green text-[10px] font-bold uppercase tracking-widest mb-1 font-dojo-display leading-tight">
+                        Fuel Up, Ninja!</h5>
+                    <p class="text-gray-400 text-[9px] leading-tight mt-1">Take breaks.<br />Your brain is<br />not a
+                        robot.
                     </p>
                 </div>
             </div>
@@ -471,12 +572,12 @@
     </div>
     <!-- BEGIN: Bottom Status Bar -->
     <footer
-        class="bg-dojo-dark border-t border-dojo-border flex items-center justify-between px-2 py-0.5 shrink-0 text-[10px]">
+        class="bg-dojo-dark border-t border-dojo-border flex items-center justify-between px-2 py-0.5 shrink-0 text-[10px] z-10 relative">
         <div class="flex items-center space-x-3 text-gray-500">
-            <span class="flex items-center text-dojo-accent-green"><i
+            <span class="flex items-center text-dojo-accent-green drop-shadow-[0_0_2px_rgba(69,162,71,0.5)]"><i
                     class="fa-solid fa-check-square mr-1 text-[8px]"></i> SM-2 Active</span>
             <span>|</span>
-            <span class="flex items-center text-dojo-accent-green"><i
+            <span class="flex items-center text-dojo-accent-green drop-shadow-[0_0_2px_rgba(69,162,71,0.5)]"><i
                     class="fa-solid fa-check-square mr-1 text-[8px]"></i> PyMuPDF loaded — PDF support active</span>
         </div>
     </footer>

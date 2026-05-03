@@ -572,10 +572,9 @@ class MusicWidget(QFrame):
     - M key  → toggle mute/unmute
     - N key  → next track
     - Click the widget → same as M
-    Needs:  pip install pygame
     Tracks: assets/music/*.mp3  (or .ogg)
     """
-    MUSIC_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "music")
+    MUSIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "music")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -585,11 +584,14 @@ class MusicWidget(QFrame):
         self.setToolTip("BGM  [M] toggle  [N] next track")
 
         self._playing   = False   # whether music is ON
+        self._paused    = False
         self._tracks    = []
         self._idx       = 0
         self._pygame_ok = False
+        self._player    = None
+        self._playlist  = None
 
-        self._init_pygame()
+        self._init_audio()
         self._scan_tracks()
 
         # ── Layout ──────────────────────────────────────────────────────
@@ -623,8 +625,8 @@ class MusicWidget(QFrame):
 
         self._refresh_style(dojo=False)
 
-    # ── pygame init ─────────────────────────────────────────────────────
-    def _init_pygame(self):
+    # ── Audio init ─────────────────────────────────────────────────────
+    def _init_audio(self):
         try:
             import pygame
             pygame.mixer.init()
@@ -632,7 +634,14 @@ class MusicWidget(QFrame):
             self._pygame_ok = True
         except Exception as e:
             self._pygame_ok = False
-            print(f"[MusicWidget] pygame not available: {e}")
+            print(f"[MusicWidget] pygame not available: {e}, falling back to QMediaPlayer")
+            try:
+                from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist
+                self._player = QMediaPlayer()
+                self._playlist = QMediaPlaylist()
+                self._player.setPlaylist(self._playlist)
+            except Exception as e2:
+                print(f"[MusicWidget] QMediaPlayer not available: {e2}")
 
     def _scan_tracks(self):
         if not os.path.isdir(self.MUSIC_DIR):
@@ -643,18 +652,36 @@ class MusicWidget(QFrame):
             glob.glob(os.path.join(self.MUSIC_DIR, "*.wav"))
         )
         random.shuffle(self._tracks)
+        
+        if self._playlist:
+            from PyQt5.QtCore import QUrl
+            from PyQt5.QtMultimedia import QMediaContent, QMediaPlaylist
+            for track in self._tracks:
+                self._playlist.addMedia(QMediaContent(QUrl.fromLocalFile(track)))
+            self._playlist.setPlaybackMode(QMediaPlaylist.Loop)
 
     # ── Public API ──────────────────────────────────────────────────────
     def toggle(self):
         """M key handler."""
-        if not self._pygame_ok or not self._tracks:
+        if not self._tracks:
             return
+        if not self._pygame_ok and not self._player:
+            return
+            
         if self._playing:
-            self._pygame.mixer.music.pause()
+            if self._pygame_ok:
+                self._pygame.mixer.music.pause()
+            elif self._player:
+                self._player.pause()
             self._playing = False
+            self._paused = True
         else:
-            if self._pygame.mixer.music.get_busy():
-                self._pygame.mixer.music.unpause()
+            if self._paused:
+                if self._pygame_ok:
+                    self._pygame.mixer.music.unpause()
+                elif self._player:
+                    self._player.play()
+                self._paused = False
             else:
                 self._load_and_play(self._idx)
             self._playing = True
@@ -662,18 +689,27 @@ class MusicWidget(QFrame):
 
     def next_track(self):
         """N key handler."""
-        if not self._pygame_ok or not self._tracks:
+        if not self._tracks:
             return
+        if not self._pygame_ok and not self._player:
+            return
+            
         self._idx = (self._idx + 1) % len(self._tracks)
         self._load_and_play(self._idx)
         self._playing = True
+        self._paused = False
         self._update_badge()
 
     def _load_and_play(self, idx):
         try:
-            self._pygame.mixer.music.load(self._tracks[idx])
-            self._pygame.mixer.music.set_volume(0.4)
-            self._pygame.mixer.music.play(-1)   # -1 = loop
+            if self._pygame_ok:
+                self._pygame.mixer.music.load(self._tracks[idx])
+                self._pygame.mixer.music.set_volume(0.4)
+                self._pygame.mixer.music.play(-1)   # -1 = loop
+            elif self._player:
+                self._playlist.setCurrentIndex(idx)
+                self._player.setVolume(40)
+                self._player.play()
         except Exception as e:
             print(f"[MusicWidget] play error: {e}")
 

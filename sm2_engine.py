@@ -22,6 +22,7 @@ GRADUATING_IV   = 1             # days
 EASY_IV         = 4             # days
 RELEARN_STEPS   = [10]          # minutes
 MAX_INTERVAL    = 365           # days — cap to avoid 10-year intervals
+EASY_BONUS      = 1.3           # Standard Anki multiplier for Easy ratings
 
 def _now_iso():
     return datetime.now().isoformat(timespec="seconds")
@@ -152,7 +153,7 @@ def sched_update(c, quality):
             good_iv_raw = (1 if c["sm2_repetitions"] == 0 else
                            6 if c["sm2_repetitions"] == 1 else
                            min(MAX_INTERVAL, max(1, round(iv * good_ef))))
-            easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef)))
+            easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef * EASY_BONUS)))
             # Fuzz both independently, then clamp Easy ≥ Good
             good_iv_fuzzed = _fuzz_interval(good_iv_raw)
             easy_iv_fuzzed = _fuzz_interval(easy_iv_raw)

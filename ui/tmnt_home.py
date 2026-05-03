@@ -41,8 +41,10 @@ from PyQt5.QtWidgets import (
     QStackedWidget,
     QApplication,
     QGraphicsDropShadowEffect,
+    QStyledItemDelegate,
+    QStyle,
 )
-from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QRect
 from PyQt5.QtGui import (
     QPainter,
     QColor,
@@ -73,6 +75,8 @@ T_BORDER = "#333b4d"
 T_MONO = "'Roboto Mono', 'Courier New', monospace"
 T_PIXEL = "'Press Start 2P', monospace"
 TMNT_BASE_SIZE = 11
+TMNT_SIDEBAR_W = int(228 * 1.2)
+TMNT_RIGHTBAR_W = int(218 * 1.2)
 _PX_RE = re.compile(r"(-?\d+(?:\.\d+)?)px")
 
 MENTOR_QUOTES = [
@@ -159,13 +163,120 @@ def _deck_total_reviews(deck):
     return total
 
 
+class TMNTDeckItemDelegate(QStyledItemDelegate):
+    def __init__(self, scale=1.0, parent=None):
+        super().__init__(parent)
+        self._scale = scale
+
+    def paint(self, painter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        is_selected = bool(option.state & QStyle.State_Selected)
+        is_hovered = bool(option.state & QStyle.State_MouseOver)
+        rect = option.rect.adjusted(
+            _px(2, self._scale),
+            _px(1, self._scale),
+            -_px(2, self._scale),
+            -_px(1, self._scale),
+        )
+
+        if is_selected:
+            painter.fillRect(rect, QColor(T_PANEL))
+            painter.fillRect(
+                QRect(rect.left(), rect.top(), _px(2, self._scale), rect.height()),
+                QColor(T_PURPLE),
+            )
+        elif is_hovered:
+            painter.fillRect(rect, QColor(69, 162, 71, 15))
+
+        name = (
+            index.data(Qt.UserRole + 2) or index.data(Qt.DisplayRole) or "?"
+        ).upper()
+        due_str = index.data(Qt.UserRole + 1)
+        total_cards = int(index.data(Qt.UserRole + 3) or 0)
+        due = int(due_str) if due_str else 0
+        is_complete = due == 0 and total_cards > 0
+
+        text_color = QColor(T_PURPLE if is_selected else T_TEXT)
+        font = QFont("Press Start 2P")
+        font.setPixelSize(_px(10, self._scale))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(text_color)
+
+        badge_w = _px(26, self._scale)
+        badge_h = _px(20, self._scale)
+        right_pad = _px(10, self._scale)
+        text_rect = QRect(
+            rect.left() + _px(14, self._scale),
+            rect.top(),
+            max(
+                _px(20, self._scale),
+                rect.width() - badge_w - right_pad - _px(24, self._scale),
+            ),
+            rect.height(),
+        )
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, name)
+
+        badge_rect = QRect(
+            rect.right() - badge_w - right_pad,
+            rect.top() + (rect.height() - badge_h) // 2,
+            badge_w,
+            badge_h,
+        )
+
+        if due > 0:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(T_RED))
+            painter.drawRoundedRect(
+                badge_rect, _px(3, self._scale), _px(3, self._scale)
+            )
+            badge_font = QFont("Roboto Mono")
+            badge_font.setPixelSize(_px(10, self._scale))
+            badge_font.setBold(True)
+            painter.setFont(badge_font)
+            painter.setPen(QColor("#FFFFFF"))
+            painter.drawText(badge_rect, Qt.AlignCenter, str(due))
+        elif is_complete:
+            check_font = QFont("Roboto Mono")
+            check_font.setPixelSize(_px(13, self._scale))
+            check_font.setBold(True)
+            painter.setFont(check_font)
+            painter.setPen(QColor(T_GREEN))
+            painter.drawText(badge_rect, Qt.AlignCenter, "✓")
+
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        from PyQt5.QtGui import QFontMetrics
+
+        name = (
+            index.data(Qt.UserRole + 2) or index.data(Qt.DisplayRole) or "?"
+        ).upper()
+        font = QFont("Press Start 2P")
+        font.setPixelSize(_px(10, self._scale))
+        font.setBold(True)
+        fm = QFontMetrics(font)
+
+        text_w = fm.horizontalAdvance(name)
+        badge_w = _px(26, self._scale)
+        right_pad = _px(10, self._scale)
+        left_pad = _px(14, self._scale)
+        extra = _px(24, self._scale)
+
+        total_w = left_pad + text_w + extra + badge_w + right_pad
+        base_size = super().sizeHint(option, index)
+        return QSize(max(base_size.width(), total_w), _px(44, self._scale))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  STAT CARD  (3 across top of main area)
 # ══════════════════════════════════════════════════════════════════════════════
 class TMNTStatCard(QFrame):
     def __init__(self, title, subtitle, color, data=None, parent=None):
         super().__init__(parent)
-        self.setObjectName("tmnt_stat_card")
+        self.setObjectName("tmnt_stat_card1")
         self._color = color
         self._scale = _tmnt_scale(data)
         self._setup(title, subtitle, color)
@@ -175,12 +286,12 @@ class TMNTStatCard(QFrame):
         self.setStyleSheet(
             _scale_ss(
                 f"""
-            QFrame#tmnt_stat_card {{
+            QFrame#tmnt_stat_card1 {{
                 background: {T_CARD};
                 border: 1px solid {T_BORDER};
                 border-radius: 4px;
             }}
-            QFrame#tmnt_stat_card:hover {{ background: #2b2f3b; border-color: {T_BORDER}; }}
+            QFrame#tmnt_stat_card1:hover {{ background: #2b2f3b; border-color: {T_BORDER}; }}
             QLabel {{ background: transparent; border: none; }}
         """,
                 self._scale,
@@ -188,12 +299,12 @@ class TMNTStatCard(QFrame):
         )
         l = QHBoxLayout(self)
         l.setContentsMargins(
-            _px(16, self._scale),
+            _px(18, self._scale),
             _px(12, self._scale),
-            _px(16, self._scale),
+            _px(18, self._scale),
             _px(12, self._scale),
         )
-        l.setSpacing(_px(16, self._scale))
+        l.setSpacing(_px(18, self._scale))
 
         # Glow blob (painted) + icon
         self._icon = QLabel("★")
@@ -218,7 +329,7 @@ class TMNTStatCard(QFrame):
         t_lbl = QLabel(title)
         t_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_TEXT}; font-size: 9px; font-weight: 900; "
+                f"color: {T_TEXT}; font-size: 10px; font-weight: 900; "
                 f"font-family: {T_MONO}; letter-spacing: 1px; background: transparent; border: none;",
                 self._scale,
             )
@@ -226,7 +337,7 @@ class TMNTStatCard(QFrame):
         s_lbl = QLabel(subtitle)
         s_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 9px; "
+                f"color: {T_SUBTEXT}; font-size: 10px; "
                 f"font-family: {T_MONO}; background: transparent; border: none;",
                 self._scale,
             )
@@ -250,12 +361,12 @@ class TMNTMissionBanner(QFrame):
 
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
-        self.setObjectName("tmnt_banner")
+        self.setObjectName("tmnt_banner1")
         self._scale = _tmnt_scale(data)
         self.setStyleSheet(
             _scale_ss(
                 f"""
-            QFrame#tmnt_banner {{
+            QFrame#tmnt_banner1 {{
                 background: {T_CARD};
                 border: 1px solid {T_BORDER};
                 border-left: 3px solid {T_PURPLE};
@@ -280,7 +391,7 @@ class TMNTMissionBanner(QFrame):
         title = QLabel("⚔  TRAINING MISSION")
         title.setStyleSheet(
             _scale_ss(
-                f"color: {T_PURPLE}; font-size: 11px; font-weight: 900; "
+                f"color: {T_PURPLE}; font-size: 12px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 1px; background: transparent; border: none;",
                 self._scale,
             )
@@ -288,14 +399,14 @@ class TMNTMissionBanner(QFrame):
         desc = QLabel("Continue your training and defeat the due cards!")
         desc.setStyleSheet(
             _scale_ss(
-                f"color: {T_TEXT}; font-size: 12px; font-family: {T_MONO}; background: transparent; border: none;",
+                f"color: {T_TEXT}; font-size: 14px; font-family: {T_MONO}; background: transparent; border: none;",
                 self._scale,
             )
         )
         self.quote = QLabel("> Cowabunga! 🐢_")
         self.quote.setStyleSheet(
             _scale_ss(
-                f"color: {T_GREEN}; font-size: 11px; font-weight: bold; "
+                f"color: {T_GREEN}; font-size: 12px; font-weight: bold; "
                 f"font-family: {T_MONO}; background: transparent; border: none;",
                 self._scale,
             )
@@ -322,7 +433,7 @@ class TMNTMissionBanner(QFrame):
                 border-radius: 2px;
                 font-weight: 900;
                 font-family: {T_PIXEL};
-                font-size: 10px;
+                font-size: 14px;
                 min-height: 52px;
                 padding: 0px 24px;
                 text-align: center;
@@ -344,7 +455,7 @@ class TMNTMissionBanner(QFrame):
                 color: #aab1c4;
                 border: 1px solid #555c6e;
                 border-radius: 2px;
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 700;
                 font-family: {T_MONO};
                 letter-spacing: 1px;
@@ -385,7 +496,7 @@ class TMNTMissionBanner(QFrame):
                 border-radius: 2px;
                 font-weight: 900;
                 font-family: {T_PIXEL};
-                font-size: 10px;
+                font-size: 14px;
                 min-height: 52px;
                 padding: 0px 24px;
                 text-align: center;
@@ -405,13 +516,13 @@ class TMNTBangaLab(QFrame):
 
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
-        self.setObjectName("banga_lab")
+        self.setObjectName("tmnt_banga_lab1")
         self._scale = _tmnt_scale(data)
-        self.setFixedWidth(_px(220, self._scale))
+        self.setFixedWidth(_px(TMNT_RIGHTBAR_W, self._scale))
         self.setStyleSheet(
             _scale_ss(
                 f"""
-            QFrame#banga_lab {{
+            QFrame#tmnt_banga_lab1 {{
                 background: {T_BG};
                 border-left: 1px solid {T_BORDER};
                 border-radius: 0px;
@@ -429,13 +540,50 @@ class TMNTBangaLab(QFrame):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(
+            _scale_ss(
+                f"""
+            QScrollArea {{
+                background: {T_BG};
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {T_BG};
+                width: 8px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {T_PANEL};
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {T_GREEN};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        """,
+                self._scale,
+            )
+        )
+        root.addWidget(scroll)
+
+        content = QWidget()
+        content.setStyleSheet(f"background: {T_BG};")
+        scroll.setWidget(content)
+
+        body = QVBoxLayout(content)
+        body.setContentsMargins(
             _px(16, self._scale),
             _px(20, self._scale),
             _px(16, self._scale),
             _px(20, self._scale),
         )
-        root.setSpacing(_px(20, self._scale))
+        body.setSpacing(_px(20, self._scale))
 
         # ── Header ──
         hdr = QHBoxLayout()
@@ -444,7 +592,7 @@ class TMNTBangaLab(QFrame):
         title = QLabel("Banga Lab")
         title.setStyleSheet(
             _scale_ss(
-                f"color: {T_GREEN}; font-size: 12px; font-weight: 900; "
+                f"color: {T_GREEN}; font-size: 11px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 1px;",
                 self._scale,
             )
@@ -452,19 +600,19 @@ class TMNTBangaLab(QFrame):
         hdr.addWidget(icon)
         hdr.addWidget(title)
         hdr.addStretch()
-        root.addLayout(hdr)
+        body.addLayout(hdr)
 
         # ── System Status ──
         sys_lbl = QLabel("— SYSTEM STATUS —")
         sys_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 9px; font-weight: 900; "
+                f"color: {T_SUBTEXT}; font-size: 10px; font-weight: 900; "
                 f"font-family: {T_MONO}; letter-spacing: 2px; padding: 4px 0px;",
                 self._scale,
             )
         )
         sys_lbl.setAlignment(Qt.AlignCenter)
-        root.addWidget(sys_lbl)
+        body.addWidget(sys_lbl)
 
         def _stat_row(lbl_text, val_text, val_color, dot=False):
             w = QWidget()
@@ -490,27 +638,27 @@ class TMNTBangaLab(QFrame):
             hl.addWidget(vl)
             return w
 
-        root.addWidget(_stat_row("ALGORITHM", "SM-2", T_PURPLE))
-        root.addWidget(_sep_line())
-        root.addWidget(_stat_row("SCHEDULER", "ACTIVE", T_GREEN, dot=True))
-        root.addWidget(_sep_line())
+        body.addWidget(_stat_row("ALGORITHM", "SM-2", T_PURPLE))
+        body.addWidget(_sep_line())
+        body.addWidget(_stat_row("SCHEDULER", "ACTIVE", T_GREEN, dot=True))
+        body.addWidget(_sep_line())
         pdf_val = "PyMuPDF" if PDF_SUPPORT else "MISSING"
         pdf_col = T_PURPLE if PDF_SUPPORT else T_RED
-        root.addWidget(_stat_row("PDF ENGINE", pdf_val, pdf_col))
-        root.addWidget(_sep_line())
-        root.addWidget(_stat_row("OCCLUSION", "ACTIVE", T_GREEN, dot=True))
+        body.addWidget(_stat_row("PDF ENGINE", pdf_val, pdf_col))
+        body.addWidget(_sep_line())
+        body.addWidget(_stat_row("OCCLUSION", "ACTIVE", T_GREEN, dot=True))
 
         # ── Dojo Resources ──
         res_lbl = QLabel("— DOJO RESOURCES —")
         res_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 9px; font-weight: 900; "
+                f"color: {T_SUBTEXT}; font-size: 10px; font-weight: 900; "
                 f"font-family: {T_MONO}; letter-spacing: 2px; padding: 4px 0px;",
                 self._scale,
             )
         )
         res_lbl.setAlignment(Qt.AlignCenter)
-        root.addWidget(res_lbl)
+        body.addWidget(res_lbl)
 
         def _res_row(name, color):
             w = QWidget()
@@ -576,9 +724,7 @@ class TMNTBangaLab(QFrame):
         )
 
         for row in (self.w_mem, self.w_cache, self.w_media, self.w_tot):
-            root.addWidget(row)
-
-        root.addStretch()
+            body.addWidget(row)
 
         # ── Fuel Up ──
         fuel = QFrame()
@@ -607,7 +753,7 @@ class TMNTBangaLab(QFrame):
         fh = QLabel("FUEL UP, NINJA!")
         fh.setStyleSheet(
             _scale_ss(
-                f"color: {T_GREEN}; font-size: 9px; font-weight: 900; font-family: {T_PIXEL};",
+                f"color: {T_GREEN}; font-size: 10px; font-weight: 900; font-family: {T_PIXEL};",
                 self._scale,
             )
         )
@@ -621,7 +767,7 @@ class TMNTBangaLab(QFrame):
         ftxt.addWidget(fh)
         ftxt.addWidget(fd)
         fl.addLayout(ftxt)
-        root.addWidget(fuel)
+        body.addWidget(fuel)
 
         # ── Clear Cache btn ──
         clr = QPushButton("🧹  Clear All Caches")
@@ -633,7 +779,7 @@ class TMNTBangaLab(QFrame):
                 color: {T_SUBTEXT};
                 border: 1px solid {T_BORDER};
                 border-radius: 2px;
-                font-size: 10px;
+                font-size: 9px;
                 font-family: {T_MONO};
                 padding: 6px;
             }}
@@ -643,7 +789,8 @@ class TMNTBangaLab(QFrame):
             )
         )
         clr.clicked.connect(self._clear_all)
-        root.addWidget(clr)
+        body.addWidget(clr)
+        body.addStretch()
 
     def refresh(self):
         try:
@@ -704,6 +851,8 @@ class TMNTDeckEngine(DeckTree):
     def __init__(self, data, scale=1.0, parent=None):
         self._tmnt_scale = scale
         super().__init__(data, theme="tmnt", parent=parent)
+        if hasattr(self, "_blink_timer"):
+            self._blink_timer.stop()
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
@@ -711,9 +860,12 @@ class TMNTDeckEngine(DeckTree):
         L.setSpacing(_px(6, self._tmnt_scale))
 
         self.tree = _DeckTreeWidget()
+        self._delegate = TMNTDeckItemDelegate(self._tmnt_scale, self.tree)
+        self.tree.setItemDelegate(self._delegate)
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, self.tree.header().ResizeToContents)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -741,10 +893,10 @@ class TMNTDeckEngine(DeckTree):
                 outline: none;
                 padding: 0px 4px 4px 4px;
                 font-family: {T_MONO};
-                font-size: 11px;
+                font-size: 10px;
             }}
             QTreeWidget::item {{
-                padding: 7px 8px;
+                padding: 8px 8px;
                 border-radius: 3px;
                 margin: 1px 0px;
             }}
@@ -768,6 +920,18 @@ class TMNTDeckEngine(DeckTree):
                 background: {T_GREEN};
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar:horizontal {{
+                background: {T_BG};
+                height: 8px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {T_PANEL};
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: {T_GREEN};
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
         """,
                 self._tmnt_scale,
             )
@@ -789,57 +953,18 @@ class TMNTDeckEngine(DeckTree):
         self._theme = "tmnt"
 
     def _make_item(self, deck):
-        def _card_due(c):
-            boxes = c.get("boxes", [])
-            if not boxes:
-                return is_due_today(c)
-            seen = set()
-            for b in boxes:
-                gid = b.get("group_id", "")
-                if gid:
-                    if gid not in seen:
-                        seen.add(gid)
-                        if is_due_today(b):
-                            return True
-                else:
-                    if is_due_today(b):
-                        return True
-            return False
-
-        def _total_due(d):
-            total = sum(1 for c in d.get("cards", []) if _card_due(c))
-            for child in d.get("children", []):
-                total += _total_due(child)
-            return total
-
-        due = _total_due(deck)
-        badge = f"[{due}]" if due else "[OK]"
-        item = QTreeWidgetItem([f"{deck['name'].upper()}  {badge}"])
+        due = _count_due_in_deck(deck)
+        item = QTreeWidgetItem([deck["name"].upper()])
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
+        item.setData(0, Qt.UserRole + 3, _deck_total_cards(deck))
         for child in deck.get("children", []):
             item.addChild(self._make_item(child))
         return item
 
     def _blink_tick(self):
-        self._blink_state = not self._blink_state
-
-        def _walk(item):
-            due_str = item.data(0, Qt.UserRole + 1)
-            name = item.data(0, Qt.UserRole + 2) or "Unknown"
-            due = int(due_str) if due_str else 0
-            badge = (
-                f"[{due}]"
-                if due > 0 and self._blink_state
-                else (f"({due})" if due > 0 else "[OK]")
-            )
-            item.setText(0, f"{name.upper()}  {badge}")
-            for i in range(item.childCount()):
-                _walk(item.child(i))
-
-        for i in range(self.tree.topLevelItemCount()):
-            _walk(self.tree.topLevelItem(i))
+        return
 
     def refresh(self):
         sel_id = self._get_selected_id()
@@ -884,12 +1009,12 @@ class TMNTSidebar(QFrame):
         self._data = data
         self._scale = _tmnt_scale(data)
         self._selected_deck = None
-        self.setFixedWidth(_px(260, self._scale))
-        self.setObjectName("tmnt_sidebar")
+        self.setFixedWidth(_px(TMNT_SIDEBAR_W, self._scale))
+        self.setObjectName("tmnt_sidebar1")
         self.setStyleSheet(
             _scale_ss(
                 f"""
-            QFrame#tmnt_sidebar {{
+            QFrame#tmnt_sidebar1 {{
                 background: {T_BG};
                 border-right: 1px solid {T_BORDER};
                 border-radius: 0px;
@@ -913,11 +1038,11 @@ class TMNTSidebar(QFrame):
         hl = QVBoxLayout(hdr)
         hl.setContentsMargins(
             _px(16, self._scale),
-            _px(14, self._scale),
             _px(16, self._scale),
-            _px(10, self._scale),
+            _px(16, self._scale),
+            _px(16, self._scale),
         )
-        hl.setSpacing(_px(10, self._scale))
+        hl.setSpacing(_px(12, self._scale))
 
         title_row = QHBoxLayout()
         torii = QLabel("⛩")
@@ -927,7 +1052,7 @@ class TMNTSidebar(QFrame):
         title = QLabel("DOJO CAVE")
         title.setStyleSheet(
             _scale_ss(
-                f"color: {T_GREEN}; font-size: 11px; font-weight: 900; "
+                f"color: {T_GREEN}; font-size: 14px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 2px;",
                 self._scale,
             )
@@ -953,7 +1078,7 @@ class TMNTSidebar(QFrame):
         search_icon = QLabel("⌕")
         search_icon.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 14px; border: none;", self._scale
+                f"color: {T_SUBTEXT}; font-size: 12px; border: none;", self._scale
             )
         )
         self.search_in = QLineEdit()
@@ -961,7 +1086,7 @@ class TMNTSidebar(QFrame):
         self.search_in.setStyleSheet(
             _scale_ss(
                 f"background: transparent; border: none; color: {T_TEXT}; "
-                f"font-family: {T_MONO}; font-size: 11px;",
+                f"font-family: {T_MONO}; font-size: 14px;",
                 self._scale,
             )
         )
@@ -985,9 +1110,9 @@ class TMNTSidebar(QFrame):
         dojos_lbl.setAlignment(Qt.AlignCenter)
         dojos_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 9px; font-weight: 900; "
+                f"color: {T_SUBTEXT}; font-size: 12px; font-weight: 900; "
                 f"font-family: {T_MONO}; letter-spacing: 2px; "
-                f"padding: 10px 0px 6px 0px; background: {T_BG};",
+                f"padding: 12px 0px 12px 0px; background: {T_BG};",
                 self._scale,
             )
         )
@@ -1003,10 +1128,10 @@ class TMNTSidebar(QFrame):
         foot.setStyleSheet(f"background: {T_BG}; border-top: 1px solid {T_BORDER};")
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(
-            _px(12, self._scale),
-            _px(10, self._scale),
-            _px(12, self._scale),
-            _px(10, self._scale),
+            _px(16, self._scale),
+            _px(16, self._scale),
+            _px(16, self._scale),
+            _px(16, self._scale),
         )
         fl.setSpacing(_px(8, self._scale))
 
@@ -1020,10 +1145,10 @@ class TMNTSidebar(QFrame):
                     color: {T_GREEN};
                     border: 1px solid {T_GREEN};
                     border-radius: 2px;
-                    font-size: 8px;
+                    font-size: 12px;
                     font-weight: 900;
                     font-family: {T_PIXEL};
-                    padding: 6px 6px;
+                    padding: 6px 8px;
                 }}
                 QPushButton:hover {{ background: rgba(69,162,71,0.12); }}
             """,
@@ -1033,21 +1158,33 @@ class TMNTSidebar(QFrame):
             return b
 
         btn_new = _foot_btn("⊕ NEW DOJO")
-        btn_sub = _foot_btn("⊕ SUB")
-        btn_open = QPushButton("📂")
-        btn_open.setFixedSize(_px(32, self._scale), _px(30, self._scale))
+        btn_sub = _foot_btn("⊕ SUB Dojo")
+        from PyQt5.QtGui import QIcon
+        from PyQt5.QtCore import QSize
+
+        btn_open = QPushButton()
+        btn_open.setIcon(QIcon("assets/themes/dojo/sewer_icon.png"))
+        btn_h = _px(34, self._scale)  # same height as NEW DOJO / SUB
+        btn_w = _px(34, self._scale)  # square — logo is circular anyway
+        btn_Icon_height = _px(74, self._scale)  # square — logo is circular anyway
+
+        btn_open.setIconSize(
+            QSize(btn_Icon_height, btn_Icon_height)
+        )  # icon fills the whole button
+        btn_open.setFixedSize(btn_w, btn_h)
+
         btn_open.setToolTip("Focus selected dojo")
         btn_open.setStyleSheet(
             _scale_ss(
                 f"""
             QPushButton {{
                 background: transparent;
-                color: {T_SUBTEXT};
-                border: 1px solid {T_BORDER};
-                border-radius: 2px;
-                font-size: 15px;
+                border: none;          /* ← kill the border box */
+                padding: 0px;
             }}
-            QPushButton:hover {{ color: {T_TEXT}; border-color: {T_GREEN}; }}
+            QPushButton:hover {{
+                background: transparent;
+            }}
         """,
                 self._scale,
             )
@@ -1440,7 +1577,7 @@ class TMNTMainContent(QWidget):
         self.lbl_title = QLabel("SELECT A DOJO")
         self.lbl_title.setStyleSheet(
             _scale_ss(
-                f"color: {T_GREEN}; font-size: 18px; font-weight: 900; "
+                f"color: {T_GREEN}; font-size: 24px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 1px; background: transparent;",
                 self._scale,
             )
@@ -1448,7 +1585,7 @@ class TMNTMainContent(QWidget):
         self.lbl_sub = QLabel("SCROLLS: 0  ❖  DUE: 0")
         self.lbl_sub.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 10px; font-weight: bold; "
+                f"color: {T_SUBTEXT}; font-size: 12px; font-weight: bold; "
                 f"font-family: {T_MONO}; letter-spacing: 1px; background: transparent;",
                 self._scale,
             )
@@ -1469,7 +1606,7 @@ class TMNTMainContent(QWidget):
                 color: #58b85d;
                 border: 1px solid #58b85d;
                 border-radius: 2px;
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 900;
                 font-family: {T_PIXEL};
                 padding: 8px 16px;
@@ -1512,7 +1649,7 @@ class TMNTMainContent(QWidget):
         section_lbl = QLabel("SCROLL INVENTORY")
         section_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 9px; font-weight: 900; "
+                f"color: {T_SUBTEXT}; font-size: 10px; font-weight: 900; "
                 f"font-family: {T_MONO}; letter-spacing: 2px; padding: 2px 0px 0px 2px;",
                 self._scale,
             )
@@ -1520,11 +1657,11 @@ class TMNTMainContent(QWidget):
         L.addWidget(section_lbl)
 
         list_frame = QFrame()
-        list_frame.setObjectName("card_list_frame")
+        list_frame.setObjectName("tmnt_card_list_frame1")
         list_frame.setStyleSheet(
             _scale_ss(
                 f"""
-            QFrame#card_list_frame {{
+            QFrame#tmnt_card_list_frame1 {{
                 background: {T_BG};
                 border: 1px solid {T_BORDER};
                 border-radius: 4px;
@@ -1587,7 +1724,7 @@ class TMNTMainContent(QWidget):
         self._empty_lbl.setAlignment(Qt.AlignCenter)
         self._empty_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-family: {T_PIXEL}; font-size: 10px; "
+                f"color: {T_SUBTEXT}; font-family: {T_PIXEL}; font-size: 14px; "
                 f"background: transparent; border: none;",
                 self._scale,
             )
@@ -1611,7 +1748,7 @@ class TMNTMainContent(QWidget):
                 color: {T_TEXT};
                 border: 1px solid {T_BORDER};
                 border-radius: 2px;
-                font-size: 11px;
+                font-size: 14px;
                 font-family: {T_MONO};
                 padding: 6px 14px;
             }}
@@ -1633,7 +1770,7 @@ class TMNTMainContent(QWidget):
                 color: {T_RED};
                 border: 1px solid {T_RED};
                 border-radius: 2px;
-                font-size: 11px;
+                font-size: 14px;
                 font-weight: bold;
                 font-family: {T_MONO};
                 padding: 6px 14px;
@@ -1785,20 +1922,20 @@ class TMNTBgmWidget(QFrame):
         self._scale = _tmnt_scale(data)
         self._playing = False
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(_px(30, self._scale))
+        self.setFixedHeight(_px(26, self._scale))
         self.setStyleSheet(
             _scale_ss(
-                f"QFrame {{ background: {T_PANEL}; border: 1px solid {T_BORDER}; border-radius: 4px; }}",
+                f"QFrame {{ background: {T_PANEL}; border: 1px solid {T_BORDER}; border-radius: 2px; }}",
                 self._scale,
             )
         )
 
         l = QHBoxLayout(self)
         l.setContentsMargins(
-            _px(10, self._scale),
-            _px(4, self._scale),
-            _px(10, self._scale),
-            _px(4, self._scale),
+            _px(12, self._scale),
+            _px(3, self._scale),
+            _px(12, self._scale),
+            _px(3, self._scale),
         )
         l.setSpacing(_px(8, self._scale))
 
@@ -1811,7 +1948,7 @@ class TMNTBgmWidget(QFrame):
         self.text_lbl = QLabel("BGM")
         self.text_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_TEXT}; font-size: 10px; font-weight: bold; font-family: {T_MONO};",
+                f"color: {T_TEXT}; font-size: 12px; font-weight: bold; font-family: {T_MONO};",
                 self._scale,
             )
         )
@@ -1821,7 +1958,7 @@ class TMNTBgmWidget(QFrame):
         self.badge_lbl.setStyleSheet(
             _scale_ss(
                 f"background: {T_BG}; color: {T_SUBTEXT}; border-radius: 3px; "
-                f"font-size: 8px; font-weight: 900; font-family: {T_MONO}; padding: 1px 4px;",
+                f"font-size: 10px; font-weight: 900; font-family: {T_MONO}; padding: 1px 4px;",
                 self._scale,
             )
         )
@@ -1842,7 +1979,7 @@ class TMNTBgmWidget(QFrame):
             self.badge_lbl.setStyleSheet(
                 _scale_ss(
                     f"background: {T_PURPLE}; color: white; border-radius: 3px; "
-                    f"font-size: 8px; font-weight: 900; font-family: {T_MONO}; padding: 1px 4px;",
+                    f"font-size: 10px; font-weight: 900; font-family: {T_MONO}; padding: 1px 4px;",
                     self._scale,
                 )
             )
@@ -1857,7 +1994,7 @@ class TMNTBgmWidget(QFrame):
             self.badge_lbl.setStyleSheet(
                 _scale_ss(
                     f"background: {T_BG}; color: {T_SUBTEXT}; border-radius: 3px; "
-                    f"font-size: 8px; font-weight: 900; font-family: {T_MONO}; padding: 1px 4px;",
+                    f"font-size: 10px; font-weight: 900; font-family: {T_MONO}; padding: 1px 4px;",
                     self._scale,
                 )
             )
@@ -1883,12 +2020,12 @@ class TMNTTopBar(QFrame):
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
         self._scale = _tmnt_scale(data)
-        self.setObjectName("tmnt_topbar")
+        self.setObjectName("tmnt_topbar1")
         self.setFixedHeight(_px(52, self._scale))
         self.setStyleSheet(
             _scale_ss(
                 f"""
-            QFrame#tmnt_topbar {{
+            QFrame#tmnt_topbar1 {{
                 background: {T_BG};
                 border-bottom: 1px solid {T_BORDER};
                 border-radius: 0px;
@@ -1938,7 +2075,7 @@ class TMNTTopBar(QFrame):
         app_name = QLabel("ANKI OCCLUSION")
         app_name.setStyleSheet(
             _scale_ss(
-                f"color: {T_NEON}; font-size: 14px; font-weight: 900; "
+                f"color: {T_NEON}; font-size: 18px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 2px;",
                 self._scale,
             )
@@ -1956,17 +2093,17 @@ class TMNTTopBar(QFrame):
                 _scale_ss(
                     f"""
                 QPushButton {{
-                    background: transparent;
-                    color: {T_SUBTEXT};
-                    border: none;
-                    border-bottom: 2px solid transparent;
-                    font-family: {T_MONO};
-                    font-size: 11px;
-                    font-weight: bold;
-                    padding: 8px 14px;
-                    letter-spacing: 1px;
-                    text-transform: uppercase;
-                }}
+                background: transparent;
+                color: {T_SUBTEXT};
+                border: none;
+                border-bottom: 2px solid transparent;
+                font-family: {T_MONO};
+                font-size: 12px;
+                font-weight: bold;
+                padding: 6px 8px;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+            }}
                 QPushButton:hover {{
                     color: {T_GREEN};
                     border-bottom: 2px solid {T_GREEN};
@@ -2012,7 +2149,7 @@ class TMNTTopBar(QFrame):
                     color: {T_SUBTEXT};
                     border: 1px solid {T_BORDER};
                     border-radius: 2px;
-                    font-size: 10px;
+                    font-size: 12px;
                     font-weight: bold;
                 }}
                 QPushButton:hover {{ background: {T_CARD}; color: {T_TEXT}; border-color: {T_GREEN}; }}
@@ -2093,12 +2230,12 @@ class TMNTTopBar(QFrame):
         self.name_lbl = QLabel(MENTOR_QUOTES[0][1])
         self.name_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 8px; font-family: {T_MONO};",
+                f"color: {T_SUBTEXT}; font-size: 14px; font-family: {T_MONO};",
                 self._scale,
             )
         )
         q_col = QVBoxLayout()
-        q_col.setSpacing(_px(2, self._scale))
+        q_col.setSpacing(0)
         q_col.addWidget(self.quote_lbl)
         q_col.addWidget(self.name_lbl)
         ml.addLayout(q_col)
@@ -2140,7 +2277,7 @@ class TMNTFooter(QFrame):
             lbl = QLabel(f"{icon}  {text}")
             lbl.setStyleSheet(
                 _scale_ss(
-                    f"color: {color}; font-size: 9px; font-family: {T_MONO}; font-weight: bold;",
+                    f"color: {color}; font-size: 8px; font-family: {T_MONO}; font-weight: bold;",
                     self._scale,
                 )
             )
@@ -2148,9 +2285,7 @@ class TMNTFooter(QFrame):
 
         L.addWidget(_status("✅", "SM-2 Active", T_GREEN))
         sep = QLabel("|")
-        sep.setStyleSheet(
-            _scale_ss(f"color: {T_BORDER}; font-size: 10px;", self._scale)
-        )
+        sep.setStyleSheet(_scale_ss(f"color: {T_BORDER}; font-size: 8px;", self._scale))
         L.addWidget(sep)
         pdf_text = (
             "PyMuPDF loaded — PDF support active"

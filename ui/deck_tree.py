@@ -449,6 +449,7 @@ class DeckTree(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, self.tree.header().ResizeToContents)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)

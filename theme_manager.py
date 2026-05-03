@@ -4,37 +4,53 @@ from PyQt5.QtGui import QColor
 
 PALETTES = {
     "dojo": {
-        "C_BG":      "#07070B",
+        "C_BG": "#07070B",
         "C_SURFACE": "#0F0F17",
-        "C_CARD":    "#14141F",
-        "C_ACCENT":  "#72FF4F", # Neon Green
-        "C_PURPLE":  "#A86CFF", # Arcade Purple
-        "C_ORANGE":  "#FF9A2E",
-        "C_GREEN":   "#72FF4F",
-        "C_RED":     "#FF4444",
-        "C_TEXT":    "#E0E0FF",
+        "C_CARD": "#14141F",
+        "C_ACCENT": "#72FF4F",  # Neon Green
+        "C_PURPLE": "#A86CFF",  # Arcade Purple
+        "C_ORANGE": "#FF9A2E",
+        "C_GREEN": "#72FF4F",
+        "C_RED": "#FF4444",
+        "C_TEXT": "#E0E0FF",
         "C_SUBTEXT": "#5F627D",
-        "C_BORDER":  "#1A1A26",
-        "C_YELLOW":  "#FFD700",
+        "C_BORDER": "#1A1A26",
+        "C_YELLOW": "#FFD700",
         "header_font": "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif",
-        "body_font":   "'Inter', 'Segoe UI', sans-serif",
+        "body_font": "'Inter', 'Segoe UI', sans-serif",
     },
     "classic": {
-        "C_BG":      "#F0F2F5",
+        "C_BG": "#F0F2F5",
         "C_SURFACE": "#FFFFFF",
-        "C_CARD":    "#F8F9FA",
-        "C_ACCENT":  "#4C6EF5", # Muted Blue
-        "C_PURPLE":  "#7048E8",
-        "C_ORANGE":  "#F59F00",
-        "C_GREEN":   "#37B24D",
-        "C_RED":     "#F03E3E",
-        "C_TEXT":    "#212529",
+        "C_CARD": "#F8F9FA",
+        "C_ACCENT": "#4C6EF5",  # Muted Blue
+        "C_PURPLE": "#7048E8",
+        "C_ORANGE": "#F59F00",
+        "C_GREEN": "#37B24D",
+        "C_RED": "#F03E3E",
+        "C_TEXT": "#212529",
         "C_SUBTEXT": "#868E96",
-        "C_BORDER":  "#DEE2E6",
-        "C_YELLOW":  "#FAB005",
+        "C_BORDER": "#DEE2E6",
+        "C_YELLOW": "#FAB005",
         "header_font": "'Segoe UI', sans-serif",
-        "body_font":   "'Segoe UI', sans-serif",
-    }
+        "body_font": "'Segoe UI', sans-serif",
+    },
+    "tmnt": {
+        "C_BG": "#0A0B11",
+        "C_SURFACE": "#10131A",
+        "C_CARD": "#1D212C",
+        "C_ACCENT": "#45A247",
+        "C_PURPLE": "#B084FF",
+        "C_ORANGE": "#FFB86C",
+        "C_GREEN": "#45A247",
+        "C_RED": "#FF5A66",
+        "C_TEXT": "#F5F1E8",
+        "C_SUBTEXT": "#7A86A8",
+        "C_BORDER": "#333B4D",
+        "C_YELLOW": "#F4D35E",
+        "header_font": "'Press Start 2P', monospace",
+        "body_font": "'Roboto Mono', 'Courier New', monospace",
+    },
 }
 
 # ── Label Mappings ────────────────────────────────────────────────────────────
@@ -89,20 +105,107 @@ LABELS = {
         "DASH_MISS": "DUE CARDS",
         "DASH_NEW": "NEW CARDS",
         "DASH_BATTLES": "TOTAL REVIEWS",
-    }
+    },
 }
 
+
+def _normalize_mode(mode="dojo"):
+    if mode == "ninja":
+        return "dojo"
+    return mode
+
+
 def get_palette(mode="dojo"):
+    mode = _normalize_mode(mode)
     return PALETTES.get(mode, PALETTES["dojo"])
 
+
 def get_label(key, mode="dojo"):
+    mode = _normalize_mode(mode)
     return LABELS.get(mode, LABELS["dojo"]).get(key, key)
 
+
 def build_stylesheet(mode="dojo", font_size=14):
+    mode = _normalize_mode(mode)
     p = get_palette(mode)
 
     hf = p["header_font"]
     bf = p["body_font"]
+
+    if mode == "tmnt":
+        return f"""
+QMainWindow, QDialog {{
+    background: {p['C_BG']};
+    color: {p['C_TEXT']};
+}}
+QWidget {{
+    background: {p['C_BG']};
+    color: {p['C_TEXT']};
+    font-family: {bf};
+    font-size: {font_size}px;
+}}
+QLabel {{
+    background: transparent;
+    color: {p['C_TEXT']};
+}}
+QFrame {{
+    border: none;
+}}
+QMenu {{
+    background: {p['C_SURFACE']};
+    color: {p['C_TEXT']};
+    border: 1px solid {p['C_BORDER']};
+    border-radius: 2px;
+    font-family: {bf};
+    font-size: {font_size}px;
+}}
+QMenu::item:selected {{
+    background: {p['C_CARD']};
+    color: {p['C_ACCENT']};
+}}
+QScrollArea {{
+    background: transparent;
+    border: none;
+}}
+QScrollBar:vertical {{
+    background: {p['C_BG']};
+    width: 8px;
+    margin: 0px;
+    border-left: 1px solid {p['C_BORDER']};
+}}
+QScrollBar::handle:vertical {{
+    background: {p['C_CARD']};
+    border-radius: 4px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {p['C_ACCENT']};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: none;
+}}
+QScrollBar:horizontal {{
+    background: {p['C_BG']};
+    height: 8px;
+    margin: 0px;
+    border-top: 1px solid {p['C_BORDER']};
+}}
+QScrollBar::handle:horizontal {{
+    background: {p['C_CARD']};
+    border-radius: 4px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {p['C_ACCENT']};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: none;
+}}
+"""
 
     if mode == "dojo":
         hf = "'Orbitron', " + hf
@@ -112,8 +215,12 @@ def build_stylesheet(mode="dojo", font_size=14):
     btn_radius = "0px" if mode == "dojo" else "6px"
     btn_border = "2px" if mode == "dojo" else "1px"
     btn_padding = "10px 20px" if mode == "dojo" else "6px 14px"
-    
-    raised = f"border-bottom: 3px solid rgba(0,0,0,0.5);" if mode == "dojo" else "border-bottom: 2px solid rgba(0,0,0,0.15);"
+
+    raised = (
+        f"border-bottom: 3px solid rgba(0,0,0,0.5);"
+        if mode == "dojo"
+        else "border-bottom: 2px solid rgba(0,0,0,0.15);"
+    )
 
     return f"""
 QMainWindow, QDialog {{ background: {p['C_BG']}; color: {p['C_TEXT']}; }}
