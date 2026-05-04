@@ -49,18 +49,22 @@ def _due_in_days(days):
 #  Prevents card pile-ups by adding a small random offset to review intervals.
 #  Anki-style: fuzz range grows with interval size.
 # ─────────────────────────────────────────────────────────────────────────────
-def _fuzz_interval(iv: int) -> int:
-    """Add a small random fuzz to intervals > 2 days to avoid pile-ups."""
+def _fuzz_interval(iv: int, seed_val: int = None) -> int:
+    """Add a small random fuzz to intervals > 2 days to avoid pile-ups.
+    Uses seed_val to guarantee the preview matches the actual interval applied."""
     if iv <= 2:
         return iv  # No fuzz for very short intervals
+        
+    rng = random.Random(seed_val) if seed_val is not None else random
+    
     if iv <= 7:
-        fuzz = random.randint(-1, 1)        # ±1 day
+        fuzz = rng.randint(-1, 1)        # ±1 day
     elif iv <= 30:
-        fuzz = random.randint(-2, 2)        # ±2 days
+        fuzz = rng.randint(-2, 2)        # ±2 days
     elif iv <= 90:
-        fuzz = random.randint(-3, 4)        # -3 to +4 days
+        fuzz = rng.randint(-3, 4)        # -3 to +4 days
     else:
-        fuzz = random.randint(-4, 7)        # -4 to +7 days
+        fuzz = rng.randint(-4, 7)        # -4 to +7 days
     return max(1, iv + fuzz)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,9 +111,21 @@ def sched_update(c, quality):
     ef    = c["sm2_ease"]
     iv    = c["sm2_interval"]
 
+    # Generate a deterministic seed based on card's review count
+    # This ensures preview simulation and actual click yield the exact same fuzz
+    seed_val = c.get("reviews", 0) + iv
+
     # Transition new → learning on first touch
     if state == "new":
         state = "learning"
+
+    # Pre-calculate the raw "Good" interval to use as an anchor for Hard/Easy clamps
+    if state == "review":
+        good_iv_raw = (1 if c["sm2_repetitions"] == 0 else
+                       6 if c["sm2_repetitions"] == 1 else
+                       min(MAX_INTERVAL, max(1, round(iv * ef))))
+    else:
+        good_iv_raw = GRADUATING_IV
 
     # ── AGAIN (quality <= 1) ──────────────────────────────────────────────────
     if quality <= 1:
@@ -137,9 +153,16 @@ def sched_update(c, quality):
             ef        = _update_ef(ef, 3)
             new_state = "review"
             new_step  = 0
-            iv        = min(MAX_INTERVAL, max(1, round(iv * 1.2)))
-            iv        = _fuzz_interval(iv)
-            due       = _due_in_days(iv)
+            
+            # Calculate raw Hard interval
+            hard_iv_raw = min(MAX_INTERVAL, max(1, round(iv * 1.2)))
+            
+            # ⚡ ALGORITHMIC ENFORCEMENT: Hard < Good
+            if good_iv_raw > 1:
+                hard_iv_raw = min(hard_iv_raw, good_iv_raw - 1)
+                
+            iv  = _fuzz_interval(hard_iv_raw, seed_val)
+            due = _due_in_days(iv)
 
     # ── EASY (quality == 5) ───────────────────────────────────────────────────
     elif quality == 5:
@@ -148,19 +171,15 @@ def sched_update(c, quality):
         new_state = "review"
         new_step  = 0
         if state == "review":
-            # ✅ FIX: Compute Good interval first, guarantee Easy ≥ Good after fuzz
-            good_ef = c["sm2_ease"]  # Good uses original EF (delta=0)
-            good_iv_raw = (1 if c["sm2_repetitions"] == 0 else
-                           6 if c["sm2_repetitions"] == 1 else
-                           min(MAX_INTERVAL, max(1, round(iv * good_ef))))
             easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef * EASY_BONUS)))
-            # Fuzz both independently, then clamp Easy ≥ Good
-            good_iv_fuzzed = _fuzz_interval(good_iv_raw)
-            easy_iv_fuzzed = _fuzz_interval(easy_iv_raw)
-            iv = max(easy_iv_fuzzed, good_iv_fuzzed)
+            
+            # ⚡ ALGORITHMIC ENFORCEMENT: Easy > Good
+            easy_iv_raw = max(easy_iv_raw, good_iv_raw + 1)
+            
+            iv = _fuzz_interval(easy_iv_raw, seed_val)
         else:
             iv = EASY_IV
-            iv = _fuzz_interval(iv)
+            iv = _fuzz_interval(iv, seed_val)
         due = _due_in_days(iv)
 
     # ── GOOD (quality == 4) ───────────────────────────────────────────────────
@@ -183,10 +202,7 @@ def sched_update(c, quality):
             ef        = _update_ef(ef, 4)   # delta = 0, but keeps clamp logic
             new_state = "review"
             new_step  = 0
-            iv = (1 if c["sm2_repetitions"] == 0 else
-                  6 if c["sm2_repetitions"] == 1 else
-                  min(MAX_INTERVAL, max(1, round(iv * ef))))
-            iv  = _fuzz_interval(iv)
+            iv  = _fuzz_interval(good_iv_raw, seed_val)
             due = _due_in_days(iv)
 
     c.update({
@@ -293,22 +309,6 @@ def _fmt_due_interval(c):
             return f"{days}d"
 
     previews = {q: _preview(q) for q in [1, 3, 4, 5]}
-
-    # ✅ FIX: Enforce button ordering Hard ≤ Good ≤ Easy for day-based intervals.
-    # Fuzzing is random and can accidentally make Easy < Good or Hard > Good.
-    def _to_days(s):
-        return int(s[:-1]) if s.endswith("d") else None
-
-    hard_d = _to_days(previews[3])
-    good_d = _to_days(previews[4])
-    easy_d = _to_days(previews[5])
-
-    if good_d is not None and easy_d is not None and easy_d <= good_d:
-        previews[5] = f"{good_d + 1}d"   # Easy always strictly > Good
-
-    if hard_d is not None and good_d is not None and hard_d > good_d:
-        previews[3] = previews[4]   # Hard can't show more than Good
-
     return previews
 
 def sm2_simulate(c, q):
