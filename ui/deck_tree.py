@@ -54,13 +54,6 @@ from sm2_engine import (
     _fmt_due_interval, sm2_simulate, sm2_badge
 )
 
-# SM-2 debug logger — safe import (no crash if file missing)
-try:
-    from sm2_debug_log import log_session, log_rate, log_due, log_queue
-    _DEBUG_LOG = True
-except ImportError:
-    _DEBUG_LOG = False
-
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog

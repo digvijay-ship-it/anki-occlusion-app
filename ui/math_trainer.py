@@ -4,7 +4,8 @@ Native PyQt5 page for Anki Occlusion.
 Matches the Ninja theme: Orbitron font, #07070B bg, #72FF4F green, particle canvas.
 """
 import random, json, os, threading, math
-import ui.home_screen
+from theme_manager import get_palette
+from PyQt5.QtWidgets import QApplication
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -174,6 +175,12 @@ class ParticleCanvas(QWidget):
 class HexLogo(QWidget):
     def __init__(self, size=34, parent=None):
         super().__init__(parent)
+        from theme_manager import get_palette
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        p = get_palette(theme)
+        self._hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
         self.setFixedSize(size, size)
         self._angle = 0
         t = QTimer(self); t.timeout.connect(self._spin); t.start(50)
@@ -202,7 +209,7 @@ class HexLogo(QWidget):
         p.setPen(pen2); p.drawPolygon(self._hex(0, 0, r, 0))
         p.restore()
         p.setPen(QPen(GREEN))
-        p.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 13, QFont.Bold))
+        p.setFont(QFont(self._hf, 13, QFont.Bold))
         p.drawText(self.rect(), Qt.AlignCenter, "∑")
         p.end()
 
@@ -272,7 +279,15 @@ class MathTrainerPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(f"QWidget{{background:{_h(BG)};color:{_h(TEXT)};}}")
+        from theme_manager import get_palette
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        p = get_palette(theme)
+        self._p = p
+        self._hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
+        self._bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
+        self.setStyleSheet(f"QWidget{{background:{p.get('C_BG', '#07070B')};color:{p.get('C_TEXT', '#E0E0FF')};}}")
         self._mode = 1; self._ans = 0; self._streak = 0; self._qn = 0
         self._tchk = {}; self._rchk = {}
         self._voice_thread = None; self._config = {}
@@ -311,50 +326,50 @@ class MathTrainerPage(QWidget):
         top = QFrame()
         top.setFixedHeight(52)
         top.setStyleSheet(
-            f"QFrame{{background:{_h(SURFACE)};border-bottom:1px solid {_h(BORDER)};border-radius:0;}}")
+            f"QFrame{{background:{self._p.get('C_SURFACE', _h(SURFACE))};border-bottom:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:0;}}")
         tl = QHBoxLayout(top); tl.setContentsMargins(16,0,16,0); tl.setSpacing(10)
 
         self._hex = HexLogo(34); tl.addWidget(self._hex)
 
         titles = QWidget(); titles.setStyleSheet("background:transparent;")
         tvl = QVBoxLayout(titles); tvl.setContentsMargins(0,0,0,0); tvl.setSpacing(1)
-        t1 = QLabel("MATH DOJO"); t1.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,11,QFont.Bold))
-        t1.setStyleSheet(f"color:{_h(GREEN)};background:transparent;letter-spacing:2px;")
+        t1 = QLabel("MATH DOJO"); t1.setFont(QFont(self._hf,11,QFont.Bold))
+        t1.setStyleSheet(f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:2px;")
         t2 = QLabel("TABLES  •  SQUARES  •  CUBES  •  TRAINER")
-        t2.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
-        t2.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;letter-spacing:1px;")
+        t2.setFont(QFont(self._hf,7))
+        t2.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1px;")
         tvl.addWidget(t1); tvl.addWidget(t2); tl.addWidget(titles)
 
         self._top_mode_lbl = QLabel("")
-        self._top_mode_lbl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,8,QFont.Bold))
-        self._top_mode_lbl.setStyleSheet(f"background:transparent;color:{_h(GREEN)};letter-spacing:1px;")
+        self._top_mode_lbl.setFont(QFont(self._hf,8,QFont.Bold))
+        self._top_mode_lbl.setStyleSheet(f"background:transparent;color:{self._p.get('C_GREEN', _h(GREEN))};letter-spacing:1px;")
         self._top_mode_lbl.hide(); tl.addWidget(self._top_mode_lbl)
         tl.addStretch()
 
         combo_frame = QFrame()
         combo_frame.setStyleSheet(
-            f"QFrame{{background:{_h(CARD)};border:1px solid {_h(BORDER)};border-radius:4px;}}")
+            f"QFrame{{background:{self._p.get('C_CARD', _h(CARD))};border:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:4px;}}")
         cl = QHBoxLayout(combo_frame); cl.setContentsMargins(10,4,10,4); cl.setSpacing(6)
         fire = QLabel("🔥"); fire.setFont(QFont("Segoe UI Emoji",12))
         fire.setStyleSheet("background:transparent;"); cl.addWidget(fire)
-        clbl = QLabel("COMBO"); clbl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
-        clbl.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;letter-spacing:1px;"); cl.addWidget(clbl)
-        self._combo_val = QLabel("0"); self._combo_val.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,15,QFont.Bold))
-        self._combo_val.setStyleSheet(f"color:{_h(ORANG)};background:transparent;min-width:24px;")
+        clbl = QLabel("COMBO"); clbl.setFont(QFont(self._hf,7))
+        clbl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1px;"); cl.addWidget(clbl)
+        self._combo_val = QLabel("0"); self._combo_val.setFont(QFont(self._hf,15,QFont.Bold))
+        self._combo_val.setStyleSheet(f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;")
         self._combo_val.setAlignment(Qt.AlignRight|Qt.AlignVCenter); cl.addWidget(self._combo_val)
         tl.addWidget(combo_frame)
 
         tl.addSpacing(8)
         btn_close = QPushButton("✕")
         btn_close.setFixedSize(30, 30)
-        btn_close.setStyleSheet(f"QPushButton{{background:{_h(CARD)};color:{_h(SUBTEXT)};border:1px solid {_h(BORDER)};border-radius:4px;font-size:14px;}} QPushButton:hover{{color:{_h(RED)};border-color:{_h(RED)};}}")
+        btn_close.setStyleSheet(f"QPushButton{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};border:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:4px;font-size:14px;}} QPushButton:hover{{color:{self._p.get('C_RED', _h(RED))};border-color:{self._p.get('C_RED', _h(RED))};}}")
         btn_close.clicked.connect(self.closed.emit)
         tl.addWidget(btn_close)
 
         root.addWidget(top)
 
         # ── Stack ─────────────────────────────────────────────────────────────
-        self._stack = QWidget(); self._stack.setStyleSheet(f"background:{_h(BG)};")
+        self._stack = QWidget(); self._stack.setStyleSheet(f"background:{self._p.get('C_BG', _h(BG))};")
         sl = QVBoxLayout(self._stack); sl.setContentsMargins(0,0,0,0); sl.setSpacing(0)
         self._p0 = self._build_p0()
         self._p1 = self._build_p1()
@@ -365,16 +380,16 @@ class MathTrainerPage(QWidget):
         # ── Status Bar ────────────────────────────────────────────────────────
         sb = QFrame(); sb.setFixedHeight(26)
         sb.setStyleSheet(
-            f"QFrame{{background:{_h(SURFACE)};border-top:1px solid {_h(BORDER)};border-radius:0;}}")
+            f"QFrame{{background:{self._p.get('C_SURFACE', _h(SURFACE))};border-top:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:0;}}")
         sbl = QHBoxLayout(sb); sbl.setContentsMargins(12,0,12,0); sbl.setSpacing(8)
         dot = QLabel("●"); dot.setFont(QFont("Segoe UI",8))
-        dot.setStyleSheet(f"color:{_h(GREEN)};background:transparent;"); sbl.addWidget(dot)
+        dot.setStyleSheet(f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;"); sbl.addWidget(dot)
         static = QLabel("•  CALCULATION DOJO  •")
-        static.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
-        static.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;"); sbl.addWidget(static)
+        static.setFont(QFont(self._hf,7))
+        static.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"); sbl.addWidget(static)
         self._sb_status = QLabel("READY")
-        self._sb_status.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
-        self._sb_status.setStyleSheet(f"color:{_h(GREEN)};background:transparent;"); sbl.addWidget(self._sb_status)
+        self._sb_status.setFont(QFont(self._hf,7))
+        self._sb_status.setStyleSheet(f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;"); sbl.addWidget(self._sb_status)
         sbl.addStretch()
         root.addWidget(sb)
 
@@ -420,13 +435,13 @@ class MathTrainerPage(QWidget):
         L.addStretch()
 
         hero = QLabel("MATH DOJO")
-        hero.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,28,QFont.Black))
-        hero.setStyleSheet(f"color:{_h(GREEN)};background:transparent;letter-spacing:4px;")
+        hero.setFont(QFont(self._hf,28,QFont.Black))
+        hero.setStyleSheet(f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:4px;")
         hero.setAlignment(Qt.AlignCenter); L.addWidget(hero)
 
         sub = QLabel("— CHOOSE YOUR DISCIPLINE —")
-        sub.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,8))
-        sub.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;letter-spacing:3px;")
+        sub.setFont(QFont(self._hf,8))
+        sub.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:3px;")
         sub.setAlignment(Qt.AlignCenter); L.addWidget(sub)
         L.addSpacing(24)
 
@@ -447,24 +462,24 @@ class MathTrainerPage(QWidget):
                     border-left:3px solid {c_hex};}}
             """)
             ol = QHBoxLayout(card); ol.setContentsMargins(12,0,12,0); ol.setSpacing(12)
-            ic = QLabel(icon); ic.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,18,QFont.Black))
+            ic = QLabel(icon); ic.setFont(QFont(self._hf,18,QFont.Black))
             ic.setStyleSheet(f"color:{c_hex};background:transparent;min-width:36px;")
             ic.setAttribute(Qt.WA_TransparentForMouseEvents)
             ic.setAlignment(Qt.AlignCenter); ol.addWidget(ic)
             tw = QWidget(); tw.setStyleSheet("background:transparent;")
             tw.setAttribute(Qt.WA_TransparentForMouseEvents)
             tvl = QVBoxLayout(tw); tvl.setContentsMargins(0,0,0,0); tvl.setSpacing(2)
-            nl = QLabel(name); nl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,11,QFont.Bold))
+            nl = QLabel(name); nl.setFont(QFont(self._hf,11,QFont.Bold))
             nl.setAttribute(Qt.WA_TransparentForMouseEvents)
             nl.setStyleSheet(f"color:{c_hex};background:transparent;letter-spacing:1px;")
-            dl = QLabel(desc); dl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,8))
+            dl = QLabel(desc); dl.setFont(QFont(self._hf,8))
             dl.setAttribute(Qt.WA_TransparentForMouseEvents)
-            dl.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;")
+            dl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;")
             tvl.addWidget(nl); tvl.addWidget(dl); ol.addWidget(tw)
             ol.addStretch()
-            arr = QLabel("▶"); arr.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,14))
+            arr = QLabel("▶"); arr.setFont(QFont(self._hf,14))
             arr.setAttribute(Qt.WA_TransparentForMouseEvents)
-            arr.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;"); ol.addWidget(arr)
+            arr.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"); ol.addWidget(arr)
             card.mousePressEvent = lambda _, m=mode_id: self._select_mode(m)
             L.addWidget(card, 0, Qt.AlignHCenter); L.addSpacing(8)
 
@@ -477,12 +492,12 @@ class MathTrainerPage(QWidget):
         L = QVBoxLayout(p); L.setContentsMargins(0,0,0,0); L.setSpacing(0)
 
         hdr = QFrame(); hdr.setFixedHeight(44)
-        hdr.setStyleSheet(f"QFrame{{background:{_h(SURFACE)};border-bottom:1px solid {_h(BORDER)};border-radius:0;}}")
+        hdr.setStyleSheet(f"QFrame{{background:{self._p.get('C_SURFACE', _h(SURFACE))};border-bottom:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:0;}}")
         hl = QHBoxLayout(hdr); hl.setContentsMargins(16,0,16,0); hl.setSpacing(12)
         back = self._mk_back_btn(); back.clicked.connect(lambda: self._show(0)); hl.addWidget(back)
         self._p1_title = QLabel("SELECT CHALLENGE")
-        self._p1_title.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,11,QFont.Bold))
-        self._p1_title.setStyleSheet(f"color:{_h(GREEN)};background:transparent;letter-spacing:2px;")
+        self._p1_title.setFont(QFont(self._hf,11,QFont.Bold))
+        self._p1_title.setStyleSheet(f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:2px;")
         hl.addWidget(self._p1_title); L.addWidget(hdr)
 
         body = QWidget(); body.setStyleSheet("background:transparent;")
@@ -491,10 +506,10 @@ class MathTrainerPage(QWidget):
         # Tables section
         self._tab_sec = QWidget(); self._tab_sec.setStyleSheet("background:transparent;")
         tsl = QVBoxLayout(self._tab_sec); tsl.setContentsMargins(0,0,0,0); tsl.setSpacing(6)
-        lbl1 = QLabel("— SELECT TABLES (1–45) —"); lbl1.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
-        lbl1.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;letter-spacing:1.5px;")
+        lbl1 = QLabel("— SELECT TABLES (1–45) —"); lbl1.setFont(QFont(self._hf,7))
+        lbl1.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1.5px;")
         tsl.addWidget(lbl1)
-        gw = QWidget(); gw.setStyleSheet(f"background:{_h(SURFACE)};border-radius:4px;")
+        gw = QWidget(); gw.setStyleSheet(f"background:{self._p.get('C_SURFACE', _h(SURFACE))};border-radius:4px;")
         self._tab_grid = QGridLayout(gw)
         self._tab_grid.setContentsMargins(8,8,8,8); self._tab_grid.setSpacing(4)
         self._tab_btns = {}
@@ -510,25 +525,25 @@ class MathTrainerPage(QWidget):
         # Range section
         self._rng_sec = QWidget(); self._rng_sec.setStyleSheet("background:transparent;")
         rsl = QVBoxLayout(self._rng_sec); rsl.setContentsMargins(0,0,0,0); rsl.setSpacing(6)
-        self._rng_sec_lbl = QLabel("— SELECT RANGE —"); self._rng_sec_lbl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
-        self._rng_sec_lbl.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;letter-spacing:1.5px;")
+        self._rng_sec_lbl = QLabel("— SELECT RANGE —"); self._rng_sec_lbl.setFont(QFont(self._hf,7))
+        self._rng_sec_lbl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1.5px;")
         rsl.addWidget(self._rng_sec_lbl)
-        self._rng_gw = QWidget(); self._rng_gw.setStyleSheet(f"background:{_h(SURFACE)};border-radius:4px;")
+        self._rng_gw = QWidget(); self._rng_gw.setStyleSheet(f"background:{self._p.get('C_SURFACE', _h(SURFACE))};border-radius:4px;")
         self._rng_grid = QGridLayout(self._rng_gw)
         self._rng_grid.setContentsMargins(8,8,8,8); self._rng_grid.setSpacing(6)
         rsl.addWidget(self._rng_gw); bl.addWidget(self._rng_sec); self._rng_sec.hide()
 
         self._warn_lbl = QLabel("")
-        self._warn_lbl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,8))
-        self._warn_lbl.setStyleSheet(f"color:{_h(RED)};background:transparent;"); bl.addWidget(self._warn_lbl)
+        self._warn_lbl.setFont(QFont(self._hf,8))
+        self._warn_lbl.setStyleSheet(f"color:{self._p.get('C_RED', _h(RED))};background:transparent;"); bl.addWidget(self._warn_lbl)
 
         start = QPushButton("▶  START MISSION"); start.setFixedHeight(44)
-        start.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,10,QFont.Black))
+        start.setFont(QFont(self._hf,10,QFont.Black))
         start.setStyleSheet(f"""
-            QPushButton{{background:{_h(GREEN)};color:#07070B;border:none;
+            QPushButton{{background:{self._p.get('C_GREEN', _h(GREEN))};color:#07070B;border:none;
                 border-radius:4px;letter-spacing:2px;}}
             QPushButton:hover{{background:white;}}
-            QPushButton:pressed{{background:{_h(GREEN)};}}
+            QPushButton:pressed{{background:{self._p.get('C_GREEN', _h(GREEN))};}}
         """)
         start.clicked.connect(self._start_practice); bl.addWidget(start); bl.addStretch()
 
@@ -538,11 +553,11 @@ class MathTrainerPage(QWidget):
 
     def _mk_back_btn(self):
         b = QPushButton("◀ BACK"); b.setFixedSize(120, 28)
-        b.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
+        b.setFont(QFont(self._hf,7))
         b.setStyleSheet(f"""
-            QPushButton{{padding:0px !important;background:transparent;border:1px solid {_h(BORDER)};
-                color:{_h(SUBTEXT)};border-radius:3px;letter-spacing:1px;}}
-            QPushButton:hover{{border-color:{_h(GREEN)};color:{_h(GREEN)};}}
+            QPushButton{{padding:0px !important;background:transparent;border:1px solid {self._p.get('C_BORDER', _h(BORDER))};
+                color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};border-radius:3px;letter-spacing:1px;}}
+            QPushButton:hover{{border-color:{self._p.get('C_GREEN', _h(GREEN))};color:{self._p.get('C_GREEN', _h(GREEN))};}}
         """)
         return b
 
@@ -551,8 +566,8 @@ class MathTrainerPage(QWidget):
         b.setFixedSize(54, 48); b.setFont(QFont("Arial", 14, QFont.Bold))
         c_hex = _h(color)
         b.setStyleSheet(f"""
-            QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:14pt;background:#0D0D16;color:{_h(SUBTEXT)};
-                border:1px solid {_h(BORDER)};border-radius:3px;}}
+            QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:14pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
+                border:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:3px;}}
             QPushButton:hover{{border-color:{c_hex};color:{c_hex};}}
             QPushButton:checked{{background:rgba(114,255,79,0.12);
                 border-color:{c_hex};color:{c_hex};}}
@@ -564,8 +579,8 @@ class MathTrainerPage(QWidget):
         b.setFixedSize(102, 48); b.setFont(QFont("Arial", 12, QFont.Bold))
         c_hex = _h(PURPLE)
         b.setStyleSheet(f"""
-            QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:12pt;background:#0D0D16;color:{_h(SUBTEXT)};
-                border:1px solid {_h(BORDER)};border-radius:3px;}}
+            QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:12pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
+                border:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:3px;}}
             QPushButton:hover{{border-color:{c_hex};color:{c_hex};}}
             QPushButton:checked{{background:rgba(168,108,255,0.12);
                 border-color:{c_hex};color:{c_hex};}}
@@ -584,17 +599,17 @@ class MathTrainerPage(QWidget):
         L = QVBoxLayout(p); L.setContentsMargins(0,0,0,0); L.setSpacing(0)
 
         hdr = QFrame(); hdr.setFixedHeight(44)
-        hdr.setStyleSheet(f"QFrame{{background:{_h(SURFACE)};border-bottom:1px solid {_h(BORDER)};border-radius:0;}}")
+        hdr.setStyleSheet(f"QFrame{{background:{self._p.get('C_SURFACE', _h(SURFACE))};border-bottom:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:0;}}")
         hl = QHBoxLayout(hdr); hl.setContentsMargins(16,0,16,0); hl.setSpacing(10)
         back2 = self._mk_back_btn(); back2.clicked.connect(lambda: self._show(1)); hl.addWidget(back2)
         self._mode_badge = QLabel("")
-        self._mode_badge.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7,QFont.Bold))
+        self._mode_badge.setFont(QFont(self._hf,7,QFont.Bold))
         self._mode_badge.setStyleSheet(
-            f"color:{_h(BLUE)};background:rgba(79,195,247,0.1);"
-            f"border:1px solid {_h(BLUE)};border-radius:3px;padding:2px 8px;letter-spacing:1px;")
+            f"color:{self._p.get('C_BLUE', _h(BLUE))};background:rgba(79,195,247,0.1);"
+            f"border:1px solid {self._p.get('C_BLUE', _h(BLUE))};border-radius:3px;padding:2px 8px;letter-spacing:1px;")
         hl.addWidget(self._mode_badge); hl.addStretch()
-        self._qcount_lbl = QLabel("MISSION 1"); self._qcount_lbl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7))
-        self._qcount_lbl.setStyleSheet(f"color:{_h(SUBTEXT)};background:transparent;"); hl.addWidget(self._qcount_lbl)
+        self._qcount_lbl = QLabel("MISSION 1"); self._qcount_lbl.setFont(QFont(self._hf,7))
+        self._qcount_lbl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"); hl.addWidget(self._qcount_lbl)
         L.addWidget(hdr)
 
         body = QWidget(); body.setStyleSheet("background:transparent;")
@@ -604,7 +619,7 @@ class MathTrainerPage(QWidget):
         self._scan_card = ScanCard(); self._scan_card.setMinimumHeight(110)
         inner = QVBoxLayout(self._scan_card)
         self._q_lbl = QLabel("?"); self._q_lbl.setFont(QFont("Segoe UI",76,QFont.Black))
-        self._q_lbl.setStyleSheet(f"color:{_h(TEXT)};background:transparent;letter-spacing:4px;")
+        self._q_lbl.setStyleSheet(f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:4px;")
         self._q_lbl.setAlignment(Qt.AlignCenter); inner.addWidget(self._q_lbl)
         bl.addWidget(self._scan_card)
 
@@ -615,11 +630,11 @@ class MathTrainerPage(QWidget):
         self._ans_in.setPlaceholderText("?")
         self._ans_in.setAlignment(Qt.AlignCenter)
         self._ans_in.setFixedSize(190,52)
-        self._ans_in.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,22,QFont.Bold))
+        self._ans_in.setFont(QFont(self._hf,22,QFont.Bold))
         self._ANS_SS = (
-            f"QLineEdit{{background:{_h(CARD)};color:{_h(TEXT)};"
-            f"border:2px solid {_h(BORDER)};border-radius:4px;padding:6px;}}"
-            f"QLineEdit:focus{{border:2px solid {_h(GREEN)};}} "
+            f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_TEXT', _h(TEXT))};"
+            f"border:2px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:4px;padding:6px;}}"
+            f"QLineEdit:focus{{border:2px solid {self._p.get('C_GREEN', _h(GREEN))};}} "
         )
         self._ans_in.setStyleSheet(self._ANS_SS)
         self._ans_in.textChanged.connect(self._auto_check)
@@ -630,24 +645,24 @@ class MathTrainerPage(QWidget):
         self._mic_btn = QPushButton("🎙"); self._mic_btn.setFixedSize(52,52)
         self._mic_btn.setFont(QFont("Segoe UI Emoji",18))
         self._mic_btn.setStyleSheet(
-            f"QPushButton{{background:{_h(CARD)};border:1px solid {_h(BORDER)};"
-            f"border-radius:4px;color:{_h(SUBTEXT)};}} "
-            f"QPushButton:hover{{border-color:{_h(GREEN)};color:{_h(GREEN)};}} "
+            f"QPushButton{{background:{self._p.get('C_CARD', _h(CARD))};border:1px solid {self._p.get('C_BORDER', _h(BORDER))};"
+            f"border-radius:4px;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};}} "
+            f"QPushButton:hover{{border-color:{self._p.get('C_GREEN', _h(GREEN))};color:{self._p.get('C_GREEN', _h(GREEN))};}} "
         )
         self._mic_btn.clicked.connect(self._voice); al.addWidget(self._mic_btn)
         bl.addWidget(ans_row)
 
         self._fb_lbl = QLabel("")
-        self._fb_lbl.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,10,QFont.Bold))
-        self._fb_lbl.setStyleSheet(f"color:{_h(TEXT)};background:transparent;letter-spacing:1px;")
+        self._fb_lbl.setFont(QFont(self._hf,10,QFont.Bold))
+        self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;")
         self._fb_lbl.setAlignment(Qt.AlignCenter); bl.addWidget(self._fb_lbl)
 
         self._show_ans_btn = QPushButton("REVEAL ANSWER 👁")
         self._show_ans_btn.setFixedHeight(34)
-        self._show_ans_btn.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY,7,QFont.Bold))
+        self._show_ans_btn.setFont(QFont(self._hf,7,QFont.Bold))
         self._show_ans_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;border:1px solid {_h(YELLOW)};"
-            f"color:{_h(YELLOW)};border-radius:3px;padding:0 14px;letter-spacing:1px;}}"
+            f"QPushButton{{background:transparent;border:1px solid {self._p.get('C_YELLOW', _h(YELLOW))};"
+            f"color:{self._p.get('C_YELLOW', _h(YELLOW))};border-radius:3px;padding:0 14px;letter-spacing:1px;}}"
             f"QPushButton:hover{{background:rgba(241,250,140,0.1);}}"
         )
         self._show_ans_btn.hide()
@@ -655,10 +670,10 @@ class MathTrainerPage(QWidget):
 
         self._reveal_scroll = QScrollArea()
         self._reveal_scroll.setStyleSheet(
-            f"QScrollArea{{background:{_h(CARD)};border:1px solid {_h(BORDER)};border-radius:4px;}}")
+            f"QScrollArea{{background:{self._p.get('C_CARD', _h(CARD))};border:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:4px;}}")
         self._reveal_lbl = QLabel("")
         self._reveal_lbl.setFont(QFont("Courier New",12))
-        self._reveal_lbl.setStyleSheet(f"color:{_h(BLUE)};background:transparent;padding:10px;")
+        self._reveal_lbl.setStyleSheet(f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;padding:10px;")
         self._reveal_lbl.setAlignment(Qt.AlignLeft|Qt.AlignTop)
         self._reveal_scroll.setWidget(self._reveal_lbl)
         self._reveal_scroll.setWidgetResizable(True)
@@ -713,18 +728,18 @@ class MathTrainerPage(QWidget):
         self._mode_badge.setStyleSheet(
             f"color:{c_hex};background:transparent;"
             f"border:1px solid {c_hex};border-radius:3px;padding:2px 8px;"
-            f"font-family:ui.home_screen.NARUTO_FONT_FAMILY;font-size:7px;font-weight:bold;letter-spacing:1px;")
+            f"font-family:self._hf;font-size:7px;font-weight:bold;letter-spacing:1px;")
         self._top_mode_lbl.setText(f"{labels[self._mode]} MODE")
         self._top_mode_lbl.setStyleSheet(f"color:{c_hex};background:transparent;letter-spacing:1px;")
         self._top_mode_lbl.show()
         self._streak=0; self._qn=0
         self._combo_val.setText("0")
-        self._combo_val.setStyleSheet(f"color:{_h(ORANG)};background:transparent;min-width:24px;")
+        self._combo_val.setStyleSheet(f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;")
         self._show(2); self._gen_q()
 
     def _gen_q(self):
         self._reveal_scroll.hide(); self._show_ans_btn.hide()
-        self._fb_lbl.setText(""); self._fb_lbl.setStyleSheet(f"color:{_h(TEXT)};background:transparent;letter-spacing:1px;")
+        self._fb_lbl.setText(""); self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;")
         self._ans_in.setText(""); self._ans_in.setStyleSheet(self._ANS_SS)
         self._qn += 1; self._qcount_lbl.setText(f"MISSION {self._qn}")
         self._sb_status.setText("TRAINING...")
@@ -761,22 +776,22 @@ class MathTrainerPage(QWidget):
                 color = _h(GREEN if cv>=10 else (YELLOW if cv>=5 else ORANG))
                 self._combo_val.setStyleSheet(f"color:{color};background:transparent;min-width:24px;")
                 self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{_h(CARD)};color:{_h(GREEN)};"
-                    f"border:2px solid {_h(GREEN)};border-radius:4px;padding:6px;}}")
+                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};"
+                    f"border:2px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:4px;padding:6px;}}")
                 msgs = ["COWABUNGA!","CORRECT!","LETHAL!","PERFECT!","NAILED IT!","KAME-HA!"]
                 self._fb_lbl.setText(random.choice(msgs))
-                self._fb_lbl.setStyleSheet(f"color:{_h(GREEN)};background:transparent;letter-spacing:1px;")
+                self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:1px;")
                 self._sb_status.setText(f"COMBO x{self._streak}")
                 self._reveal_scroll.hide(); self._show_ans_btn.hide()
                 QTimer.singleShot(650, self._gen_q)
             else:
                 self._streak=0; self._combo_val.setText("0")
-                self._combo_val.setStyleSheet(f"color:{_h(ORANG)};background:transparent;min-width:24px;")
+                self._combo_val.setStyleSheet(f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;")
                 self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{_h(CARD)};color:{_h(RED)};"
-                    f"border:2px solid {_h(RED)};border-radius:4px;padding:6px;}}")
+                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};"
+                    f"border:2px solid {self._p.get('C_RED', _h(RED))};border-radius:4px;padding:6px;}}")
                 self._fb_lbl.setText("WRONG! ADJUST OR REVEAL.")
-                self._fb_lbl.setStyleSheet(f"color:{_h(RED)};background:transparent;letter-spacing:1px;")
+                self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_RED', _h(RED))};background:transparent;letter-spacing:1px;")
                 self._sb_status.setText("COMBO BROKEN"); self._show_ans_btn.show()
         except ValueError: pass
 
@@ -790,7 +805,7 @@ class MathTrainerPage(QWidget):
             self._reveal_lbl.setText("\n".join(lines)); self._reveal_scroll.show()
         else:
             self._fb_lbl.setText(f"ANSWER:  {q.replace('?',str(self._ans))}")
-            self._fb_lbl.setStyleSheet(f"color:{_h(BLUE)};background:transparent;letter-spacing:1px;")
+            self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;letter-spacing:1px;")
 
     # ── Voice ─────────────────────────────────────────────────────────────────
     def _voice(self):
@@ -798,7 +813,7 @@ class MathTrainerPage(QWidget):
             self._fb_lbl.setText("pip install speechrecognition"); return
         self._mic_btn.setText("…")
         self._fb_lbl.setText("LISTENING...")
-        self._fb_lbl.setStyleSheet(f"color:{_h(BLUE)};background:transparent;letter-spacing:1px;")
+        self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;letter-spacing:1px;")
         self._voice_thread = VoiceThread()
         self._voice_thread.result.connect(self._voice_done)
         self._voice_thread.error.connect(self._voice_err)
@@ -812,4 +827,4 @@ class MathTrainerPage(QWidget):
     @pyqtSlot(str)
     def _voice_err(self, msg):
         self._fb_lbl.setText(msg[:50])
-        self._fb_lbl.setStyleSheet(f"color:{_h(YELLOW)};background:transparent;letter-spacing:1px;")
+        self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_YELLOW', _h(YELLOW))};background:transparent;letter-spacing:1px;")

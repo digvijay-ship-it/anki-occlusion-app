@@ -54,13 +54,6 @@ from sm2_engine import (
     _fmt_due_interval, sm2_simulate, sm2_badge
 )
 
-# SM-2 debug logger — safe import (no crash if file missing)
-try:
-    from sm2_debug_log import log_session, log_rate, log_due, log_queue
-    _DEBUG_LOG = True
-except ImportError:
-    _DEBUG_LOG = False
-
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
@@ -179,6 +172,7 @@ SS = _build_ss()
 class DojoStatsCard(QFrame):
     def __init__(self, title, subtitle, color_hex, parent=None):
         super().__init__(parent)
+        self._color_hex = color_hex
         self.setObjectName("dojo_stats_card")
         self.setFixedHeight(100)
         self.setStyleSheet(f"""
@@ -193,34 +187,38 @@ class DojoStatsCard(QFrame):
         l.setSpacing(16)
 
         self.icon_lbl = QLabel("★")
-        self.icon_lbl.setStyleSheet(f"color: {color_hex}; font-size: 32px;")
         self.icon_lbl.setAlignment(Qt.AlignCenter)
         l.addWidget(self.icon_lbl)
 
         text_l = QVBoxLayout()
-        text_l.setSpacing(0) # Reduce spacing
+        text_l.setSpacing(0)
         text_l.setAlignment(Qt.AlignVCenter)
 
         self.val_lbl = QLabel("0")
-        self.val_lbl.setStyleSheet(f"color: {color_hex}; font-size: 38px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: -2px;")
-
-        title_lbl = QLabel(title)
-        title_lbl.setStyleSheet(f"color: #A6ADC8; font-size: 10px; font-weight: 800; font-family: 'Orbitron'; letter-spacing: 1px;")
-
-        sub_lbl = QLabel(subtitle)
-        sub_lbl.setStyleSheet(f"color: #5F627D; font-size: 11px;")
+        self.title_lbl = QLabel(title)
+        self.sub_lbl = QLabel(subtitle)
 
         text_l.addWidget(self.val_lbl)
-        text_l.addWidget(title_lbl)
-        text_l.addWidget(sub_lbl)
+        text_l.addWidget(self.title_lbl)
+        text_l.addWidget(self.sub_lbl)
         l.addLayout(text_l)
         l.addStretch()
+        self.update_font_scale(1.0)
+        
+    def update_font_scale(self, scale: float):
+        self.setFixedHeight(int(100 * scale))
+        self.icon_lbl.setStyleSheet(f"color: {self._color_hex}; font-size: {int(32 * scale)}px;")
+        self.val_lbl.setStyleSheet(f"color: {self._color_hex}; font-size: {int(38 * scale)}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: -2px;")
+        self.title_lbl.setStyleSheet(f"color: #A6ADC8; font-size: {max(8, int(10 * scale))}px; font-weight: 800; font-family: 'Orbitron'; letter-spacing: 1px;")
+        self.sub_lbl.setStyleSheet(f"color: #5F627D; font-size: {max(9, int(11 * scale))}px;")
+
     def set_value(self, val):
         self.val_lbl.setText(str(val))
 
 class DojoMissionBanner(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._scale = 1.0
         self.setObjectName("dojo_mission_banner")
         self.setMinimumHeight(140)
         self.setStyleSheet(f"""
@@ -236,21 +234,15 @@ class DojoMissionBanner(QFrame):
         left_l = QVBoxLayout()
         left_l.setSpacing(6)
         
-        title = QLabel("⚔ TRAINING MISSION")
-        title.setStyleSheet("color: #BD93F9; font-size: 12px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+        self.title_lbl = QLabel("⚔ TRAINING MISSION")
+        self.desc_lbl = QLabel("Continue your training and defeat the due cards!")
+        self.quote_lbl = QLabel("> Cowabunga! 🐢_")
         
-        desc = QLabel("Continue your training and defeat the due cards!")
-        desc.setStyleSheet("color: #CDD6F4; font-size: 14px;")
-        
-        quote = QLabel("> Cowabunga! 🐢_")
-        quote.setStyleSheet("color: #50FA7B; font-size: 12px; font-weight: bold; font-family: monospace;")
-        
-        left_l.addWidget(title)
-        left_l.addWidget(desc)
-        left_l.addWidget(quote)
+        left_l.addWidget(self.title_lbl)
+        left_l.addWidget(self.desc_lbl)
+        left_l.addWidget(self.quote_lbl)
         left_l.addStretch()
         l.addLayout(left_l)
-        
         l.addStretch()
         
         right_l = QVBoxLayout()
@@ -258,50 +250,15 @@ class DojoMissionBanner(QFrame):
         right_l.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         
         self.btn_train = QPushButton("▶ START TRAINING\nREVIEW DUE SCROLLS")
-        self.btn_train.setStyleSheet("""
-            QPushButton {
-                background: #50FA7B;
-                color: #0F0F17;
-                border-radius: 6px;
-                font-weight: 900;
-                font-family: 'Orbitron';
-                font-size: 14px;
-                min-height: 52px;
-                padding: 0px 32px;
-                text-align: center;
-            }
-            QPushButton:hover {
-                background: #72FF4F;
-            }
-        """)
-        
         self.btn_all = QPushButton("  TRAIN SELECTED SCROLL")
         from dojo_assets import DojoAssets
         self.btn_all.setIcon(QIcon(DojoAssets.get().get_ui_icon(2, 32)))
-        self.btn_all.setIconSize(QSize(20, 20))
-        self.btn_all.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #50FA7B;
-                border: 1px solid #50FA7B;
-                border-radius: 6px;
-                font-size: 11px;
-                font-weight: 900;
-                font-family: 'Orbitron';
-                letter-spacing: 1px;
-                min-height: 38px;
-                padding: 0px 20px;
-                text-align: center;
-            }
-            QPushButton:hover {
-                background: rgba(80, 250, 123, 0.1);
-            }
-        """)
         
         right_l.addWidget(self.btn_train)
         right_l.addWidget(self.btn_all)
         l.addLayout(right_l)
 
+        from PyQt5.QtCore import QTimer
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._animate_glow)
         self._glow_step = 0
@@ -311,7 +268,37 @@ class DojoMissionBanner(QFrame):
         self._shadow.setOffset(0, 0)
         self.btn_train.setGraphicsEffect(self._shadow)
         
+        self.update_font_scale(1.0)
         self._glow_timer.start(50)
+
+    def update_font_scale(self, scale: float):
+        self._scale = scale
+        self.setMinimumHeight(int(140 * scale))
+        self.title_lbl.setStyleSheet(f"color: #BD93F9; font-size: {max(9, int(12 * scale))}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+        self.desc_lbl.setStyleSheet(f"color: #CDD6F4; font-size: {max(11, int(14 * scale))}px;")
+        self.quote_lbl.setStyleSheet(f"color: #50FA7B; font-size: {max(9, int(12 * scale))}px; font-weight: bold; font-family: monospace;")
+        
+        from PyQt5.QtCore import QSize
+        self.btn_all.setIconSize(QSize(int(20 * scale), int(20 * scale)))
+        self.btn_all.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: #50FA7B;
+                border: 1px solid #50FA7B;
+                border-radius: 6px;
+                font-size: {max(9, int(11 * scale))}px;
+                font-weight: 900;
+                font-family: 'Orbitron';
+                letter-spacing: 1px;
+                min-height: {int(38 * scale)}px;
+                padding: 0px {int(20 * scale)}px;
+                text-align: center;
+            }}
+            QPushButton:hover {{
+                background: rgba(80, 250, 123, 0.1);
+            }}
+        """)
+        self._animate_glow()
 
     def _animate_glow(self):
         import math
@@ -323,6 +310,7 @@ class DojoMissionBanner(QFrame):
         b = int(50 + (79 - 50) * progress)
         
         color = f"#{r:02X}{g:02X}{b:02X}"
+        scale = getattr(self, '_scale', 1.0)
         self.btn_train.setStyleSheet(f"""
             QPushButton {{
                 background: {color};
@@ -330,9 +318,9 @@ class DojoMissionBanner(QFrame):
                 border-radius: 6px;
                 font-weight: 900;
                 font-family: 'Orbitron';
-                font-size: 14px;
-                min-height: 52px;
-                padding: 0px 32px;
+                font-size: {max(11, int(14 * scale))}px;
+                min-height: {int(52 * scale)}px;
+                padding: 0px {int(32 * scale)}px;
                 text-align: center;
                 border: 1px solid {color};
             }}
@@ -343,8 +331,8 @@ class DojoMissionBanner(QFrame):
         """)
         
         from PyQt5.QtGui import QColor
-        blur_radius = 5 + 35 * progress  # bleeds up to 40px when brightest
-        shadow_alpha = int(80 + 175 * progress)  # gets more opaque as it brightens
+        blur_radius = 5 + 35 * progress
+        shadow_alpha = int(80 + 175 * progress)
         self._shadow.setBlurRadius(blur_radius)
         self._shadow.setColor(QColor(r, g, b, shadow_alpha))
 
@@ -462,6 +450,22 @@ class DeckView(QWidget):
         bot.addWidget(bd)
         bot.addStretch()
         L.addLayout(bot)
+
+    def update_font_size(self, size: int):
+        self._font_size_val = size
+        scale = size / 11.0 # 11 is BASE_FONT_SIZE
+        if hasattr(self, 'stat_missions'):
+            self.stat_missions.update_font_scale(scale)
+            self.stat_scrolls.update_font_scale(scale)
+            self.stat_battles.update_font_scale(scale)
+            self.dojo_banner.update_font_scale(scale)
+            
+        if self._theme == "dojo":
+            self.lbl_deck.setStyleSheet(f"color: #72FF4F; font-size: {int(24 * scale)}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+            self.btn_add.setStyleSheet(f"QPushButton{{background:transparent;border:2px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:{max(10, int(12 * scale))}px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
+            from dojo_assets import DojoAssets
+            self.lbl_deck_icon.setPixmap(DojoAssets.get().get_ui_icon(0, int(48 * scale)).scaled(int(48 * scale), int(48 * scale), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._refresh()
 
     def set_theme(self, theme):
         from dojo_assets import DojoAssets
@@ -602,6 +606,8 @@ class DeckView(QWidget):
             return
         self.card_list.clear()
 
+        scale = getattr(self, '_font_size_val', 11) / 11.0
+
         def _get_all_cards(d):
             res = list(d.get("cards", []))
             for child in d.get("children", []):
@@ -718,7 +724,7 @@ class DeckView(QWidget):
             # Empty state for Dojo mode
             item = QListWidgetItem()
             item.setTextAlignment(Qt.AlignCenter)
-            item.setFont(QFont('Orbitron', 14, QFont.Bold))
+            item.setFont(QFont('Orbitron', int(14 * scale), QFont.Bold))
             item.setForeground(QBrush(QColor("#45475A")))
             item.setText("\n\n★\n- SELECT A SCROLL TO BEGIN -\n")
             self.card_list.addItem(item)

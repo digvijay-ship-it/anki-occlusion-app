@@ -73,35 +73,44 @@ class CardEditorDialog(QDialog):
         self._schedule_zoom_fit()
 
     def _setup_ui(self):
-        self.setStyleSheet("""
-            QDialog { background: #ECECEC; }
-            QWidget { background: #ECECEC; color: #222; font-family: 'Segoe UI'; font-size: 12px; }
-            QFrame  { background: #ECECEC; border: none; border-radius: 0; }
-            QLabel  { background: transparent; color: #333; }
-            QLineEdit, QTextEdit {
-                background: white; color: #111;
-                border: 1px solid #CCC; border-radius: 4px; padding: 4px; }
-            QListWidget {
-                background: white; color: #111;
-                border: 1px solid #CCC; border-radius: 4px; }
-            QListWidget::item:selected { background: #4A90D9; color: white; }
-            QPushButton {
-                background: #E8E8E8; color: #333;
-                border: 1px solid #BBB; border-radius: 4px;
-                padding: 4px 10px; font-size: 12px; }
-            QPushButton:hover   { background: #D8D8D8; }
-            QPushButton:pressed { background: #C8C8C8; }
-            QPushButton#accent  { background: #4A90D9; color: white; border: 1px solid #3A7FC9; }
-            QPushButton#accent:hover { background: #3A7FC9; }
-            QPushButton#danger  { background: #E05555; color: white; border: 1px solid #C04040; }
-            QPushButton#danger:hover { background: #C04040; }
-            QPushButton#success { background: #4CAF50; color: white; border: 1px solid #3A9040; }
-            QPushButton#success:hover { background: #3A9040; }
-            QScrollArea { border: none; background: #888; }
-            QScrollBar:vertical   { background:#CCC; width:10px; border-radius:5px; }
-            QScrollBar::handle:vertical { background:#999; border-radius:5px; }
-            QScrollBar:horizontal { background:#CCC; height:10px; border-radius:5px; }
-            QScrollBar::handle:horizontal { background:#999; border-radius:5px; }
+        from theme_manager import get_palette
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        p = get_palette(theme)
+        self._p = p
+        self._hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
+        self._bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
+        
+        self.setStyleSheet(f"""
+            QDialog {{ background: {p.get('C_BG', '#ECECEC')}; }}
+            QWidget {{ background: {p.get('C_BG', '#ECECEC')}; color: {p.get('C_TEXT', '#222')}; font-family: {self._bf}; font-size: 12px; }}
+            QFrame  {{ background: {p.get('C_BG', '#ECECEC')}; border: none; border-radius: 0; }}
+            QLabel  {{ background: transparent; color: {p.get('C_TEXT', '#333')}; font-family: {self._hf}; }}
+            QLineEdit, QTextEdit {{
+                background: {p.get('C_CARD', 'white')}; color: {p.get('C_TEXT', '#111')};
+                border: 1px solid {p.get('C_BORDER', '#CCC')}; border-radius: 4px; padding: 4px; font-family: {self._bf}; }}
+            QListWidget {{
+                background: {p.get('C_CARD', 'white')}; color: {p.get('C_TEXT', '#111')};
+                border: 1px solid {p.get('C_BORDER', '#CCC')}; border-radius: 4px; font-family: {self._bf}; }}
+            QListWidget::item:selected {{ background: {p.get('C_ACCENT', '#4A90D9')}; color: {p.get('C_BG', 'white')}; }}
+            QPushButton {{
+                background: {p.get('C_SURFACE', '#E8E8E8')}; color: {p.get('C_TEXT', '#333')};
+                border: 1px solid {p.get('C_BORDER', '#BBB')}; border-radius: 4px;
+                padding: 4px 10px; font-size: 12px; font-family: {self._hf}; font-weight: bold; }}
+            QPushButton:hover   {{ background: {p.get('C_CARD', '#D8D8D8')}; }}
+            QPushButton:pressed {{ background: {p.get('C_BORDER', '#C8C8C8')}; }}
+            QPushButton#accent  {{ background: {p.get('C_ACCENT', '#4A90D9')}; color: {p.get('C_BG', 'white')}; border: 1px solid {p.get('C_ACCENT', '#3A7FC9')}; }}
+            QPushButton#accent:hover {{ background: white; color: {p.get('C_BG', '#111')}; }}
+            QPushButton#danger  {{ background: {p.get('C_RED', '#E05555')}; color: {p.get('C_BG', 'white')}; border: none; }}
+            QPushButton#danger:hover {{ background: white; color: {p.get('C_BG', '#111')}; }}
+            QPushButton#success {{ background: {p.get('C_GREEN', '#4CAF50')}; color: {p.get('C_BG', 'white')}; border: none; }}
+            QPushButton#success:hover {{ background: white; color: {p.get('C_BG', '#111')}; }}
+            QScrollArea {{ border: none; background: transparent; }}
+            QScrollBar:vertical   {{ background:{p.get('C_SURFACE', '#CCC')}; width:10px; border-radius:5px; }}
+            QScrollBar::handle:vertical {{ background:{p.get('C_BORDER', '#999')}; border-radius:5px; }}
+            QScrollBar:horizontal {{ background:{p.get('C_SURFACE', '#CCC')}; height:10px; border-radius:5px; }}
+            QScrollBar::handle:horizontal {{ background:{p.get('C_BORDER', '#999')}; border-radius:5px; }}
         """)
 
         L = QVBoxLayout(self); L.setContentsMargins(0,0,0,0); L.setSpacing(0)
@@ -109,12 +118,12 @@ class CardEditorDialog(QDialog):
         # ── top bar ───────────────────────────────────────────────────────────
         top_bar = QFrame(); top_bar.setFixedHeight(46)
         top_bar.setStyleSheet(
-            "QFrame{background:#F0F0F0;border-bottom:1px solid #C8C8C8;border-radius:0;}"
-            "QPushButton{background:transparent;border:none;border-radius:4px;"
-            "padding:4px 10px;font-size:13px;color:#333;min-height:32px;}"
-            "QPushButton:hover{background:#DDD;}"
-            "QPushButton:pressed{background:#CCC;}"
-            "QPushButton:checked{background:#C8D8EE;color:#1a5ca8;}")
+            f"QFrame{{background:{p.get('C_SURFACE', '#F0F0F0')};border-bottom:1px solid {p.get('C_BORDER', '#C8C8C8')};border-radius:0;}}"
+            f"QPushButton{{background:transparent;border:none;border-radius:4px;"
+            f"padding:4px 10px;font-size:13px;color:{p.get('C_TEXT', '#333')};min-height:32px;font-family:{self._hf};}}"
+            f"QPushButton:hover{{background:{p.get('C_CARD', '#DDD')};}}"
+            f"QPushButton:pressed{{background:{p.get('C_BORDER', '#CCC')};}}"
+            f"QPushButton:checked{{background:{p.get('C_ACCENT', '#C8D8EE')};color:{p.get('C_BG', '#1a5ca8')};}}")
         tl = QHBoxLayout(top_bar); tl.setContentsMargins(6,4,6,4); tl.setSpacing(2)
 
         def _tbtn(label, tip, checkable=False, w=None):
@@ -125,7 +134,7 @@ class CardEditorDialog(QDialog):
 
         def _sep():
             s = QFrame(); s.setFrameShape(QFrame.VLine)
-            s.setStyleSheet("QFrame{background:#C0C0C0;margin:5px 4px;}")
+            s.setStyleSheet(f"QFrame{{background:{p.get('C_BORDER', '#C0C0C0')};margin:5px 4px;}}")
             s.setFixedWidth(1); return s
 
         btn_img   = _tbtn("🖼 Image",     "Load Image")
@@ -174,7 +183,7 @@ class CardEditorDialog(QDialog):
             "QPushButton:hover{background:#FFE4C4;}")
 
         self.lbl_sync = QLabel("")
-        self.lbl_sync.setStyleSheet("background:transparent;font-size:11px;color:#666;")
+        self.lbl_sync.setStyleSheet(f"background:transparent;font-size:11px;color:{p.get('C_SUBTEXT', '#666')};font-family:{self._bf};")
         self.lbl_sync.setVisible(False)
 
         for w in [btn_img, btn_paste, btn_pdf, _sep(),
@@ -200,10 +209,10 @@ class CardEditorDialog(QDialog):
 
         # ── pdf bar ───────────────────────────────────────────────────────────
         self.pdf_bar = QWidget()
-        self.pdf_bar.setStyleSheet("background:#E8E8E8;border-bottom:1px solid #CCC;")
+        self.pdf_bar.setStyleSheet(f"background:{p.get('C_SURFACE', '#E8E8E8')};border-bottom:1px solid {p.get('C_BORDER', '#CCC')};")
         pb = QHBoxLayout(self.pdf_bar); pb.setContentsMargins(10,2,10,2)
         self.lbl_pg = QLabel("")
-        self.lbl_pg.setStyleSheet("color:#555;font-size:11px;background:transparent;")
+        self.lbl_pg.setStyleSheet(f"color:{p.get('C_SUBTEXT', '#555')};font-size:11px;background:transparent;font-family:{self._bf};")
         pb.addWidget(self.lbl_pg); pb.addStretch()
         self.pdf_bar.setFixedHeight(22); self.pdf_bar.hide()
         L.addWidget(self.pdf_bar)
@@ -214,7 +223,7 @@ class CardEditorDialog(QDialog):
 
         sc = _ZoomableScrollArea(); sc.setWidgetResizable(False)
         sc.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        sc.setStyleSheet("QScrollArea{background:#787878;border:none;}")
+        sc.setStyleSheet(f"QScrollArea{{background:{p.get('C_BG', '#787878')};border:none;}}")
         self.canvas = OcclusionCanvas()
         self.canvas.setStyleSheet("background:transparent;")
         sc.setWidget(self.canvas); sc.set_canvas(self.canvas)
@@ -224,12 +233,12 @@ class CardEditorDialog(QDialog):
 
         # ── right panel ───────────────────────────────────────────────────────
         right_panel = QWidget(); right_panel.setFixedWidth(240)
-        right_panel.setStyleSheet("QWidget{background:#F5F5F5;}QFrame{background:#F5F5F5;border:none;}")
+        right_panel.setStyleSheet(f"QWidget{{background:{p.get('C_SURFACE', '#F5F5F5')};}}QFrame{{background:{p.get('C_SURFACE', '#F5F5F5')};border:none;}}")
         rp = QVBoxLayout(right_panel); rp.setContentsMargins(0,0,0,0); rp.setSpacing(0)
 
         ml_hdr = QFrame(); ml_hdr.setFixedHeight(28)
-        ml_hdr.setStyleSheet("QFrame{background:#E0E0E0;border-bottom:1px solid #CCC;}"
-                             "QLabel{color:#444;font-size:11px;font-weight:bold;background:transparent;}")
+        ml_hdr.setStyleSheet(f"QFrame{{background:{p.get('C_CARD', '#E0E0E0')};border-bottom:1px solid {p.get('C_BORDER', '#CCC')};}}"
+                             f"QLabel{{color:{p.get('C_TEXT', '#444')};font-size:11px;font-weight:bold;background:transparent;font-family:{self._hf};}}")
         ml_hl = QHBoxLayout(ml_hdr); ml_hl.setContentsMargins(8,0,8,0)
         ml_hl.addWidget(QLabel("Masks")); ml_hl.addStretch()
         rp.addWidget(ml_hdr)
@@ -238,13 +247,13 @@ class CardEditorDialog(QDialog):
         self.mask_panel.list_w.currentRowChanged.connect(self._center_on_mask)
 
         ci_hdr = QFrame(); ci_hdr.setFixedHeight(28)
-        ci_hdr.setStyleSheet("QFrame{background:#E0E0E0;border-top:1px solid #CCC;"
-                             "border-bottom:1px solid #CCC;}"
-                             "QLabel{color:#444;font-size:11px;font-weight:bold;background:transparent;}")
+        ci_hdr.setStyleSheet(f"QFrame{{background:{p.get('C_CARD', '#E0E0E0')};border-top:1px solid {p.get('C_BORDER', '#CCC')};"
+                             f"border-bottom:1px solid {p.get('C_BORDER', '#CCC')};}}"
+                             f"QLabel{{color:{p.get('C_TEXT', '#444')};font-size:11px;font-weight:bold;background:transparent;font-family:{self._hf};}}")
         ci_hl = QHBoxLayout(ci_hdr); ci_hl.setContentsMargins(8,0,8,0)
         ci_hl.addWidget(QLabel("Card Info")); rp.addWidget(ci_hdr)
 
-        ci_body = QWidget(); ci_body.setStyleSheet("QWidget{background:#F5F5F5;}")
+        ci_body = QWidget(); ci_body.setStyleSheet(f"QWidget{{background:{p.get('C_SURFACE', '#F5F5F5')};}}")
         cib = QFormLayout(ci_body); cib.setContentsMargins(8,8,8,8); cib.setSpacing(6)
         self.inp_title = QLineEdit(); self.inp_title.setPlaceholderText("Card title…")
         self.inp_tags  = QLineEdit(); self.inp_tags.setPlaceholderText("tag1, tag2…")
@@ -407,7 +416,7 @@ class CardEditorDialog(QDialog):
             self._finish_pdf_load(path, cached_pages)
             self.lbl_sync.setText("⚡ PDF ready from cache")
             self.lbl_sync.setStyleSheet(
-                f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+                f"color:{self._p.get('C_GREEN', C_GREEN)};font-size:11px;background:transparent;font-weight:bold;")
             self.lbl_sync.setVisible(True)
             return
 
@@ -416,7 +425,7 @@ class CardEditorDialog(QDialog):
         print(f"[DEBUG][load] 🔄 rendering — {cached_count}/{total_pages} already cached")
         self.lbl_sync.setText(f"⏳ Rendering {total_pages - cached_count} pages…")
         self.lbl_sync.setStyleSheet(
-            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+            f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
         self.lbl_sync.setVisible(True)
         self._show_pdf_loading(True)
 
@@ -488,7 +497,7 @@ class CardEditorDialog(QDialog):
         self._finish_pdf_load(path, pages)
         self.lbl_sync.setText(f"✅ Rendered {len(pages)} pages")
         self.lbl_sync.setStyleSheet(
-            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+            f"color:{self._p.get('C_GREEN', C_GREEN)};font-size:11px;background:transparent;font-weight:bold;")
         self.lbl_sync.setVisible(True)
 
     def _show_pdf_loading(self, loading: bool):
@@ -496,7 +505,7 @@ class CardEditorDialog(QDialog):
             self.setWindowTitle("Occlusion Card Editor  ⏳ Loading PDF…")
             self.lbl_sync.setVisible(True); self.lbl_sync.setText("⏳ Loading PDF…")
             self.lbl_sync.setStyleSheet(
-                f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+                f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
         else:
             self.setWindowTitle("Occlusion Card Editor")
 
@@ -546,7 +555,7 @@ class CardEditorDialog(QDialog):
         self.btn_relink.setVisible(True)
         self.lbl_sync.setVisible(True); self.lbl_sync.setText("🟢 Live Sync: watching")
         self.lbl_sync.setStyleSheet(
-            f"color:{C_GREEN};font-size:11px;background:transparent;font-weight:bold;")
+            f"color:{self._p.get('C_GREEN', C_GREEN)};font-size:11px;background:transparent;font-weight:bold;")
 
     def _stop_watch(self):
         if self._watched_path:
@@ -556,7 +565,7 @@ class CardEditorDialog(QDialog):
     def _on_file_changed(self, path: str):
         self.lbl_sync.setText("🟡 Live Sync: change detected…")
         self.lbl_sync.setStyleSheet(
-            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+            f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
         self._reload_timer.start()
 
     def _reload_pdf(self):
@@ -570,7 +579,7 @@ class CardEditorDialog(QDialog):
         self._pending_boxes = saved_boxes
         self.lbl_sync.setText("🟡 Live Sync: reloading…")
         self.lbl_sync.setStyleSheet(
-            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+            f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
         self._load_pdf_direct(path)
 
     def _open_in_reader(self):
@@ -631,7 +640,7 @@ class CardEditorDialog(QDialog):
         self.lbl_sync.setVisible(True)
         self.lbl_sync.setText("🔄 Relinking…")
         self.lbl_sync.setStyleSheet(
-            f"color:{C_YELLOW};font-size:11px;background:transparent;font-weight:bold;")
+            f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
 
         self._show_pdf_loading(True)
         self._load_pdf_direct(new_path)

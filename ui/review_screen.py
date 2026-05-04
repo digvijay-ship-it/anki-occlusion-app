@@ -54,13 +54,6 @@ from sm2_engine import (
     _fmt_due_interval, sm2_simulate, sm2_badge
 )
 
-# SM-2 debug logger — safe import (no crash if file missing)
-try:
-    from sm2_debug_log import log_session, log_rate, log_due, log_queue
-    _DEBUG_LOG = True
-except ImportError:
-    _DEBUG_LOG = False
-
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
@@ -95,7 +88,7 @@ from data_manager import (
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
-import ui.home_screen
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
@@ -201,7 +194,7 @@ DOJO = {
 def _is_dojo() -> bool:
     """Return True if the Ninja Dojo theme is currently active."""
     app = QApplication.instance()
-    return getattr(app, "_active_theme", "classic") == "dojo"
+    return getattr(app, "_active_theme", "classic") in ["dojo", "tmnt"]
 
 
 def _tc(classic_val: str, dojo_val: str) -> str:
@@ -236,8 +229,24 @@ class QueueDelegate(QStyledItemDelegate):
     }
 
     def paint(self, painter, option, index):
+        from theme_manager import get_palette
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
         state = index.data(QUEUE_ROLE) or "pending"
-        cols  = (self.COLORS_DOJO if _is_dojo() else self.COLORS)[state]
+        
+        if theme in ["dojo", "tmnt"]:
+            p = get_palette(theme)
+            cols_map = {
+                "current": {"bg": QColor(p["C_ACCENT"]),  "fg": QColor(p["C_BG"])},
+                "done":    {"bg": QColor("#0A0A12" if theme=="dojo" else p["C_CARD"]),  "fg": QColor("#3A3A5A" if theme=="dojo" else p["C_SUBTEXT"])},
+                "pending": {"bg": QColor(p["C_SURFACE"]),  "fg": QColor(p["C_TEXT"])},
+                "relearn": {"bg": QColor("#1A0A05" if theme=="dojo" else p.get("C_ORANGE", "#FF8040")),  "fg": QColor("#FF8040" if theme=="dojo" else p.get("C_BG", "#000"))},
+                "peek":    {"bg": QColor("#2A0505" if theme=="dojo" else p["C_RED"]),  "fg": QColor("#FF6060" if theme=="dojo" else p["C_BG"])},
+            }
+            cols = cols_map[state]
+        else:
+            cols = self.COLORS[state]
+            
         painter.save()
         r = option.rect.adjusted(2, 2, -2, -2)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -357,10 +366,7 @@ class ReviewScreen(QWidget):
 
         seen_item_keys = set()
 
-        # ── SM-2 Debug Logger ─────────────────────────────────────────────────
-        if _DEBUG_LOG:
-            try: log_session()
-            except Exception: pass
+        # ── SM-2 Debug Logger removed ─────────────────────────────────────────
 
         for card in cards:
             boxes = card.get("boxes", [])
@@ -387,9 +393,6 @@ class ReviewScreen(QWidget):
                         if item_key not in seen_item_keys:
                             seen_item_keys.add(item_key)
                             _due_result = is_due_today(box)
-                            if _DEBUG_LOG:
-                                try: log_due(box, card, _due_result)
-                                except Exception: pass
                             if _due_result:
                                 self._items.append((card, ("group", gid), box))
                                 self._queued_ids.add(gid)          # O(1) track
@@ -399,17 +402,11 @@ class ReviewScreen(QWidget):
                     if item_key not in seen_item_keys:
                         seen_item_keys.add(item_key)
                         _due_result = is_due_today(box)
-                        if _DEBUG_LOG:
-                            try: log_due(box, card, _due_result)
-                            except Exception: pass
                         if _due_result:
                             self._items.append((card, i, box))
                             self._queued_ids.add(box_id)           # O(1) track
 
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
-        if _DEBUG_LOG:
-            try: log_queue(self._items)
-            except Exception: pass
         self._idx  = 0
         self._done = 0
         # ── Review undo/redo stacks ───────────────────────────────────────────
@@ -784,18 +781,21 @@ class ReviewScreen(QWidget):
 
     def _setup_ui(self):
         dojo = _is_dojo()
-        D    = DOJO
+        from theme_manager import get_palette
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        p = get_palette(theme)
 
         # ── resolved palette ──────────────────────────────────────────────────
-        bg      = D["bg"]        if dojo else C_BG
-        surface = D["surface"]   if dojo else C_SURFACE
-        card    = D["card"]      if dojo else C_CARD
-        accent  = D["accent"]    if dojo else C_ACCENT
-        accent2 = D["accent2"]   if dojo else C_ACCENT
-        text    = D["text"]      if dojo else C_TEXT
-        subtext = D["subtext"]   if dojo else C_SUBTEXT
-        border  = D["border"]    if dojo else C_BORDER
-        font    = D["font"]      if dojo else "'Segoe UI'"
+        bg      = p.get("C_BG", C_BG)
+        surface = p.get("C_SURFACE", C_SURFACE)
+        card    = p.get("C_CARD", C_CARD)
+        accent  = p.get("C_ACCENT", C_ACCENT)
+        accent2 = p.get("C_PURPLE", C_ACCENT)
+        text    = p.get("C_TEXT", C_TEXT)
+        subtext = p.get("C_SUBTEXT", C_SUBTEXT)
+        border  = p.get("C_BORDER", C_BORDER)
+        font    = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
 
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
@@ -817,7 +817,7 @@ class ReviewScreen(QWidget):
 
         self.lbl_prog = QLabel("Card 1/1")
         if dojo:
-            self.lbl_prog.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold))
+            self.lbl_prog.setFont(QFont(font, 9, QFont.Bold))
             self.lbl_prog.setStyleSheet(
                 f"color:{accent};letter-spacing:2px;font-family:{font};")
         else:
@@ -947,7 +947,7 @@ class ReviewScreen(QWidget):
 
         self.lbl_title = QLabel("")
         self.lbl_title.setFont(QFont(
-            ui.home_screen.NARUTO_FONT_FAMILY if dojo else "Segoe UI", 10 if dojo else 12, QFont.Bold))
+            font if dojo else "Segoe UI", 10 if dojo else 12, QFont.Bold))
         if dojo:
             self.lbl_title.setStyleSheet(
                 f"color:{accent};background:{bg};"
@@ -1178,10 +1178,10 @@ class ReviewScreen(QWidget):
             "warning": ("#4DC4FF", "#88DDFF", "#1A88CC"),
         }
         RATING_COLORS_DOJO = {
-            "danger":  ("#FF4444", "#FF7777", "#CC1111"),
-            "hard":    ("#FF8C00", "#FFB347", "#CC6600"),
-            "success": ("#72FF4F", "#A0FF80", "#44CC20"),
-            "warning": ("#A86CFF", "#C899FF", "#7040CC"),
+            "danger":  (p.get("C_RED", "#FF4444"), "#FF7777", "#CC1111"),
+            "hard":    (p.get("C_ORANGE", "#FF8C00"), "#FFB347", "#CC6600"),
+            "success": (p.get("C_GREEN", "#72FF4F"), "#A0FF80", "#44CC20"),
+            "warning": (p.get("C_PURPLE", "#A86CFF"), "#C899FF", "#7040CC"),
         }
 
         self._rating_btns = []
@@ -2280,7 +2280,7 @@ class ReviewScreen(QWidget):
         # Title
         if dojo:
             title = QLabel("🥷  MISSION COMPLETE")
-            title.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 12, QFont.Bold))
+            title.setFont(QFont(font, 12, QFont.Bold))
             title.setAlignment(Qt.AlignCenter)
             title.setStyleSheet(
                 f"color:{accent};background:transparent;"

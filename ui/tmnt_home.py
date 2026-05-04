@@ -1542,7 +1542,7 @@ class TMNTMainContent(QWidget):
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
         self._deck = None
-        self._data = {}
+        self._data = data if isinstance(data, dict) else {}
         self._scale = _tmnt_scale(data)
         self.setStyleSheet(f"background: #151821;")
         self._build_ui()

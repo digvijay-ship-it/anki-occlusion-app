@@ -54,13 +54,6 @@ from sm2_engine import (
     _fmt_due_interval, sm2_simulate, sm2_badge
 )
 
-# SM-2 debug logger — safe import (no crash if file missing)
-try:
-    from sm2_debug_log import log_session, log_rate, log_due, log_queue
-    _DEBUG_LOG = True
-except ImportError:
-    _DEBUG_LOG = False
-
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
@@ -252,13 +245,18 @@ class AboutDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("About Anki Occlusion")
         self.setFixedSize(480, 560)
-        self.setStyleSheet(f"QDialog{{background:{C_BG};}}")
+        from theme_manager import get_palette
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        p = get_palette(theme)
+        self.setStyleSheet(f"QDialog{{background:{p.get('C_BG', C_BG)};}}")
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
         header = QFrame()
         header.setFixedHeight(140)
-        header.setStyleSheet(f"QFrame{{background:{C_SURFACE};border-radius:0px;}}")
+        header.setStyleSheet(f"QFrame{{background:{p.get('C_SURFACE', C_SURFACE)};border-radius:0px;}}")
         hl = QVBoxLayout(header)
         hl.setAlignment(Qt.AlignCenter)
         icon_lbl = QLabel()
@@ -266,27 +264,29 @@ class AboutDialog(QDialog):
         icon_px = make_app_icon().pixmap(72, 72)
         icon_lbl.setPixmap(icon_px)
         hl.addWidget(icon_lbl)
+        hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
+        bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
         name_lbl = QLabel("Anki Occlusion")
-        name_lbl.setFont(QFont("Segoe UI", 18, QFont.Bold))
-        name_lbl.setStyleSheet(f"color:{C_ACCENT};background:transparent;")
+        name_lbl.setFont(QFont(hf, 18, QFont.Bold))
+        name_lbl.setStyleSheet(f"color:{p.get('C_ACCENT', C_ACCENT)};background:transparent;")
         name_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(name_lbl)
         ver_lbl = QLabel("Version 1.0  •  Desktop Edition")
-        ver_lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:11px;background:transparent;")
+        ver_lbl.setStyleSheet(f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:11px;background:transparent;font-family:{bf};")
         ver_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(ver_lbl)
         L.addWidget(header)
         body = QWidget()
-        body.setStyleSheet(f"background:{C_BG};")
+        body.setStyleSheet(f"background:{p.get('C_BG', C_BG)};")
         bl = QVBoxLayout(body)
         bl.setContentsMargins(32, 24, 32, 24)
         bl.setSpacing(16)
         def _section(title, text):
             t = QLabel(title)
-            t.setFont(QFont("Segoe UI", 10, QFont.Bold))
-            t.setStyleSheet(f"color:{C_TEXT};")
+            t.setFont(QFont(hf, 10, QFont.Bold))
+            t.setStyleSheet(f"color:{p.get('C_TEXT', C_TEXT)};")
             d = QLabel(text)
-            d.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+            d.setStyleSheet(f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;font-family:{bf};")
             d.setWordWrap(True)
             bl.addWidget(t)
             bl.addWidget(d)
@@ -306,8 +306,8 @@ class AboutDialog(QDialog):
         bl.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet(
-            f"background:{C_ACCENT};color:white;border:none;border-radius:8px;"
-            f"padding:8px 32px;font-weight:bold;font-size:13px;")
+            f"background:{p.get('C_ACCENT', C_ACCENT)};color:{p.get('C_BG', 'white')};border:none;border-radius:8px;"
+            f"padding:8px 32px;font-weight:bold;font-size:13px;font-family:{hf};")
         close_btn.clicked.connect(self.accept)
         bl.addWidget(close_btn, alignment=Qt.AlignCenter)
         L.addWidget(body)
@@ -329,44 +329,52 @@ class OnboardingDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Welcome")
         self.setFixedSize(540, 440)
-        self.setStyleSheet(f"QDialog{{background:{C_BG};}}")
+        from theme_manager import get_palette
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        self._p = get_palette(theme)
+        self.setStyleSheet(f"QDialog{{background:{self._p.get('C_BG', C_BG)};}}")
         self._step = 0
         self._setup_ui()
         self._show_step(0)
 
     def _setup_ui(self):
+        p = self._p
+        hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
+        bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
         dot_bar = QWidget()
         dot_bar.setFixedHeight(32)
-        dot_bar.setStyleSheet(f"background:{C_SURFACE};")
+        dot_bar.setStyleSheet(f"background:{p.get('C_SURFACE', C_SURFACE)};")
         dl = QHBoxLayout(dot_bar)
         dl.setAlignment(Qt.AlignCenter)
         dl.setSpacing(8)
         self._dots = []
         for _ in self.STEPS:
             dot = QLabel("●")
-            dot.setStyleSheet(f"color:{C_BORDER};font-size:10px;background:transparent;")
+            dot.setStyleSheet(f"color:{p.get('C_BORDER', C_BORDER)};font-size:10px;background:transparent;")
             dl.addWidget(dot)
             self._dots.append(dot)
         L.addWidget(dot_bar)
         content = QWidget()
-        content.setStyleSheet(f"background:{C_BG};")
+        content.setStyleSheet(f"background:{p.get('C_BG', C_BG)};")
         cl = QVBoxLayout(content)
         cl.setContentsMargins(48, 32, 48, 24)
         cl.setSpacing(16)
         self._icon_lbl = QLabel()
-        self._icon_lbl.setFont(QFont("Segoe UI", 48))
+        self._icon_lbl.setFont(QFont(hf, 48))
         self._icon_lbl.setAlignment(Qt.AlignCenter)
         self._icon_lbl.setStyleSheet("background:transparent;")
         self._title_lbl = QLabel()
-        self._title_lbl.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        self._title_lbl.setStyleSheet(f"color:{C_TEXT};background:transparent;")
+        self._title_lbl.setFont(QFont(hf, 16, QFont.Bold))
+        self._title_lbl.setStyleSheet(f"color:{p.get('C_TEXT', C_TEXT)};background:transparent;")
         self._title_lbl.setAlignment(Qt.AlignCenter)
         self._title_lbl.setWordWrap(True)
         self._body_lbl = QLabel()
-        self._body_lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;background:transparent;")
+        self._body_lbl.setStyleSheet(f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;background:transparent;font-family:{bf};")
         self._body_lbl.setWordWrap(True)
         self._body_lbl.setAlignment(Qt.AlignCenter)
         cl.addStretch()
@@ -378,23 +386,23 @@ class OnboardingDialog(QDialog):
         btn_bar = QFrame()
         btn_bar.setFixedHeight(64)
         btn_bar.setStyleSheet(
-            f"QFrame{{background:{C_SURFACE};"
-            f"border-top:1px solid {C_BORDER};border-radius:0px;}}")
+            f"QFrame{{background:{p.get('C_SURFACE', C_SURFACE)};"
+            f"border-top:1px solid {p.get('C_BORDER', C_BORDER)};border-radius:0px;}}")
         bl = QHBoxLayout(btn_bar)
         bl.setContentsMargins(24, 0, 24, 0)
         self._skip_btn = QPushButton("Skip")
         self._skip_btn.setStyleSheet(
-            f"background:transparent;color:{C_SUBTEXT};border:none;font-size:12px;padding:6px 16px;")
+            f"background:transparent;color:{p.get('C_SUBTEXT', C_SUBTEXT)};border:none;font-size:12px;padding:6px 16px;font-family:{hf};")
         self._skip_btn.clicked.connect(self.accept)
         self._back_btn = QPushButton("← Back")
         self._back_btn.setStyleSheet(
-            f"background:{C_CARD};color:{C_TEXT};border:1px solid {C_BORDER};"
-            f"border-radius:8px;padding:8px 20px;font-size:12px;")
+            f"background:{p.get('C_CARD', C_CARD)};color:{p.get('C_TEXT', C_TEXT)};border:1px solid {p.get('C_BORDER', C_BORDER)};"
+            f"border-radius:8px;padding:8px 20px;font-size:12px;font-family:{hf};")
         self._back_btn.clicked.connect(self._prev)
         self._next_btn = QPushButton("Next →")
         self._next_btn.setStyleSheet(
-            f"background:{C_ACCENT};color:white;border:none;"
-            f"border-radius:8px;padding:8px 24px;font-weight:bold;font-size:13px;")
+            f"background:{p.get('C_ACCENT', C_ACCENT)};color:{p.get('C_BG', 'white')};border:none;"
+            f"border-radius:8px;padding:8px 24px;font-weight:bold;font-size:13px;font-family:{hf};")
         self._next_btn.clicked.connect(self._next)
         bl.addWidget(self._skip_btn)
         bl.addStretch()
@@ -1200,23 +1208,32 @@ class HomeScreen(QWidget):
         layout.set_bgm_state(self.music_widget._playing)
         return layout
 
-    def rebuild_tmnt_layout(self):
+    def rebuild_tmnt_layout(self, force=False):
         if not _TMNT_HOME_AVAILABLE or self._tmnt_layout is None:
+            print("[DEBUG] rebuild_tmnt_layout aborted: TMNT not available or layout is None")
             return
         current = self._body_stack.currentWidget()
-        if current is not self._tmnt_layout:
+        was_visible = current is self._tmnt_layout
+        if not force and not was_visible:
+            print(f"[DEBUG] rebuild_tmnt_layout aborted: current {current} is not tmnt_layout {self._tmnt_layout}")
             return
+        
+        print("[DEBUG] rebuild_tmnt_layout is executing!")
         selected = self._tmnt_layout.get_selected_deck()
         selected_id = selected.get("_id") if selected else None
         old = self._tmnt_layout
+        old_index = self._body_stack.indexOf(old)
         self._tmnt_layout = self._create_tmnt_layout()
-        self._body_stack.insertWidget(1, self._tmnt_layout)
-        self._body_stack.setCurrentWidget(self._tmnt_layout)
+        self._body_stack.insertWidget(old_index if old_index >= 0 else 1, self._tmnt_layout)
+        if was_visible:
+            self._body_stack.setCurrentWidget(self._tmnt_layout)
         self._body_stack.removeWidget(old)
         old.setParent(None)
         old.deleteLater()
         if selected_id:
             self._tmnt_layout.select_deck_by_id(selected_id)
+        else:
+            self._tmnt_layout.refresh()
 
     def _toggle_tmnt_bgm(self):
         self.music_widget.toggle()
@@ -1238,6 +1255,8 @@ class HomeScreen(QWidget):
         app = QApplication.instance()
         win = self.window()
         current_size = self._data.get("_font_size", BASE_FONT_SIZE)
+        
+        print(f"[DEBUG] _toggle_theme called! New theme: {self._current_theme}")
 
         if self._current_theme == "tmnt" and self._tmnt_layout:
             # ── Swap to TMNT full layout ──────────────────────────────────────
@@ -1253,6 +1272,7 @@ class HomeScreen(QWidget):
                 ss = build_stylesheet("tmnt", current_size)
                 app.setStyleSheet(ss)
                 if win: win.setStyleSheet(ss)
+                print(f"[DEBUG] Applied TMNT layout and stylesheet")
         else:
             # ── Swap back to splitter (classic / dojo) ───────────────────────
             self.top_frame.show()
@@ -1270,13 +1290,16 @@ class HomeScreen(QWidget):
                     app.setFont(QFont("Segoe UI", current_size))
                     app.setStyleSheet(_build_ss(current_size))
                     if win: win.setStyleSheet("")
+                    print(f"[DEBUG] Applied Classic layout and stylesheet")
                 else:
                     app.setFont(QFont(NARUTO_FONT_FAMILY, current_size))
                     ss = build_stylesheet("dojo", current_size)
                     app.setStyleSheet(ss)
                     if win: win.setStyleSheet(ss)
+                    print(f"[DEBUG] Applied Dojo layout and stylesheet")
 
     def _emit_font(self, direction: int):
+        print(f"[DEBUG] _emit_font called with direction: {direction}")
         win = self.window()
         if hasattr(win, "change_font_size"):
             win.change_font_size(direction)

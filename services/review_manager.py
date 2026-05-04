@@ -11,11 +11,7 @@ QUEUE_INDEX_ROLE = Qt.UserRole + 11
 
 from data_manager import store
 
-try:
-    from sm2_debug_log import log_rate, log_session, log_due, log_queue
-    _DEBUG_LOG = True
-except ImportError:
-    _DEBUG_LOG = False
+
 
 class ReviewSessionManager:
     def __init__(self, rs):

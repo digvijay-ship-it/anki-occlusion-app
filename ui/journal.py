@@ -59,7 +59,7 @@ def _is_ninja() -> bool:
     try:
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
-        return getattr(app, "_active_theme", "classic") == "dojo"
+        return getattr(app, "_active_theme", "classic") in ["dojo", "tmnt"]
     except Exception:
         return False
 
@@ -135,10 +135,16 @@ class JournalCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        from theme_manager import get_palette
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        self._p = get_palette(theme)
+        
         self._page_h       = PAGE_HEIGHT
         self.setFixedWidth(PAGE_WIDTH)
         self.setFixedHeight(self._page_h)
-        bg = N_CANVAS if _is_ninja() else C_BG
+        bg = self._p.get("C_BG", N_CANVAS if _is_ninja() else C_BG)
         self.setStyleSheet(f"background:{bg};")
         self.setCursor(Qt.CrossCursor)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -234,7 +240,7 @@ class JournalCanvas(QWidget):
 
     def export_pixmap(self):
         px = QPixmap(self.size())
-        px.fill(QColor(N_CANVAS if _is_ninja() else C_BG))
+        px.fill(QColor(self._p.get("C_BG", N_CANVAS if _is_ninja() else C_BG)))
         p = QPainter(px)
         p.setRenderHint(QPainter.Antialiasing)
         self._paint(p)
@@ -274,7 +280,7 @@ class JournalCanvas(QWidget):
     def _paint(self, p):
         w, h = self.width(), self.height()
         ninja = _is_ninja()
-        bg = N_CANVAS if ninja else C_BG
+        bg = self._p.get("C_BG", N_CANVAS if ninja else C_BG)
         p.fillRect(0, 0, w, h, QColor(bg))
 
         if self._show_lines:
@@ -329,14 +335,14 @@ class JournalCanvas(QWidget):
             tw = fm.horizontalAdvance(display)
             iy = int(self._text_pos.y()) + 3
             ix = int(self._text_pos.x())
-            accent = N_ACCENT if ninja else C_ACCENT
+            accent = self._p.get("C_ACCENT", N_ACCENT if ninja else C_ACCENT)
             p.setPen(QPen(QColor(accent), 1))
             p.drawLine(ix, iy, ix + tw, iy)
 
         # Eraser cursor — use tracked position for accuracy
         if self._mode == MODE_ERASER and self._eraser_pos is not None:
             ep = self._eraser_pos
-            cursor_col = N_ACCENT if ninja else C_SUBTEXT
+            cursor_col = self._p.get("C_ACCENT", N_ACCENT if ninja else C_SUBTEXT)
             p.setPen(QPen(QColor(cursor_col), 1, Qt.DashLine))
             p.setBrush(Qt.NoBrush)
             r = int(ERASER_WIDTH)
@@ -558,8 +564,14 @@ class JournalDialog(QDialog):
 
     # ── Stylesheet builders ───────────────────────────────────────────────────
 
-    @staticmethod
-    def _classic_ss() -> str:
+    def _classic_ss(self, p) -> str:
+        C_BG = p.get("C_BG", "#1E1E2E")
+        C_SURFACE = p.get("C_SURFACE", "#2A2A3E")
+        C_CARD = p.get("C_CARD", "#313145")
+        C_ACCENT = p.get("C_ACCENT", "#7C6AF7")
+        C_TEXT = p.get("C_TEXT", "#CDD6F4")
+        C_SUBTEXT = p.get("C_SUBTEXT", "#A6ADC8")
+        C_BORDER = p.get("C_BORDER", "#45475A")
         return f"""
             QDialog  {{ background:{C_BG}; color:{C_TEXT}; }}
             QWidget  {{ background:{C_BG}; color:{C_TEXT};
@@ -595,21 +607,32 @@ class JournalDialog(QDialog):
             }}
         """
 
-    @staticmethod
-    def _ninja_ss() -> str:
-        """Ninja/Dojo stylesheet — matches test.html visual language."""
+    def _ninja_ss(self, p) -> str:
+        """Ninja/Dojo/TMNT stylesheet — matches test.html visual language."""
+        N_BG = p.get("C_BG", "#07070B")
+        N_SURFACE = p.get("C_SURFACE", "#0F0F17")
+        N_CARD = p.get("C_CARD", "#14141F")
+        N_ACCENT = p.get("C_ACCENT", "#72FF4F")
+        N_PURPLE = p.get("C_PURPLE", "#A86CFF")
+        N_RED = p.get("C_RED", "#FF4444")
+        N_TEXT = p.get("C_TEXT", "#E0E0FF")
+        N_SUBTEXT = p.get("C_SUBTEXT", "#5F627D")
+        N_BORDER = p.get("C_BORDER", "#1A1A26")
+        hf = p.get("header_font", "{hf}").split(',')[0].strip("'")
+        bf = p.get("body_font", "'Share Tech Mono'").split(',')[0].strip("'")
+        
         return f"""
             @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
             QDialog  {{ background:{N_BG}; color:{N_TEXT}; }}
             QWidget  {{ background:{N_BG}; color:{N_TEXT};
-                        font-family:'Rajdhani', 'Segoe UI'; font-size:12px; }}
+                        font-family:{bf}, 'Segoe UI'; font-size:12px; }}
             QFrame   {{ background:{N_SURFACE}; border-radius:4px; }}
             QLabel   {{ background:transparent; color:{N_TEXT}; }}
             QPushButton {{
                 background:{N_CARD}; color:{N_ACCENT};
                 border:1px solid {N_ACCENT}; border-radius:2px;
                 padding:4px 10px; font-size:11px;
-                font-family:'Orbitron','Segoe UI'; font-weight:700;
+                font-family:{hf}, 'Segoe UI'; font-weight:700;
                 letter-spacing:1px;
             }}
             QPushButton:hover {{
@@ -636,7 +659,7 @@ class JournalDialog(QDialog):
             QListWidget {{
                 background:{N_SURFACE}; border:1px solid {N_BORDER};
                 border-radius:4px; padding:2px;
-                font-family:'Share Tech Mono','Consolas';
+                font-family:{bf}, 'Consolas';
                 font-size:10px;
                 scrollbar-width:thin;
             }}
@@ -687,7 +710,12 @@ class JournalDialog(QDialog):
     def _apply_theme_ss(self):
         """Apply correct stylesheet for current theme."""
         self._ninja = _is_ninja()
-        self.setStyleSheet(self._ninja_ss() if self._ninja else self._classic_ss())
+        from theme_manager import get_palette
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        self._p = get_palette(theme)
+        self.setStyleSheet(self._ninja_ss(self._p) if self._ninja else self._classic_ss(self._p))
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -700,6 +728,16 @@ class JournalDialog(QDialog):
     # ── Classic layout ────────────────────────────────────────────────────────
 
     def _setup_ui_classic(self):
+        p = self._p
+        C_BG = p.get("C_BG", "#1E1E2E")
+        C_SURFACE = p.get("C_SURFACE", "#2A2A3E")
+        C_CARD = p.get("C_CARD", "#313145")
+        C_ACCENT = p.get("C_ACCENT", "#7C6AF7")
+        C_TEXT = p.get("C_TEXT", "#CDD6F4")
+        C_SUBTEXT = p.get("C_SUBTEXT", "#A6ADC8")
+        C_BORDER = p.get("C_BORDER", "#45475A")
+        hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
+        bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -857,6 +895,18 @@ class JournalDialog(QDialog):
 
     def _setup_ui_ninja(self):
         """Build the Dojo/Ninja themed journal UI matching test.html aesthetic."""
+        p = self._p
+        N_BG = p.get("C_BG", "#07070B")
+        N_SURFACE = p.get("C_SURFACE", "#0F0F17")
+        N_CARD = p.get("C_CARD", "#14141F")
+        N_ACCENT = p.get("C_ACCENT", "#72FF4F")
+        N_PURPLE = p.get("C_PURPLE", "#A86CFF")
+        N_RED = p.get("C_RED", "#FF4444")
+        N_TEXT = p.get("C_TEXT", "#E0E0FF")
+        N_SUBTEXT = p.get("C_SUBTEXT", "#5F627D")
+        N_BORDER = p.get("C_BORDER", "#1A1A26")
+        hf = p.get("header_font", "'Orbitron'").split(',')[0].strip("'")
+        bf = p.get("body_font", "'Share Tech Mono'").split(',')[0].strip("'")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -878,7 +928,7 @@ class JournalDialog(QDialog):
         logo_box.setStyleSheet(
             f"color:{N_ACCENT};border:2px solid {N_ACCENT};"
             f"border-radius:5px;font-size:13px;font-weight:900;"
-            f"font-family:'Orbitron','Segoe UI';background:{N_BG};")
+            f"font-family:{hf}, 'Segoe UI';background:{N_BG};")
         tl.addWidget(logo_box)
 
         logo_txt = QWidget()
@@ -888,12 +938,12 @@ class JournalDialog(QDialog):
         lt.setSpacing(1)
         lbl_title = QLabel("SCROLL — DAILY JOURNAL")
         lbl_title.setStyleSheet(
-            f"color:{N_ACCENT};font-family:'Orbitron','Segoe UI';"
+            f"color:{N_ACCENT};font-family:{hf}, 'Segoe UI';"
             f"font-size:10px;font-weight:900;letter-spacing:2px;")
         lbl_sub = QLabel("MISSION LOG • SM-2")
         lbl_sub.setStyleSheet(
             f"color:{N_SUBTEXT};font-size:7px;letter-spacing:0.5px;"
-            f"font-family:'Share Tech Mono','Consolas';")
+            f"font-family:{bf}, 'Consolas';")
         lt.addWidget(lbl_title)
         lt.addWidget(lbl_sub)
         tl.addWidget(logo_txt)
@@ -915,7 +965,7 @@ class JournalDialog(QDialog):
             f"QPushButton{{background:{N_CARD};color:{N_TEXT};"
             f"border:1px solid {N_BORDER};border-radius:2px;"
             f"padding:3px 14px;font-size:10px;font-weight:700;"
-            f"font-family:'Orbitron','Segoe UI';letter-spacing:1px;}}"
+            f"font-family:{hf}, 'Segoe UI';letter-spacing:1px;}}"
             f"QPushButton:hover{{background:rgba(114,255,79,0.08);"
             f"border-color:{N_ACCENT};color:{N_ACCENT};}}")
         self._btn_date.setToolTip("Click to pick a date")
@@ -925,7 +975,7 @@ class JournalDialog(QDialog):
         self._lbl_focus = QLabel("")
         self._lbl_focus.setStyleSheet(
             f"color:{N_PURPLE};font-size:10px;font-weight:700;"
-            f"font-family:'Share Tech Mono','Consolas';padding:0 10px;")
+            f"font-family:{bf}, 'Consolas';padding:0 10px;")
         self._lbl_focus.hide()
 
         btn_today = QPushButton("NOW")
@@ -1033,7 +1083,7 @@ class JournalDialog(QDialog):
         sbh.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         sbh.setFixedHeight(32)
         sbh.setStyleSheet(
-            f"color:{N_ACCENT};font-family:'Orbitron','Segoe UI';"
+            f"color:{N_ACCENT};font-family:{hf}, 'Segoe UI';"
             f"font-size:8px;font-weight:700;letter-spacing:2px;"
             f"border-bottom:1px solid {N_BORDER};padding-left:11px;")
         sl.addWidget(sbh)
@@ -1044,7 +1094,7 @@ class JournalDialog(QDialog):
         q_lbl.setWordWrap(True)
         q_lbl.setAlignment(Qt.AlignCenter)
         q_lbl.setStyleSheet(
-            f"color:{N_SUBTEXT};font-family:'Share Tech Mono','Consolas';"
+            f"color:{N_SUBTEXT};font-family:{bf}, 'Consolas';"
             f"font-size:7px;padding:6px 8px;letter-spacing:0.5px;"
             f"border-bottom:1px solid {N_BORDER};")
         sl.addWidget(q_lbl)
@@ -1053,7 +1103,7 @@ class JournalDialog(QDialog):
         dlbl = QLabel("— ENTRIES —")
         dlbl.setFixedHeight(22)
         dlbl.setStyleSheet(
-            f"color:{N_SUBTEXT};font-family:'Orbitron','Segoe UI';"
+            f"color:{N_SUBTEXT};font-family:{hf}, 'Segoe UI';"
             f"font-size:7.5px;letter-spacing:1px;padding-left:11px;")
         sl.addWidget(dlbl)
 
@@ -1062,7 +1112,7 @@ class JournalDialog(QDialog):
             f"QListWidget{{background:transparent;border:none;padding:2px 4px;}}"
             f"QListWidget::item{{padding:5px 6px;border-radius:3px;"
             f"border-left:2px solid transparent;color:{N_SUBTEXT};"
-            f"font-family:'Orbitron','Segoe UI';font-size:7.5px;font-weight:700;letter-spacing:1px;}}"
+            f"font-family:{hf}, 'Segoe UI';font-size:7.5px;font-weight:700;letter-spacing:1px;}}"
             f"QListWidget::item:selected{{background:rgba(168,108,255,0.15);"
             f"border-left:2px solid {N_PURPLE};color:{N_TEXT};}}"
             f"QListWidget::item:hover:!selected{{background:rgba(114,255,79,0.05);"
@@ -1084,7 +1134,7 @@ class JournalDialog(QDialog):
         btn_new.setStyleSheet(
             f"QPushButton{{background:{N_CARD};color:{N_ACCENT};"
             f"border:1px solid {N_ACCENT};border-radius:2px;"
-            f"padding:4px 4px;font-family:'Orbitron','Segoe UI';"
+            f"padding:4px 4px;font-family:{hf}, 'Segoe UI';"
             f"font-size:6.5px;font-weight:700;letter-spacing:0.5px;}}"
             f"QPushButton:hover{{background:rgba(114,255,79,0.1);}}")
         btn_new.clicked.connect(self._go_today)
@@ -1126,11 +1176,11 @@ class JournalDialog(QDialog):
         self._hint_lbl.setAlignment(Qt.AlignCenter)
         self._hint_lbl.setStyleSheet(
             f"color:{N_ACCENT};font-size:8px;letter-spacing:1px;"
-            f"font-family:'Share Tech Mono','Consolas';")
+            f"font-family:{bf}, 'Consolas';")
 
         mode_hint = QLabel("I=INK  V=VANISH  C=CIPHER  P=PIGMENT")
         mode_hint.setStyleSheet(
-            f"color:{N_SUBTEXT};font-size:7px;font-family:'Share Tech Mono','Consolas';"
+            f"color:{N_SUBTEXT};font-size:7px;font-family:{bf}, 'Consolas';"
             f"letter-spacing:0.5px;")
 
         sb_layout.addWidget(dot)
@@ -1213,18 +1263,24 @@ class JournalDialog(QDialog):
         self._update_mode_ui()
 
     def _update_mode_ui(self):
+        p = getattr(self, "_p", {})
         if self._ninja:
+            N_BG = p.get("C_BG", "#07070B")
+            N_CARD = p.get("C_CARD", "#14141F")
+            N_ACCENT = p.get("C_ACCENT", "#72FF4F")
+            N_TEXT = p.get("C_TEXT", "#E0E0FF")
+            hf = p.get("header_font", "'Orbitron'").split(',')[0].strip("'")
             active_ss = (
                 f"QPushButton{{background:{N_ACCENT};color:{N_BG};"
                 f"border:none;border-radius:2px;padding:4px 10px;"
-                f"font-size:11px;font-family:'Orbitron','Segoe UI';"
+                f"font-size:11px;font-family:{hf}, 'Segoe UI';"
                 f"font-weight:900;letter-spacing:1px;}}"
                 f"QPushButton:hover{{background:white;color:{N_BG};}}")
             normal_ss = (
                 f"QPushButton{{background:{N_CARD};color:{N_ACCENT};"
                 f"border:1px solid {N_ACCENT};border-radius:2px;"
                 f"padding:4px 10px;font-size:11px;"
-                f"font-family:'Orbitron','Segoe UI';font-weight:700;letter-spacing:1px;}}"
+                f"font-family:{hf}, 'Segoe UI';font-weight:700;letter-spacing:1px;}}"
                 f"QPushButton:hover{{background:rgba(114,255,79,0.1);}}")
             hints = {
                 MODE_PEN:    "🗡 INK JUTSU — INSCRIBE THE SCROLL",

@@ -54,13 +54,6 @@ from sm2_engine import (
     _fmt_due_interval, sm2_simulate, sm2_badge
 )
 
-# SM-2 debug logger — safe import (no crash if file missing)
-try:
-    from sm2_debug_log import log_session, log_rate, log_due, log_queue
-    _DEBUG_LOG = True
-except ImportError:
-    _DEBUG_LOG = False
-
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
@@ -249,22 +242,30 @@ class MainWindow(QMainWindow):
         else:
             self._font_size = max(8, min(20, self._font_size + direction))
         self._data["_font_size"] = self._font_size
-        
+
         from theme_manager import build_stylesheet
         app = QApplication.instance()
         theme = getattr(app, '_active_theme', 'classic')
+        print(f"[DEBUG] change_font_size called! Active theme: {theme}, Font size: {self._font_size}")
+
         if theme == 'classic':
-            app.setStyleSheet(_build_ss(self._font_size))
+            ss = _build_ss(self._font_size)
+            app.setStyleSheet(ss)
             self.setStyleSheet("")
+            print(f"[DEBUG] Classic stylesheet applied.")
         else:
-            app.setStyleSheet(build_stylesheet(theme, self._font_size))
-            self.setStyleSheet(build_stylesheet(theme, self._font_size))
+            ss = build_stylesheet(theme, self._font_size)
+            app.setStyleSheet(ss)
+            self.setStyleSheet(ss)
+            print(f"[DEBUG] {theme} stylesheet applied (length: {len(ss)} chars).")
+
         home = self.centralWidget()
         if home is not None and hasattr(home, "rebuild_tmnt_layout"):
-            home.rebuild_tmnt_layout()
-             
-        store.mark_dirty()  # 🔒 DirtyStore
+            home.rebuild_tmnt_layout(force=(theme == "tmnt"))
+            if hasattr(home, "deck_view") and hasattr(home.deck_view, "update_font_size"):
+                home.deck_view.update_font_size(self._font_size)
 
+        store.mark_dirty()  # 🔒 DirtyStore
     def _apply_font_size(self, size: int):
         QApplication.instance().setStyleSheet(_build_ss(size))
 
