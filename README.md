@@ -65,7 +65,6 @@ Anki Occlusion/
 ├── 📦 models.py               Defines core data structures (Decks, Cards, Occlusions)
 ├── 💾 data_manager.py         Handles loading, saving, and managing the local database
 ├── 🧠 sm2_engine.py           Implements the SuperMemo-2 (SM-2) spaced repetition algorithm
-├── 🐛 sm2_debug_log.py        Utilities for logging and debugging SM-2 interval calculations
 ├── 📄 pdf_engine.py           Parses and renders PDF pages into images for occlusion
 ├── ⚡ cache_manager.py        Caches rendered PDFs and images for lightning-fast loading
 ├── ⏱️ session_timer.py        Tracks active focus and study time during review sessions

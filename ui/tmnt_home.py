@@ -60,6 +60,7 @@ from sm2_engine import sm2_init, is_due_today, sm2_days_left
 from data_manager import find_deck_by_id, next_deck_id, store
 from pdf_engine import PDF_SUPPORT
 from ui.deck_tree import DeckTree, _DeckTreeWidget
+from ui.deck_view import DeckView
 
 # ── TMNT Palette ─────────────────────────────────────────────────────────────
 T_BG = "#0b0c10"
@@ -1529,25 +1530,17 @@ class _TMNTDeckItem(QFrame):
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN CONTENT AREA
 # ══════════════════════════════════════════════════════════════════════════════
-class TMNTMainContent(QWidget):
+class TMNTMainContent(DeckView):
     """Centre panel: deck title, stat cards, mission banner, card list, action bar."""
 
-    request_review_due = pyqtSignal()
-    request_review_all = pyqtSignal()
-    request_review_selected = pyqtSignal()
-    request_add_card = pyqtSignal()
-    request_edit_card = pyqtSignal(int)  # index
-    request_delete_card = pyqtSignal(int)  # index
-
     def __init__(self, data=None, parent=None):
-        super().__init__(parent)
-        self._deck = None
         self._data = data if isinstance(data, dict) else {}
         self._scale = _tmnt_scale(data)
+        self._theme = "tmnt"
+        super().__init__(parent)
         self.setStyleSheet(f"background: #151821;")
-        self._build_ui()
 
-    def _build_ui(self):
+    def _setup_ui(self):
         L = QVBoxLayout(self)
         L.setContentsMargins(
             _px(20, self._scale),
@@ -1561,10 +1554,10 @@ class TMNTMainContent(QWidget):
         title_row = QHBoxLayout()
         title_row.setSpacing(_px(16, self._scale))
 
-        self.deck_icon = QLabel("🏯")
-        self.deck_icon.setFixedSize(_px(40, self._scale), _px(40, self._scale))
-        self.deck_icon.setAlignment(Qt.AlignCenter)
-        self.deck_icon.setStyleSheet(
+        self.lbl_deck_icon = QLabel("🏯")
+        self.lbl_deck_icon.setFixedSize(_px(40, self._scale), _px(40, self._scale))
+        self.lbl_deck_icon.setAlignment(Qt.AlignCenter)
+        self.lbl_deck_icon.setStyleSheet(
             _scale_ss(
                 f"font-size: 24px; background: {T_PANEL}; "
                 f"border: 1px solid {T_BORDER}; border-radius: 4px;",
@@ -1574,31 +1567,34 @@ class TMNTMainContent(QWidget):
 
         title_txt = QVBoxLayout()
         title_txt.setSpacing(_px(2, self._scale))
-        self.lbl_title = QLabel("SELECT A DOJO")
-        self.lbl_title.setStyleSheet(
+        self.lbl_deck = QLabel("SELECT A DOJO")
+        self.lbl_deck.setStyleSheet(
             _scale_ss(
                 f"color: {T_GREEN}; font-size: 24px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 1px; background: transparent;",
                 self._scale,
             )
         )
-        self.lbl_sub = QLabel("SCROLLS: 0  ❖  DUE: 0")
-        self.lbl_sub.setStyleSheet(
+        self.lbl_deck_sub = QLabel("SCROLLS: 0  ❖  DUE: 0")
+        self.lbl_deck_sub.setStyleSheet(
             _scale_ss(
                 f"color: {T_SUBTEXT}; font-size: 12px; font-weight: bold; "
                 f"font-family: {T_MONO}; letter-spacing: 1px; background: transparent;",
                 self._scale,
             )
         )
-        title_txt.addWidget(self.lbl_title)
-        title_txt.addWidget(self.lbl_sub)
+        self.lbl_stats = QLabel() # hidden, needed by DeckView
+        self.lbl_stats.hide()
+        
+        title_txt.addWidget(self.lbl_deck)
+        title_txt.addWidget(self.lbl_deck_sub)
 
-        title_row.addWidget(self.deck_icon)
+        title_row.addWidget(self.lbl_deck_icon)
         title_row.addLayout(title_txt)
         title_row.addStretch()
 
-        self.btn_forge = QPushButton("🐢  FORGE SCROLL")
-        self.btn_forge.setStyleSheet(
+        self.btn_add = QPushButton("🐢  FORGE SCROLL")
+        self.btn_add.setStyleSheet(
             _scale_ss(
                 f"""
             QPushButton {{
@@ -1617,9 +1613,9 @@ class TMNTMainContent(QWidget):
                 self._scale,
             )
         )
-        self.btn_forge.clicked.connect(self.request_add_card)
-        _apply_glow(self.btn_forge, "#58b85d", blur=_px(22, self._scale), alpha=95)
-        title_row.addWidget(self.btn_forge)
+        self.btn_add.clicked.connect(self._add_card)
+        _apply_glow(self.btn_add, "#58b85d", blur=_px(22, self._scale), alpha=95)
+        title_row.addWidget(self.btn_add)
         L.addLayout(title_row)
 
         # ── 3 Stat Cards ──
@@ -1641,8 +1637,10 @@ class TMNTMainContent(QWidget):
 
         # ── Mission Banner ──
         self.banner = TMNTMissionBanner(data=self._data)
-        self.banner.train_clicked.connect(self.request_review_due)
-        self.banner.selected_clicked.connect(self.request_review_selected)
+        self.btn_due = self.banner.btn_train
+        self.btn_all = self.banner.btn_selected
+        self.btn_due.clicked.connect(self._review_due)
+        self.btn_all.clicked.connect(self._review_selected)
         L.addWidget(self.banner)
 
         # ── Card list area ──
@@ -1715,9 +1713,13 @@ class TMNTMainContent(QWidget):
             )
         )
         self.card_list.itemDoubleClicked.connect(
-            lambda item: self.request_edit_card.emit(self.card_list.row(item))
+            lambda item: self._edit_card(item)
         )
         self.card_list.itemSelectionChanged.connect(self._sync_action_state)
+        self.card_list.keyPressEvent = self._card_list_key_press
+        self.card_list.setDragEnabled(True)
+        self.card_list.setDragDropMode(QAbstractItemView.DragOnly)
+        self.card_list.startDrag = self._start_card_drag
 
         # Empty state label
         self._empty_lbl = QLabel()
@@ -1758,11 +1760,11 @@ class TMNTMainContent(QWidget):
             )
         )
         self.btn_edit.clicked.connect(
-            lambda: self.request_edit_card.emit(self.card_list.currentRow())
+            lambda: self._edit_card(self.card_list.currentItem())
         )
 
-        self.btn_delete = QPushButton("🗑  DELETE")
-        self.btn_delete.setStyleSheet(
+        self.btn_delete_tmnt = QPushButton("🗑  DELETE")
+        self.btn_delete_tmnt.setStyleSheet(
             _scale_ss(
                 f"""
             QPushButton {{
@@ -1780,126 +1782,51 @@ class TMNTMainContent(QWidget):
                 self._scale,
             )
         )
-        self.btn_delete.clicked.connect(
-            lambda: self.request_delete_card.emit(self.card_list.currentRow())
-        )
-        _apply_glow(self.btn_delete, T_RED, blur=_px(18, self._scale), alpha=100)
+        self.btn_delete_tmnt.clicked.connect(self._delete_card)
+        _apply_glow(self.btn_delete_tmnt, T_RED, blur=_px(18, self._scale), alpha=100)
 
         bot.addWidget(self.btn_edit)
-        bot.addWidget(self.btn_delete)
+        bot.addWidget(self.btn_delete_tmnt)
         bot.addStretch()
         L.addLayout(bot)
         self._sync_action_state()
 
-    def load_deck(self, deck, data):
-        self._deck = deck
-        self._data = data
-        self._refresh()
+    def set_theme(self, theme):
+        # Override DeckView's set_theme so it doesn't mess with our TMNT layout
+        pass
 
     def _refresh(self):
-        if not self._deck:
-            return
-
-        def _all_cards(d):
-            res = list(d.get("cards", []))
-            for ch in d.get("children", []):
-                res.extend(_all_cards(ch))
-            return res
-
-        all_cards = _all_cards(self._deck)
-        due_c = 0
-        total_rev = 0
-
-        for c in all_cards:
-            sm2_init(c)
-            boxes = c.get("boxes", [])
-            if not boxes:
-                if is_due_today(c):
-                    due_c += 1
-            else:
-                seen = set()
-                for b in boxes:
-                    sm2_init(b)
-                    gid = b.get("group_id", "")
-                    if gid:
-                        if gid not in seen:
-                            seen.add(gid)
-                            if is_due_today(b):
-                                due_c += 1
-                    else:
-                        if is_due_today(b):
-                            due_c += 1
-            total_rev += c.get("reviews", 0)
-
-        direct = self._deck.get("cards", [])
-
-        self.lbl_title.setText(self._deck.get("name", "?").upper())
-        self.lbl_sub.setText(f"SCROLLS: {len(all_cards)}  ❖  DUE: {due_c}")
-        self.stat_missions.set_value(due_c)
-        self.stat_scrolls.set_value(len(all_cards))
-        self.stat_battles.set_value(total_rev)
-        self.btn_forge.setEnabled(True)
-        self.banner.btn_train.setEnabled(due_c > 0)
-
-        self.card_list.clear()
-
-        for c in direct:
-            boxes = c.get("boxes", [])
-            is_due = self._card_due(c)
-            badge = "🔴 DUE" if is_due else f"✅ {sm2_days_left(c)}d"
-            n_masks = len(
-                set(b.get("group_id", "") or b.get("box_id", "") for b in boxes)
-            )
-            title = c.get("title", "Untitled")
-            rep = c.get("sm2_repetitions", 0)
-            text = f"  {title}  |  masks: {n_masks}  |  rep: {rep}  |  {badge}"
-            item = QListWidgetItem(text)
-            if is_due:
-                item.setForeground(QColor(T_RED))
-            self.card_list.addItem(item)
-
-        if not direct:
+        # Call the classic logic to populate the list and update the stats
+        super()._refresh()
+        
+        direct_cards = self.deck.get("cards", []) if self.deck else []
+        if not direct_cards:
             self.card_list.hide()
-            self._empty_lbl.setText("★\n\n— FORGE FIRST SCROLL TO BEGIN —")
             self._empty_lbl.show()
+            if self.deck:
+                self._empty_lbl.setText("★\n\n— FORGE FIRST SCROLL TO BEGIN —")
+            else:
+                self.lbl_deck.setText("SELECT A DOJO")
+                self._empty_lbl.setText("★\n\n— SELECT A DOJO TO BEGIN —")
         else:
             self.card_list.show()
             self._empty_lbl.hide()
-            self.card_list.setCurrentRow(0)
-
+            
         self._sync_action_state()
 
-    def _card_due(self, card):
-        boxes = card.get("boxes", [])
-        if not boxes:
-            sm2_init(card)
-            return is_due_today(card)
-        seen = set()
-        for b in boxes:
-            sm2_init(b)
-            gid = b.get("group_id", "")
-            if gid:
-                if gid not in seen:
-                    seen.add(gid)
-                    if is_due_today(b):
-                        return True
-            else:
-                if is_due_today(b):
-                    return True
-        return False
-
     def _sync_action_state(self):
-        has_deck = self._deck is not None
+        has_deck = self.deck is not None
         has_card = self.card_list.currentRow() >= 0 and self.card_list.count() > 0
-        self.btn_forge.setEnabled(has_deck)
+        self.btn_add.setEnabled(has_deck)
         self.btn_edit.setEnabled(has_card)
-        self.btn_delete.setEnabled(has_card)
-        self.banner.btn_selected.setEnabled(has_card)
+        self.btn_delete_tmnt.setEnabled(has_card)
+        self.btn_all.setEnabled(has_card)
 
     def clear(self):
-        self._deck = None
-        self.lbl_title.setText("SELECT A DOJO")
-        self.lbl_sub.setText("SCROLLS: 0  ❖  DUE: 0")
+        self._deck_id = None
+        self.deck = None
+        self.lbl_deck.setText("SELECT A DOJO")
+        self.lbl_deck_sub.setText("SCROLLS: 0  ❖  DUE: 0")
         self.stat_missions.set_value(0)
         self.stat_scrolls.set_value(0)
         self.stat_battles.set_value(0)
@@ -1907,12 +1834,9 @@ class TMNTMainContent(QWidget):
         self.card_list.hide()
         self._empty_lbl.setText("★\n\n— SELECT A DOJO TO BEGIN —")
         self._empty_lbl.show()
-        self.banner.btn_train.setEnabled(False)
+        self.btn_due.setEnabled(False)
         self._sync_action_state()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  BGM TOGGLE
 # ══════════════════════════════════════════════════════════════════════════════
 class TMNTBgmWidget(QFrame):
     clicked = pyqtSignal()
@@ -2317,16 +2241,13 @@ class TMNTHomeLayout(QWidget):
     bgm_toggle = pyqtSignal()
     deck_selected = pyqtSignal(object)
 
-    def __init__(self, data: dict, deck_view_ref, parent=None):
+    def __init__(self, data: dict, parent=None):
         """
         data          — the global app data dict
-        deck_view_ref — the existing DeckView (we call its methods for
-                        card add/edit/delete/review so we don't duplicate logic)
         """
         super().__init__(parent)
         self._data = data
         self._scale = _tmnt_scale(data)
-        self._dv = deck_view_ref  # DeckView — used for card ops
         self._selected_deck = None
         self._setup_ui()
         self._wire_signals()
@@ -2377,19 +2298,11 @@ class TMNTHomeLayout(QWidget):
         self.sidebar.new_deck.connect(self._new_deck)
         self.sidebar.new_sub.connect(self._new_sub)
 
-        # Main content card operations → delegate to DeckView
-        self.main.request_add_card.connect(self._add_card)
-        self.main.request_review_due.connect(self._review_due)
-        self.main.request_review_all.connect(self._review_all)
-        self.main.request_review_selected.connect(self._review_selected)
-        self.main.request_edit_card.connect(self._edit_card)
-        self.main.request_delete_card.connect(self._delete_card)
+
 
     # ── Deck ops ─────────────────────────────────────────────────────────────
     def _on_deck_selected(self, deck):
         self._selected_deck = deck
-        # Sync the hidden DeckView so card ops work
-        self._dv.load_deck(deck, self._data)
         self.main.load_deck(deck, self._data)
         self.deck_selected.emit(deck)
 
@@ -2428,51 +2341,6 @@ class TMNTHomeLayout(QWidget):
             store.mark_dirty()
             self.refresh()
 
-    # ── Card ops (delegate to DeckView) ──────────────────────────────────────
-    def _add_card(self):
-        if not self._selected_deck:
-            QMessageBox.warning(self, "No Dojo", "Select a dojo first.")
-            return
-        self._dv._add_card()
-        self._reload_main()
-
-    def _edit_card(self, idx):
-        if idx < 0:
-            return
-        item = self._dv.card_list.item(idx)
-        if item:
-            self._dv._edit_card(item)
-            self._reload_main()
-
-    def _delete_card(self, idx):
-        if idx < 0:
-            return
-        self._dv.card_list.setCurrentRow(idx)
-        self._dv._delete_card()
-        self._reload_main()
-
-    def _review_due(self):
-        if not self._selected_deck:
-            QMessageBox.warning(self, "No Dojo", "Select a dojo first.")
-            return
-        self._dv._review_due()
-
-    def _review_all(self):
-        if not self._selected_deck:
-            QMessageBox.warning(self, "No Dojo", "Select a dojo first.")
-            return
-        self._dv._review_all()
-
-    def _review_selected(self):
-        idx = self.main.card_list.currentRow()
-        if idx < 0 or not self._selected_deck:
-            return
-        cards = self._selected_deck.get("cards", [])
-        if 0 <= idx < len(cards):
-            home = self._find_home()
-            if home:
-                home.show_review([cards[idx]], self._data)
-
     def _reload_main(self):
         """Reload main content from fresh deck data."""
         if self._selected_deck:
@@ -2503,6 +2371,43 @@ class TMNTHomeLayout(QWidget):
                 self._selected_deck.get("_id"), self._data.get("decks", [])
             )
             if fresh:
+                self._selected_deck = fresh
+                self.main.load_deck(fresh, self._data)
+            else:
+                self._selected_deck = None
+                self.main.clear()
+        else:
+            self.main.clear()
+        self.banga.refresh()
+
+    def get_selected_deck(self):
+        return self._selected_deck
+
+    def set_bgm_state(self, playing):
+        self.topbar.set_bgm_state(playing)
+
+    def select_deck_by_id(self, deck_id):
+        if not deck_id:
+            return
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        self.sidebar._selected_deck = deck
+        self.sidebar.refresh()
+        self._on_deck_selected(deck)
+ng):
+        self.topbar.set_bgm_state(playing)
+
+    def select_deck_by_id(self, deck_id):
+        if not deck_id:
+            return
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        self.sidebar._selected_deck = deck
+        self.sidebar.refresh()
+        self._on_deck_selected(deck)
+esh:
                 self._selected_deck = fresh
                 self.main.load_deck(fresh, self._data)
             else:

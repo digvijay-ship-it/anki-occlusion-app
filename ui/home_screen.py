@@ -1062,7 +1062,7 @@ class HomeScreen(QWidget):
                 self._body_stack.removeWidget(rev)
                 rev.setParent(None)
                 rev.deleteLater()
-            self._body_stack.setCurrentIndex(1)
+            self._body_stack.setCurrentWidget(self._tmnt_layout)
             self.top_frame.hide()
             self._tmnt_layout.refresh()
         else:
@@ -1197,7 +1197,7 @@ class HomeScreen(QWidget):
         OnboardingDialog(self).exec_()
 
     def _create_tmnt_layout(self):
-        layout = TMNTHomeLayout(self._data, self.deck_view, parent=self)
+        layout = TMNTHomeLayout(self._data, parent=self)
         layout.btn_math_clicked.connect(self._show_math_trainer)
         layout.btn_journal_clicked.connect(self._show_journal)
         layout.btn_theme_clicked.connect(self._toggle_theme)
@@ -1469,6 +1469,20 @@ class HomeScreen(QWidget):
                     background: {C_CARD};
                     color: {C_TEXT};
                 }}
+            """)
+
+    def refresh(self):
+        if self._current_theme == "tmnt" and self._tmnt_layout:
+            self._tmnt_layout.refresh()
+        else:
+            self.deck_tree.refresh()
+            sel = self.deck_tree.get_selected_deck()
+            if sel:
+                self.deck_view.load_deck(sel, self._data)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+}
             """)
 
     def refresh(self):

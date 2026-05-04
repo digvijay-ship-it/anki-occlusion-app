@@ -58,13 +58,7 @@ class ReviewSessionManager:
         # New rating clears redo stack
         self._review_redo_stack.clear()
 
-        if _DEBUG_LOG:
-            try: log_rate("BEFORE", sm2_obj, quality, card)
-            except Exception: pass
         sched_update(sm2_obj, quality)
-        if _DEBUG_LOG:
-            try: log_rate("AFTER", sm2_obj, quality, card)
-            except Exception: pass
 
         # ── Persist review timestamp in metadata ──────────────────────────────
         # Stamped on every rating so "when was this last reviewed?" is always
