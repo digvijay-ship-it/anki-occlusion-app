@@ -1830,7 +1830,9 @@ class TMNTMainContent(DeckView):
     def _sync_action_state(self):
         has_deck = self.deck is not None
         has_card = self.card_list.currentRow() >= 0 and self.card_list.count() > 0
+        has_due = bool(has_deck and self._collect_due_by_pdf(self.deck))
         self.btn_add.setEnabled(has_deck)
+        self.btn_due.setEnabled(has_due)
         self.btn_edit.setEnabled(has_card)
         self.btn_delete_tmnt.setEnabled(has_card)
         self.btn_all.setEnabled(has_card)

@@ -89,11 +89,7 @@ def _fmt_human(secs: int) -> str:
     return f"{s}s"
 
 
-def _write_focus_to_journal(seconds: int):
-    if seconds <= 0:
-        return
-
-    today   = date.today().isoformat()
+def _load_journal():
     journal = {}
     if os.path.exists(_JOURNAL_FILE):
         try:
@@ -101,9 +97,17 @@ def _write_focus_to_journal(seconds: int):
                 journal = json.load(f)
         except Exception:
             journal = {}
+    return journal
+
+
+def _write_focus_to_journal_for_date(day: str, seconds: int):
+    if seconds <= 0 or not day:
+        return
+
+    journal = _load_journal()
 
     # Normalise entry
-    entry = journal.get(today, {})
+    entry = journal.get(day, {})
     if isinstance(entry, list):
         entry = {"strokes": entry, "texts": []}
     if not isinstance(entry, dict):
@@ -130,8 +134,12 @@ def _write_focus_to_journal(seconds: int):
         texts.insert(0, text_obj)
 
     entry["texts"] = texts
-    journal[today] = entry
+    journal[day] = entry
     _atomic_write(_JOURNAL_FILE, journal)
+
+
+def _write_focus_to_journal(seconds: int):
+    _write_focus_to_journal_for_date(date.today().isoformat(), seconds)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,6 +155,7 @@ class SessionTimer:
     """
 
     def __init__(self, parent=None):
+        self._current_day = date.today().isoformat()
         self._elapsed = _load_state()
         self._session_elapsed = 0
         self._running = False
@@ -165,20 +174,34 @@ class SessionTimer:
         self._save_timer.setInterval(30_000)
         self._save_timer.timeout.connect(lambda: _save_state(self._elapsed))
 
+    def _rollover_if_needed(self):
+        today = date.today().isoformat()
+        if today == self._current_day:
+            return
+        _write_focus_to_journal_for_date(self._current_day, self._elapsed)
+        self._current_day = today
+        self._elapsed = 0
+        self.label.setText(self._make_text())
+        self.label_today.setText(self._fmt(self._elapsed))
+        _save_state(self._elapsed)
+
     def start(self):
         if not self._running:
+            self._rollover_if_needed()
             self._running = True
             self._tick_timer.start()
             self._save_timer.start()
 
     def stop(self):
         if self._running:
+            self._rollover_if_needed()
             self._running = False
             self._tick_timer.stop()
             self._save_timer.stop()
             _save_state(self._elapsed)
 
     def flush_to_journal(self):
+        self._rollover_if_needed()
         _save_state(self._elapsed)
         _write_focus_to_journal(self._elapsed)
 
@@ -190,6 +213,7 @@ class SessionTimer:
         return self._elapsed
 
     def _tick(self):
+        self._rollover_if_needed()
         self._elapsed += 1
         self._session_elapsed += 1
         self.label.setText(self._make_text())

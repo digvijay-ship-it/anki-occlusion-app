@@ -210,6 +210,27 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 720)
         self.setWindowIcon(make_app_icon())
         self._font_size = int(self._data.get("_font_size", BASE_FONT_SIZE))
+
+        # Apply saved theme/font before building HomeScreen so TMNT widgets
+        # construct with the correct cold-start sizing context.
+        theme = self._data.get("_theme", "classic")
+        app = QApplication.instance()
+        if app:
+            app._active_theme = theme
+            from theme_manager import build_stylesheet
+            if theme == 'classic':
+                app.setFont(QFont("Segoe UI", self._font_size))
+                app.setStyleSheet(_build_ss(self._font_size))
+                self.setStyleSheet("")
+            else:
+                if theme == "tmnt":
+                    app.setFont(QFont("Roboto Mono", self._font_size))
+                else:
+                    app.setFont(QFont(NARUTO_FONT_FAMILY, self._font_size))
+                ss = build_stylesheet(theme, self._font_size)
+                app.setStyleSheet(ss)
+                self.setStyleSheet(ss)
+
         self.showMaximized()
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
@@ -219,19 +240,11 @@ class MainWindow(QMainWindow):
             "PyMuPDF loaded — PDF support active"
             if PDF_SUPPORT else "⚠ pip install pymupdf  for PDF support"))
         self.setStatusBar(sb)
-        
-        # Apply initial theme and font
-        theme = self._data.get("_theme", "classic")
-        app = QApplication.instance()
-        if app:
-            app._active_theme = theme
-            from theme_manager import build_stylesheet
-            if theme == 'classic':
-                app.setStyleSheet(_build_ss(self._font_size))
-                self.setStyleSheet("")
-            else:
-                app.setStyleSheet(build_stylesheet(theme, self._font_size))
-                self.setStyleSheet(build_stylesheet(theme, self._font_size))
+
+        if theme == "tmnt" and hasattr(home, "_tmnt_layout") and home._tmnt_layout:
+            if hasattr(home._tmnt_layout, "main"):
+                home._tmnt_layout.main._font_size_val = self._font_size
+            home._tmnt_layout.refresh()
 
         if not self._data.get("_onboarding_done"):
             QTimer.singleShot(200, self._run_onboarding)
@@ -273,6 +286,7 @@ class MainWindow(QMainWindow):
                 home.deck_view.update_font_size(self._font_size)
 
         store.mark_dirty()  # 🔒 DirtyStore
+        store.save_force()
     def _apply_font_size(self, size: int):
         QApplication.instance().setStyleSheet(_build_ss(size))
 

@@ -1,5 +1,6 @@
 import os
 import json
+import os
 import unittest
 import tempfile
 from pathlib import Path
@@ -121,6 +122,34 @@ class SessionTimerTests(unittest.TestCase):
         self.assertEqual(timer.elapsed_seconds, 11)
         self.assertEqual(timer.elapsed_str(), "0:00:11")
         self.assertEqual(timer.label.text(), "0:00:11")
+
+    @patch('session_timer._STATE_FILE', new_callable=lambda: None)
+    @patch('session_timer._JOURNAL_FILE', new_callable=lambda: None)
+    def test_SessionTimer_rolls_over_at_midnight(self, mock_journal_file, mock_state_file):
+        session_timer._STATE_FILE = self.test_state_file
+        session_timer._JOURNAL_FILE = self.test_journal_file
+
+        with patch('session_timer.date') as mock_date:
+            mock_date.today.return_value.isoformat.return_value = "2026-05-04"
+            timer = SessionTimer()
+            timer._elapsed = 120
+            timer._session_elapsed = 30
+
+            mock_date.today.return_value.isoformat.return_value = "2026-05-05"
+            timer._tick()
+
+            self.assertEqual(timer.elapsed_seconds, 1)
+            self.assertEqual(timer.label_today.text(), "0:00:01")
+            self.assertEqual(timer.label_session.text(), "0:00:31")
+
+        with open(self.test_journal_file, "r", encoding="utf-8") as f:
+            journal = json.load(f)
+        self.assertEqual(journal["2026-05-04"]["focus_seconds"], 120)
+
+        with open(self.test_state_file, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        self.assertEqual(state["date"], "2026-05-05")
+        self.assertEqual(state["seconds"], 0)
 
 if __name__ == "__main__":
     unittest.main()
