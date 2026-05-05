@@ -1224,6 +1224,10 @@ class HomeScreen(QWidget):
         old = self._tmnt_layout
         old_index = self._body_stack.indexOf(old)
         self._tmnt_layout = self._create_tmnt_layout()
+        if hasattr(self._tmnt_layout, "main"):
+            self._tmnt_layout.main._font_size_val = int(
+                self._data.get("_font_size", BASE_FONT_SIZE)
+            )
         self._body_stack.insertWidget(old_index if old_index >= 0 else 1, self._tmnt_layout)
         if was_visible:
             self._body_stack.setCurrentWidget(self._tmnt_layout)
@@ -1469,20 +1473,6 @@ class HomeScreen(QWidget):
                     background: {C_CARD};
                     color: {C_TEXT};
                 }}
-            """)
-
-    def refresh(self):
-        if self._current_theme == "tmnt" and self._tmnt_layout:
-            self._tmnt_layout.refresh()
-        else:
-            self.deck_tree.refresh()
-            sel = self.deck_tree.get_selected_deck()
-            if sel:
-                self.deck_view.load_deck(sel, self._data)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-}
             """)
 
     def refresh(self):

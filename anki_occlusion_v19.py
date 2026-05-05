@@ -254,6 +254,8 @@ class MainWindow(QMainWindow):
             self.setStyleSheet("")
             print(f"[DEBUG] Classic stylesheet applied.")
         else:
+            if theme == "tmnt":
+                app.setFont(QFont("Roboto Mono", self._font_size))
             ss = build_stylesheet(theme, self._font_size)
             app.setStyleSheet(ss)
             self.setStyleSheet(ss)
@@ -262,6 +264,11 @@ class MainWindow(QMainWindow):
         home = self.centralWidget()
         if home is not None and hasattr(home, "rebuild_tmnt_layout"):
             home.rebuild_tmnt_layout(force=(theme == "tmnt"))
+            if theme == "tmnt" and hasattr(home, "_tmnt_layout") and home._tmnt_layout:
+                if hasattr(home._tmnt_layout, "main"):
+                    home._tmnt_layout.main._font_size_val = self._font_size
+                    if getattr(home._tmnt_layout.main, "deck", None):
+                        home._tmnt_layout.main._refresh()
             if hasattr(home, "deck_view") and hasattr(home.deck_view, "update_font_size"):
                 home.deck_view.update_font_size(self._font_size)
 

@@ -909,6 +909,18 @@ class TMNTDeckEngine(DeckTree):
             QTreeWidget::item:hover:!selected {{
                 background: rgba(69,162,71,0.06);
             }}
+            QTreeWidget::branch {{
+                background: transparent;
+            }}
+            QTreeWidget::branch:closed:has-children,
+            QTreeWidget::branch:closed:has-children:has-siblings,
+            QTreeWidget::branch:closed:has-children:adjoins-item {{
+                image: url(assets/themes/dojo/tmnt_tree_closed.svg);
+            }}
+            QTreeWidget::branch:open:has-children:has-siblings,
+            QTreeWidget::branch:open:has-children {{
+                image: url(assets/themes/dojo/tmnt_tree_open.svg);
+            }}
             QScrollBar:vertical {{
                 background: {T_BG};
                 width: 8px;
@@ -1535,6 +1547,7 @@ class TMNTMainContent(DeckView):
 
     def __init__(self, data=None, parent=None):
         self._data = data if isinstance(data, dict) else {}
+        self._font_size_val = int(self._data.get("_font_size", TMNT_BASE_SIZE))
         self._scale = _tmnt_scale(data)
         self._theme = "tmnt"
         super().__init__(parent)
@@ -1821,6 +1834,14 @@ class TMNTMainContent(DeckView):
         self.btn_edit.setEnabled(has_card)
         self.btn_delete_tmnt.setEnabled(has_card)
         self.btn_all.setEnabled(has_card)
+
+    def _review_selected(self):
+        row = self.card_list.currentRow()
+        if row < 0 or not self.deck:
+            return
+        cards = self.deck.get("cards", [])
+        if 0 <= row < len(cards):
+            self._start_review([cards[row]])
 
     def clear(self):
         self._deck_id = None
@@ -2371,43 +2392,6 @@ class TMNTHomeLayout(QWidget):
                 self._selected_deck.get("_id"), self._data.get("decks", [])
             )
             if fresh:
-                self._selected_deck = fresh
-                self.main.load_deck(fresh, self._data)
-            else:
-                self._selected_deck = None
-                self.main.clear()
-        else:
-            self.main.clear()
-        self.banga.refresh()
-
-    def get_selected_deck(self):
-        return self._selected_deck
-
-    def set_bgm_state(self, playing):
-        self.topbar.set_bgm_state(playing)
-
-    def select_deck_by_id(self, deck_id):
-        if not deck_id:
-            return
-        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
-        if not deck:
-            return
-        self.sidebar._selected_deck = deck
-        self.sidebar.refresh()
-        self._on_deck_selected(deck)
-ng):
-        self.topbar.set_bgm_state(playing)
-
-    def select_deck_by_id(self, deck_id):
-        if not deck_id:
-            return
-        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
-        if not deck:
-            return
-        self.sidebar._selected_deck = deck
-        self.sidebar.refresh()
-        self._on_deck_selected(deck)
-esh:
                 self._selected_deck = fresh
                 self.main.load_deck(fresh, self._data)
             else:
