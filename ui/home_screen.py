@@ -1056,6 +1056,9 @@ class HomeScreen(QWidget):
         """Restore layout after review ends."""
         rev = getattr(self, "_active_review", None)
         self._active_review = None
+        if rev and getattr(rev, "canvas", None) is not None:
+            from cache_manager import MASK_REGISTRY
+            MASK_REGISTRY.unregister(rev.canvas)
 
         if getattr(self, "_pre_review_tmnt", False) and self._tmnt_layout:
             if rev:

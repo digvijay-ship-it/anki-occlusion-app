@@ -1,23 +1,30 @@
 import os
-import sys
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
     QLineEdit, QListWidget, QFrame, QScrollArea, QMessageBox, QFileDialog,
-    QFormLayout, QTextEdit, QSizePolicy, QDialog, QApplication, QSplitter
+    QFormLayout, QTextEdit, QSizePolicy, QDialog, QApplication, QSplitter, QShortcut
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QFileSystemWatcher, QUrl
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
 from sm2_engine import sm2_init
 from data_manager import new_box_id
-from pdf_engine import PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread
-
-try:
-    import fitz
-except ImportError:
-    pass
+from pdf_engine import (
+    PDF_SUPPORT,
+    PAGE_CACHE,
+    PdfLoaderThread,
+    get_changed_pages,
+    choose_pdf_render_zoom,
+    ensure_pdf_cache_profile,
+    adapt_pdf_boxes_to_render_zoom,
+    PDF_LEGACY_BOX_ZOOM,
+    get_cached_pdf_page_set,
+)
+from perf_utils import get_pdf_page_count
 
 from editor_ui import OcclusionCanvas, _ZoomableScrollArea, ToolBar, MaskPanel
+from ui.pdf_annotation_dialog import PdfAnnotationDialog
+from ui.pdf_viewer_controller import PdfViewerController
 
 C_BG      = "#1E1E2E"
 C_SURFACE = "#2A2A3E"
@@ -49,6 +56,7 @@ class CardEditorDialog(QDialog):
         self._deck              = deck
         self._auto_subdeck_name = None
         self._watcher           = QFileSystemWatcher()
+        self._ignored_watch_paths = {}
         self._watched_path      = None
         self._reload_timer      = QTimer()
         self._reload_timer.setSingleShot(True)
@@ -57,6 +65,10 @@ class CardEditorDialog(QDialog):
         self._watcher.fileChanged.connect(self._on_file_changed)
         self._pdf_loader_thread = None
         self._pdf_total_pages   = 0
+        self._pdf_render_zoom   = 2.0
+        self._pending_boxes_need_pdf_adapt = False
+        self._ui_page_zero      = 0
+        self._nav_seq           = 0
         self._pending_boxes     = []
         self._fit_timer         = QTimer(self)
         self._fit_timer.setSingleShot(True)
@@ -173,6 +185,10 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext.clicked.connect(self._open_in_reader)
         self.btn_open_ext.setVisible(False)
 
+        self.btn_annotate_beta = _tbtn("🖊 In-App Annotate (Beta)", "Open in-app PDF annotation editor  Ctrl+T")
+        self.btn_annotate_beta.clicked.connect(self._open_annotation_beta)
+        self.btn_annotate_beta.setVisible(False)
+
         self.btn_relink = _tbtn("🔄 Relink PDF", "Replace the PDF source file — keeps all existing masks")
         self.btn_relink.setEnabled(PDF_SUPPORT)
         self.btn_relink.clicked.connect(self._relink_pdf)
@@ -191,7 +207,7 @@ class CardEditorDialog(QDialog):
                   btn_zi, btn_zo, btn_zf, _sep(),
                   btn_del, btn_clear, _sep(),
                   btn_grp, btn_ungrp, _sep(),
-                  self.btn_open_ext, self.btn_relink, self.lbl_sync]:
+                  self.btn_open_ext, self.btn_annotate_beta, self.btn_relink, self.lbl_sync]:
             tl.addWidget(w)
         tl.addStretch()
 
@@ -211,10 +227,30 @@ class CardEditorDialog(QDialog):
         self.pdf_bar = QWidget()
         self.pdf_bar.setStyleSheet(f"background:{p.get('C_SURFACE', '#E8E8E8')};border-bottom:1px solid {p.get('C_BORDER', '#CCC')};")
         pb = QHBoxLayout(self.pdf_bar); pb.setContentsMargins(10,2,10,2)
+        self.btn_prev_page = _tbtn("←", "Previous page", w=30)
+        self.btn_prev_page.setFocusPolicy(Qt.NoFocus)
+        self.btn_prev_page.clicked.connect(self._go_prev_page)
+        self.btn_next_page = _tbtn("→", "Next page", w=30)
+        self.btn_next_page.setFocusPolicy(Qt.NoFocus)
+        self.btn_next_page.clicked.connect(self._go_next_page)
+        self.inp_page_jump = QLineEdit()
+        self.inp_page_jump.setFixedWidth(52)
+        self.inp_page_jump.setAlignment(Qt.AlignCenter)
+        self.inp_page_jump.setPlaceholderText("1")
+        self.inp_page_jump.returnPressed.connect(self._jump_to_page_from_input)
+        self.lbl_page_total = QLabel("/ 0")
+        self.lbl_page_total.setStyleSheet(f"color:{p.get('C_SUBTEXT', '#555')};font-size:11px;background:transparent;font-family:{self._bf};")
         self.lbl_pg = QLabel("")
         self.lbl_pg.setStyleSheet(f"color:{p.get('C_SUBTEXT', '#555')};font-size:11px;background:transparent;font-family:{self._bf};")
-        pb.addWidget(self.lbl_pg); pb.addStretch()
-        self.pdf_bar.setFixedHeight(22); self.pdf_bar.hide()
+        pb.addWidget(self.btn_prev_page)
+        pb.addWidget(self.btn_next_page)
+        pb.addSpacing(6)
+        pb.addWidget(self.inp_page_jump)
+        pb.addWidget(self.lbl_page_total)
+        pb.addSpacing(12)
+        pb.addWidget(self.lbl_pg)
+        pb.addStretch()
+        self.pdf_bar.setFixedHeight(38); self.pdf_bar.hide()
         L.addWidget(self.pdf_bar)
 
         # ── main row ──────────────────────────────────────────────────────────
@@ -228,8 +264,27 @@ class CardEditorDialog(QDialog):
         self.canvas.setStyleSheet("background:transparent;")
         sc.setWidget(self.canvas); sc.set_canvas(self.canvas)
         self.toolbar.tool_changed.connect(self.canvas.set_tool)
+        sc.verticalScrollBar().valueChanged.connect(self._on_scroll_pdf_page_changed)
         main_row.addWidget(sc, stretch=1)
         self._sc = sc
+        self._sc_prev_page = QShortcut(Qt.Key_Left, self)
+        self._sc_prev_page.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_prev_page.setAutoRepeat(False)
+        self._sc_prev_page.activated.connect(self._go_prev_page)
+        self._sc_next_page = QShortcut(Qt.Key_Right, self)
+        self._sc_next_page.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_next_page.setAutoRepeat(False)
+        self._sc_next_page.activated.connect(self._go_next_page)
+        self._pdf_viewer = PdfViewerController(
+            canvas=self.canvas,
+            scroll_area=self._sc,
+            page_input=self.inp_page_jump,
+            page_total_label=self.lbl_page_total,
+            prev_button=self.btn_prev_page,
+            next_button=self.btn_next_page,
+            total_pages_getter=lambda: int(self._pdf_total_pages or len(getattr(self.canvas, "_pages", []) or [])),
+            debug_hook=self._editor_nav_debug,
+        )
 
         # ── right panel ───────────────────────────────────────────────────────
         right_panel = QWidget(); right_panel.setFixedWidth(240)
@@ -289,7 +344,55 @@ class CardEditorDialog(QDialog):
 
     def _zoom_fit(self):
         vp = self._sc.viewport()
-        self.canvas.zoom_fit_width(vp.width())
+        if getattr(self.canvas, "_pages", None):
+            self._pdf_viewer.reset_fit()
+        else:
+            self.canvas.zoom_fit_width(vp.width())
+
+    def _editor_nav_debug(self, action: str, **data):
+        return
+
+    def _pdf_quality_debug(self, action: str, **data):
+        parts = " ".join(f"{key}={value}" for key, value in data.items())
+        print(f"[DEBUG][pdf_quality][editor] {action} {parts}".rstrip())
+
+    def _set_pdf_page_ui(self, current_zero: int):
+        self._pdf_viewer.set_page_ui(current_zero)
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _update_pdf_nav_ui(self, *_):
+        self._pdf_viewer.refresh_page_ui()
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _on_scroll_pdf_page_changed(self, value: int):
+        page_zero = self._current_visible_page()
+        if page_zero != self._ui_page_zero:
+            self._editor_nav_debug("scroll", value=value, page=page_zero + 1)
+        self._pdf_viewer.set_page_ui(page_zero)
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _go_to_page(self, page_zero: int):
+        self._pdf_viewer.go_to_page(page_zero)
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _finalize_pdf_page_jump(self, seq: int, target: int):
+        self._pdf_viewer._finalize_page_jump(seq, target)
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _nav_current_page(self) -> int:
+        return self._pdf_viewer.nav_current_page()
+
+    def _go_prev_page(self):
+        self._pdf_viewer.go_prev_page()
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _go_next_page(self):
+        self._pdf_viewer.go_next_page()
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _jump_to_page_from_input(self):
+        self._pdf_viewer.jump_from_input()
+        self._ui_page_zero = self._pdf_viewer._ui_page_zero
 
     def _schedule_zoom_fit(self, delay_ms=120):
         if getattr(self, "canvas", None) and self.canvas._pages:
@@ -306,9 +409,13 @@ class CardEditorDialog(QDialog):
     def keyPressEvent(self, e):
         key = e.key(); mods = e.modifiers()
         if mods & Qt.ControlModifier and key == Qt.Key_Z:  self.canvas.undo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_X: self.canvas.redo()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Y: self.canvas.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_S: self._save()
+        elif mods & Qt.ControlModifier and key == Qt.Key_E: self._open_in_reader()
+        elif mods & Qt.ControlModifier and key == Qt.Key_T: self._open_annotation_beta()
         elif mods & Qt.ControlModifier and key == Qt.Key_V: self._paste_image()
+        elif key == Qt.Key_Left and not mods and not e.isAutoRepeat(): self._go_prev_page()
+        elif key == Qt.Key_Right and not mods and not e.isAutoRepeat(): self._go_next_page()
         elif key == Qt.Key_V: self.toolbar.select_tool("select")
         elif key == Qt.Key_R: self.toolbar.select_tool("rect")
         elif key == Qt.Key_E: self.toolbar.select_tool("ellipse")
@@ -328,6 +435,7 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext.setVisible(False); self.lbl_sync.setVisible(False)
         self._stop_watch()
         self.canvas.load_pixmap(px)
+        self._update_pdf_nav_ui()
         if not self.inp_title.text():
             self.inp_title.setText(os.path.splitext(os.path.basename(path))[0])
 
@@ -351,6 +459,7 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext.setVisible(False); self.lbl_sync.setVisible(False)
         self._stop_watch()
         self.canvas.load_pixmap(px)
+        self._update_pdf_nav_ui()
         if not self.inp_title.text(): self.inp_title.setText("Pasted Image")
 
     # ── PDF loading ───────────────────────────────────────────────────────────
@@ -394,25 +503,26 @@ class CardEditorDialog(QDialog):
         self._show_pdf_loading(False)
 
         # ── Count pages ───────────────────────────────────────────────────────
-        try:
-            _doc = fitz.open(path)
-            total_pages = len(_doc)
-            _doc.close()
-        except Exception as ex:
-            print(f"[DEBUG][load] ❌ cannot open PDF: {ex}")
-            QMessageBox.warning(self, "PDF Error", f"Could not open PDF:\n{ex}")
-            return
-
+        total_pages = get_pdf_page_count(path)
         if total_pages <= 0:
-            print(f"[DEBUG][load] ❌ zero pages: {path}")
+            QMessageBox.warning(self, "PDF Error", f"Could not open PDF:\n{path}")
             return
 
         self._pdf_total_pages = total_pages
+        self._pdf_render_zoom = choose_pdf_render_zoom(total_pages)
+        profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)
+        self._pdf_quality_debug(
+            "profile",
+            pages=total_pages,
+            zoom=self._pdf_render_zoom,
+            reset_cache=profile_reset,
+        )
 
         # ── Full cache hit → instant ──────────────────────────────────────────
-        cached_pages = [PAGE_CACHE.get(path, i) for i in range(total_pages)]
+        cache_state = get_cached_pdf_page_set(path, total_pages)
+        cached_pages_by_index = cache_state["cached_pages_by_index"]
+        cached_pages = [cached_pages_by_index.get(i) for i in range(total_pages)]
         if all(p is not None and not p.isNull() for p in cached_pages):
-            print(f"[DEBUG][load] ⚡ full cache hit — {total_pages} pages")
             self._finish_pdf_load(path, cached_pages)
             self.lbl_sync.setText("⚡ PDF ready from cache")
             self.lbl_sync.setStyleSheet(
@@ -421,15 +531,13 @@ class CardEditorDialog(QDialog):
             return
 
         # ── Cache miss (full or partial) → render in background ───────────────
-        cached_count = sum(1 for p in cached_pages if p is not None and not p.isNull())
-        print(f"[DEBUG][load] 🔄 rendering — {cached_count}/{total_pages} already cached")
-        self.lbl_sync.setText(f"⏳ Rendering {total_pages - cached_count} pages…")
+        self.lbl_sync.setText(f"⏳ Rendering {cache_state['cache_miss_count']} pages…")
         self.lbl_sync.setStyleSheet(
             f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
         self.lbl_sync.setVisible(True)
         self._show_pdf_loading(True)
 
-        self._pdf_loader_thread = PdfLoaderThread(path, parent=self)
+        self._pdf_loader_thread = PdfLoaderThread(path, zoom=self._pdf_render_zoom, parent=self)
         self._pdf_loader_thread.done.connect(self._on_pdf_done)
         self._pdf_loader_thread.start()
 
@@ -448,6 +556,7 @@ class CardEditorDialog(QDialog):
         self.lbl_pg.setText(
             f"📄  {os.path.basename(path)}  —  {n} page{'s' if n != 1 else ''}")
         self.pdf_bar.show()
+        self._update_pdf_nav_ui()
 
         if not self.inp_title.text():
             self.inp_title.setText(self._auto_subdeck_name or "")
@@ -458,9 +567,26 @@ class CardEditorDialog(QDialog):
             or list(self.card.get("boxes", []))
         )
         if boxes_to_restore:
+            if self._pending_boxes_need_pdf_adapt:
+                source_zoom = self.card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
+                boxes_to_restore = adapt_pdf_boxes_to_render_zoom(
+                    path,
+                    boxes_to_restore,
+                    source_zoom,
+                    self._pdf_render_zoom,
+                )
+                self._pdf_quality_debug(
+                    "box_remap",
+                    source_zoom=source_zoom,
+                    target_zoom=self._pdf_render_zoom,
+                    boxes=len(boxes_to_restore),
+                )
+                self._pending_boxes_need_pdf_adapt = False
             self.canvas.set_boxes(boxes_to_restore)
             self.mask_panel._refresh(boxes_to_restore)
         self._pending_boxes = []
+        self.btn_open_ext.setVisible(True)
+        self.btn_annotate_beta.setVisible(True)
 
     def _after_load_scroll(self):
         """Scroll to exact image-space position after canvas is ready."""
@@ -530,6 +656,7 @@ class CardEditorDialog(QDialog):
             self.card["pdf_path"] = path
             self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
             self._pending_boxes = current_boxes
+            self._pending_boxes_need_pdf_adapt = True
             self.btn_relink.setVisible(True)
             self._show_pdf_loading(True)
             self._load_pdf_direct(path)
@@ -563,6 +690,14 @@ class CardEditorDialog(QDialog):
         self._reload_timer.stop()
 
     def _on_file_changed(self, path: str):
+        key = os.path.abspath(path) if path else ""
+        if key and self._ignored_watch_paths.get(key, 0) > 0:
+            self._ignored_watch_paths[key] -= 1
+            if self._ignored_watch_paths[key] <= 0:
+                self._ignored_watch_paths.pop(key, None)
+            if path and os.path.exists(path) and path not in self._watcher.files():
+                self._watcher.addPath(path)
+            return
         self.lbl_sync.setText("🟡 Live Sync: change detected…")
         self.lbl_sync.setStyleSheet(
             f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
@@ -573,10 +708,15 @@ class CardEditorDialog(QDialog):
         if not path or not os.path.exists(path):
             QTimer.singleShot(500, self._reload_pdf); return
         if path not in self._watcher.files(): self._watcher.addPath(path)
-        PAGE_CACHE.invalidate_pdf(path)
+        changed = get_changed_pages(path)
+        if changed is None:
+            PAGE_CACHE.invalidate_pdf(path)
+        else:
+            PAGE_CACHE.invalidate_pages(path, changed)
 
         saved_boxes = self.canvas.get_boxes()
         self._pending_boxes = saved_boxes
+        self._pending_boxes_need_pdf_adapt = False
         self.lbl_sync.setText("🟡 Live Sync: reloading…")
         self.lbl_sync.setStyleSheet(
             f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
@@ -598,6 +738,44 @@ class CardEditorDialog(QDialog):
             else:                             subprocess.Popen(["xdg-open", path])
         except Exception as ex:
             QMessageBox.warning(self,"Could not open",f"Could not open PDF:\n{ex}")
+
+    def _open_annotation_beta(self):
+        path = self.card.get("pdf_path") or self._watched_path
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
+            return
+        page_zero = self._current_visible_page()
+        scroll_y = self._sc.verticalScrollBar().value()
+        dialog = PdfAnnotationDialog(
+            path,
+            parent=self,
+            initial_page=page_zero,
+            initial_anchor_y=scroll_y,
+        )
+        dialog.exec_()
+        self._apply_annotation_beta_refresh(path, dialog._saved_pages, dialog.return_page, dialog.return_anchor_y)
+
+    def _apply_annotation_beta_refresh(self, path: str, changed_pages, return_page: int, return_scroll: int | None):
+        if not changed_pages:
+            if return_page is not None:
+                QTimer.singleShot(0, lambda pg=return_page: self._go_to_page(pg))
+            return
+        key = os.path.abspath(path)
+        self._ignored_watch_paths[key] = self._ignored_watch_paths.get(key, 0) + 2
+        self._pdf_quality_debug(
+            "annotation_refresh",
+            pages=[pn + 1 for pn in changed_pages],
+            zoom=self._pdf_render_zoom,
+        )
+        for page_num in sorted(set(int(pn) for pn in changed_pages)):
+            px = PAGE_CACHE.get(path, page_num)
+            if px is not None and not px.isNull():
+                self.canvas.inject_page(page_num, px)
+        self._update_pdf_nav_ui()
+        if return_page is not None:
+            QTimer.singleShot(0, lambda pg=return_page: self._go_to_page(pg))
+        elif return_scroll is not None:
+            QTimer.singleShot(0, lambda sv=return_scroll: self._sc.verticalScrollBar().setValue(int(sv)))
 
     def _relink_pdf(self):
         """Pick a new PDF file — replaces the stored path but keeps ALL existing masks."""
@@ -636,6 +814,7 @@ class CardEditorDialog(QDialog):
 
         # _pending_boxes makes _on_pdf_done restore masks after load
         self._pending_boxes = saved_boxes
+        self._pending_boxes_need_pdf_adapt = False
 
         self.lbl_sync.setVisible(True)
         self.lbl_sync.setText("🔄 Relinking…")
@@ -670,6 +849,8 @@ class CardEditorDialog(QDialog):
                           "boxes":   merged,
                           "created": self.card.get("created", datetime.now().isoformat()),
                           "reviews": self.card.get("reviews", 0)})
+        if self.card.get("pdf_path"):
+            self.card["_pdf_box_render_zoom"] = float(self._pdf_render_zoom or PDF_LEGACY_BOX_ZOOM)
         if self._auto_subdeck_name: self.card["_auto_subdeck"] = self._auto_subdeck_name
         sm2_init(self.card)
         for box in self.card.get("boxes",[]): sm2_init(box)
@@ -678,16 +859,22 @@ class CardEditorDialog(QDialog):
     def get_card(self): return self.card
 
     def closeEvent(self, e):
+        from cache_manager import MASK_REGISTRY
+        MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         self._stop_pdf_threads()
         super().closeEvent(e)
 
     def reject(self):
+        from cache_manager import MASK_REGISTRY
+        MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         self._stop_pdf_threads()
         super().reject()
 
     def accept(self):
+        from cache_manager import MASK_REGISTRY
+        MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch(); super().accept()
 
 

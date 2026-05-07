@@ -84,6 +84,7 @@ from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
+from perf_utils import build_deck_rollups
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -510,6 +511,8 @@ class DeckTree(QWidget):
 
     def refresh(self):
         sel_id = self._get_selected_id()
+        rollups = build_deck_rollups(self._data.get("decks", []))
+        self._due_counts = rollups["due_cards"]
         self.tree.clear()
         for deck in self._data.get("decks", []):
             self.tree.addTopLevelItem(self._make_item(deck))
@@ -517,29 +520,7 @@ class DeckTree(QWidget):
             self._select_by_id(sel_id)
 
     def _make_item(self, deck):
-        def _card_due(c):
-            boxes = c.get("boxes", [])
-            if not boxes:
-                return is_due_today(c)
-            seen = set()
-            for b in boxes:
-                gid = b.get("group_id", "")
-                if gid:
-                    if gid not in seen:
-                        seen.add(gid)
-                        if is_due_today(b): return True
-                else:
-                    if is_due_today(b): return True
-            return False
-
-        def _total_due(d):
-            """Recursively count due cards in this deck and all children."""
-            total = sum(1 for c in d.get("cards", []) if _card_due(c))
-            for child in d.get("children", []):
-                total += _total_due(child)
-            return total
-
-        due   = _total_due(deck)
+        due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         badge = f"🔴{due}" if due else "✅"
         text = f"  📂  {deck['name']}  {badge}" if getattr(self, '_theme', 'classic') == "classic" else ""
         item  = QTreeWidgetItem([text])

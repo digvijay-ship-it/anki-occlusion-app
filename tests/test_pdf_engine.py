@@ -122,6 +122,76 @@ class PdfEngineTests(unittest.TestCase):
         self.assertGreater(qpx.width(), 0)
         self.assertGreater(qpx.height(), 0)
 
+    def test_choose_pdf_render_zoom_uses_3x_below_40_pages(self):
+        self.assertEqual(pdf_engine.choose_pdf_render_zoom(1), 3.0)
+        self.assertEqual(pdf_engine.choose_pdf_render_zoom(39), 3.0)
+
+    def test_choose_pdf_render_zoom_uses_2x_at_or_above_40_pages(self):
+        self.assertEqual(pdf_engine.choose_pdf_render_zoom(40), 2.0)
+        self.assertEqual(pdf_engine.choose_pdf_render_zoom(250), 2.0)
+
+    def test_adapt_pdf_boxes_to_render_zoom_remaps_legacy_box_positions(self):
+        boxes = [{
+            "rect": [40.0, 60.0, 50.0, 30.0],
+            "label": "Mask 1",
+            "page_num": 0,
+        }]
+
+        adapted = pdf_engine.adapt_pdf_boxes_to_render_zoom(
+            str(self.pdf_path),
+            boxes,
+            source_zoom=1.5,
+            target_zoom=3.0,
+        )
+
+        self.assertEqual(boxes[0]["rect"], [40.0, 60.0, 50.0, 30.0])
+        self.assertAlmostEqual(adapted[0]["rect"][0], 80.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][1], 120.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][2], 100.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][3], 60.0, places=1)
+
+    def test_adapt_pdf_boxes_to_render_zoom_recomputes_page_for_later_masks(self):
+        src = pdf_engine.load_pdf_skeleton(str(self.pdf_path), zoom=1.5)
+        first_h = src.page_dims[0][1]
+        second_top = first_h + 12
+        boxes = [{
+            "rect": [30.0, float(second_top + 20.0), 40.0, 25.0],
+            "label": "Mask 2",
+            # stale / wrong saved page_num on purpose
+            "page_num": 0,
+        }]
+
+        adapted = pdf_engine.adapt_pdf_boxes_to_render_zoom(
+            str(self.pdf_path),
+            boxes,
+            source_zoom=1.5,
+            target_zoom=3.0,
+        )
+
+        dst = pdf_engine.load_pdf_skeleton(str(self.pdf_path), zoom=3.0)
+        expected_second_top = dst.page_dims[0][1] + 12
+
+        self.assertEqual(adapted[0]["page_num"], 1)
+        self.assertAlmostEqual(adapted[0]["rect"][0], 60.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][1], expected_second_top + 40.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][2], 80.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][3], 50.0, places=1)
+
+    def test_get_cached_pdf_page_set_reports_hit_and_miss_counts(self):
+        doc = pdf_engine.fitz.open(str(self.pdf_path))
+        px = pdf_engine.pdf_page_to_pixmap(doc[0], pdf_engine.fitz.Matrix(1.0, 1.0))
+        doc.close()
+        cache = cache_manager.LRUPageCache()
+        cache.put(str(self.pdf_path), 0, px, render_zoom=1.0)
+
+        with patch.object(pdf_engine, "PAGE_CACHE", cache):
+            state = pdf_engine.get_cached_pdf_page_set(str(self.pdf_path), total_pages=2)
+
+        self.assertEqual(state["total_pages"], 2)
+        self.assertEqual(state["cache_hit_count"], 1)
+        self.assertEqual(state["cache_miss_count"], 1)
+        self.assertIn(0, state["cached_pages_by_index"])
+
     def test_on_demand_thread_emits_rendered_pages_and_skips_out_of_range(self):
         emitted_pages = []
         completed = []

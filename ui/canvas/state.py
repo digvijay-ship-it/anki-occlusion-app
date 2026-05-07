@@ -340,6 +340,7 @@ class CanvasStateMixin:
         self._invalidate_mask_cache()
         self._resize_canvas()
         self.update()
+        self.zoom_changed.emit(self._scale)
 
     def _finalize_zoom(self):
         self._fast_zoom = False
@@ -545,9 +546,10 @@ class CanvasStateMixin:
             return 0
         # Convert screen scroll_y → image-space y
         img_y = scroll_y / max(self._scale, 0.01)
+        epsilon = 0.75
         page = 0
         for i, top in enumerate(self._page_tops):
-            if img_y >= top:
+            if img_y + epsilon >= top:
                 page = i
             else:
                 break
@@ -557,7 +559,7 @@ class CanvasStateMixin:
         """Scroll the given QScrollArea so that page `page` is at the top."""
         if not self._page_tops or page >= len(self._page_tops):
             return
-        y = int(self._page_tops[page] * self._scale)
+        y = math.ceil(self._page_tops[page] * self._scale)
         scroll_area.verticalScrollBar().setValue(y)
 
     def select_all(self):

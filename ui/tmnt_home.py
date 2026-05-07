@@ -59,6 +59,7 @@ from PyQt5.QtGui import (
 from sm2_engine import sm2_init, is_due_today, sm2_days_left
 from data_manager import find_deck_by_id, next_deck_id, store
 from pdf_engine import PDF_SUPPORT
+from perf_utils import build_deck_rollups
 from ui.deck_tree import DeckTree, _DeckTreeWidget
 from ui.deck_view import DeckView
 
@@ -966,12 +967,12 @@ class TMNTDeckEngine(DeckTree):
         self._theme = "tmnt"
 
     def _make_item(self, deck):
-        due = _count_due_in_deck(deck)
+        due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         item = QTreeWidgetItem([deck["name"].upper()])
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
-        item.setData(0, Qt.UserRole + 3, _deck_total_cards(deck))
+        item.setData(0, Qt.UserRole + 3, getattr(self, "_total_cards", {}).get(deck.get("_id"), 0))
         for child in deck.get("children", []):
             item.addChild(self._make_item(child))
         return item
@@ -992,6 +993,9 @@ class TMNTDeckEngine(DeckTree):
         for i in range(self.tree.topLevelItemCount()):
             _collect(self.tree.topLevelItem(i))
 
+        rollups = build_deck_rollups(self._data.get("decks", []))
+        self._due_counts = rollups["due_units"]
+        self._total_cards = rollups["total_cards"]
         self.tree.clear()
         for deck in self._data.get("decks", []):
             self.tree.addTopLevelItem(self._make_item(deck))
@@ -1283,9 +1287,11 @@ class _TMNTDeckList(QScrollArea):
         self._expanded_ids = set()
         self._buttons = []
         self._filter_text = ""
+        self._rollups = {"due_units": {}, "total_cards": {}}
 
     def load(self, decks, selected_id=None):
         self._all_decks = decks
+        self._rollups = build_deck_rollups(decks)
         if selected_id is not None:
             self._selected_id = selected_id
         self._render()
@@ -1348,6 +1354,8 @@ class _TMNTDeckList(QScrollArea):
             selected=selected,
             expanded=expanded,
             has_children=bool(children),
+            due_count=self._rollups["due_units"].get(deck_id, 0),
+            total_cards=self._rollups["total_cards"].get(deck_id, 0),
         )
         btn.clicked_deck.connect(self._on_item_clicked)
         self._layout.insertWidget(self._layout.count() - 1, btn)
@@ -1430,6 +1438,8 @@ class _TMNTDeckItem(QFrame):
         selected=False,
         expanded=False,
         has_children=False,
+        due_count=0,
+        total_cards=0,
         parent=None,
     ):
         super().__init__(parent)
@@ -1439,14 +1449,16 @@ class _TMNTDeckItem(QFrame):
         self._selected = selected
         self._expanded = expanded
         self._has_children = has_children
+        self._due_count = due_count
+        self._total_cards = total_cards
         self.setCursor(Qt.PointingHandCursor)
         self._build()
 
     def _build(self):
         self.setFixedHeight(_px(44, self._scale))
-        due = _count_due_in_deck(self._deck)
+        due = self._due_count
         name = self._deck.get("name", "?").upper()
-        total_cards = _deck_total_cards(self._deck)
+        total_cards = self._total_cards
         is_complete = due == 0 and total_cards > 0
         indent = self._depth * _px(16, self._scale)
 

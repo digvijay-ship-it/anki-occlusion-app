@@ -86,11 +86,10 @@ class ReviewSessionManager:
         # Always stamp the parent card with the latest review time
         card["last_reviewed_at"] = _now
 
-        # ── Immediate, unconditional save after every rating ──────────────────
-        # mark_dirty() then save_force() guarantees the rating survives a crash,
-        # power loss, or force-close between the review and the 60s autosave tick.
+        # Persist promptly, but keep the disk write off the UI thread so rapid
+        # rating keys do not stall the review flow.
         store.mark_dirty()
-        store.save_force()   # crash-safe atomic write — replaces save_if_dirty() here
+        store.save_soon()
 
         state = sm2_obj.get("sched_state", "review")
 
@@ -175,7 +174,7 @@ class ReviewSessionManager:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
 
         store.mark_dirty()
-        store.save_force()
+        store.save_soon()
 
         self.rs.canvas._show_toast(f"↩ Undo — back to card {self._idx + 1}")
         self.rs._load_item()
@@ -224,7 +223,7 @@ class ReviewSessionManager:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
 
         store.mark_dirty()
-        store.save_force()
+        store.save_soon()
 
         self.rs.canvas._show_toast(f"↪ Redo — card {self._idx + 1}")
         self.rs._load_item()

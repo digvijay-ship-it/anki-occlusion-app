@@ -10,6 +10,7 @@ class PdfWatcher(QObject):
         super().__init__(parent)
         self._watcher = QFileSystemWatcher(self)
         self._watched_pdf_path = None
+        self._ignored_once = {}
         self._reload_timer = QTimer(self)
         self._reload_timer.setSingleShot(True)
         self._reload_timer.setInterval(800)
@@ -31,10 +32,26 @@ class PdfWatcher(QObject):
             except Exception:
                 pass
             self._watched_pdf_path = None
+        self._ignored_once.clear()
         self._reload_timer.stop()
 
+    def ignore_next_change(self, path: str):
+        if not path:
+            return
+        key = os.path.abspath(path)
+        self._ignored_once[key] = self._ignored_once.get(key, 0) + 1
+
     def _on_pdf_file_changed(self, path: str):
-        if not path: return
+        if not path:
+            return
+        key = os.path.abspath(path)
+        if self._ignored_once.get(key, 0) > 0:
+            self._ignored_once[key] -= 1
+            if self._ignored_once[key] <= 0:
+                self._ignored_once.pop(key, None)
+            if path and os.path.exists(path) and path not in self._watcher.files():
+                self._watcher.addPath(path)
+            return
         self.file_changed.emit(path)
         self._reload_timer.start()
 

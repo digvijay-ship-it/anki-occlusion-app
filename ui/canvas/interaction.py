@@ -2,7 +2,6 @@ from PyQt5.QtWidgets import QWidget, QScrollArea, QApplication, QLabel
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QEvent
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QPixmap, QPainterPath, QTransform, QCursor
 
-import uuid
 import time
 import math
 import copy
@@ -361,7 +360,7 @@ class CanvasInteractionMixin:
         if self._mode == "review": e.ignore(); return
         if key == Qt.Key_Delete:                                self.delete_selected_boxes()
         elif mods & Qt.ControlModifier and key == Qt.Key_Z:    self.undo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_X:    self.redo()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Y:    self.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_A:
             if mods & Qt.AltModifier:
                 self.select_all_on_pdf()

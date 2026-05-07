@@ -35,6 +35,9 @@ class DirtyStore:
         self._lock        = threading.Lock()
         self._auto_thread = None
         self._stop_event  = threading.Event()
+        self._save_thread = None
+        self._save_thread_lock = threading.Lock()
+        self._last_async_save_ts = 0.0
 
     # ── Load / Get / Set ──────────────────────────────────────────────────────
 
@@ -93,6 +96,30 @@ class DirtyStore:
             snapshot = copy.deepcopy(self._data)
             self._dirty = False
         self._write_to_disk(snapshot)
+
+    def save_soon(self, min_interval: float = 3.0):
+        """
+        Schedule a background save without blocking the UI thread.
+        Rapid repeated calls are coalesced into a single write.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if not self._dirty:
+                return False
+            if (now - self._last_async_save_ts) < min_interval:
+                return False
+            self._last_async_save_ts = now
+
+        with self._save_thread_lock:
+            if self._save_thread and self._save_thread.is_alive():
+                return False
+            self._save_thread = threading.Thread(
+                target=self.save_if_dirty,
+                daemon=True,
+                name="DirtyStore-SaveSoon"
+            )
+            self._save_thread.start()
+            return True
 
     # ── Auto-save background thread ───────────────────────────────────────────
 

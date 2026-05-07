@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QWidget, QScrollArea, QApplication, QLabel
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QEvent
-from PyQt5.QtGui import QCursor, QPainter, QColor, QPen, QBrush, QPixmap, QPainterPath, QTransform, QFont
+from PyQt5.QtGui import QCursor, QPainter, QColor, QPen, QBrush, QPixmap, QPainterPath, QTransform, QFont, QImage
 
 import uuid
 import time

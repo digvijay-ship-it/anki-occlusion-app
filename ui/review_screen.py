@@ -72,11 +72,18 @@ from pdf_engine import (
     PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
     pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
     build_skeleton_placeholders,
-    invalidate_pdf_skeleton        # STEP 2 + 3
+    invalidate_pdf_skeleton,       # STEP 2 + 3
+    choose_pdf_render_zoom,
+    ensure_pdf_cache_profile,
+    adapt_pdf_boxes_to_render_zoom,
+    PDF_LEGACY_BOX_ZOOM,
+    get_cached_pdf_page_set,
 )
 
 from editor_ui import OcclusionCanvas,_ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
+from ui.pdf_annotation_dialog import PdfAnnotationDialog
+from ui.pdf_viewer_controller import PdfViewerController
 
 import fitz
 
@@ -84,6 +91,7 @@ from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
+from perf_utils import get_pdf_page_count
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -330,6 +338,9 @@ class ReviewScreen(QWidget):
         self._pdf_watcher.get_current_page_cb = lambda: self.canvas.get_current_page(self._canvas_scroll.verticalScrollBar().value())
         self._pdf_watcher.get_hint_cb = lambda: (self._external_pdf_path_hint, self._external_pdf_page_hint)
         self._watched_pdf_path = None
+        self._review_ui_page_zero = 0
+        self._review_nav_seq = 0
+        self._pdf_render_zoom = 2.0
         
         
         
@@ -441,6 +452,8 @@ class ReviewScreen(QWidget):
             self._cache_panel.show()
             self._cache_panel.refresh()
     def closeEvent(self, e):
+        from cache_manager import MASK_REGISTRY
+        MASK_REGISTRY.unregister(self.canvas)
         self._close_bg_prefetch_dialog()
         self._stop_skeleton_thread()
         if hasattr(self, '_pdf_loader_thread') and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
@@ -594,6 +607,21 @@ class ReviewScreen(QWidget):
             if hasattr(self.canvas, "clear_peek_target"):
                 self.canvas.clear_peek_target()
             boxes = card.get("boxes", [])
+            source_box_zoom = card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
+            if new_path and boxes:
+                boxes = adapt_pdf_boxes_to_render_zoom(
+                    new_path,
+                    boxes,
+                    source_box_zoom,
+                    self._pdf_render_zoom,
+                )
+                self._pdf_quality_debug(
+                    "same_pdf_box_remap",
+                    source_zoom=source_box_zoom,
+                    target_zoom=self._pdf_render_zoom,
+                    boxes=len(boxes),
+                    review_idx=self._idx,
+                )
             if isinstance(box_idx, tuple) and box_idx[0] == "group":
                 gid = box_idx[1]
                 display_boxes = [{**b, "revealed": False} for b in boxes]
@@ -616,6 +644,7 @@ class ReviewScreen(QWidget):
                     self.canvas._scale = self._user_zoom_scale
                     self.canvas._on_zoom()
                 self._center_on_target()
+                self._update_review_page_nav_ui()
             QTimer.singleShot(0, _same_pdf_zoom_center)
         else:
             self._reload_current_canvas()
@@ -698,12 +727,18 @@ class ReviewScreen(QWidget):
             self._debug_report("D key (manual)")
         elif mods & Qt.ControlModifier and key == Qt.Key_Z:
             self._review_undo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_X:
+        elif mods & Qt.ControlModifier and key == Qt.Key_Y:
             self._review_redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_E:
             self._open_current_pdf_in_reader()
+        elif key == Qt.Key_T and not mods and not e.isAutoRepeat():
+            self._open_annotation_beta()
         elif key == Qt.Key_E:
             self._edit_current_card()
+        elif key == Qt.Key_Left and not mods and not e.isAutoRepeat():
+            self._go_prev_review_page()
+        elif key == Qt.Key_Right and not mods and not e.isAutoRepeat():
+            self._go_next_review_page()
         # ── INK LAYER SHORTCUTS ──────────────────────────────────────────────
         elif (key == Qt.Key_Alt or key == Qt.Key_QuoteLeft) and not e.isAutoRepeat():
             self.canvas.ink_toggle()
@@ -871,12 +906,26 @@ class ReviewScreen(QWidget):
         b_zout   = _zb("−", "Zoom Out  Ctrl+−")
         b_zfit   = _zb("⊡", "Zoom Fit  Ctrl+0")
         b_center = _zb("⊕", "Center on active mask")
+        self._btn_prev_page = _zb("←", "Previous PDF page")
+        self._btn_next_page = _zb("→", "Next PDF page")
+        self._btn_prev_page.setFocusPolicy(Qt.NoFocus)
+        self._btn_next_page.setFocusPolicy(Qt.NoFocus)
+        self._page_jump = QLineEdit()
+        self._page_jump.setFixedWidth(46)
+        self._page_jump.setAlignment(Qt.AlignCenter)
+        self._page_jump.returnPressed.connect(self._jump_to_review_page_from_input)
+        self._page_total = QLabel("/ 0")
+        self._page_total.setStyleSheet(f"color:{subtext};background:transparent;")
         b_zin.clicked.connect(lambda: self.canvas.zoom_in())
         b_zout.clicked.connect(lambda: self.canvas.zoom_out())
         b_zfit.clicked.connect(self._zoom_fit)
         b_center.clicked.connect(self._center_on_target)
+        self._btn_prev_page.clicked.connect(self._go_prev_review_page)
+        self._btn_next_page.clicked.connect(self._go_next_review_page)
         hdr.addWidget(b_zin); hdr.addWidget(b_zout)
         hdr.addWidget(b_zfit); hdr.addWidget(b_center)
+        hdr.addWidget(self._btn_prev_page); hdr.addWidget(self._btn_next_page)
+        hdr.addWidget(self._page_jump); hdr.addWidget(self._page_total)
 
         def _hdr_btn(label, primary=False):
             b = QPushButton(label)
@@ -913,9 +962,12 @@ class ReviewScreen(QWidget):
 
         b_edit = _hdr_btn("✏ Edit Card", primary=True)
         b_edit.clicked.connect(self._edit_current_card)
+        b_annot = _hdr_btn("🖊 In-App Annotate (Beta)")
+        b_annot.clicked.connect(self._open_annotation_beta)
         b_cache = _hdr_btn("💾 Cache")
         b_cache.clicked.connect(self._toggle_cache_panel)
         hdr.addWidget(b_edit)
+        hdr.addWidget(b_annot)
         hdr.addWidget(b_cache)
 
         self._btn_mode = _hdr_btn("🟧 Hide All, Guess One")
@@ -981,6 +1033,18 @@ class ReviewScreen(QWidget):
             lambda *_: self._note_user_activity())
         self._canvas_scroll.verticalScrollBar().valueChanged.connect(
             lambda *_: self._note_user_activity())
+        self._canvas_scroll.verticalScrollBar().valueChanged.connect(
+            self._on_review_scroll_page_changed)
+        self._pdf_viewer = PdfViewerController(
+            canvas=self.canvas,
+            scroll_area=self._canvas_scroll,
+            page_input=self._page_jump,
+            page_total_label=self._page_total,
+            prev_button=self._btn_prev_page,
+            next_button=self._btn_next_page,
+            total_pages_getter=lambda: len(getattr(self.canvas, "_pages", []) or []),
+            debug_hook=self._review_nav_debug,
+        )
 
         # ── Queue panel (right sidebar) ───────────────────────────────────────
         queue_panel = QWidget()
@@ -1234,19 +1298,60 @@ class ReviewScreen(QWidget):
     def _zoom_fit(self):
         vp = self._canvas_scroll.viewport()
         if self.canvas._pages:
-            # PDF: fit by width only — user scrolls vertically through pages
-            w = self.canvas._total_w
-            if w < 1:
-                return
-            self.canvas._scale = vp.width() / w
-        else:
-            w, h = self.canvas._canvas_wh()
-            if w < 1 or h < 1:
-                return
-            scale_w = vp.width()  / w
-            scale_h = vp.height() / h
-            self.canvas._scale = min(scale_w, scale_h)
+            self._pdf_viewer.reset_fit()
+            return
+        w, h = self.canvas._canvas_wh()
+        if w < 1 or h < 1:
+            return
+        scale_w = vp.width()  / w
+        scale_h = vp.height() / h
+        self.canvas._scale = min(scale_w, scale_h)
         self.canvas._on_zoom()
+
+    def _update_review_page_nav_ui(self, *_):
+        self._pdf_viewer.refresh_page_ui()
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _review_nav_debug(self, action: str, **data):
+        return
+
+    def _pdf_quality_debug(self, action: str, **data):
+        parts = " ".join(f"{key}={value}" for key, value in data.items())
+        print(f"[DEBUG][pdf_quality][review] {action} {parts}".rstrip())
+
+    def _set_review_page_ui(self, current_zero: int):
+        self._pdf_viewer.set_page_ui(current_zero)
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _on_review_scroll_page_changed(self, value: int):
+        page_zero = self.canvas.get_current_page(value)
+        if page_zero != self._review_ui_page_zero:
+            self._review_nav_debug("scroll", value=value, page=page_zero + 1)
+        self._pdf_viewer.set_page_ui(page_zero)
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _go_to_review_page(self, page_zero: int):
+        self._pdf_viewer.go_to_page(page_zero)
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _finalize_review_page_jump(self, seq: int, target: int):
+        self._pdf_viewer._finalize_page_jump(seq, target)
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _nav_current_review_page(self) -> int:
+        return self._pdf_viewer.nav_current_page()
+
+    def _go_prev_review_page(self):
+        self._pdf_viewer.go_prev_page()
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _go_next_review_page(self):
+        self._pdf_viewer.go_next_page()
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+
+    def _jump_to_review_page_from_input(self):
+        self._pdf_viewer.jump_from_input()
+        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
         
     def _center_on_target(self):
         # Force a layout update so viewport dimensions are accurate
@@ -1467,7 +1572,6 @@ class ReviewScreen(QWidget):
             import subprocess
 
             if sys.platform == "win32":
-                # PDF-XChange Editor — page jump via /A page=N
                 xchange_paths = [
                     r"C:\Program Files\Tracker Software\PDF Editor\PDFXEdit.exe",
                     r"C:\Program Files (x86)\Tracker Software\PDF Editor\PDFXEdit.exe",
@@ -1480,7 +1584,6 @@ class ReviewScreen(QWidget):
                         self.canvas._show_toast(f"📄 Opened p.{current_page} in PDF-XChange")
                         return
 
-                # PDF-XChange not found at known paths — try via registry
                 try:
                     import winreg
                     key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
@@ -1494,7 +1597,6 @@ class ReviewScreen(QWidget):
                 except Exception:
                     pass
 
-                # Final fallback — open without page number
                 os.startfile(path)
                 self.canvas._show_toast("📄 Opened PDF (page jump not supported by this reader)")
 
@@ -1507,6 +1609,47 @@ class ReviewScreen(QWidget):
 
         except Exception as ex:
             QMessageBox.warning(self, "Could not open PDF", f"Could not open PDF:\n{ex}")
+
+    def _open_annotation_beta(self):
+        idx = self._idx
+        if idx >= len(self._items):
+            idx = len(self._items) - 1
+        if not (0 <= idx < len(self._items)):
+            return
+        card, _box_idx, _ = self._items[idx]
+        path = card.get("pdf_path", "")
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
+            return
+        page_zero = self.canvas.get_current_page(self._canvas_scroll.verticalScrollBar().value())
+        scroll_y = self._canvas_scroll.verticalScrollBar().value()
+        dialog = PdfAnnotationDialog(
+            path,
+            parent=self,
+            initial_page=page_zero,
+            initial_anchor_y=scroll_y,
+        )
+        dialog.exec_()
+        self._apply_annotation_beta_refresh(path, dialog._saved_pages, dialog.return_page)
+
+    def _apply_annotation_beta_refresh(self, path: str, changed_pages, return_page: int | None):
+        if not changed_pages:
+            if return_page is not None:
+                QTimer.singleShot(0, lambda pg=return_page: self.canvas.scroll_to_page(pg, self._canvas_scroll))
+            return
+        self._pdf_watcher.ignore_next_change(path)
+        self._pdf_quality_debug(
+            "annotation_refresh",
+            pages=[pn + 1 for pn in changed_pages],
+            zoom=self._pdf_render_zoom,
+        )
+        for page_num in sorted(set(int(pn) for pn in changed_pages)):
+            px = PAGE_CACHE.get(path, page_num)
+            if px is not None and not px.isNull():
+                self.canvas.inject_page(page_num, px)
+        self._update_review_page_nav_ui()
+        if return_page is not None:
+            QTimer.singleShot(0, lambda pg=return_page: self.canvas.scroll_to_page(pg, self._canvas_scroll))
 
     def _reload_current_canvas(self, view_idx=None):
         """
@@ -1569,18 +1712,18 @@ class ReviewScreen(QWidget):
                 return
 
             # ── 2b. Full cache hit — instant ──────────────────────────────────
-            try:
-                _doc        = fitz.open(path)
-                total_pages = len(_doc)
-                _doc.close()
-            except Exception:
-                total_pages = 0
+            total_pages = get_pdf_page_count(path)
+            self._pdf_render_zoom = choose_pdf_render_zoom(total_pages)
+            profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)
+            self._pdf_quality_debug(
+                "profile",
+                pages=total_pages,
+                zoom=self._pdf_render_zoom,
+                reset_cache=profile_reset,
+            )
 
-            clean_pages = {}
-            for i in range(total_pages):
-                pg = PAGE_CACHE.get(path, i)
-                if pg and not pg.isNull():
-                    clean_pages[i] = pg
+            cache_state = get_cached_pdf_page_set(path, total_pages)
+            clean_pages = cache_state["cached_pages_by_index"]
 
             if total_pages > 0 and len(clean_pages) == total_pages:
                 t_ms = (time.perf_counter() - t_start) * 1000
@@ -1664,7 +1807,7 @@ class ReviewScreen(QWidget):
 
     def _start_review_skeleton_thread(self, path):
         self._stop_skeleton_thread()
-        self._skeleton_thread = PdfSkeletonThread(path, zoom=1.5, parent=self)
+        self._skeleton_thread = PdfSkeletonThread(path, zoom=self._pdf_render_zoom, parent=self)
         self._skeleton_thread.done.connect(lambda skel, p=path: self._on_review_skeleton_ready(p, skel))
         self._skeleton_thread.error.connect(lambda err, p=path: self._on_review_skeleton_error(p, err))
         self._skeleton_thread.start()
@@ -1750,7 +1893,7 @@ class ReviewScreen(QWidget):
             self._start_background_fill(path, priority_pages, total_pages)
             return
 
-        self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=1.5, parent=self)
+        self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=self._pdf_render_zoom, parent=self)
         self._ondemand_path   = path
         self._ondemand_total  = total_pages
         self._priority_pages  = set(priority_pages)
@@ -1840,7 +1983,6 @@ class ReviewScreen(QWidget):
                 self._background_fill_state = (path, list(already_rendered), total_pages)
                 return
             if getattr(self, "_ondemand_kind", None) == "background":
-                print("[DEBUG][bg_fill] already running ? skipping duplicate start")
                 return
 
         # ?? FIX 1 guard: if card switched, abort ?????????????????????????????
@@ -1875,7 +2017,7 @@ class ReviewScreen(QWidget):
             return
 
         self._ondemand_thread = PdfOnDemandThread(
-            path, windowed, zoom=1.5, parent=self)
+            path, windowed, zoom=self._pdf_render_zoom, parent=self)
         self._ondemand_path   = path
         self._ondemand_total  = total_pages
         self._ondemand_kind   = "background"
@@ -1957,7 +2099,6 @@ class ReviewScreen(QWidget):
                 return
 
             self._pending_visible_request = (path, list(needed))
-            print(f"[DEBUG][on_visible] render thread busy - queued pages {[p+1 for p in needed]}")
             return
 
         self._start_visible_page_request(path, needed)
@@ -1965,7 +2106,7 @@ class ReviewScreen(QWidget):
     def _start_visible_page_request(self, path, needed):
         self._pending_visible_request = None
         self._ondemand_kind = "visible"
-        self._ondemand_thread = PdfOnDemandThread(path, needed, zoom=1.5, parent=self)
+        self._ondemand_thread = PdfOnDemandThread(path, needed, zoom=self._pdf_render_zoom, parent=self)
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(self._on_visible_pages_batch_done)
         self._ondemand_thread.start()
@@ -2017,9 +2158,9 @@ class ReviewScreen(QWidget):
 
         if getattr(self, "_ondemand_kind", None) == "background":
             self._bg_pending_inserts[page_num] = qpx
-            print(f"[DEBUG][page_ready] background page queued p.{page_num+1}")
             return
         self.canvas.inject_page(page_num, qpx)
+        self._update_review_page_nav_ui()
     def _stop_ondemand_thread(self):
         """
         Safely stop any running PdfOnDemandThread.
@@ -2094,6 +2235,7 @@ class ReviewScreen(QWidget):
             else:
                 self._zoom_fit()
             self._center_on_target()
+            self._update_review_page_nav_ui()
         QTimer.singleShot(0, _apply_zoom_and_center_img)
 
     def _apply_canvas_pages(self, card, box_idx, pages):
@@ -2116,6 +2258,20 @@ class ReviewScreen(QWidget):
 
         # 4. Setup boxes state (must come AFTER set_mode)
         boxes = card.get("boxes", [])
+        source_box_zoom = card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
+        if path and boxes:
+            boxes = adapt_pdf_boxes_to_render_zoom(
+                path,
+                boxes,
+                source_box_zoom,
+                self._pdf_render_zoom,
+            )
+            self._pdf_quality_debug(
+                "box_remap",
+                source_zoom=source_box_zoom,
+                target_zoom=self._pdf_render_zoom,
+                boxes=len(boxes),
+            )
         if isinstance(box_idx, tuple) and box_idx[0] == "group":
             gid = box_idx[1]
             display_boxes = [{**b, "revealed": False} for b in boxes]
@@ -2146,6 +2302,7 @@ class ReviewScreen(QWidget):
                     self._zoom_fit()
                 self._center_on_target()
             QTimer.singleShot(0, _apply_zoom_and_center)
+        QTimer.singleShot(0, self._update_review_page_nav_ui)
 
         # 7. Rebuild queue now that _page_tops is populated with real page positions
         QTimer.singleShot(50, self._rebuild_queue)
@@ -2160,7 +2317,15 @@ class ReviewScreen(QWidget):
             self._pdf_loader_thread.quit()
             self._pdf_loader_thread.wait(300)
 
-        self._pdf_loader_thread     = PdfLoaderThread(path, parent=self)
+        self._pdf_render_zoom       = choose_pdf_render_zoom(get_pdf_page_count(path))
+        profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)
+        self._pdf_quality_debug(
+            "fallback_loader",
+            pages=get_pdf_page_count(path),
+            zoom=self._pdf_render_zoom,
+            reset_cache=profile_reset,
+        )
+        self._pdf_loader_thread     = PdfLoaderThread(path, zoom=self._pdf_render_zoom, parent=self)
         self._pending_review_card   = card
         self._pending_review_box_idx = box_idx
 
@@ -2170,12 +2335,7 @@ class ReviewScreen(QWidget):
         self._pdf_loader_thread.start()
 
         # Show loading toast immediately
-        try:
-            _doc = fitz.open(path)
-            total = len(_doc)
-            _doc.close()
-        except Exception:
-            total = "?"
+        total = get_pdf_page_count(path) or "?"
         self.canvas._show_toast(f"⏳ Loading PDF... 0/{total} pages")
         self._pdf_total_pages = total
 

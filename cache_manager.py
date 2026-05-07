@@ -43,6 +43,7 @@ import os
 import hashlib
 import tempfile
 import time
+import json
 from collections import OrderedDict
 
 from PyQt5.QtWidgets import (
@@ -109,29 +110,102 @@ class LRUPageCache:
 
     def _disk_page_path(self, path: str, page_num: int) -> str:
         """Return the PNG file path for a given PDF + page in the disk cache."""
+        return self._disk_page_path_variant(path, page_num, None)
+
+    def _variant_name(self, variant: str | None) -> str:
+        return (variant or "default").strip() or "default"
+
+    def _variant_suffix(self, variant: str | None) -> str:
+        name = self._variant_name(variant)
+        if name == "default":
+            return ""
+        digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+        return f"__{digest}"
+
+    def _disk_cache_dir(self, path: str) -> str:
+        path = _canonical_pdf_path(path)
         h = hashlib.md5(path.encode("utf-8")).hexdigest()
         # Use COMBINED_CACHE._dir at call time (not import time) so the
         # user-chosen location is always respected.
         cache_dir = COMBINED_CACHE._dir if "COMBINED_CACHE" in globals() else os.path.join(
             os.path.expanduser("~"), ".cache", "anki_occlusion"
         )
-        page_dir = os.path.join(cache_dir, f"vcache_{h}")
-        return os.path.join(page_dir, f"page_{page_num:04d}.png")
+        return os.path.join(cache_dir, f"vcache_{h}")
 
-    def _save_to_disk(self, path: str, page_num: int, pixmap) -> None:
+    def _disk_meta_path(self, path: str) -> str:
+        return os.path.join(self._disk_cache_dir(path), "_render_meta.json")
+
+    def _load_render_meta(self, path: str) -> dict:
+        meta_path = self._disk_meta_path(path)
+        try:
+            if not os.path.exists(meta_path):
+                return {"variants": {}}
+            with open(meta_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                return {"variants": {}}
+            data.setdefault("variants", {})
+            return data
+        except Exception:
+            return {"variants": {}}
+
+    def _save_render_meta(self, path: str, data: dict) -> None:
+        try:
+            os.makedirs(self._disk_cache_dir(path), exist_ok=True)
+            meta_path = self._disk_meta_path(path)
+            tmp_path = f"{meta_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            os.replace(tmp_path, meta_path)
+        except Exception:
+            pass
+
+    def get_render_zoom(self, path: str, variant: str | None = None):
+        path = _canonical_pdf_path(path)
+        meta = self._load_render_meta(path)
+        entry = meta.get("variants", {}).get(self._variant_name(variant), {})
+        zoom = entry.get("render_zoom")
+        try:
+            return float(zoom)
+        except (TypeError, ValueError):
+            return None
+
+    def set_render_zoom(self, path: str, zoom: float, variant: str | None = None) -> None:
+        path = _canonical_pdf_path(path)
+        meta = self._load_render_meta(path)
+        meta.setdefault("variants", {})
+        meta["variants"][self._variant_name(variant)] = {
+            "render_zoom": float(zoom),
+            "updated_at": time.time(),
+        }
+        self._save_render_meta(path, meta)
+
+    def matches_render_zoom(self, path: str, zoom: float, variant: str | None = None, tolerance: float = 0.01) -> bool:
+        path = _canonical_pdf_path(path)
+        current = self.get_render_zoom(path, variant=variant)
+        if current is None:
+            return False
+        return abs(float(current) - float(zoom)) <= tolerance
+
+    def _disk_page_path_variant(self, path: str, page_num: int, variant: str | None) -> str:
+        page_dir = self._disk_cache_dir(path)
+        suffix = self._variant_suffix(variant)
+        return os.path.join(page_dir, f"page_{page_num:04d}{suffix}.png")
+
+    def _save_to_disk(self, path: str, page_num: int, pixmap, variant: str | None = None) -> None:
         """Save a QPixmap as PNG to disk. Silent on failure."""
         try:
-            fpath = self._disk_page_path(path, page_num)
+            fpath = self._disk_page_path_variant(path, page_num, variant)
             os.makedirs(os.path.dirname(fpath), exist_ok=True)
             if not os.path.exists(fpath):   # already saved → skip
                 pixmap.save(fpath, "PNG")
         except Exception as e:
             print(f"[cache][_save_to_disk] ⚠ failed to save p.{page_num+1} → {e}")
 
-    def _load_from_disk(self, path: str, page_num: int):
+    def _load_from_disk(self, path: str, page_num: int, variant: str | None = None):
         """Try to load a QPixmap from disk. Returns None on miss."""
         try:
-            fpath = self._disk_page_path(path, page_num)
+            fpath = self._disk_page_path_variant(path, page_num, variant)
             if not os.path.exists(fpath):
                 return None
             from PyQt5.QtGui import QPixmap
@@ -142,9 +216,10 @@ class LRUPageCache:
 
     # ── Main API ──────────────────────────────────────────────────────────────
 
-    def get(self, path: str, page_num: int):
+    def get(self, path: str, page_num: int, variant: str | None = None):
+        path = _canonical_pdf_path(path)
         self.expire_stale()
-        key = (path, page_num)
+        key = (path, page_num, self._variant_name(variant))
 
         # 1. RAM hit — fastest
         if key in self._cache:
@@ -153,55 +228,90 @@ class LRUPageCache:
             return self._cache[key]
 
         # 2. Disk hit — load PNG → put back in RAM
-        px = self._load_from_disk(path, page_num)
+        px = self._load_from_disk(path, page_num, variant=variant)
         if px is not None:
             self._cache[key] = px
             self._cache.move_to_end(key)
             self._touch(path)
-            print(f"[cache][disk_hit] ⚡ p.{page_num+1}")
             return px
 
         return None
 
-    def put(self, path: str, page_num: int, pixmap):
+    def put(self, path: str, page_num: int, pixmap, variant: str | None = None, render_zoom: float | None = None):
+        path = _canonical_pdf_path(path)
         self.expire_stale()
-        key = (path, page_num)
+        key = (path, page_num, self._variant_name(variant))
         self._cache[key] = pixmap
         self._cache.move_to_end(key)
         self._touch(path)
+        if render_zoom is not None:
+            self.set_render_zoom(path, render_zoom, variant=variant)
         # Save to disk asynchronously — silent, non-blocking
-        self._save_to_disk(path, page_num, pixmap)
+        self._save_to_disk(path, page_num, pixmap, variant=variant)
 
-    def invalidate_pdf(self, path: str):
+    def invalidate_pdf(self, path: str, variant: str | None = None):
+        path = _canonical_pdf_path(path)
         # RAM
-        keys = [k for k in self._cache if k[0] == path]
+        variant_name = self._variant_name(variant) if variant is not None else None
+        keys = [
+            k for k in self._cache
+            if k[0] == path and (variant_name is None or k[2] == variant_name)
+        ]
         for k in keys:
             del self._cache[k]
         # Disk
         try:
-            cache_dir = COMBINED_CACHE._dir if "COMBINED_CACHE" in globals() else ""
-            if cache_dir:
-                h = hashlib.md5(path.encode("utf-8")).hexdigest()
-                v_dir = os.path.join(cache_dir, f"vcache_{h}")
-                if os.path.exists(v_dir):
+            v_dir = self._disk_cache_dir(path)
+            if os.path.exists(v_dir):
+                if variant_name is None:
                     import shutil
                     shutil.rmtree(v_dir, ignore_errors=True)
+                else:
+                    suffix = self._variant_suffix(variant_name)
+                    for name in os.listdir(v_dir):
+                        if name.startswith("page_") and name.endswith(f"{suffix}.png"):
+                            try:
+                                os.unlink(os.path.join(v_dir, name))
+                            except Exception:
+                                pass
+                    meta = self._load_render_meta(path)
+                    meta.get("variants", {}).pop(variant_name, None)
+                    self._save_render_meta(path, meta)
         except Exception:
             pass
+
     def get_page_hash(self, path, page_num):
-        return self._hashes.get((path, page_num))
+        return self._hashes.get((_canonical_pdf_path(path), page_num))
 
     def set_page_hash(self, path, page_num, h):
-        self._hashes[(path, page_num)] = h
+        self._hashes[(_canonical_pdf_path(path), page_num)] = h
 
-    def invalidate_pages(self, path, page_nums):
+    def invalidate_pages(self, path, page_nums, variant: str | None = None):
+        path = _canonical_pdf_path(path)
+        variant_name = self._variant_name(variant) if variant is not None else None
         for pn in page_nums:
-            key = (path, pn)
-            self._cache.pop(key, None)
+            keys = [
+                key for key in list(self._cache.keys())
+                if key[0] == path and key[1] == pn and (variant_name is None or key[2] == variant_name)
+            ]
+            for key in keys:
+                self._cache.pop(key, None)
             try:
-                fpath = self._disk_page_path(path, pn)
-                if os.path.exists(fpath):
-                    os.unlink(fpath)
+                v_dir = self._disk_cache_dir(path)
+                if not os.path.exists(v_dir):
+                    continue
+                if variant_name is None:
+                    prefixes = [f"page_{pn:04d}"]
+                    for name in os.listdir(v_dir):
+                        if name.startswith(prefixes[0]) and name.endswith(".png"):
+                            try:
+                                os.unlink(os.path.join(v_dir, name))
+                            except Exception:
+                                pass
+                else:
+                    fpath = self._disk_page_path_variant(path, pn, variant_name)
+                    if os.path.exists(fpath):
+                        os.unlink(fpath)
             except Exception:
                 pass
             
@@ -233,14 +343,15 @@ class LRUPageCache:
 
     def ram_bytes_for_pdf(self, path: str) -> int:
         """Estimate RAM bytes for all cached pages of one PDF."""
+        path = _canonical_pdf_path(path)
         total = 0
-        for (p, _), px in self._cache.items():
+        for (p, _, _variant), px in self._cache.items():
             if p == path:
                 total += px.width() * px.height() * 4   # RGBA = 4 bytes/pixel
         return total
 
     def all_cached_pdfs(self) -> set:
-        return {p for (p, _) in self._cache}
+        return {p for (p, _, _variant) in self._cache}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -261,6 +372,7 @@ class DiskCombinedCache:
         self._rebuild_index()
 
     def _cache_path(self, pdf_path: str) -> str:
+        pdf_path = _canonical_pdf_path(pdf_path)
         h = hashlib.md5(pdf_path.encode("utf-8")).hexdigest()
         return os.path.join(self._dir, f"combined_{h}.png")
 
@@ -282,6 +394,7 @@ class DiskCombinedCache:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def get(self, pdf_path: str):
+        pdf_path = _canonical_pdf_path(pdf_path)
         cache_file = self._cache_path(pdf_path)
         meta_file  = cache_file + ".meta"
         if not os.path.exists(cache_file) or not os.path.exists(meta_file):
@@ -301,6 +414,7 @@ class DiskCombinedCache:
         return (px, total_pages)
 
     def put(self, pdf_path: str, combined, total_pages: int):
+        pdf_path = _canonical_pdf_path(pdf_path)
         from PyQt5.QtGui import QPixmap
         if combined.isNull():
             return
@@ -316,6 +430,7 @@ class DiskCombinedCache:
         self._index[pdf_path] = cache_file
 
     def invalidate(self, pdf_path: str):
+        pdf_path = _canonical_pdf_path(pdf_path)
         cache_file = self._cache_path(pdf_path)
         self._index.pop(pdf_path, None)
         self._delete_files(cache_file)
@@ -346,6 +461,7 @@ class DiskCombinedCache:
     def disk_bytes_for_pdf(self, pdf_path: str) -> int:
         """File: cache_manager.py -> Class: DiskCombinedCache"""
         import hashlib
+        pdf_path = _canonical_pdf_path(pdf_path)
         h = hashlib.md5(pdf_path.encode("utf-8")).hexdigest()
         # v20 virtual cache folder
         v_dir = os.path.join(self._dir, f"vcache_{h}")
@@ -397,6 +513,15 @@ def _short_name(path: str) -> str:
     return name if len(name) <= 36 else name[:33] + "..."
 
 
+def _canonical_pdf_path(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    except Exception:
+        return str(path)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MASK CACHE REGISTRY
 #  OcclusionCanvas instances register themselves here so we can query and
@@ -409,42 +534,71 @@ class _MaskRegistry:
     Canvas calls register(pdf_path, self) on load_pixmap / set_boxes.
     """
     def __init__(self):
-        self._map = {}   # pdf_path → set of OcclusionCanvas
+        import weakref
+        self._weakref = weakref
+        self._map = {}   # pdf_path -> WeakSet[OcclusionCanvas]
+
+    def _prune_empty(self):
+        for path, canvases in list(self._map.items()):
+            if not canvases:
+                del self._map[path]
 
     def register(self, pdf_path: str, canvas):
-        self._map.setdefault(pdf_path, set()).add(canvas)
+        if not pdf_path or canvas is None:
+            return
+        pdf_path = _canonical_pdf_path(pdf_path)
+        # A canvas can switch PDFs across editor/review sessions. Move it to the
+        # new bucket first so old pdf_path entries do not keep reporting/storing it.
+        self.unregister(canvas)
+        canvases = self._map.get(pdf_path)
+        if canvases is None:
+            canvases = self._weakref.WeakSet()
+            self._map[pdf_path] = canvases
+        canvases.add(canvas)
+        self._prune_empty()
 
     def unregister(self, canvas):
         for path, canvases in list(self._map.items()):
             canvases.discard(canvas)
-            if not canvases:
-                del self._map[path]
+        self._prune_empty()
 
     def mask_bytes_for_pdf(self, pdf_path: str) -> int:
+        pdf_path = _canonical_pdf_path(pdf_path)
         total = 0
-        for canvas in self._map.get(pdf_path, set()):
+        canvases = self._map.get(pdf_path)
+        if not canvases:
+            return 0
+        for canvas in list(canvases):
             try:
                 layer = getattr(canvas, "_mask_cache_layer", None)
                 if layer and not layer.isNull():
                     total += layer.width() * layer.height() * 4
             except RuntimeError:
                 pass
+        self._prune_empty()
         return total
 
     def invalidate_masks_for_pdf(self, pdf_path: str):
         """Force all canvases showing this PDF to rebuild their mask layer."""
-        dead = set()
-        for canvas in self._map.get(pdf_path, set()):
+        pdf_path = _canonical_pdf_path(pdf_path)
+        canvases = self._map.get(pdf_path)
+        if not canvases:
+            return
+        dead = []
+        for canvas in list(canvases):
             try:
                 canvas._mask_cache_layer = None
                 canvas._mask_cache_dirty = True
                 canvas.update()
             except RuntimeError:
-                dead.add(canvas)
+                dead.append(canvas)
         if dead:
-            self._map[pdf_path] -= dead
+            for canvas in dead:
+                canvases.discard(canvas)
+        self._prune_empty()
 
     def all_registered_pdfs(self) -> set:
+        self._prune_empty()
         return set(self._map.keys())
 
 
@@ -475,7 +629,7 @@ class _PixmapRegistry:
         self._entries = {}   # label → (weakref, attr_name, pdf_path)
 
     def register(self, label: str, obj, attr: str, pdf_path: str = ""):
-        self._entries[label] = (self._weakref.ref(obj), attr, pdf_path)
+        self._entries[label] = (self._weakref.ref(obj), attr, _canonical_pdf_path(pdf_path))
 
     def unregister(self, label: str):
         self._entries.pop(label, None)
@@ -486,6 +640,7 @@ class _PixmapRegistry:
         return px.width() * px.height() * 4
 
     def bytes_for_pdf(self, pdf_path: str) -> int:
+        pdf_path = _canonical_pdf_path(pdf_path)
         total = 0
         dead = []
         for label, (wref, attr, path) in self._entries.items():
@@ -520,6 +675,7 @@ class _PixmapRegistry:
 
     def breakdown(self, pdf_path: str) -> dict:
         """Returns {label: bytes} for a given pdf_path — for detailed display."""
+        pdf_path = _canonical_pdf_path(pdf_path)
         result = {}
         for label, (wref, attr, path) in self._entries.items():
             if path != pdf_path:

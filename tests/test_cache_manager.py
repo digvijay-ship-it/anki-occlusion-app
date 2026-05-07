@@ -32,6 +32,21 @@ class CacheHelperTests(unittest.TestCase):
 
 
 class LRUPageCacheTests(unittest.TestCase):
+    def setUp(self):
+        tmp_root = Path(__file__).resolve().parent / "_tmp"
+        tmp_root.mkdir(exist_ok=True)
+        self.tmpdir = tmp_root / f"page_cache_{uuid.uuid4().hex}"
+        self.tmpdir.mkdir()
+        self.addCleanup(self._cleanup_tmpdir)
+
+    def _cleanup_tmpdir(self):
+        for path in sorted(self.tmpdir.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                path.rmdir()
+        self.tmpdir.rmdir()
+
     def test_put_get_and_invalidate_pdf(self):
         cache = cache_manager.LRUPageCache()
         px = QPixmap(10, 20)
@@ -43,6 +58,47 @@ class LRUPageCacheTests(unittest.TestCase):
         self.assertEqual(cache.ram_bytes_for_pdf("doc1.pdf"), 10 * 20 * 4)
         cache.invalidate_pdf("doc1.pdf")
         self.assertIsNone(cache.get("doc1.pdf", 0))
+
+    def test_render_zoom_profile_is_saved_and_read_back(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache()
+
+            cache.set_render_zoom("doc.pdf", 3.0)
+
+            self.assertEqual(cache.get_render_zoom("doc.pdf"), 3.0)
+            self.assertTrue(cache.matches_render_zoom("doc.pdf", 3.0))
+            self.assertFalse(cache.matches_render_zoom("doc.pdf", 2.0))
+
+    def test_variant_pages_and_profiles_stay_separate(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache()
+            px_default = QPixmap(8, 8)
+            px_default.fill()
+            px_beta = QPixmap(9, 9)
+            px_beta.fill()
+
+            cache.put("doc.pdf", 0, px_default, render_zoom=2.0)
+            cache.put("doc.pdf", 0, px_beta, variant="beta", render_zoom=3.0)
+
+            self.assertEqual(cache.get("doc.pdf", 0).size(), px_default.size())
+            self.assertEqual(cache.get("doc.pdf", 0, variant="beta").size(), px_beta.size())
+            self.assertEqual(cache.get_render_zoom("doc.pdf"), 2.0)
+            self.assertEqual(cache.get_render_zoom("doc.pdf", variant="beta"), 3.0)
+            self.assertTrue(cache.matches_render_zoom("doc.pdf", 3.0, variant="beta"))
+            self.assertFalse(cache.matches_render_zoom("doc.pdf", 2.0, variant="beta"))
+
+    def test_pdf_paths_are_canonicalized_for_same_file(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache()
+            px = QPixmap(8, 8)
+            px.fill()
+            path_a = r"C:\Temp\Demo\file.pdf"
+            path_b = r"C:/Temp/Demo/file.pdf"
+
+            cache.put(path_a, 0, px, render_zoom=2.0)
+
+            self.assertIsNotNone(cache.get(path_b, 0))
+            self.assertEqual(len(cache.all_cached_pdfs()), 1)
 
 class DiskCombinedCacheTests(unittest.TestCase):
     def setUp(self):
@@ -117,9 +173,10 @@ class RegistryTests(unittest.TestCase):
         holder.preview = QPixmap(7, 8)
         holder.preview.fill()
         registry.register("preview", holder, "preview", "doc.pdf")
+        canonical = cache_manager._canonical_pdf_path("doc.pdf")
 
         self.assertEqual(registry.bytes_for_pdf("doc.pdf"), 7 * 8 * 4)
-        self.assertIn("doc.pdf", registry.all_registered_pdfs())
+        self.assertIn(canonical, registry.all_registered_pdfs())
         self.assertEqual(registry.breakdown("doc.pdf")["preview"], 7 * 8 * 4)
 
         del holder

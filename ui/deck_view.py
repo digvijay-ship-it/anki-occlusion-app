@@ -84,6 +84,7 @@ from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
+from perf_utils import card_has_due_today, get_pdf_page_count
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -586,16 +587,18 @@ class DeckView(QWidget):
     def load_deck(self, deck, data):
         self._data = data
         new_id     = deck.get("_id")
-        # [FIX] Same deck clicked again — don't clear card list or reset selection
-        if new_id == self._deck_id:
-            return
+        same_deck = (new_id == self._deck_id)
+        selected_row = self.card_list.currentRow() if same_deck else -1
         # [PERF FIX] Thumb cache sirf tab clear karo jab deck badla ho
-        self._thumb_cache.clear()
-        self._undo_stack.clear()
+        if not same_deck:
+            self._thumb_cache.clear()
+            self._undo_stack.clear()
         self._deck_id = new_id
         self.deck     = deck
         self.lbl_deck.setText(deck.get("name", "?"))
         self._refresh()
+        if same_deck and 0 <= selected_row < self.card_list.count():
+            self.card_list.setCurrentRow(selected_row)
 
     def _refresh(self):
         if self._deck_id is not None:
@@ -666,13 +669,7 @@ class DeckView(QWidget):
             # ── Pages count ───────────────────────────────────────────────────
             pdf_path = c.get("pdf_path", "")
             if pdf_path and os.path.exists(pdf_path) and PDF_SUPPORT:
-                try:
-                    import fitz as _fitz
-                    _doc = _fitz.open(pdf_path)
-                    n_pages = len(_doc)
-                    _doc.close()
-                except Exception:
-                    n_pages = 0
+                n_pages = get_pdf_page_count(pdf_path)
                 pages_str = f"📄{n_pages}p  "
             else:
                 pages_str = ""
@@ -820,23 +817,7 @@ class DeckView(QWidget):
             store.mark_dirty()  # 🔒 DirtyStore
 
     def _card_has_due_today(self, card):
-        boxes = card.get("boxes", [])
-        if not boxes:
-            sm2_init(card)
-            return is_due_today(card)
-        seen_gids = set()
-        for b in boxes:
-            sm2_init(b)
-            gid = b.get("group_id", "")
-            if gid:
-                if gid not in seen_gids:
-                    seen_gids.add(gid)
-                    if is_due_today(b):
-                        return True
-            else:
-                if is_due_today(b):
-                    return True
-        return False
+        return card_has_due_today(card)
 
     def _collect_due_by_pdf(self, deck):
         """Recursively collect due cards from deck+children, grouped by pdf_path.
