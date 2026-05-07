@@ -157,6 +157,33 @@ class PdfAnnotationServiceTests(unittest.TestCase):
         self.assertEqual(session.pending_deleted_xrefs, {42})
         self.assertEqual(session.dirty_pages, {0})
 
+    def test_delete_pdf_xchange_watermark_uses_redaction_flow(self):
+        session = PdfAnnotationSession.__new__(PdfAnnotationSession)
+        session.new_items = {}
+        session.existing_annots = {
+            0: [
+                {
+                    "id": "watermark:0:0:24",
+                    "kind": "watermark",
+                    "xref": 24,
+                    "rect": QRectF(0.0, 0.0, 74.0, 74.0),
+                    "pdf_rect": (0.0, 0.0, 24.67, 24.67),
+                    "page": 0,
+                }
+            ]
+        }
+        session.pending_deleted_xrefs = set()
+        session.pending_image_moves = {}
+        session.pending_watermark_deletes = {}
+        session.dirty_pages = set()
+        session._undo_stack = []
+        session._redo_stack = []
+        session._debug = lambda *args, **kwargs: None
+
+        self.assertTrue(session.delete_image_item(0, "watermark:0:0:24"))
+        self.assertIn("watermark:0:0:24", session.pending_watermark_deletes)
+        self.assertEqual(session.dirty_pages, {0})
+
 
 if __name__ == "__main__":
     unittest.main()
