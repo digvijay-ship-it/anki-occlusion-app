@@ -157,6 +157,25 @@ class PdfAnnotationServiceTests(unittest.TestCase):
         self.assertEqual(session.pending_deleted_xrefs, {42})
         self.assertEqual(session.dirty_pages, {0})
 
+    def test_add_new_item_accepts_pen_style_override(self):
+        session = PdfAnnotationSession.__new__(PdfAnnotationSession)
+        session.new_items = {}
+        session.dirty_pages = set()
+        session._undo_stack = []
+        session._redo_stack = []
+        session._debug = lambda *args, **kwargs: None
+
+        item = session.add_new_item(
+            0,
+            "pen",
+            [QPointF(1.0, 2.0), QPointF(3.0, 4.0)],
+            style_override={"color": "#00FFAA", "width": 5.4},
+        )
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item["color"], "#00FFAA")
+        self.assertEqual(item["width"], 5.4)
+
 
 if __name__ == "__main__":
     unittest.main()

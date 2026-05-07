@@ -1,9 +1,10 @@
 import os
 
-from PyQt5.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt, QTimer, QEvent, pyqtSignal
+from PyQt5.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt, QTimer, QEvent, pyqtSignal, QSettings
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
+    QColorDialog,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -441,12 +442,17 @@ class PdfAnnotationCanvas(QWidget):
 
 
 class PdfAnnotationDialog(QDialog):
+    PEN_DEFAULT_COLOR = "#FF4444"
+    PEN_DEFAULT_WIDTH = 2.8
+
     def __init__(self, pdf_path: str, parent=None, initial_page: int = 0, initial_anchor_y: float | None = None):
         super().__init__(parent)
         self.pdf_path = os.path.abspath(pdf_path)
         self.initial_page = max(0, int(initial_page or 0))
         self.initial_anchor_y = initial_anchor_y
         self.session = PdfAnnotationSession(self.pdf_path)
+        self._annotation_pen_color = self._load_annotation_pen_color()
+        self._annotation_pen_width = self._load_annotation_pen_width()
         self._current_page_zero = self.initial_page
         self._loader_thread = None
         self._saved_pages = []
@@ -483,6 +489,7 @@ class PdfAnnotationDialog(QDialog):
         self.btn_redo = QPushButton("↪ Redo")
         self.btn_pen = QPushButton("🖊 Pen")
         self.btn_highlight = QPushButton("🟨 Highlight")
+        self.btn_color = QPushButton("🎨 Ink")
         self.btn_erase = QPushButton("🧽 Erase")
         self.btn_image = QPushButton("🖼 Move Image")
         self.btn_pen.setCheckable(True)
@@ -506,7 +513,7 @@ class PdfAnnotationDialog(QDialog):
             f"{os.path.basename(self.pdf_path)}  •  {self.session.page_count} pages  •  {self.session.render_label}"
         )
 
-        for btn in (self.btn_undo, self.btn_redo, self.btn_pen, self.btn_highlight, self.btn_erase, self.btn_image):
+        for btn in (self.btn_undo, self.btn_redo, self.btn_pen, self.btn_highlight, self.btn_color, self.btn_erase, self.btn_image):
             bar_l.addWidget(btn)
         bar_l.addSpacing(8)
         bar_l.addWidget(self.btn_zoom_out)
@@ -545,6 +552,7 @@ class PdfAnnotationDialog(QDialog):
 
         self.btn_pen.clicked.connect(lambda: self._set_tool("pen"))
         self.btn_highlight.clicked.connect(lambda: self._set_tool("highlight"))
+        self.btn_color.clicked.connect(self._choose_pen_color)
         self.btn_erase.clicked.connect(lambda: self._set_tool("erase"))
         self.btn_image.clicked.connect(lambda: self._set_tool("image"))
         self.btn_zoom_out.clicked.connect(self._viewer.zoom_out)
@@ -575,9 +583,12 @@ class PdfAnnotationDialog(QDialog):
         QShortcut(Qt.Key_P, self, activated=lambda: self._set_tool("pen"))
         QShortcut(Qt.Key_E, self, activated=lambda: self._set_tool("erase"))
         QShortcut(Qt.Key_S, self, activated=lambda: self._set_tool("image"))
-        QShortcut(Qt.Key_Minus, self, activated=self._viewer.zoom_out)
-        QShortcut(Qt.Key_Equal, self, activated=self._viewer.zoom_in)
+        QShortcut(Qt.Key_Minus, self, activated=lambda: self._adjust_pen_width(-0.4))
+        QShortcut(Qt.Key_Equal, self, activated=lambda: self._adjust_pen_width(0.4))
+        QShortcut(Qt.Key_Plus, self, activated=lambda: self._adjust_pen_width(0.4))
+        QShortcut(Qt.Key_0, self, activated=self._reset_pen_style)
         QShortcut(Qt.Key_C, self, activated=self._viewer.reset_fit)
+        self._update_pen_controls()
 
     def exec_(self):
         self.showMaximized()
@@ -591,6 +602,89 @@ class PdfAnnotationDialog(QDialog):
         self.canvas.set_tool(tool)
         if tool == "image":
             self.lbl_status.setText("image move mode: drag pasted screenshot")
+        elif tool == "pen":
+            self.lbl_status.setText(
+                f"pen {self._annotation_pen_width:.1f}px {self._annotation_pen_color}"
+            )
+        self._update_pen_controls()
+
+    def _annotation_pen_style_override(self, tool: str) -> dict | None:
+        if tool != "pen":
+            return None
+        return {
+            "color": self._annotation_pen_color,
+            "width": float(self._annotation_pen_width),
+        }
+
+    def _load_annotation_pen_color(self) -> str:
+        raw = QSettings("AnkiOcclusion", "App").value("annotation/pen_color", self.PEN_DEFAULT_COLOR)
+        color = str(raw or self.PEN_DEFAULT_COLOR).strip() or self.PEN_DEFAULT_COLOR
+        if not QColor(color).isValid():
+            color = self.PEN_DEFAULT_COLOR
+        print(f"[DEBUG][pdf_annotation_dialog] load_pen_color color={color}")
+        return color
+
+    def _load_annotation_pen_width(self) -> float:
+        raw = QSettings("AnkiOcclusion", "App").value("annotation/pen_width", self.PEN_DEFAULT_WIDTH)
+        try:
+            width = float(raw)
+        except (TypeError, ValueError):
+            width = self.PEN_DEFAULT_WIDTH
+        width = max(0.8, min(24.0, width))
+        print(f"[DEBUG][pdf_annotation_dialog] load_pen_width width={width:.1f}")
+        return width
+
+    def _save_annotation_pen_settings(self):
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("annotation/pen_color", self._annotation_pen_color)
+        settings.setValue("annotation/pen_width", float(self._annotation_pen_width))
+        settings.sync()
+        self._debug(
+            "save_pen_settings",
+            color=self._annotation_pen_color,
+            width=f"{self._annotation_pen_width:.1f}",
+        )
+
+    def _update_pen_controls(self):
+        color = QColor(self._annotation_pen_color)
+        color_name = color.name() if color.isValid() else self.PEN_DEFAULT_COLOR
+        self.btn_color.setStyleSheet(
+            "QPushButton{"
+            f"background:{color_name};"
+            "color:#111111;border:1px solid #45475A;border-radius:6px;padding:6px 10px;font-weight:bold;}"
+            "QPushButton:hover{background:#FFFFFF;}"
+        )
+        self.btn_color.setText(f"🎨 {self._annotation_pen_width:.1f}px")
+        self.btn_color.setEnabled(getattr(self.canvas, "_tool", "pen") == "pen")
+
+    def _adjust_pen_width(self, delta: float):
+        if getattr(self.canvas, "_tool", "pen") != "pen":
+            self.lbl_status.setText("pen width shortcuts apply in pen tool")
+            return
+        self._annotation_pen_width = max(0.8, min(24.0, float(self._annotation_pen_width) + float(delta)))
+        self._save_annotation_pen_settings()
+        self._update_pen_controls()
+        self.lbl_status.setText(f"pen {self._annotation_pen_width:.1f}px {self._annotation_pen_color}")
+        self._debug("pen_width_adjust", delta=delta, width=f"{self._annotation_pen_width:.1f}")
+
+    def _reset_pen_style(self):
+        self._annotation_pen_color = self.PEN_DEFAULT_COLOR
+        self._annotation_pen_width = float(self.PEN_DEFAULT_WIDTH)
+        self._save_annotation_pen_settings()
+        self._update_pen_controls()
+        self.lbl_status.setText(f"pen reset {self._annotation_pen_width:.1f}px {self._annotation_pen_color}")
+        self._debug("pen_reset", color=self._annotation_pen_color, width=f"{self._annotation_pen_width:.1f}")
+
+    def _choose_pen_color(self):
+        chosen = QColorDialog.getColor(QColor(self._annotation_pen_color), self, "Choose Pen Color")
+        if not chosen.isValid():
+            self._debug("pen_color_cancel")
+            return
+        self._annotation_pen_color = chosen.name()
+        self._save_annotation_pen_settings()
+        self._update_pen_controls()
+        self.lbl_status.setText(f"pen {self._annotation_pen_width:.1f}px {self._annotation_pen_color}")
+        self._debug("pen_color_pick", color=self._annotation_pen_color)
 
     def _load_pages(self):
         cache_state = get_cached_pdf_page_set(self.pdf_path, self.session.page_count)
@@ -640,7 +734,12 @@ class PdfAnnotationDialog(QDialog):
         self.return_page = page_zero
 
     def _on_stroke_finished(self, page_num: int, tool: str, points):
-        item = self.session.add_new_item(page_num, tool, points)
+        item = self.session.add_new_item(
+            page_num,
+            tool,
+            points,
+            style_override=self._annotation_pen_style_override(tool),
+        )
         if item is not None:
             self.canvas.update()
             self.lbl_status.setText(f"unsaved changes p.{page_num + 1}")

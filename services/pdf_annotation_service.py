@@ -333,13 +333,15 @@ class PdfAnnotationSession:
             if not item.get("deleted", False)
         ]
 
-    def add_new_item(self, page_num: int, tool: str, points):
+    def add_new_item(self, page_num: int, tool: str, points, style_override: dict | None = None):
         if tool not in self.TOOL_STYLES:
             return None
         pts = _to_qpointf_list(points)
         if len(pts) < 2:
             return None
-        style = self.TOOL_STYLES[tool]
+        style = dict(self.TOOL_STYLES[tool])
+        if style_override:
+            style.update({k: v for k, v in dict(style_override).items() if v is not None})
         item = {
             "id": f"new:{uuid.uuid4().hex}",
             "page": int(page_num),
@@ -355,7 +357,14 @@ class PdfAnnotationSession:
         self.dirty_pages.add(int(page_num))
         self._undo_stack.append({"type": "add_new", "page": int(page_num), "item_id": item["id"]})
         self._redo_stack.clear()
-        self._debug("add_new", page=page_num + 1, tool=tool, points=len(pts))
+        self._debug(
+            "add_new",
+            page=page_num + 1,
+            tool=tool,
+            points=len(pts),
+            color=item["color"],
+            width=item["width"],
+        )
         return item
 
     def add_image_item(self, page_num: int, image_bytes: bytes, pixmap: QPixmap, rect: QRectF):

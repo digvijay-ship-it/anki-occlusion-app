@@ -110,6 +110,11 @@ class OcclusionCanvas(CanvasStateMixin, CanvasRendererMixin, CanvasInteractionMi
         self._ink_colors         = ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF"]
         self._ink_width          = 1.2
         self._ink_ctrl_last_time = 0.0
+        self._ink_pending_mask_idx = -1
+        self._ink_pending_press_ip = None
+        self._ink_pending_press_sp = None
+        self._ink_pending_press_time = 0.0
+        self._ink_input_kind = None
 
         # ── zoom ──────────────────────────────────────────────────────────────
         self._fast_zoom  = False

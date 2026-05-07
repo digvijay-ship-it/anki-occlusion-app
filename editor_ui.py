@@ -422,8 +422,6 @@ class _ZoomableScrollArea(QScrollArea):
     def keyReleaseEvent(self, e): super().keyReleaseEvent(e)
 
     def _should_pan(self, e):
-        if self._canvas and getattr(self._canvas,'_mode','') == "review":
-            if e.button() == Qt.LeftButton: return True
         if e.button() == Qt.MiddleButton: return True
         if e.button() == Qt.LeftButton and self.pan_mode: return True
         return False

@@ -366,8 +366,9 @@ class CanvasStateMixin:
     def set_boxes_with_state(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=b.get("revealed", False))
                        for b in boxes]
-        self._ink_strokes.clear()
-        self._ink_current.clear()
+        if self._mode != "review":
+            self._ink_strokes.clear()
+            self._ink_current.clear()
         self._invalidate_mask_cache()
         self.update()
 
@@ -433,7 +434,8 @@ class CanvasStateMixin:
             b["revealed"] = False
         if mode == "review":
             self.setFocusPolicy(Qt.NoFocus)
-            self.setCursor(QCursor(Qt.PointingHandCursor))
+            self.setCursor(QCursor(Qt.CrossCursor if getattr(self, "_ink_active", False)
+                                   else Qt.PointingHandCursor))
         else:
             self.setFocusPolicy(Qt.StrongFocus)
             self.setCursor(QCursor(Qt.CrossCursor))
@@ -718,21 +720,44 @@ class CanvasStateMixin:
                 **{k: b[k] for k in ("sm2_interval","sm2_repetitions","sm2_ease",
                                      "sm2_due","sm2_last_quality") if k in b}}
 
+    def _qt_object_alive(self, obj) -> bool:
+        if obj is None:
+            return False
+        try:
+            obj.objectName()
+            return True
+        except RuntimeError:
+            return False
+
+    def _hide_toast(self):
+        label = getattr(self, "_toast_label", None)
+        if not self._qt_object_alive(label):
+            self._toast_label = None
+            return
+        label.hide()
+
     def _show_toast(self, msg: str):
-        if not hasattr(self, "_toast_label"):
+        if not self._qt_object_alive(self):
+            return
+        if not self._qt_object_alive(getattr(self, "_toast_label", None)):
             self._toast_label = QLabel(self)
             self._toast_label.setStyleSheet(
                 "QLabel{background:rgba(30,30,46,210);color:#BD93F9;"
                 "border:1px solid #BD93F9;border-radius:6px;"
                 "padding:4px 12px;font-size:12px;font-weight:bold;}")
             self._toast_label.hide()
-        if not hasattr(self, "_toast_timer"):
+        if not self._qt_object_alive(getattr(self, "_toast_timer", None)):
             self._toast_timer = QTimer(self)
             self._toast_timer.setSingleShot(True)
-            self._toast_timer.timeout.connect(self._toast_label.hide)
-        self._toast_label.setText(msg)
-        self._toast_label.adjustSize()
-        self._toast_label.move((self.width()-self._toast_label.width())//2, 18)
-        self._toast_label.show(); self._toast_label.raise_()
-        self._toast_timer.start(1800)
+            self._toast_timer.timeout.connect(self._hide_toast)
+        try:
+            self._toast_label.setText(msg)
+            self._toast_label.adjustSize()
+            self._toast_label.move((self.width()-self._toast_label.width())//2, 18)
+            self._toast_label.show(); self._toast_label.raise_()
+            self._toast_timer.start(1800)
+        except RuntimeError:
+            # Background PDF work can finish while the canvas is closing.
+            self._toast_label = None
+            self._toast_timer = None
 

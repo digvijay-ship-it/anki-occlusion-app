@@ -106,7 +106,7 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
     QHeaderView
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
+from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl, QSettings
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
     QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices
@@ -369,6 +369,7 @@ class ReviewScreen(QWidget):
         self._peek_origin_idx = None
         # ── User zoom tracking — None = no manual zoom set yet ────────────────
         self._user_zoom_scale = None
+        self._review_ink_width = self._load_review_ink_width()
         # ── O(1) box tracking ─────────────────────────────────────────────────
         # All box_ids/group_ids that entered the queue (ever seen this session)
         self._queued_ids     = set()
@@ -649,12 +650,11 @@ class ReviewScreen(QWidget):
         else:
             self._reload_current_canvas()
 
-        # Temporary strokes are per-card, but the user's pen/mouse mode is a
-        # deliberate choice and should survive card changes.
-        self.canvas.ink_clear()
-        if getattr(self.canvas, "_ink_active", False):
-            self.canvas.setCursor(QCursor(Qt.CrossCursor))
-        self._update_ink_hint()
+        print(
+            f"[DEBUG][review_pen] preserve_on_card_switch "
+            f"active={getattr(self.canvas, '_ink_active', False)} "
+            f"strokes={len(getattr(self.canvas, '_ink_strokes', []))}"
+        )
 
         self.canvas.setFocus() # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
         self._rating_frame.hide()   # ← rating frame explicitly hide karo
@@ -730,33 +730,24 @@ class ReviewScreen(QWidget):
             self._open_current_pdf_in_reader()
         elif key == Qt.Key_T and not mods and not e.isAutoRepeat():
             self._open_annotation_beta()
-        elif key == Qt.Key_E:
+        elif key == Qt.Key_E and not mods:
             self._edit_current_card()
         elif key == Qt.Key_Left and not mods and not e.isAutoRepeat():
             self._go_prev_review_page()
         elif key == Qt.Key_Right and not mods and not e.isAutoRepeat():
             self._go_next_review_page()
-        # ── INK LAYER SHORTCUTS ──────────────────────────────────────────────
-        elif key == Qt.Key_P and not mods and not e.isAutoRepeat():
-            self.canvas.ink_set_active(True)
-            self.canvas._show_toast(f"Pen ON  size {self.canvas._ink_width:.1f}")
-            self._update_ink_hint()
-        elif key == Qt.Key_E and mods & Qt.ShiftModifier and not e.isAutoRepeat():
-            self.canvas.ink_set_active(False)
-            self.canvas._show_toast("Pen OFF")
-            self._update_ink_hint()
-        elif key in (Qt.Key_Equal, Qt.Key_Plus) and not (mods & Qt.ControlModifier) and getattr(self.canvas, "_ink_active", False):
-            self.canvas.ink_adjust_width(0.4)
-            self._update_ink_hint()
-        elif key == Qt.Key_Minus and not (mods & Qt.ControlModifier) and getattr(self.canvas, "_ink_active", False):
-            self.canvas.ink_adjust_width(-0.4)
-            self._update_ink_hint()
         elif (key == Qt.Key_Alt or key == Qt.Key_QuoteLeft) and not e.isAutoRepeat():
             self.canvas.ink_toggle()
             active = self.canvas._ink_active
             color  = self.canvas._ink_colors[self.canvas._ink_color_idx]
             self.canvas._show_toast(f"✏ Pen {'ON' if active else 'OFF'}  {color if active else ''}")
             self._update_ink_hint()
+        elif key in (Qt.Key_Equal, Qt.Key_Plus) and not (mods & Qt.ControlModifier) and getattr(self.canvas, "_ink_active", False):
+            self.canvas.ink_adjust_width(0.4)
+            self._capture_review_ink_width("width_plus")
+        elif key == Qt.Key_Minus and not (mods & Qt.ControlModifier) and getattr(self.canvas, "_ink_active", False):
+            self.canvas.ink_adjust_width(-0.4)
+            self._capture_review_ink_width("width_minus")
         elif key == Qt.Key_X and not e.isAutoRepeat():
             if self.canvas._ink_active:
                 self.canvas.ink_cycle_color()
@@ -1036,6 +1027,7 @@ class ReviewScreen(QWidget):
             f"QScrollBar::handle:horizontal{{background:{border};border-radius:4px;}}")
         self.canvas = OcclusionCanvas()
         self.canvas.set_mode("review")
+        self.canvas._ink_width = float(self._review_ink_width)
         self.canvas.right_clicked.connect(self._toggle_chrome)
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
@@ -1170,10 +1162,10 @@ class ReviewScreen(QWidget):
 
         hint_text = (
             "SPACE=REVEAL  •  1/2/3/4=RATE  •  C=FIT  •  D=DEBUG  •  "
-            "CTRL+SCROLL=ZOOM  •  H=PAN  •  ALT=PEN  •  X=COLOR  •  DEL=CLEAR  •  F11"
+            "CTRL+SCROLL=ZOOM  •  H=PAN  •  ALT/P=PEN  •  X=COLOR  •  +/-=SIZE  •  DEL=CLEAR  •  F11"
             if dojo else
             "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  "
-            "Ctrl+Scroll = zoom  •  H = pan  •  Alt = pen  •  X = color  •  Del = clear ink  •  F11"
+            "Ctrl+Scroll = zoom  •  H = pan  •  Alt/P = pen  •  X = color  •  +/- = size  •  Del = clear pen  •  F11"
         )
         hint = QLabel(hint_text)
         hint.setAlignment(Qt.AlignCenter)
@@ -1291,8 +1283,37 @@ class ReviewScreen(QWidget):
         self._mid_row_widget = self._reveal_bar
 
     def _update_ink_hint(self):
-        """Flash a small ink-status label near the hint bar."""
-        pass   # toast in canvas handles display; placeholder for future status bar
+        """Canvas toasts handle the visible pen status in review mode."""
+        pass
+
+    def _load_review_ink_width(self):
+        raw = QSettings("AnkiOcclusion", "App").value("review/ink_width", 1.2)
+        try:
+            width = float(raw)
+        except (TypeError, ValueError):
+            width = 1.2
+        width = max(0.4, min(12.0, width))
+        print(f"[DEBUG][review_pen] load width={width:.1f}")
+        return width
+
+    def _save_review_ink_width(self):
+        width = max(0.4, min(12.0, float(self._review_ink_width)))
+        self._review_ink_width = width
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("review/ink_width", width)
+        settings.sync()
+        print(f"[DEBUG][review_pen] save width={width:.1f}")
+
+    def _capture_review_ink_width(self, reason=""):
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+        self._review_ink_width = float(getattr(canvas, "_ink_width", self._review_ink_width))
+        self._save_review_ink_width()
+        print(
+            f"[DEBUG][review_pen] capture_width reason={reason} "
+            f"width={self._review_ink_width:.1f}"
+        )
 
     def _toggle_review_mode(self):
         if self._btn_mode.isChecked():
@@ -1934,7 +1955,29 @@ class ReviewScreen(QWidget):
     _BG_FILL_BATCH = 2
     _BG_FILL_DELAY_MS = 250
 
+    def _canvas_alive(self):
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return False
+        try:
+            canvas.objectName()
+            return True
+        except RuntimeError:
+            return False
+
+    def _safe_canvas_toast(self, msg):
+        if not self._canvas_alive():
+            print(f"[DEBUG][review_bg] toast_skip reason=canvas_deleted msg={msg}")
+            return
+        try:
+            self.canvas._show_toast(msg)
+        except RuntimeError as exc:
+            print(f"[DEBUG][review_bg] toast_skip reason=qt_deleted error={exc}")
+
     def _queue_background_ready(self, path, rendered):
+        if path != getattr(self, "_canvas_pdf_path", None):
+            print(f"[DEBUG][review_bg] stale_ready_skip path={path}")
+            return
         ready = [pn for pn in rendered if PAGE_CACHE.get(path, pn) is not None]
         if not ready:
             return
@@ -1946,7 +1989,7 @@ class ReviewScreen(QWidget):
         total = self._bg_prefetch_total_pages or max(self._bg_prefetch_rendered_count, 1)
         self._bg_prefetch_cached_count = min(self._bg_prefetch_cached_count + len(ready), total)
         msg = "BG ready: " + ", ".join(f"p.{pn+1}" for pn in sorted(ready))
-        self.canvas._show_toast(msg)
+        self._safe_canvas_toast(msg)
         self._note_user_activity()
 
     def _flush_pending_background_inserts(self):
@@ -1967,14 +2010,24 @@ class ReviewScreen(QWidget):
         if self._ondemand_thread and self._ondemand_thread.isRunning() and getattr(self, "_ondemand_kind", None) == "background":
             # let the background render continue, but flush only on idle timeout
             return
+        if not self._canvas_alive():
+            print("[DEBUG][review_bg] insert_skip reason=canvas_deleted")
+            self._bg_pending_inserts.clear()
+            return
         ready_items = sorted(self._bg_pending_inserts.items())
         self._bg_pending_inserts.clear()
         for pn, pg in ready_items:
             self.canvas.inject_page(pn, pg)
         if ready_items:
-            self.canvas._show_toast("Inserted " + ", ".join(f"p.{pn+1}" for pn, _ in ready_items))
+            self._safe_canvas_toast("Inserted " + ", ".join(f"p.{pn+1}" for pn, _ in ready_items))
 
     def _start_background_fill(self, path, already_rendered, total_pages):
+        if path != getattr(self, "_canvas_pdf_path", None):
+            print(f"[DEBUG][review_bg] start_skip reason=stale_path path={path}")
+            return
+        if not self._canvas_alive():
+            print("[DEBUG][review_bg] start_skip reason=canvas_deleted")
+            return
         cached_pages = sum(
             1 for page_num in range(total_pages)
             if PAGE_CACHE.get(path, page_num) is not None
@@ -1985,7 +2038,7 @@ class ReviewScreen(QWidget):
         self._bg_prefetch_rendered_count = len(already_rendered)
         self._show_bg_prefetch_dialog(path, total_pages)
         self._sync_bg_prefetch_dialog(path, total_pages, done=False)
-        self.canvas._show_toast(f"Ready: {cached_pages}/{total_pages} pages cached")
+        self._safe_canvas_toast(f"Ready: {cached_pages}/{total_pages} pages cached")
 
         # Defer if a visible-page request is in flight. Scroll responsiveness
         # wins over background cache completion.
@@ -2007,7 +2060,7 @@ class ReviewScreen(QWidget):
         remaining  = sorted(all_pages - skip)
 
         if not remaining:
-            self.canvas._show_toast(f"PDF ready: {total_pages} pages")
+            self._safe_canvas_toast(f"PDF ready: {total_pages} pages")
             self._background_fill_state = None
             self._ondemand_kind = None
             self._bg_accept_mode = True
@@ -2023,6 +2076,9 @@ class ReviewScreen(QWidget):
         self._background_fill_state = (path, next_rendered, total_pages)
 
         # Verify canvas is still intact after stop (regression check for the wipe bug)
+        if not self._canvas_alive():
+            print("[DEBUG][review_bg] start_skip reason=canvas_deleted")
+            return
         canvas_pages_after_stop = len(self.canvas._pages)
         if canvas_pages_after_stop == 0:
             return
@@ -2041,17 +2097,17 @@ class ReviewScreen(QWidget):
         self._ondemand_thread.start()
 
     def _on_background_fill_batch_done(self, rendered, path, already_rendered, total_pages):
+        if path != getattr(self, "_canvas_pdf_path", None):
+            print(f"[DEBUG][review_bg] batch_skip reason=stale_path path={path}")
+            self._background_fill_state = None
+            self._ondemand_kind = None
+            return
         combined = sorted(set(already_rendered) | set(rendered))
         self._queue_background_ready(path, rendered)
         remaining = [
             pn for pn in range(total_pages)
             if PAGE_CACHE.get(path, pn) is None and pn not in combined
         ]
-
-        if path != getattr(self, "_canvas_pdf_path", None):
-            self._background_fill_state = None
-            self._ondemand_kind = None
-            return
 
         if remaining:
             self._background_fill_state = (path, combined, total_pages)
@@ -2064,7 +2120,7 @@ class ReviewScreen(QWidget):
         self._ondemand_kind = None
         self._bg_accept_mode = True
         self._sync_bg_prefetch_dialog(path, total_pages, done=True)
-        self.canvas._show_toast(f"PDF ready: {total_pages} pages")
+        self._safe_canvas_toast(f"PDF ready: {total_pages} pages")
 
     def _wire_scroll_ondemand(self, path, total_pages):
         """
