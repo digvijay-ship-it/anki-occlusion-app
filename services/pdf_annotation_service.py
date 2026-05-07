@@ -1,6 +1,10 @@
 import json
+import gc
+import json
 import math
 import os
+import stat
+import time
 import uuid
 from collections import Counter
 
@@ -12,6 +16,7 @@ from pdf_engine import (
     PAGE_CACHE,
     choose_pdf_render_zoom,
     ensure_pdf_cache_profile,
+    load_pdf_skeleton,
     pdf_page_to_pixmap,
     render_pdf_pages,
     update_page_hashes,
@@ -73,6 +78,27 @@ def _parse_saved_points(annot) -> list[QPointF]:
         return []
 
 
+def _replace_file_with_retry(src_path: str, dst_path: str, attempts: int = 12, delay: float = 0.08):
+    last_error = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            os.replace(src_path, dst_path)
+            return
+        except PermissionError as ex:
+            last_error = ex
+            gc.collect()
+            time.sleep(delay)
+    raise PermissionError(
+        f"Windows still has a file handle open after {attempts} replace attempts."
+    ) from last_error
+
+
+def _open_pdf_from_memory(path: str):
+    with open(path, "rb") as f:
+        data = f.read()
+    return fitz.open(stream=data, filetype="pdf")
+
+
 def _page_rect_tuple(rect):
     return (float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1))
 
@@ -120,7 +146,7 @@ class PdfAnnotationSession:
 
     def __init__(self, pdf_path: str):
         self.pdf_path = os.path.abspath(pdf_path)
-        self.doc = fitz.open(self.pdf_path)
+        self.doc = _open_pdf_from_memory(self.pdf_path)
         if self.doc.is_encrypted:
             self.doc.close()
             raise RuntimeError("PDF is password protected.")
@@ -129,6 +155,12 @@ class PdfAnnotationSession:
         self.render_zoom = choose_pdf_render_zoom(self.page_count)
         self.render_label = "3x" if self.render_zoom >= 3.0 else "2x"
         self.cache_reset = ensure_pdf_cache_profile(self.pdf_path, self.render_zoom)
+        self.skeleton = load_pdf_skeleton(self.pdf_path, zoom=self.render_zoom)
+        self.page_pixel_dims = list(getattr(self.skeleton, "page_dims", []) or [])
+        self.page_pdf_dims = [
+            (float(self.doc.load_page(i).rect.width), float(self.doc.load_page(i).rect.height))
+            for i in range(self.page_count)
+        ]
         self.dirty_pages = set()
         self.pending_deleted_xrefs = set()
         self.existing_annots = {}
@@ -145,6 +177,46 @@ class PdfAnnotationSession:
     def _debug(self, action: str, **data):
         parts = " ".join(f"{key}={value}" for key, value in data.items())
         print(f"[DEBUG][pdf_annotation] {action} {parts}".rstrip())
+
+    def _page_scale_factors(self, page_num: int):
+        if not (0 <= int(page_num) < self.page_count):
+            return 1.0, 1.0
+        px_w, px_h = (self.page_pixel_dims[page_num] if page_num < len(self.page_pixel_dims) else (0, 0))
+        pdf_w, pdf_h = self.page_pdf_dims[page_num]
+        sx = float(px_w) / max(float(pdf_w), 1.0)
+        sy = float(px_h) / max(float(pdf_h), 1.0)
+        return sx or 1.0, sy or 1.0
+
+    def _canvas_to_pdf_points(self, page_num: int, points):
+        sx, sy = self._page_scale_factors(page_num)
+        out = []
+        for pt in _to_qpointf_list(points):
+            out.append((float(pt.x()) / sx, float(pt.y()) / sy))
+        return out
+
+    def _pdf_to_canvas_points(self, page_num: int, points):
+        sx, sy = self._page_scale_factors(page_num)
+        out = []
+        for pt in _to_qpointf_list(points):
+            out.append(QPointF(float(pt.x()) * sx, float(pt.y()) * sy))
+        return out
+
+    def _pdf_rect_to_canvas(self, page_num: int, rect_tuple):
+        sx, sy = self._page_scale_factors(page_num)
+        return (
+            float(rect_tuple[0]) * sx,
+            float(rect_tuple[1]) * sy,
+            float(rect_tuple[2]) * sx,
+            float(rect_tuple[3]) * sy,
+        )
+
+    def _canvas_width_to_pdf(self, page_num: int, width: float) -> float:
+        sx, sy = self._page_scale_factors(page_num)
+        return float(width) / max((sx + sy) / 2.0, 0.01)
+
+    def _pdf_width_to_canvas(self, page_num: int, width: float) -> float:
+        sx, sy = self._page_scale_factors(page_num)
+        return float(width) * ((sx + sy) / 2.0)
 
     def _load_existing_annotations(self, page_nums=None):
         if page_nums is None:
@@ -180,7 +252,7 @@ class PdfAnnotationSession:
         except Exception:
             subtype = "unknown"
 
-        rect = _page_rect_tuple(annot.rect)
+        rect = self._pdf_rect_to_canvas(page_num, _page_rect_tuple(annot.rect))
         width = 2.0
         try:
             border = annot.border or {}
@@ -190,11 +262,14 @@ class PdfAnnotationSession:
 
         vertices = []
         try:
-            vertices = _flatten_annot_vertices(getattr(annot, "vertices", None))
+            vertices = self._pdf_to_canvas_points(
+                page_num,
+                _flatten_annot_vertices(getattr(annot, "vertices", None)),
+            )
         except Exception:
             vertices = []
         if not vertices:
-            vertices = _parse_saved_points(annot)
+            vertices = self._pdf_to_canvas_points(page_num, _parse_saved_points(annot))
 
         item = {
             "id": f"existing:{annot.xref}",
@@ -204,7 +279,7 @@ class PdfAnnotationSession:
             "xref": int(annot.xref),
             "rect": rect,
             "points": vertices,
-            "width": width,
+            "width": self._pdf_width_to_canvas(page_num, width),
         }
         return item
 
@@ -398,7 +473,7 @@ class PdfAnnotationSession:
 
         temp_doc = None
         try:
-            temp_doc = fitz.open(self.pdf_path)
+            temp_doc = _open_pdf_from_memory(self.pdf_path)
             page = temp_doc.load_page(page_num)
             if page_deletes:
                 for annot in list(page.annots() or []):
@@ -418,6 +493,8 @@ class PdfAnnotationSession:
             return []
 
         try:
+            page = None
+            annot = None
             for page_num, items in self.existing_annots.items():
                 page = self.doc.load_page(page_num)
                 for annot in list(page.annots() or []):
@@ -431,14 +508,50 @@ class PdfAnnotationSession:
                         continue
                     self._commit_new_item(page, item)
 
+            page = None
+            annot = None
+            gc.collect()
+
             try:
                 self.doc.saveIncr()
-            except Exception:
+                self._debug("save_mode", mode="incremental")
+            except Exception as incr_ex:
                 temp_path = f"{self.pdf_path}.annot_tmp.pdf"
-                self.doc.save(temp_path)
-                self.doc.close()
-                os.replace(temp_path, self.pdf_path)
-                self.doc = fitz.open(self.pdf_path)
+                self._debug("save_mode", mode="replacement", reason=str(incr_ex))
+                try:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
+                    self.doc.save(temp_path)
+                    self.doc.close()
+                    self.doc = None
+                    page = None
+                    annot = None
+                    gc.collect()
+                    try:
+                        os.chmod(self.pdf_path, stat.S_IWRITE | stat.S_IREAD)
+                    except OSError:
+                        pass
+                    _replace_file_with_retry(temp_path, self.pdf_path)
+                    self.doc = _open_pdf_from_memory(self.pdf_path)
+                except PermissionError as perm_ex:
+                    if self.doc is None:
+                        self.doc = _open_pdf_from_memory(self.pdf_path)
+                    raise PermissionError(
+                        "Windows blocked replacing this PDF even after our own PDF handles were closed. "
+                        f"A saved temp copy remains here: {temp_path}"
+                    ) from perm_ex
+                except Exception:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
+                    if self.doc is None:
+                        self.doc = _open_pdf_from_memory(self.pdf_path)
+                    raise
 
             PAGE_CACHE.invalidate_pages(self.pdf_path, dirty_pages)
             rendered = render_pdf_pages(self.pdf_path, dirty_pages, zoom=self.render_zoom, show_annots=True)
@@ -457,7 +570,9 @@ class PdfAnnotationSession:
             raise
 
     def _commit_new_item(self, page, item):
-        points = [(pt.x(), pt.y()) for pt in item.get("points", [])]
+        page_num = int(item.get("page", 0))
+        view_points = _to_qpointf_list(item.get("points", []))
+        points = self._canvas_to_pdf_points(page_num, view_points)
         if len(points) < 2:
             return
         annot = page.add_ink_annot([points])
@@ -468,9 +583,13 @@ class PdfAnnotationSession:
         except Exception:
             pass
         try:
-            annot.set_border(width=_safe_float(item.get("width"), 2.0))
+            pdf_width = self._canvas_width_to_pdf(
+                page_num,
+                _safe_float(item.get("width"), 2.0),
+            )
+            annot.set_border(width=pdf_width)
         except Exception:
-            pass
+            pdf_width = _safe_float(item.get("width"), 2.0)
         try:
             annot.set_info(
                 title="AnkiOcclusion",
@@ -478,13 +597,29 @@ class PdfAnnotationSession:
                 content=json.dumps(
                     {
                         "kind": item.get("kind", "pen"),
-                        "points": _to_point_pairs(item.get("points", [])),
+                        "points": points,
                     },
                     separators=(",", ":"),
                 ),
             )
         except Exception:
             pass
+        self._debug(
+            "commit_new",
+            page=page_num + 1,
+            view_points=len(view_points),
+            pdf_points=len(points),
+            view_first=(
+                f"{view_points[0].x():.1f},{view_points[0].y():.1f}"
+                if view_points else ""
+            ),
+            pdf_first=(
+                f"{points[0][0]:.1f},{points[0][1]:.1f}"
+                if points else ""
+            ),
+            view_width=f"{_safe_float(item.get('width'), 2.0):.2f}",
+            pdf_width=f"{pdf_width:.2f}",
+        )
         try:
             annot.update(opacity=_safe_float(item.get("opacity"), 1.0))
         except Exception:

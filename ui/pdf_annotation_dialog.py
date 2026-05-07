@@ -202,8 +202,19 @@ class PdfAnnotationCanvas(QWidget):
         top = self._page_tops[page_num] * self._scale
         path = QPainterPath()
         path.moveTo(pts[0].x() * self._scale, top + pts[0].y() * self._scale)
-        for pt in pts[1:]:
-            path.lineTo(pt.x() * self._scale, top + pt.y() * self._scale)
+        for idx in range(1, len(pts) - 1):
+            mid = QPointF(
+                (pts[idx].x() + pts[idx + 1].x()) / 2.0,
+                (pts[idx].y() + pts[idx + 1].y()) / 2.0,
+            )
+            path.quadTo(
+                pts[idx].x() * self._scale,
+                top + pts[idx].y() * self._scale,
+                mid.x() * self._scale,
+                top + mid.y() * self._scale,
+            )
+        last = pts[-1]
+        path.lineTo(last.x() * self._scale, top + last.y() * self._scale)
         pen_color = QColor(color or ("#FFD54A" if tool == "highlight" else "#FF4444"))
         painter.save()
         painter.setOpacity(float(opacity))
@@ -385,6 +396,8 @@ class PdfAnnotationDialog(QDialog):
         QShortcut(Qt.Key_1, self, activated=lambda: self._set_tool("pen"))
         QShortcut(Qt.Key_2, self, activated=lambda: self._set_tool("highlight"))
         QShortcut(Qt.Key_3, self, activated=lambda: self._set_tool("erase"))
+        QShortcut(Qt.Key_P, self, activated=lambda: self._set_tool("pen"))
+        QShortcut(Qt.Key_E, self, activated=lambda: self._set_tool("erase"))
         QShortcut(Qt.Key_Minus, self, activated=self._viewer.zoom_out)
         QShortcut(Qt.Key_Equal, self, activated=self._viewer.zoom_in)
         QShortcut(Qt.Key_C, self, activated=self._viewer.reset_fit)
