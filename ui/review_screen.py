@@ -649,15 +649,12 @@ class ReviewScreen(QWidget):
         else:
             self._reload_current_canvas()
 
-        # ── Reset ink on every card change ────────────────────────────────────────────
-        # Ink state must not carry over from the previous card.
-        # ink_toggle() turns ink OFF and resets cursor to arrow.
-        # ink_clear() wipes drawn strokes from the previous card.
-        # _update_ink_hint() syncs the icon to reflect OFF state.
+        # Temporary strokes are per-card, but the user's pen/mouse mode is a
+        # deliberate choice and should survive card changes.
+        self.canvas.ink_clear()
         if getattr(self.canvas, "_ink_active", False):
-            self.canvas.ink_toggle()   # turns OFF → resets cursor
-        self.canvas.ink_clear()        # wipe strokes from previous card
-        self._update_ink_hint()        # sync icon to OFF state
+            self.canvas.setCursor(QCursor(Qt.CrossCursor))
+        self._update_ink_hint()
 
         self.canvas.setFocus() # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
         self._rating_frame.hide()   # ← rating frame explicitly hide karo
@@ -740,6 +737,20 @@ class ReviewScreen(QWidget):
         elif key == Qt.Key_Right and not mods and not e.isAutoRepeat():
             self._go_next_review_page()
         # ── INK LAYER SHORTCUTS ──────────────────────────────────────────────
+        elif key == Qt.Key_P and not mods and not e.isAutoRepeat():
+            self.canvas.ink_set_active(True)
+            self.canvas._show_toast(f"Pen ON  size {self.canvas._ink_width:.1f}")
+            self._update_ink_hint()
+        elif key == Qt.Key_E and mods & Qt.ShiftModifier and not e.isAutoRepeat():
+            self.canvas.ink_set_active(False)
+            self.canvas._show_toast("Pen OFF")
+            self._update_ink_hint()
+        elif key in (Qt.Key_Equal, Qt.Key_Plus) and not (mods & Qt.ControlModifier) and getattr(self.canvas, "_ink_active", False):
+            self.canvas.ink_adjust_width(0.4)
+            self._update_ink_hint()
+        elif key == Qt.Key_Minus and not (mods & Qt.ControlModifier) and getattr(self.canvas, "_ink_active", False):
+            self.canvas.ink_adjust_width(-0.4)
+            self._update_ink_hint()
         elif (key == Qt.Key_Alt or key == Qt.Key_QuoteLeft) and not e.isAutoRepeat():
             self.canvas.ink_toggle()
             active = self.canvas._ink_active

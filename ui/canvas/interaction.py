@@ -142,9 +142,19 @@ class CanvasInteractionMixin:
         self.setCursor(QCursor(Qt.CrossCursor if self._ink_active
                                else Qt.PointingHandCursor))
 
+    def ink_set_active(self, active: bool):
+        self._ink_active = bool(active)
+        self.setCursor(QCursor(Qt.CrossCursor if self._ink_active
+                               else Qt.PointingHandCursor))
+
     def ink_cycle_color(self):
         self._ink_color_idx = (self._ink_color_idx + 1) % len(self._ink_colors)
         self._show_toast(f"✏ Ink: {self._ink_colors[self._ink_color_idx]}")
+
+    def ink_adjust_width(self, delta: float):
+        self._ink_width = max(0.4, min(12.0, float(self._ink_width) + float(delta)))
+        self.update()
+        self._show_toast(f"Ink size: {self._ink_width:.1f}")
 
     def ink_clear(self):
         self._ink_strokes.clear(); self._ink_current.clear()

@@ -1,6 +1,6 @@
 import os
 
-from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, QEvent, pyqtSignal
+from PyQt5.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt, QTimer, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -52,6 +52,7 @@ class AnnotationScrollArea(QScrollArea):
 class PdfAnnotationCanvas(QWidget):
     stroke_finished = pyqtSignal(int, str, object)
     erase_dragged = pyqtSignal(int, object)
+    image_move_finished = pyqtSignal(int, str, object, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,6 +65,12 @@ class PdfAnnotationCanvas(QWidget):
         self._live_points = []
         self._live_tool = "pen"
         self._erase_active = False
+        self._image_drag_item = None
+        self._image_drag_page = None
+        self._image_drag_start = None
+        self._image_drag_start_rect = None
+        self._selected_image_page = None
+        self._selected_image_id = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -92,7 +99,9 @@ class PdfAnnotationCanvas(QWidget):
 
     def set_tool(self, tool: str):
         self._tool = tool
-        if tool == "erase":
+        if tool == "image":
+            self.setCursor(Qt.SizeAllCursor)
+        elif tool == "erase":
             self.setCursor(Qt.ForbiddenCursor)
         else:
             self.setCursor(Qt.CrossCursor)
@@ -192,8 +201,57 @@ class PdfAnnotationCanvas(QWidget):
     def _draw_page_overlays(self, painter: QPainter, page_num: int, top: float):
         if not self._overlay_provider:
             return
-        for item in self._overlay_provider(page_num):
+        items = list(self._overlay_provider(page_num))
+        for item in items:
+            if self._is_selectable_visual(item):
+                self._draw_image_item(painter, item, page_num)
+                self._draw_image_selection(painter, item, page_num)
+        for item in items:
+            if self._is_selectable_visual(item):
+                continue
             self._draw_points(painter, item.get("points", []), page_num, item.get("kind", "pen"), color=item.get("color"), width=item.get("width"), opacity=item.get("opacity", 1.0))
+
+    def _draw_image_item(self, painter: QPainter, item, page_num: int):
+        pixmap = item.get("pixmap")
+        rect = self._item_rect(item)
+        if pixmap is None or pixmap.isNull() or rect is None:
+            return
+        if item.get("source") == "existing" and item.get("id") != self._selected_image_id:
+            return
+        top = self._page_tops[page_num] * self._scale
+        target = QRectF(
+            rect.x() * self._scale,
+            top + rect.y() * self._scale,
+            rect.width() * self._scale,
+            rect.height() * self._scale,
+        )
+        painter.save()
+        painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+        if self._tool == "image":
+            painter.setPen(QPen(QColor("#00E5FF"), max(1.0, 1.0 * self._scale), Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(target)
+        painter.restore()
+
+    def _draw_image_selection(self, painter: QPainter, item, page_num: int):
+        if self._tool != "image" and item.get("id") != self._selected_image_id:
+            return
+        rect = self._item_rect(item)
+        if rect is None:
+            return
+        top = self._page_tops[page_num] * self._scale
+        target = QRectF(
+            rect.x() * self._scale,
+            top + rect.y() * self._scale,
+            rect.width() * self._scale,
+            rect.height() * self._scale,
+        )
+        painter.save()
+        color = QColor("#FFDD55") if item.get("id") == self._selected_image_id else QColor("#00E5FF")
+        painter.setPen(QPen(color, max(1.0, 1.2 * self._scale), Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(target)
+        painter.restore()
 
     def _draw_points(self, painter: QPainter, points, page_num: int, tool: str, color=None, width=None, opacity=1.0):
         pts = [pt if isinstance(pt, QPointF) else QPointF(pt[0], pt[1]) for pt in points]
@@ -232,6 +290,26 @@ class PdfAnnotationCanvas(QWidget):
         page_num, point = self._page_info_for_pos(event.pos())
         if page_num is None:
             return
+        if self._tool == "image":
+            item = self._image_item_at(page_num, point)
+            if item is None:
+                self.clear_selected_image()
+                print(
+                    f"[DEBUG][pdf_screenshot] drag_miss page={page_num + 1} "
+                    f"x={point.x():.1f} y={point.y():.1f}"
+                )
+                return
+            self._selected_image_page = page_num
+            self._selected_image_id = item.get("id")
+            self._image_drag_item = item
+            self._image_drag_page = page_num
+            self._image_drag_start = QPointF(point)
+            self._image_drag_start_rect = self._item_rect(item)
+            print(
+                f"[DEBUG][pdf_screenshot] drag_start page={page_num + 1} "
+                f"item={item.get('id')} x={point.x():.1f} y={point.y():.1f}"
+            )
+            return
         if self._tool == "erase":
             print(
                 f"[DEBUG][pdf_erase_drag] start page={page_num + 1} "
@@ -247,6 +325,17 @@ class PdfAnnotationCanvas(QWidget):
 
     def mouseMoveEvent(self, event):
         page_num, point = self._page_info_for_pos(event.pos())
+        if self._tool == "image" and self._image_drag_item is not None:
+            if point is None:
+                return
+            if self._image_drag_page is None or self._image_drag_start is None or self._image_drag_start_rect is None:
+                return
+            delta = QPointF(point.x() - self._image_drag_start.x(), point.y() - self._image_drag_start.y())
+            moved = QRectF(self._image_drag_start_rect)
+            moved.translate(delta)
+            self._image_drag_item["rect"] = self._clamp_image_rect(self._image_drag_page, moved)
+            self.update()
+            return
         if self._tool == "erase" and self._erase_active and page_num is not None:
             self.erase_dragged.emit(page_num, point)
             return
@@ -258,6 +347,27 @@ class PdfAnnotationCanvas(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
             return super().mouseReleaseEvent(event)
+        if self._tool == "image":
+            if self._image_drag_item is not None and self._image_drag_page is not None:
+                rect = self._item_rect(self._image_drag_item)
+                if rect is None:
+                    rect = QRectF()
+                print(
+                    f"[DEBUG][pdf_screenshot] drag_stop page={self._image_drag_page + 1} "
+                    f"item={self._image_drag_item.get('id')} "
+                    f"rect={rect.x():.1f},{rect.y():.1f},{rect.width():.1f},{rect.height():.1f}"
+                )
+                self.image_move_finished.emit(
+                    self._image_drag_page,
+                    self._image_drag_item["id"],
+                    QRectF(self._image_drag_start_rect),
+                    rect,
+                )
+            self._image_drag_item = None
+            self._image_drag_page = None
+            self._image_drag_start = None
+            self._image_drag_start_rect = None
+            return
         if self._tool == "erase":
             if self._erase_active:
                 print("[DEBUG][pdf_erase_drag] stop")
@@ -267,6 +377,66 @@ class PdfAnnotationCanvas(QWidget):
             self.stroke_finished.emit(self._drawing_page, self._live_tool, list(self._live_points))
         self._drawing_page = None
         self._live_points = []
+        self.update()
+
+    def _image_item_at(self, page_num: int, point: QPointF):
+        if not self._overlay_provider:
+            return None
+        for item in reversed(list(self._overlay_provider(page_num))):
+            if not self._is_selectable_visual(item):
+                continue
+            rect = self._item_rect(item)
+            if rect is None:
+                continue
+            if rect.contains(point):
+                return item
+        return None
+
+    @staticmethod
+    def _is_selectable_visual(item):
+        return item.get("kind") in {"image", "stamp"}
+
+    @staticmethod
+    def _item_rect(item):
+        rect = item.get("rect")
+        if rect is None:
+            return None
+        if isinstance(rect, QRectF):
+            return QRectF(rect)
+        if item.get("source") == "existing" and item.get("kind") in {"image", "stamp"}:
+            return QRectF(
+                float(rect[0]),
+                float(rect[1]),
+                max(1.0, float(rect[2]) - float(rect[0])),
+                max(1.0, float(rect[3]) - float(rect[1])),
+            )
+        return QRectF(*rect)
+
+    def _clamp_image_rect(self, page_num: int, rect: QRectF) -> QRectF:
+        if page_num is None or page_num < 0 or page_num >= len(self._pages):
+            return QRectF(rect)
+        page = self._pages[page_num]
+        page_w = max(float(page.width()), 1.0)
+        page_h = max(float(page.height()), 1.0)
+        width = min(max(rect.width(), 1.0), page_w)
+        height = min(max(rect.height(), 1.0), page_h)
+        x = max(0.0, min(page_w - width, rect.x()))
+        y = max(0.0, min(page_h - height, rect.y()))
+        return QRectF(x, y, width, height)
+
+    def selected_image(self):
+        if self._selected_image_page is None or not self._selected_image_id:
+            return None, None
+        return self._selected_image_page, self._selected_image_id
+
+    def select_image(self, page_num: int, item_id: str):
+        self._selected_image_page = int(page_num)
+        self._selected_image_id = item_id
+        self.update()
+
+    def clear_selected_image(self):
+        self._selected_image_page = None
+        self._selected_image_id = None
         self.update()
 
 
@@ -314,9 +484,11 @@ class PdfAnnotationDialog(QDialog):
         self.btn_pen = QPushButton("🖊 Pen")
         self.btn_highlight = QPushButton("🟨 Highlight")
         self.btn_erase = QPushButton("🧽 Erase")
+        self.btn_image = QPushButton("🖼 Move Image")
         self.btn_pen.setCheckable(True)
         self.btn_highlight.setCheckable(True)
         self.btn_erase.setCheckable(True)
+        self.btn_image.setCheckable(True)
         self.btn_pen.setChecked(True)
         self.btn_zoom_out = QPushButton("Zoom -")
         self.btn_zoom_in = QPushButton("Zoom +")
@@ -334,7 +506,7 @@ class PdfAnnotationDialog(QDialog):
             f"{os.path.basename(self.pdf_path)}  •  {self.session.page_count} pages  •  {self.session.render_label}"
         )
 
-        for btn in (self.btn_undo, self.btn_redo, self.btn_pen, self.btn_highlight, self.btn_erase):
+        for btn in (self.btn_undo, self.btn_redo, self.btn_pen, self.btn_highlight, self.btn_erase, self.btn_image):
             bar_l.addWidget(btn)
         bar_l.addSpacing(8)
         bar_l.addWidget(self.btn_zoom_out)
@@ -374,6 +546,7 @@ class PdfAnnotationDialog(QDialog):
         self.btn_pen.clicked.connect(lambda: self._set_tool("pen"))
         self.btn_highlight.clicked.connect(lambda: self._set_tool("highlight"))
         self.btn_erase.clicked.connect(lambda: self._set_tool("erase"))
+        self.btn_image.clicked.connect(lambda: self._set_tool("image"))
         self.btn_zoom_out.clicked.connect(self._viewer.zoom_out)
         self.btn_zoom_in.clicked.connect(self._viewer.zoom_in)
         self.btn_fit.clicked.connect(self._viewer.reset_fit)
@@ -387,8 +560,11 @@ class PdfAnnotationDialog(QDialog):
         self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
         self.canvas.stroke_finished.connect(self._on_stroke_finished)
         self.canvas.erase_dragged.connect(self._on_erase_dragged)
+        self.canvas.image_move_finished.connect(self._on_image_move_finished)
 
         QShortcut(Qt.CTRL + Qt.Key_S, self, activated=self._save_pdf)
+        QShortcut(Qt.CTRL + Qt.Key_V, self, activated=self._paste_clipboard_image)
+        QShortcut(Qt.Key_Delete, self, activated=self._delete_selected_image)
         QShortcut(Qt.CTRL + Qt.Key_Z, self, activated=self._undo)
         QShortcut(Qt.CTRL + Qt.Key_Y, self, activated=self._redo)
         QShortcut(Qt.Key_Left, self, activated=self._viewer.go_prev_page)
@@ -398,6 +574,7 @@ class PdfAnnotationDialog(QDialog):
         QShortcut(Qt.Key_3, self, activated=lambda: self._set_tool("erase"))
         QShortcut(Qt.Key_P, self, activated=lambda: self._set_tool("pen"))
         QShortcut(Qt.Key_E, self, activated=lambda: self._set_tool("erase"))
+        QShortcut(Qt.Key_S, self, activated=lambda: self._set_tool("image"))
         QShortcut(Qt.Key_Minus, self, activated=self._viewer.zoom_out)
         QShortcut(Qt.Key_Equal, self, activated=self._viewer.zoom_in)
         QShortcut(Qt.Key_C, self, activated=self._viewer.reset_fit)
@@ -410,7 +587,10 @@ class PdfAnnotationDialog(QDialog):
         self.btn_pen.setChecked(tool == "pen")
         self.btn_highlight.setChecked(tool == "highlight")
         self.btn_erase.setChecked(tool == "erase")
+        self.btn_image.setChecked(tool == "image")
         self.canvas.set_tool(tool)
+        if tool == "image":
+            self.lbl_status.setText("image move mode: drag pasted screenshot")
 
     def _load_pages(self):
         cache_state = get_cached_pdf_page_set(self.pdf_path, self.session.page_count)
@@ -475,6 +655,91 @@ class PdfAnnotationDialog(QDialog):
         else:
             self.canvas.update()
         self.lbl_status.setText(f"erase touched p.{page_num + 1}")
+
+    def _on_image_move_finished(self, page_num: int, item_id: str, old_rect: QRectF, rect: QRectF):
+        if self.session.move_image_item(page_num, item_id, rect, old_rect=old_rect):
+            self.lbl_status.setText(f"moved screenshot p.{page_num + 1}")
+            if item_id.startswith("existing:"):
+                preview = self.session.build_page_preview(page_num)
+                if preview is not None and not preview.isNull():
+                    self.canvas.replace_page(page_num, preview)
+            self.canvas.update()
+
+    def _delete_selected_image(self):
+        page_num, item_id = self.canvas.selected_image()
+        if page_num is None or not item_id:
+            self.lbl_status.setText("no screenshot selected")
+            print("[DEBUG][pdf_screenshot] delete_skip reason=no_selection")
+            return
+        if not self.session.delete_image_item(page_num, item_id):
+            self.lbl_status.setText("selected screenshot could not be deleted")
+            return
+        print(f"[DEBUG][pdf_screenshot] delete page={page_num + 1} item={item_id}")
+        self.canvas.clear_selected_image()
+        preview = self.session.build_page_preview(page_num)
+        if preview is not None and not preview.isNull():
+            self.canvas.replace_page(page_num, preview)
+        else:
+            self.canvas.update()
+        self.lbl_status.setText(f"deleted screenshot p.{page_num + 1}; save to persist")
+
+    def _paste_clipboard_image(self):
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        if not mime.hasImage():
+            self.lbl_status.setText("clipboard has no image")
+            print("[DEBUG][pdf_screenshot] paste_skip reason=no_clipboard_image")
+            return
+        image = clipboard.image()
+        if image.isNull():
+            self.lbl_status.setText("clipboard image is empty")
+            print("[DEBUG][pdf_screenshot] paste_skip reason=null_image")
+            return
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.WriteOnly)
+        image.save(buffer, "PNG")
+        image_bytes = bytes(data)
+        pixmap = QPixmap.fromImage(image)
+        page_num = self.canvas.get_current_page(self.scroll.verticalScrollBar().value())
+        rect = self._default_image_rect(page_num, pixmap)
+        item = self.session.add_image_item(page_num, image_bytes, pixmap, rect)
+        if item is None:
+            self.lbl_status.setText("could not paste screenshot")
+            return
+        print(
+            f"[DEBUG][pdf_screenshot] paste page={page_num + 1} "
+            f"image={image.width()}x{image.height()} "
+            f"rect={rect.x():.1f},{rect.y():.1f},{rect.width():.1f},{rect.height():.1f}"
+        )
+        self._set_tool("image")
+        self.canvas.select_image(page_num, item["id"])
+        self.lbl_status.setText(f"pasted screenshot p.{page_num + 1}; press P to write")
+        self.canvas.update()
+
+    def _default_image_rect(self, page_num: int, pixmap: QPixmap) -> QRectF:
+        if page_num < 0 or page_num >= len(self.canvas._pages) or pixmap.isNull():
+            return QRectF(20.0, 20.0, 200.0, 120.0)
+        page = self.canvas._pages[page_num]
+        page_w = max(float(page.width()), 1.0)
+        page_h = max(float(page.height()), 1.0)
+        target_w = min(page_w * 0.60, max(page_w * 0.28, float(pixmap.width())))
+        target_h = target_w * float(pixmap.height()) / max(float(pixmap.width()), 1.0)
+        if target_h > page_h * 0.45:
+            target_h = page_h * 0.45
+            target_w = target_h * float(pixmap.width()) / max(float(pixmap.height()), 1.0)
+
+        viewport_center_x = (
+            self.scroll.horizontalScrollBar().value() + self.scroll.viewport().width() / 2.0
+        ) / max(self.canvas.zoom(), 0.01)
+        viewport_center_y = (
+            self.scroll.verticalScrollBar().value() + self.scroll.viewport().height() / 2.0
+        ) / max(self.canvas.zoom(), 0.01)
+        page_top = self.canvas._page_tops[page_num] if page_num < len(self.canvas._page_tops) else 0
+        local_y = viewport_center_y - page_top
+        x = max(0.0, min(page_w - target_w, viewport_center_x - target_w / 2.0))
+        y = max(0.0, min(page_h - target_h, local_y - target_h / 2.0))
+        return QRectF(x, y, target_w, target_h)
 
     def _undo(self):
         if not self.session.undo():

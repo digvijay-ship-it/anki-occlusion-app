@@ -1,4 +1,3 @@
-import json
 import gc
 import json
 import math
@@ -139,6 +138,8 @@ def _safe_float(value, default):
 
 
 class PdfAnnotationSession:
+    SELECTABLE_VISUAL_KINDS = {"image", "stamp"}
+
     TOOL_STYLES = {
         "pen": {"color": "#FF4444", "width": 2.8, "opacity": 1.0},
         "highlight": {"color": "#FFD54A", "width": 12.0, "opacity": 0.30},
@@ -163,6 +164,7 @@ class PdfAnnotationSession:
         ]
         self.dirty_pages = set()
         self.pending_deleted_xrefs = set()
+        self.pending_image_moves = {}
         self.existing_annots = {}
         self.new_items = {}
         self._undo_stack = []
@@ -210,6 +212,16 @@ class PdfAnnotationSession:
             float(rect_tuple[3]) * sy,
         )
 
+    def _canvas_rect_to_pdf_rect(self, page_num: int, rect) -> tuple[float, float, float, float]:
+        sx, sy = self._page_scale_factors(page_num)
+        qrect = rect if isinstance(rect, QRectF) else QRectF(*rect)
+        return (
+            float(qrect.x()) / sx,
+            float(qrect.y()) / sy,
+            float(qrect.right()) / sx,
+            float(qrect.bottom()) / sy,
+        )
+
     def _canvas_width_to_pdf(self, page_num: int, width: float) -> float:
         sx, sy = self._page_scale_factors(page_num)
         return float(width) / max((sx + sy) / 2.0, 0.01)
@@ -252,7 +264,7 @@ class PdfAnnotationSession:
         except Exception:
             subtype = "unknown"
 
-        rect = self._pdf_rect_to_canvas(page_num, _page_rect_tuple(annot.rect))
+        rect_bounds = self._pdf_rect_to_canvas(page_num, _page_rect_tuple(annot.rect))
         width = 2.0
         try:
             border = annot.border or {}
@@ -271,20 +283,52 @@ class PdfAnnotationSession:
         if not vertices:
             vertices = self._pdf_to_canvas_points(page_num, _parse_saved_points(annot))
 
+        info = {}
+        try:
+            info = annot.info or {}
+        except Exception:
+            info = {}
+        is_app_image = (
+            info.get("title") == "AnkiOcclusion"
+            and info.get("subject") == "anki_occlusion_image"
+        )
+
+        rect = (
+            QRectF(
+                rect_bounds[0],
+                rect_bounds[1],
+                max(1.0, rect_bounds[2] - rect_bounds[0]),
+                max(1.0, rect_bounds[3] - rect_bounds[1]),
+            )
+            if is_app_image
+            else rect_bounds
+        )
+
         item = {
             "id": f"existing:{annot.xref}",
             "page": page_num,
             "source": "existing",
-            "kind": subtype,
+            "kind": "image" if is_app_image else subtype,
             "xref": int(annot.xref),
             "rect": rect,
+            "saved_rect": rect,
             "points": vertices,
             "width": self._pdf_width_to_canvas(page_num, width),
         }
+        if is_app_image:
+            image_payload = self._image_payload_from_annot(annot)
+            if image_payload:
+                item.update(image_payload)
         return item
 
     def get_new_items_for_page(self, page_num: int):
-        return [
+        page_num = int(page_num)
+        existing_visuals = [
+            item for item in self.existing_annots.get(page_num, [])
+            if item.get("kind") in self.SELECTABLE_VISUAL_KINDS
+            and item.get("xref") not in self.pending_deleted_xrefs
+        ]
+        return existing_visuals + [
             item for item in self.new_items.get(page_num, [])
             if not item.get("deleted", False)
         ]
@@ -314,6 +358,105 @@ class PdfAnnotationSession:
         self._debug("add_new", page=page_num + 1, tool=tool, points=len(pts))
         return item
 
+    def add_image_item(self, page_num: int, image_bytes: bytes, pixmap: QPixmap, rect: QRectF):
+        page_num = int(page_num)
+        if not image_bytes or pixmap is None or pixmap.isNull():
+            return None
+        item = {
+            "id": f"image:{uuid.uuid4().hex}",
+            "page": page_num,
+            "source": "new",
+            "kind": "image",
+            "image_bytes": bytes(image_bytes),
+            "pixmap": QPixmap(pixmap),
+            "rect": QRectF(rect),
+            "deleted": False,
+        }
+        self.new_items.setdefault(page_num, []).append(item)
+        self.dirty_pages.add(page_num)
+        self._undo_stack.append({"type": "add_new", "page": page_num, "item_id": item["id"]})
+        self._redo_stack.clear()
+        self._debug(
+            "image_add",
+            page=page_num + 1,
+            item=item["id"],
+            rect=self._format_rect(item["rect"]),
+            bytes=len(image_bytes),
+        )
+        return item
+
+    def move_image_item(self, page_num: int, item_id: str, new_rect: QRectF, old_rect: QRectF | None = None):
+        page_num = int(page_num)
+        item = self._find_new_item(page_num, item_id)
+        if item is None:
+            item = self._find_existing_item(page_num, item_id)
+        if item is None or item.get("kind") != "image" or item.get("deleted", False):
+            self._debug("image_move_skip", page=page_num + 1, item=item_id, reason="not_found")
+            return False
+        old_rect = QRectF(old_rect if old_rect is not None else item.get("rect", QRectF()))
+        rect = QRectF(new_rect)
+        item["rect"] = rect
+        if item.get("source") == "existing":
+            saved_rect = self._rect_from_value(item.get("saved_rect", old_rect))
+            if self._rects_close(saved_rect, rect):
+                self.pending_image_moves.pop(int(item["xref"]), None)
+            else:
+                self.pending_image_moves[int(item["xref"])] = QRectF(rect)
+        else:
+            item["last_saved_rect"] = QRectF(rect)
+        self.dirty_pages.add(page_num)
+        if self._rects_close(old_rect, rect):
+            return True
+        self._undo_stack.append(
+            {
+                "type": "move_image",
+                "page": page_num,
+                "item_id": item_id,
+                "old_rect": old_rect,
+                "new_rect": QRectF(rect),
+            }
+        )
+        self._redo_stack.clear()
+        self._debug(
+            "image_move_apply",
+            page=page_num + 1,
+            item=item_id,
+            rect=self._format_rect(rect),
+        )
+        return True
+
+    def delete_image_item(self, page_num: int, item_id: str):
+        page_num = int(page_num)
+        item = self._find_new_item(page_num, item_id)
+        if item is not None and item.get("kind") == "image" and not item.get("deleted", False):
+            item["deleted"] = True
+            self.dirty_pages.add(page_num)
+            self._undo_stack.append({"type": "erase", "page": page_num, "new_ids": [item_id], "existing_xrefs": []})
+            self._redo_stack.clear()
+            self._debug("image_delete_apply", page=page_num + 1, source="new", item=item_id)
+            return True
+
+        item = self._find_existing_item(page_num, item_id)
+        if item is None or item.get("kind") not in self.SELECTABLE_VISUAL_KINDS:
+            self._debug("image_delete_skip", page=page_num + 1, item=item_id, reason="not_found")
+            return False
+        xref = int(item["xref"])
+        if xref in self.pending_deleted_xrefs:
+            return False
+        self.pending_deleted_xrefs.add(xref)
+        self.pending_image_moves.pop(xref, None)
+        self.dirty_pages.add(page_num)
+        self._undo_stack.append({"type": "erase", "page": page_num, "new_ids": [], "existing_xrefs": [xref]})
+        self._redo_stack.clear()
+        self._debug(
+            "image_delete_apply",
+            page=page_num + 1,
+            source="existing",
+            kind=item.get("kind"),
+            xref=xref,
+        )
+        return True
+
     def erase_at_point(self, page_num: int, point):
         page_num = int(page_num)
         point = point if isinstance(point, QPointF) else QPointF(point[0], point[1])
@@ -329,6 +472,8 @@ class PdfAnnotationSession:
         for item in self.new_items.get(page_num, []):
             if item.get("deleted", False):
                 continue
+            if item.get("kind") == "image":
+                continue
             if self._new_item_hit(item, point):
                 item["deleted"] = True
                 deleted_new.append(item["id"])
@@ -341,6 +486,8 @@ class PdfAnnotationSession:
                 )
 
         for item in self.existing_annots.get(page_num, []):
+            if item.get("kind") == "image":
+                continue
             xref = item["xref"]
             if xref in self.pending_deleted_xrefs:
                 continue
@@ -384,6 +531,12 @@ class PdfAnnotationSession:
         return True
 
     def _new_item_hit(self, item, point: QPointF) -> bool:
+        if item.get("kind") == "image":
+            rect = item.get("rect")
+            if rect is None:
+                return False
+            rect = rect if isinstance(rect, QRectF) else QRectF(*rect)
+            return rect.contains(point)
         points = item.get("points") or []
         width = max(3.0, _safe_float(item.get("width"), 3.0))
         for idx in range(1, len(points)):
@@ -433,6 +586,21 @@ class PdfAnnotationSession:
             for xref in action.get("existing_xrefs", []):
                 self.pending_deleted_xrefs.add(xref)
             self.dirty_pages.add(page_num)
+        if action["type"] == "move_image":
+            item = self._find_new_item(page_num, action.get("item_id"))
+            if item is None:
+                item = self._find_existing_item(page_num, action.get("item_id"))
+            if item is not None:
+                item["rect"] = QRectF(action["new_rect"])
+                if item.get("source") == "existing":
+                    saved_rect = self._rect_from_value(item.get("saved_rect", action["old_rect"]))
+                    if self._rects_close(saved_rect, item["rect"]):
+                        self.pending_image_moves.pop(int(item["xref"]), None)
+                    else:
+                        self.pending_image_moves[int(item["xref"])] = QRectF(action["new_rect"])
+                else:
+                    item["last_saved_rect"] = QRectF(action["new_rect"])
+                self.dirty_pages.add(page_num)
 
     def _apply_inverse_action(self, action):
         page_num = action.get("page", 0)
@@ -450,9 +618,26 @@ class PdfAnnotationSession:
             for xref in action.get("existing_xrefs", []):
                 self.pending_deleted_xrefs.discard(xref)
             self.dirty_pages.add(page_num)
+        if action["type"] == "move_image":
+            item = self._find_new_item(page_num, action.get("item_id"))
+            if item is None:
+                item = self._find_existing_item(page_num, action.get("item_id"))
+            if item is not None:
+                item["rect"] = QRectF(action["old_rect"])
+                if item.get("source") == "existing":
+                    saved_rect = self._rect_from_value(item.get("saved_rect", action["old_rect"]))
+                    if self._rects_close(saved_rect, item["rect"]):
+                        self.pending_image_moves.pop(int(item["xref"]), None)
+                    else:
+                        self.pending_image_moves[int(item["xref"])] = QRectF(action["old_rect"])
+                else:
+                    item["last_saved_rect"] = QRectF(action["old_rect"])
+                self.dirty_pages.add(page_num)
 
     def has_unsaved_changes(self) -> bool:
         if self.pending_deleted_xrefs:
+            return True
+        if self.pending_image_moves:
             return True
         for items in self.new_items.values():
             if any(not item.get("deleted", False) for item in items):
@@ -466,7 +651,15 @@ class PdfAnnotationSession:
             for item in self.existing_annots.get(page_num, [])
             if item["xref"] in self.pending_deleted_xrefs
         ]
-        if not page_deletes:
+        page_moves = {
+            xref: {
+                "rect": rect,
+                "item": self._find_existing_item(page_num, f"existing:{xref}"),
+            }
+            for xref, rect in self.pending_image_moves.items()
+            if any(item.get("xref") == xref for item in self.existing_annots.get(page_num, []))
+        }
+        if not page_deletes and not page_moves:
             cached = PAGE_CACHE.get(self.pdf_path, page_num)
             if cached is not None and not cached.isNull():
                 return cached
@@ -475,10 +668,16 @@ class PdfAnnotationSession:
         try:
             temp_doc = _open_pdf_from_memory(self.pdf_path)
             page = temp_doc.load_page(page_num)
-            if page_deletes:
+            if page_deletes or page_moves:
                 for annot in list(page.annots() or []):
-                    if annot.xref in page_deletes:
+                    xref = int(annot.xref)
+                    if xref in page_deletes or xref in page_moves:
                         page.delete_annot(annot)
+                for move in page_moves.values():
+                    item = dict(move.get("item") or {})
+                    if item.get("image_bytes"):
+                        item["rect"] = move["rect"]
+                        self._commit_image_item(page, item)
             pix = pdf_page_to_pixmap(page, fitz.Matrix(self.render_zoom, self.render_zoom), show_annots=True)
             return pix
         finally:
@@ -497,14 +696,36 @@ class PdfAnnotationSession:
             annot = None
             for page_num, items in self.existing_annots.items():
                 page = self.doc.load_page(page_num)
+                moved_items = []
                 for annot in list(page.annots() or []):
-                    if annot.xref in self.pending_deleted_xrefs:
+                    xref = int(annot.xref)
+                    if xref in self.pending_deleted_xrefs:
                         page.delete_annot(annot)
+                    elif xref in self.pending_image_moves:
+                        moved_item = self._find_existing_item(page_num, f"existing:{xref}")
+                        page.delete_annot(annot)
+                        if moved_item is not None and moved_item.get("image_bytes"):
+                            moved_copy = dict(moved_item)
+                            moved_copy["rect"] = self.pending_image_moves[xref]
+                            moved_items.append(moved_copy)
+                            self._debug(
+                                "image_move_commit",
+                                page=page_num + 1,
+                                xref=xref,
+                                rect=self._format_rect(self.pending_image_moves[xref]),
+                            )
+                for moved_item in moved_items:
+                    self._commit_image_item(page, moved_item)
 
             for page_num, items in self.new_items.items():
                 page = self.doc.load_page(page_num)
                 for item in items:
                     if item.get("deleted", False):
+                        continue
+                    if item.get("kind") == "image":
+                        self._commit_image_item(page, item)
+                for item in items:
+                    if item.get("deleted", False) or item.get("kind") == "image":
                         continue
                     self._commit_new_item(page, item)
 
@@ -560,6 +781,7 @@ class PdfAnnotationSession:
             for page_num in dirty_pages:
                 self.new_items[page_num] = []
             self.pending_deleted_xrefs.clear()
+            self.pending_image_moves.clear()
             self.dirty_pages.clear()
             self._undo_stack.clear()
             self._redo_stack.clear()
@@ -570,6 +792,8 @@ class PdfAnnotationSession:
             raise
 
     def _commit_new_item(self, page, item):
+        if item.get("kind") == "image":
+            return
         page_num = int(item.get("page", 0))
         view_points = _to_qpointf_list(item.get("points", []))
         points = self._canvas_to_pdf_points(page_num, view_points)
@@ -627,3 +851,129 @@ class PdfAnnotationSession:
                 annot.update()
             except Exception:
                 pass
+
+    def _commit_image_item(self, page, item):
+        page_num = int(item.get("page", 0))
+        image_bytes = item.get("image_bytes") or b""
+        if not image_bytes:
+            return
+        pdf_rect = self._canvas_rect_to_pdf_rect(page_num, item.get("rect", QRectF()))
+        rect = fitz.Rect(*pdf_rect)
+        if rect.is_empty or rect.width <= 0 or rect.height <= 0:
+            return
+        image_xref = page.insert_image(
+            fitz.Rect(-10000, -10000, -9999, -9999),
+            stream=image_bytes,
+            keep_proportion=True,
+        )
+        annot = page.add_rect_annot(rect)
+        try:
+            annot.set_border(width=0)
+        except Exception:
+            pass
+        try:
+            annot.set_info(
+                title="AnkiOcclusion",
+                subject="anki_occlusion_image",
+                content=json.dumps(
+                    {
+                        "kind": "image",
+                        "tool": "screenshot",
+                        "id": item.get("id"),
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        except Exception:
+            pass
+        try:
+            annot.update()
+        except Exception:
+            pass
+        self._set_image_annotation_appearance(page.parent, annot, image_xref, rect)
+        self._debug(
+            "image_commit",
+            page=page_num + 1,
+            item=item.get("id"),
+            view_rect=self._format_rect(item.get("rect", QRectF())),
+            pdf_rect=",".join(f"{value:.2f}" for value in pdf_rect),
+            bytes=len(image_bytes),
+        )
+
+    def _find_new_item(self, page_num: int, item_id: str):
+        for item in self.new_items.get(int(page_num), []):
+            if item.get("id") == item_id:
+                return item
+        return None
+
+    def _find_existing_item(self, page_num: int, item_id: str):
+        for item in self.existing_annots.get(int(page_num), []):
+            if item.get("id") == item_id:
+                return item
+        return None
+
+    def _image_payload_from_annot(self, annot):
+        doc = annot.parent.parent
+        try:
+            _kind, ap_ref = doc.xref_get_key(annot.xref, "AP/N")
+            form_xref = int(str(ap_ref).split()[0])
+            _kind, image_ref = doc.xref_get_key(form_xref, "Resources/XObject/Im0")
+            image_xref = int(str(image_ref).split()[0])
+            extracted = doc.extract_image(image_xref)
+            image_bytes = extracted.get("image") or b""
+            if not image_bytes:
+                return {}
+            pixmap = QPixmap()
+            pixmap.loadFromData(image_bytes)
+            self._debug(
+                "image_loaded",
+                xref=annot.xref,
+                image=image_xref,
+                bytes=len(image_bytes),
+                pixmap=f"{pixmap.width()}x{pixmap.height()}",
+            )
+            return {
+                "image_xref": image_xref,
+                "image_bytes": image_bytes,
+                "pixmap": pixmap,
+            }
+        except Exception as ex:
+            self._debug("image_load_failed", xref=getattr(annot, "xref", ""), error=str(ex))
+            return {}
+
+    def _set_image_annotation_appearance(self, doc, annot, image_xref: int, rect: fitz.Rect):
+        width = max(float(rect.width), 1.0)
+        height = max(float(rect.height), 1.0)
+        form_xref = doc.get_new_xref()
+        obj = (
+            f"<< /Type /XObject /Subtype /Form /BBox [0 0 {width} {height}] "
+            f"/Matrix [1 0 0 1 0 0] "
+            f"/Resources << /XObject << /Im0 {int(image_xref)} 0 R >> >> "
+            f"/Length 0 >>"
+        )
+        doc.update_object(form_xref, obj)
+        doc.update_stream(form_xref, f"q {width} 0 0 {height} 0 0 cm /Im0 Do Q".encode("ascii"))
+        doc.xref_set_key(annot.xref, "AP", f"<</N {form_xref} 0 R>>")
+        self._debug("image_applied", xref=annot.xref, form=form_xref, image=image_xref)
+
+    @staticmethod
+    def _format_rect(rect) -> str:
+        qrect = PdfAnnotationSession._rect_from_value(rect)
+        return f"{qrect.x():.1f},{qrect.y():.1f},{qrect.width():.1f},{qrect.height():.1f}"
+
+    @staticmethod
+    def _rects_close(a: QRectF, b: QRectF, tolerance: float = 0.01) -> bool:
+        a = PdfAnnotationSession._rect_from_value(a)
+        b = PdfAnnotationSession._rect_from_value(b)
+        return (
+            abs(a.x() - b.x()) <= tolerance
+            and abs(a.y() - b.y()) <= tolerance
+            and abs(a.width() - b.width()) <= tolerance
+            and abs(a.height() - b.height()) <= tolerance
+        )
+
+    @staticmethod
+    def _rect_from_value(rect) -> QRectF:
+        if isinstance(rect, QRectF):
+            return QRectF(rect)
+        return QRectF(*rect)
