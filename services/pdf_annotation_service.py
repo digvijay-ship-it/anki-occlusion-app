@@ -138,7 +138,7 @@ def _safe_float(value, default):
 
 
 class PdfAnnotationSession:
-    SELECTABLE_VISUAL_KINDS = {"image", "stamp", "watermark"}
+    SELECTABLE_VISUAL_KINDS = {"image", "stamp"}
 
     TOOL_STYLES = {
         "pen": {"color": "#FF4444", "width": 2.8, "opacity": 1.0},
@@ -165,7 +165,6 @@ class PdfAnnotationSession:
         self.dirty_pages = set()
         self.pending_deleted_xrefs = set()
         self.pending_image_moves = {}
-        self.pending_watermark_deletes = {}
         self.existing_annots = {}
         self.new_items = {}
         self._undo_stack = []
@@ -246,7 +245,6 @@ class PdfAnnotationSession:
                     item = self._build_existing_item(page_num, annot)
                     if item is not None:
                         items.append(item)
-            items.extend(self._detect_pdf_xchange_watermarks(page_num, page))
             self.existing_annots[page_num] = items
             if items:
                 kind_counts = Counter(item.get("kind", "unknown") for item in items)
@@ -323,42 +321,12 @@ class PdfAnnotationSession:
                 item.update(image_payload)
         return item
 
-    def _detect_pdf_xchange_watermarks(self, page_num: int, page):
-        items = []
-        for idx, link in enumerate(page.get_links() or []):
-            uri = (link.get("uri") or "").lower()
-            rect = link.get("from")
-            if "pdf-xchange.com" not in uri or rect is None:
-                continue
-            bounds = self._pdf_rect_to_canvas(page_num, _page_rect_tuple(rect))
-            view_rect = QRectF(
-                bounds[0],
-                bounds[1],
-                max(1.0, bounds[2] - bounds[0]),
-                max(1.0, bounds[3] - bounds[1]),
-            )
-            item = {
-                "id": f"watermark:{page_num}:{idx}:{link.get('xref', 0)}",
-                "page": page_num,
-                "source": "existing",
-                "kind": "watermark",
-                "xref": int(link.get("xref", 0) or 0),
-                "rect": view_rect,
-                "pdf_rect": _page_rect_tuple(rect),
-                "uri": link.get("uri", ""),
-            }
-            items.append(item)
-        if items:
-            self._debug("watermark_scan", page=page_num + 1, count=len(items))
-        return items
-
     def get_new_items_for_page(self, page_num: int):
         page_num = int(page_num)
         existing_visuals = [
             item for item in self.existing_annots.get(page_num, [])
             if item.get("kind") in self.SELECTABLE_VISUAL_KINDS
             and item.get("xref") not in self.pending_deleted_xrefs
-            and item.get("id") not in self.pending_watermark_deletes
         ]
         return existing_visuals + [
             item for item in self.new_items.get(page_num, [])
@@ -472,19 +440,6 @@ class PdfAnnotationSession:
         if item is None or item.get("kind") not in self.SELECTABLE_VISUAL_KINDS:
             self._debug("image_delete_skip", page=page_num + 1, item=item_id, reason="not_found")
             return False
-        if item.get("kind") == "watermark":
-            self.pending_watermark_deletes[item["id"]] = dict(item)
-            self.dirty_pages.add(page_num)
-            self._undo_stack.append({"type": "delete_watermark", "page": page_num, "item_id": item["id"]})
-            self._redo_stack.clear()
-            self._debug(
-                "watermark_delete_apply",
-                page=page_num + 1,
-                item=item["id"],
-                rect=self._format_rect(item.get("rect", QRectF())),
-            )
-            return True
-
         xref = int(item["xref"])
         if xref in self.pending_deleted_xrefs:
             return False
@@ -646,11 +601,6 @@ class PdfAnnotationSession:
                 else:
                     item["last_saved_rect"] = QRectF(action["new_rect"])
                 self.dirty_pages.add(page_num)
-        if action["type"] == "delete_watermark":
-            item = self._find_existing_item(page_num, action.get("item_id"))
-            if item is not None:
-                self.pending_watermark_deletes[item["id"]] = dict(item)
-                self.dirty_pages.add(page_num)
 
     def _apply_inverse_action(self, action):
         page_num = action.get("page", 0)
@@ -683,16 +633,11 @@ class PdfAnnotationSession:
                 else:
                     item["last_saved_rect"] = QRectF(action["old_rect"])
                 self.dirty_pages.add(page_num)
-        if action["type"] == "delete_watermark":
-            self.pending_watermark_deletes.pop(action.get("item_id"), None)
-            self.dirty_pages.add(page_num)
 
     def has_unsaved_changes(self) -> bool:
         if self.pending_deleted_xrefs:
             return True
         if self.pending_image_moves:
-            return True
-        if self.pending_watermark_deletes:
             return True
         for items in self.new_items.values():
             if any(not item.get("deleted", False) for item in items):
@@ -714,8 +659,7 @@ class PdfAnnotationSession:
             for xref, rect in self.pending_image_moves.items()
             if any(item.get("xref") == xref for item in self.existing_annots.get(page_num, []))
         }
-        page_watermarks = self._pending_watermarks_for_page(page_num)
-        if not page_deletes and not page_moves and not page_watermarks:
+        if not page_deletes and not page_moves:
             cached = PAGE_CACHE.get(self.pdf_path, page_num)
             if cached is not None and not cached.isNull():
                 return cached
@@ -724,8 +668,6 @@ class PdfAnnotationSession:
         try:
             temp_doc = _open_pdf_from_memory(self.pdf_path)
             page = temp_doc.load_page(page_num)
-            if page_watermarks:
-                self._apply_pending_watermark_deletes(page_num, page, page_watermarks)
             if page_deletes or page_moves:
                 for annot in list(page.annots() or []):
                     xref = int(annot.xref)
@@ -754,9 +696,6 @@ class PdfAnnotationSession:
             annot = None
             for page_num, items in self.existing_annots.items():
                 page = self.doc.load_page(page_num)
-                page_watermarks = self._pending_watermarks_for_page(page_num)
-                if page_watermarks:
-                    self._apply_pending_watermark_deletes(page_num, page, page_watermarks)
                 moved_items = []
                 for annot in list(page.annots() or []):
                     xref = int(annot.xref)
@@ -843,7 +782,6 @@ class PdfAnnotationSession:
                 self.new_items[page_num] = []
             self.pending_deleted_xrefs.clear()
             self.pending_image_moves.clear()
-            self.pending_watermark_deletes.clear()
             self.dirty_pages.clear()
             self._undo_stack.clear()
             self._redo_stack.clear()
@@ -973,37 +911,6 @@ class PdfAnnotationSession:
             if item.get("id") == item_id:
                 return item
         return None
-
-    def _pending_watermarks_for_page(self, page_num: int):
-        return [
-            item for item in self.pending_watermark_deletes.values()
-            if int(item.get("page", -1)) == int(page_num)
-        ]
-
-    def _apply_pending_watermark_deletes(self, page_num: int, page, items):
-        for item in items:
-            pdf_rect = item.get("pdf_rect")
-            if not pdf_rect:
-                pdf_rect = self._canvas_rect_to_pdf_rect(page_num, item.get("rect", QRectF()))
-            rect = fitz.Rect(*pdf_rect)
-            for link in list(page.get_links() or []):
-                if int(link.get("xref", 0) or 0) == int(item.get("xref", 0) or 0):
-                    try:
-                        page.delete_link(link)
-                    except Exception:
-                        pass
-            try:
-                page.add_redact_annot(rect, fill=(1, 1, 1), cross_out=False)
-                page.apply_redactions(images=0, graphics=2, text=0)
-            except Exception as ex:
-                self._debug("watermark_redact_failed", page=page_num + 1, item=item.get("id"), error=str(ex))
-                raise
-            self._debug(
-                "watermark_delete_commit",
-                page=page_num + 1,
-                item=item.get("id"),
-                pdf_rect=",".join(f"{float(value):.2f}" for value in pdf_rect),
-            )
 
     def _image_payload_from_annot(self, annot):
         doc = annot.parent.parent

@@ -301,13 +301,6 @@ class PdfAnnotationCanvas(QWidget):
                 return
             self._selected_image_page = page_num
             self._selected_image_id = item.get("id")
-            if item.get("kind") != "image":
-                print(
-                    f"[DEBUG][pdf_screenshot] select page={page_num + 1} "
-                    f"item={item.get('id')} kind={item.get('kind')}"
-                )
-                self.update()
-                return
             self._image_drag_item = item
             self._image_drag_page = page_num
             self._image_drag_start = QPointF(point)
@@ -401,7 +394,7 @@ class PdfAnnotationCanvas(QWidget):
 
     @staticmethod
     def _is_selectable_visual(item):
-        return item.get("kind") in {"image", "stamp", "watermark"}
+        return item.get("kind") in {"image", "stamp"}
 
     @staticmethod
     def _item_rect(item):
@@ -410,7 +403,7 @@ class PdfAnnotationCanvas(QWidget):
             return None
         if isinstance(rect, QRectF):
             return QRectF(rect)
-        if item.get("source") == "existing" and item.get("kind") in {"image", "stamp", "watermark"}:
+        if item.get("source") == "existing" and item.get("kind") in {"image", "stamp"}:
             return QRectF(
                 float(rect[0]),
                 float(rect[1]),
