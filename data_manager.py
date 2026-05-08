@@ -5,12 +5,16 @@ import uuid
 import threading
 import time
 import copy
+import shutil
+from datetime import datetime
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 DATA_FILE          = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
 AUTO_SAVE_INTERVAL = 60   # seconds
+BACKUP_DIR_NAME    = "anki_occlusion_data.backups"
+MAX_SAVE_BACKUPS   = 50
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DirtyStore
@@ -45,9 +49,10 @@ class DirtyStore:
         """Load from disk. Clears dirty flag."""
         if os.path.exists(DATA_FILE):
             try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                with open(DATA_FILE, "r", encoding="utf-8-sig") as f:
                     self._data = json.load(f)
             except Exception:
+                print("[DEBUG][data_safety] load_failed using_empty_default")
                 self._data = {"decks": []}
         self._dirty = False
         return self._data
@@ -86,7 +91,12 @@ class DirtyStore:
             snapshot = copy.deepcopy(self._data)
             self._dirty = False          # clear flag while we still hold the lock
         # json.dump outside the lock — slow I/O should never block _rate()
-        self._write_to_disk(snapshot)
+        try:
+            self._write_to_disk(snapshot)
+        except Exception:
+            with self._lock:
+                self._dirty = True
+            raise
         return True
 
     def save_force(self):
@@ -95,7 +105,12 @@ class DirtyStore:
             # ── FIX: snapshot inside lock so json.dump never races with _rate() ──
             snapshot = copy.deepcopy(self._data)
             self._dirty = False
-        self._write_to_disk(snapshot)
+        try:
+            self._write_to_disk(snapshot)
+        except Exception:
+            with self._lock:
+                self._dirty = True
+            raise
 
     def save_soon(self, min_interval: float = 3.0):
         """
@@ -147,7 +162,7 @@ class DirtyStore:
             if saved:
                 print(f"[AutoSave] Saved at {time.strftime('%H:%M:%S')}")
 
-    # ── Atomic write (crash-safe) — unchanged from original ───────────────────
+    # ── Atomic write + local safety backups ───────────────────────────────────
 
     @staticmethod
     def _write_to_disk(data):
@@ -156,13 +171,135 @@ class DirtyStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+
+            DirtyStore._validate_saved_json(tmp)
+            existing_data = DirtyStore._read_json_file(DATA_FILE)
+            if DirtyStore._is_dangerous_empty_overwrite(existing_data, data):
+                existing_summary = DirtyStore._data_summary(existing_data)
+                new_summary = DirtyStore._data_summary(data)
+                print(
+                    "[DEBUG][data_safety] refused_empty_overwrite "
+                    f"existing_decks={existing_summary['decks']} "
+                    f"new_decks={new_summary['decks']}"
+                )
+                raise RuntimeError(
+                    "Refusing to overwrite non-empty Anki Occlusion data with an empty deck list."
+                )
+
+            backup_path = DirtyStore._backup_existing_file(DATA_FILE, existing_data)
             os.replace(tmp, DATA_FILE)
+            summary = DirtyStore._data_summary(data)
+            backup_name = os.path.basename(backup_path) if backup_path else "none"
+            print(
+                "[DEBUG][data_save] saved "
+                f"decks={summary['decks']} cards={summary['cards']} "
+                f"boxes={summary['boxes']} backup={backup_name}"
+            )
         except Exception:
             try:
                 os.unlink(tmp)
             except Exception:
                 pass
             raise
+
+    @staticmethod
+    def _read_json_file(path):
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _validate_saved_json(path):
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("decks", []), list):
+            raise ValueError("Saved data must be a JSON object with a deck list.")
+
+    @staticmethod
+    def _backup_dir_for(data_file):
+        return os.path.join(os.path.dirname(data_file) or ".", BACKUP_DIR_NAME)
+
+    @staticmethod
+    def _backup_existing_file(data_file, existing_data=None):
+        if not os.path.exists(data_file):
+            return None
+        backup_dir = DirtyStore._backup_dir_for(data_file)
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(backup_dir, f"anki_occlusion_data.{stamp}.json")
+        counter = 1
+        while os.path.exists(backup_path):
+            backup_path = os.path.join(
+                backup_dir, f"anki_occlusion_data.{stamp}_{counter}.json"
+            )
+            counter += 1
+
+        shutil.copy2(data_file, backup_path)
+        summary = DirtyStore._data_summary(existing_data)
+        print(
+            "[DEBUG][data_backup] created "
+            f"{os.path.basename(backup_path)} decks={summary['decks']} "
+            f"cards={summary['cards']} boxes={summary['boxes']}"
+        )
+        DirtyStore._prune_backups(backup_dir)
+        return backup_path
+
+    @staticmethod
+    def _prune_backups(backup_dir):
+        try:
+            backups = [
+                os.path.join(backup_dir, name)
+                for name in os.listdir(backup_dir)
+                if name.startswith("anki_occlusion_data.") and name.endswith(".json")
+            ]
+            backups.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+            for old_path in backups[MAX_SAVE_BACKUPS:]:
+                try:
+                    os.unlink(old_path)
+                    print(f"[DEBUG][data_backup] pruned {os.path.basename(old_path)}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_dangerous_empty_overwrite(existing_data, new_data):
+        existing_summary = DirtyStore._data_summary(existing_data)
+        new_summary = DirtyStore._data_summary(new_data)
+        return existing_summary["decks"] > 0 and new_summary["decks"] == 0
+
+    @staticmethod
+    def _data_summary(data):
+        if not isinstance(data, dict):
+            return {"decks": 0, "cards": 0, "boxes": 0}
+
+        def walk(decks):
+            deck_count = 0
+            card_count = 0
+            box_count = 0
+            for deck in decks or []:
+                if not isinstance(deck, dict):
+                    continue
+                deck_count += 1
+                cards = deck.get("cards", []) or []
+                card_count += len(cards)
+                for card in cards:
+                    if isinstance(card, dict):
+                        box_count += len(card.get("boxes", []) or [])
+                child_decks = deck.get("children", []) or deck.get("subdecks", []) or []
+                child_summary = walk(child_decks)
+                deck_count += child_summary["decks"]
+                card_count += child_summary["cards"]
+                box_count += child_summary["boxes"]
+            return {"decks": deck_count, "cards": card_count, "boxes": box_count}
+
+        return walk(data.get("decks", []) or [])
 
 
 # Singleton — import `store` everywhere

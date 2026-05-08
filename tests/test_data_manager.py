@@ -34,6 +34,17 @@ class DirtyStoreTests(unittest.TestCase):
         self.assertEqual(loaded, {"decks": []})
         self.assertFalse(store.is_dirty())
 
+    def test_load_accepts_utf8_bom_files(self):
+        payload = {"decks": [{"_id": 1, "name": "Safe"}]}
+        self.data_file.write_text(json.dumps(payload), encoding="utf-8-sig")
+        store = data_manager.DirtyStore()
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            loaded = store.load()
+
+        self.assertEqual(loaded, payload)
+        self.assertFalse(store.is_dirty())
+
     def test_save_if_dirty_writes_json_and_clears_dirty_flag(self):
         store = data_manager.DirtyStore()
         payload = {"decks": [{"_id": 1, "name": "Biology"}]}
@@ -45,6 +56,51 @@ class DirtyStoreTests(unittest.TestCase):
         self.assertTrue(saved)
         self.assertFalse(store.is_dirty())
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
+
+    def test_save_creates_timestamped_backup_before_replacing_existing_data(self):
+        existing = {"decks": [{"_id": 1, "name": "Old"}]}
+        payload = {"decks": [{"_id": 2, "name": "New"}]}
+        self.data_file.write_text(json.dumps(existing), encoding="utf-8")
+        store = data_manager.DirtyStore()
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            store.set(payload)
+            saved = store.save_if_dirty()
+
+        backup_dir = self.data_file.parent / data_manager.BACKUP_DIR_NAME
+        backups = list(backup_dir.glob("anki_occlusion_data.*.json"))
+        self.assertTrue(saved)
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(json.loads(backups[0].read_text(encoding="utf-8")), existing)
+
+    def test_save_refuses_to_replace_non_empty_data_with_empty_decks(self):
+        existing = {"decks": [{"_id": 1, "name": "Important"}]}
+        payload = {"decks": []}
+        self.data_file.write_text(json.dumps(existing), encoding="utf-8")
+        store = data_manager.DirtyStore()
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            store.set(payload)
+            with self.assertRaises(RuntimeError):
+                store.save_if_dirty()
+
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), existing)
+        self.assertTrue(store.is_dirty())
+
+    def test_save_force_keeps_dirty_flag_when_protected_write_fails(self):
+        existing = {"decks": [{"_id": 1, "name": "Important"}]}
+        payload = {"decks": []}
+        self.data_file.write_text(json.dumps(existing), encoding="utf-8")
+        store = data_manager.DirtyStore()
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            store._data = payload
+            with self.assertRaises(RuntimeError):
+                store.save_force()
+
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), existing)
+        self.assertTrue(store.is_dirty())
 
     def test_save_if_dirty_uses_snapshot_to_prevent_race_conditions(self):
         store = data_manager.DirtyStore()

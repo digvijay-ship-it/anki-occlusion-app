@@ -1325,9 +1325,13 @@ class ReviewScreen(QWidget):
         w, h = self.canvas._canvas_wh()
         if w < 1 or h < 1:
             return
-        scale_w = vp.width()  / w
-        scale_h = vp.height() / h
-        self.canvas._scale = min(scale_w, scale_h)
+        available_w = max(vp.width(), 1)
+        self.canvas._scale = available_w / w
+        print(
+            "[DEBUG][review_image_fit] "
+            f"img={w}x{h} viewport={vp.width()}x{vp.height()} "
+            f"scale={self.canvas._scale:.4f}"
+        )
         self.canvas._on_zoom()
 
     def _update_review_page_nav_ui(self, *_):

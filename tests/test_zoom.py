@@ -45,6 +45,25 @@ class ReviewScreenZoomTests(unittest.TestCase):
         self.assertIsNone(screen._user_zoom_scale)
         screen._zoom_fit.assert_called_once()
 
+    def test_review_image_zoom_fit_uses_available_width_not_height(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen.canvas = MagicMock()
+        screen.canvas._pages = []
+        screen.canvas._scale = 1.0
+        screen.canvas._canvas_wh.return_value = (400, 1200)
+        viewport = MagicMock()
+        viewport.width.return_value = 1000
+        viewport.height.return_value = 800
+        screen._canvas_scroll = MagicMock()
+        screen._canvas_scroll.viewport.return_value = viewport
+
+        with patch("builtins.print") as fake_print:
+            screen._zoom_fit()
+
+        self.assertAlmostEqual(screen.canvas._scale, 2.5)
+        screen.canvas._on_zoom.assert_called_once()
+        self.assertIn("[DEBUG][review_image_fit]", fake_print.call_args.args[0])
+
     def test_ctrl_plus_sets_user_zoom_scale(self):
         screen = ReviewScreen.__new__(ReviewScreen)
         screen.canvas = MagicMock()
