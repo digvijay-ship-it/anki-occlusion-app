@@ -346,6 +346,7 @@ class CardEditorDialog(QDialog):
         vp = self._sc.viewport()
         if getattr(self.canvas, "_pages", None):
             self._pdf_viewer.reset_fit()
+            self._schedule_initial_view_restore("post_zoom_fit", delays_ms=(0, 35, 90))
         else:
             self.canvas.zoom_fit_width(vp.width())
 
@@ -590,24 +591,53 @@ class CardEditorDialog(QDialog):
 
     def _after_load_scroll(self):
         """Scroll to exact image-space position after canvas is ready."""
+        self._schedule_initial_view_restore("after_load")
+
+    def _apply_initial_view_position(self, reason: str = "manual", finalize: bool = False):
+        vbar = self._sc.verticalScrollBar()
         if self._initial_img_y is not None:
-            img_y    = self._initial_img_y
-            editor_scale = self.canvas._scale
+            img_y = float(self._initial_img_y)
+            editor_scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
             scroll_y = int(img_y * editor_scale)
-            sv = scroll_y
-            QTimer.singleShot(30, lambda:
-                self._sc.verticalScrollBar().setValue(sv))
-            self._initial_img_y = None
-        elif self._initial_page is not None and self._initial_page >= 0:
-            pg = self._initial_page
-            sc = self._sc
-            QTimer.singleShot(30, lambda: self.canvas.scroll_to_page(pg, sc))
-            self._initial_page = None
-        elif self._initial_scroll > 0:
-            sv = self._initial_scroll
-            QTimer.singleShot(30, lambda:
-                self._sc.verticalScrollBar().setValue(sv))
-            self._initial_scroll = 0
+            print(
+                f"[DEBUG][editor_restore] apply_img_y reason={reason} "
+                f"img_y={img_y:.2f} scale={editor_scale:.4f} scroll_y={scroll_y}"
+            )
+            vbar.setValue(scroll_y)
+            if finalize:
+                self._initial_img_y = None
+            return True
+        if self._initial_page is not None and self._initial_page >= 0:
+            pg = int(self._initial_page)
+            print(f"[DEBUG][editor_restore] apply_page reason={reason} page={pg + 1}")
+            self.canvas.scroll_to_page(pg, self._sc)
+            if finalize:
+                self._initial_page = None
+            return True
+        if self._initial_scroll > 0:
+            sv = int(self._initial_scroll)
+            print(f"[DEBUG][editor_restore] apply_scroll reason={reason} scroll_y={sv}")
+            vbar.setValue(sv)
+            if finalize:
+                self._initial_scroll = 0
+            return True
+        return False
+
+    def _schedule_initial_view_restore(self, reason: str, delays_ms=(30, 90, 180)):
+        if (
+            self._initial_img_y is None and
+            not (self._initial_page is not None and self._initial_page >= 0) and
+            self._initial_scroll <= 0
+        ):
+            return
+
+        delays = list(delays_ms) if delays_ms else [0]
+        for idx, delay in enumerate(delays):
+            finalize = idx == len(delays) - 1
+            QTimer.singleShot(
+                int(delay),
+                lambda rsn=f"{reason}@{delay}ms", fin=finalize: self._apply_initial_view_position(rsn, finalize=fin),
+            )
 
     def _current_visible_page(self) -> int:
         scroll_pos = self._sc.verticalScrollBar().value()
@@ -651,6 +681,7 @@ class CardEditorDialog(QDialog):
             if current_boxes:
                 self.canvas.set_boxes(current_boxes)
                 self.mask_panel._refresh(current_boxes)
+            self._schedule_initial_view_restore("image_load")
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
             path = card["pdf_path"]
             self.card["pdf_path"] = path

@@ -392,6 +392,30 @@ class CardEditorDialogTests(unittest.TestCase):
         url = open_url.call_args[0][0]
         self.assertEqual(url.fragment(), "page=4")
 
+    def test_apply_initial_view_position_uses_current_canvas_scale_for_img_y(self):
+        self.dialog._initial_img_y = 240.0
+        self.dialog.canvas._scale = 0.5
+        self.dialog._sc.verticalScrollBar().setRange(0, 1000)
+
+        applied = self.dialog._apply_initial_view_position("test_scale_restore")
+
+        self.assertTrue(applied)
+        self.assertEqual(self.dialog._sc.verticalScrollBar().value(), 120)
+        self.assertEqual(self.dialog._initial_img_y, 240.0)
+
+    def test_schedule_initial_view_restore_final_pass_consumes_initial_img_y(self):
+        calls = []
+        self.dialog._initial_img_y = 180.0
+        self.dialog.canvas._scale = 1.25
+        self.dialog._sc.verticalScrollBar().setRange(0, 1000)
+
+        with patch("ui.editor_dialog.QTimer.singleShot", side_effect=lambda delay, fn: (calls.append(delay), fn())):
+            self.dialog._schedule_initial_view_restore("review_handoff", delays_ms=(0, 25, 50))
+
+        self.assertEqual(calls, [0, 25, 50])
+        self.assertEqual(self.dialog._sc.verticalScrollBar().value(), 225)
+        self.assertIsNone(self.dialog._initial_img_y)
+
 
 if __name__ == "__main__":
     unittest.main()
