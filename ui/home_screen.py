@@ -194,7 +194,6 @@ from .deck_view import DeckView
 try:
     from .tmnt_home import TMNTHomeLayout
     _TMNT_HOME_AVAILABLE = True
-    print("[TMNT] Import OK")
 except Exception as _tmnt_err:
     import traceback as _tb
     print(f"[TMNT IMPORT ERROR] {type(_tmnt_err).__name__}: {_tmnt_err}")

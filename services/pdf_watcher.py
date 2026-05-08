@@ -35,11 +35,11 @@ class PdfWatcher(QObject):
         self._ignored_once.clear()
         self._reload_timer.stop()
 
-    def ignore_next_change(self, path: str):
+    def ignore_next_change(self, path: str, count: int = 1):
         if not path:
             return
         key = os.path.abspath(path)
-        self._ignored_once[key] = self._ignored_once.get(key, 0) + 1
+        self._ignored_once[key] = self._ignored_once.get(key, 0) + max(1, int(count or 1))
 
     def _on_pdf_file_changed(self, path: str):
         if not path:

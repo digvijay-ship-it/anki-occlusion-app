@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from PyQt5.QtCore import QPointF, QRectF
 
@@ -16,7 +17,40 @@ class _FakeAnnot:
         self.info = info or {}
 
 
+class _FakePage:
+    def __init__(self, width=300.0, height=400.0):
+        self.rect = type("Rect", (), {"width": width, "height": height})()
+
+
+class _FakeDoc:
+    def __init__(self, page_count):
+        self.is_encrypted = False
+        self._page_count = int(page_count)
+
+    def __len__(self):
+        return self._page_count
+
+    def load_page(self, page_num):
+        return _FakePage()
+
+    def close(self):
+        return None
+
+
 class PdfAnnotationServiceTests(unittest.TestCase):
+    def test_session_init_preloads_only_current_plus_neighbor_pages(self):
+        fake_doc = _FakeDoc(5)
+        fake_skeleton = type("Skeleton", (), {"page_dims": [(900, 1200)] * 5})()
+
+        with patch("services.pdf_annotation_service._open_pdf_from_memory", return_value=fake_doc), \
+             patch("services.pdf_annotation_service.choose_pdf_render_zoom", return_value=2.0), \
+             patch("services.pdf_annotation_service.ensure_pdf_cache_profile", return_value=False), \
+             patch("services.pdf_annotation_service.load_pdf_skeleton", return_value=fake_skeleton), \
+             patch.object(PdfAnnotationSession, "_load_existing_annotations", autospec=True) as load_existing:
+            session = PdfAnnotationSession("deck.pdf", initial_page=2, preload_radius=1)
+
+        load_existing.assert_called_once_with(session, [1, 2, 3])
+
     def test_flatten_annot_vertices_handles_nested_ink_paths(self):
         annot = _FakeAnnot(
             vertices=[

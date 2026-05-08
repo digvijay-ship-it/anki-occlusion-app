@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from pdf_engine import PAGE_CACHE, PdfLoaderThread, get_cached_pdf_page_set, load_pdf_skeleton
+from pdf_engine import PAGE_CACHE, PdfOnDemandThread, get_cached_pdf_page_set, load_pdf_skeleton
 from services.pdf_annotation_service import PdfAnnotationSession
 from ui.pdf_viewer_controller import PdfViewerController
 
@@ -295,10 +295,6 @@ class PdfAnnotationCanvas(QWidget):
             item = self._image_item_at(page_num, point)
             if item is None:
                 self.clear_selected_image()
-                print(
-                    f"[DEBUG][pdf_screenshot] drag_miss page={page_num + 1} "
-                    f"x={point.x():.1f} y={point.y():.1f}"
-                )
                 return
             self._selected_image_page = page_num
             self._selected_image_id = item.get("id")
@@ -306,16 +302,8 @@ class PdfAnnotationCanvas(QWidget):
             self._image_drag_page = page_num
             self._image_drag_start = QPointF(point)
             self._image_drag_start_rect = self._item_rect(item)
-            print(
-                f"[DEBUG][pdf_screenshot] drag_start page={page_num + 1} "
-                f"item={item.get('id')} x={point.x():.1f} y={point.y():.1f}"
-            )
             return
         if self._tool == "erase":
-            print(
-                f"[DEBUG][pdf_erase_drag] start page={page_num + 1} "
-                f"x={point.x():.1f} y={point.y():.1f}"
-            )
             self._erase_active = True
             self.erase_dragged.emit(page_num, point)
             return
@@ -353,11 +341,6 @@ class PdfAnnotationCanvas(QWidget):
                 rect = self._item_rect(self._image_drag_item)
                 if rect is None:
                     rect = QRectF()
-                print(
-                    f"[DEBUG][pdf_screenshot] drag_stop page={self._image_drag_page + 1} "
-                    f"item={self._image_drag_item.get('id')} "
-                    f"rect={rect.x():.1f},{rect.y():.1f},{rect.width():.1f},{rect.height():.1f}"
-                )
                 self.image_move_finished.emit(
                     self._image_drag_page,
                     self._image_drag_item["id"],
@@ -370,8 +353,6 @@ class PdfAnnotationCanvas(QWidget):
             self._image_drag_start_rect = None
             return
         if self._tool == "erase":
-            if self._erase_active:
-                print("[DEBUG][pdf_erase_drag] stop")
             self._erase_active = False
             return
         if self._drawing_page is not None and len(self._live_points) >= 2:
@@ -444,17 +425,23 @@ class PdfAnnotationCanvas(QWidget):
 class PdfAnnotationDialog(QDialog):
     PEN_DEFAULT_COLOR = "#FF4444"
     PEN_DEFAULT_WIDTH = 2.8
+    PREFETCH_RADIUS = 1
 
     def __init__(self, pdf_path: str, parent=None, initial_page: int = 0, initial_anchor_y: float | None = None):
         super().__init__(parent)
         self.pdf_path = os.path.abspath(pdf_path)
         self.initial_page = max(0, int(initial_page or 0))
         self.initial_anchor_y = initial_anchor_y
-        self.session = PdfAnnotationSession(self.pdf_path)
+        self.session = PdfAnnotationSession(
+            self.pdf_path,
+            initial_page=self.initial_page,
+            preload_radius=self.PREFETCH_RADIUS,
+        )
         self._annotation_pen_color = self._load_annotation_pen_color()
         self._annotation_pen_width = self._load_annotation_pen_width()
         self._current_page_zero = self.initial_page
         self._loader_thread = None
+        self._loader_targets = ()
         self._saved_pages = []
         self.return_page = self.initial_page
         self.return_anchor_y = initial_anchor_y
@@ -462,8 +449,72 @@ class PdfAnnotationDialog(QDialog):
         self._load_pages()
 
     def _debug(self, action: str, **data):
-        parts = " ".join(f"{key}={value}" for key, value in data.items())
-        print(f"[DEBUG][pdf_annotation_dialog] {action} {parts}".rstrip())
+        return
+
+    def _target_page_window(self, center_page: int):
+        total = max(0, int(getattr(self.session, "page_count", 0) or 0))
+        if total <= 0:
+            return []
+        center = max(0, min(int(center_page), total - 1))
+        start = max(0, center - self.PREFETCH_RADIUS)
+        end = min(total - 1, center + self.PREFETCH_RADIUS)
+        return list(range(start, end + 1))
+
+    def _ensure_annotation_window(self, center_page: int, reason: str):
+        loaded = self.session.ensure_existing_annotations_loaded(
+            center_page=center_page,
+            radius=self.PREFETCH_RADIUS,
+        )
+        if loaded:
+            self.canvas.update()
+        return loaded
+
+    def _stop_loader_thread(self):
+        thread = getattr(self, "_loader_thread", None)
+        if thread and thread.isRunning():
+            thread.stop()
+            thread.quit()
+            thread.wait(500)
+        self._loader_thread = None
+        self._loader_targets = ()
+
+    def _ensure_render_window(self, center_page: int, reason: str):
+        targets = self._target_page_window(center_page)
+        if not targets:
+            return []
+        missing = []
+        for page_num in targets:
+            cached = PAGE_CACHE.get(self.pdf_path, page_num)
+            if cached is not None and not cached.isNull():
+                print(f"[DEBUG][annotation_lazy] ⚡ p.{page_num + 1}")
+                self.canvas.replace_page(page_num, cached)
+                continue
+            missing.append(page_num)
+        target_key = tuple(missing)
+        if not missing:
+            self.lbl_status.setText(f"ready p.{center_page + 1}")
+            self._stop_loader_thread()
+            return []
+        if self._loader_thread and self._loader_thread.isRunning() and target_key == self._loader_targets:
+            return list(missing)
+        self._stop_loader_thread()
+        self._loader_targets = target_key
+        self.lbl_status.setText(
+            f"loading p.{missing[0] + 1}"
+            if len(missing) == 1
+            else "loading " + ", ".join(f"p.{pn + 1}" for pn in missing)
+        )
+        self._loader_thread = PdfOnDemandThread(
+            self.pdf_path,
+            page_nums=missing,
+            zoom=self.session.render_zoom,
+            parent=self,
+        )
+        self._loader_thread.page_ready.connect(self._on_page_ready)
+        self._loader_thread.batch_done.connect(self._on_render_window_done)
+        self._loader_thread.error.connect(self._on_render_window_error)
+        self._loader_thread.start()
+        return list(missing)
 
     def _setup_ui(self):
         self.setWindowTitle("PDF Annotation Editor (Beta)")
@@ -621,7 +672,6 @@ class PdfAnnotationDialog(QDialog):
         color = str(raw or self.PEN_DEFAULT_COLOR).strip() or self.PEN_DEFAULT_COLOR
         if not QColor(color).isValid():
             color = self.PEN_DEFAULT_COLOR
-        print(f"[DEBUG][pdf_annotation_dialog] load_pen_color color={color}")
         return color
 
     def _load_annotation_pen_width(self) -> float:
@@ -631,7 +681,6 @@ class PdfAnnotationDialog(QDialog):
         except (TypeError, ValueError):
             width = self.PEN_DEFAULT_WIDTH
         width = max(0.8, min(24.0, width))
-        print(f"[DEBUG][pdf_annotation_dialog] load_pen_width width={width:.1f}")
         return width
 
     def _save_annotation_pen_settings(self):
@@ -707,28 +756,35 @@ class PdfAnnotationDialog(QDialog):
         self._viewer.reset_fit()
         self._viewer.set_page_ui(self.initial_page)
         self._viewer.restore_position(page_zero=self.initial_page)
-        if len(cached_pages) == total:
-            self.lbl_status.setText("cache ready")
-            return
-        self.lbl_status.setText("rendering missing pages…")
-        self._loader_thread = PdfLoaderThread(self.pdf_path, zoom=self.session.render_zoom, parent=self)
-        self._loader_thread.done.connect(self._on_pages_ready)
-        self._loader_thread.start()
+        self._ensure_annotation_window(self.initial_page, reason="open")
+        self._ensure_render_window(self.initial_page, reason="open")
 
-    def _on_pages_ready(self, pages, err):
-        if err or not pages:
-            self.lbl_status.setText(err or "render failed")
+    def _on_page_ready(self, page_num, qpx):
+        if qpx is None:
             return
+        pixmap = qpx if isinstance(qpx, QPixmap) else QPixmap.fromImage(qpx)
+        if pixmap.isNull():
+            return
+        print(f"[DEBUG][annotation_lazy] 👀 p.{page_num + 1}")
+        self.canvas.replace_page(page_num, pixmap)
+
+    def _on_render_window_done(self, rendered_pages):
+        self._loader_thread = None
+        self._loader_targets = ()
         current = self._current_page_zero
-        self.canvas.load_pages(pages)
-        self._viewer.fit_width(force=False)
-        self._viewer.restore_position(page_zero=current)
-        self.lbl_status.setText("pages ready")
+        self.lbl_status.setText(f"ready p.{current + 1}")
+
+    def _on_render_window_error(self, message: str):
+        self._loader_thread = None
+        self._loader_targets = ()
+        self.lbl_status.setText(message or "render failed")
 
     def _on_scroll_changed(self, value: int):
         page_zero = self.canvas.get_current_page(value)
         if page_zero != self._current_page_zero:
             self._debug("scroll", value=value, page=page_zero + 1)
+            self._ensure_annotation_window(page_zero, reason="scroll")
+            self._ensure_render_window(page_zero, reason="scroll")
         self._current_page_zero = page_zero
         self._viewer.set_page_ui(page_zero)
         self.return_page = page_zero
@@ -768,12 +824,10 @@ class PdfAnnotationDialog(QDialog):
         page_num, item_id = self.canvas.selected_image()
         if page_num is None or not item_id:
             self.lbl_status.setText("no screenshot selected")
-            print("[DEBUG][pdf_screenshot] delete_skip reason=no_selection")
             return
         if not self.session.delete_image_item(page_num, item_id):
             self.lbl_status.setText("selected screenshot could not be deleted")
             return
-        print(f"[DEBUG][pdf_screenshot] delete page={page_num + 1} item={item_id}")
         self.canvas.clear_selected_image()
         preview = self.session.build_page_preview(page_num)
         if preview is not None and not preview.isNull():
@@ -787,12 +841,10 @@ class PdfAnnotationDialog(QDialog):
         mime = clipboard.mimeData()
         if not mime.hasImage():
             self.lbl_status.setText("clipboard has no image")
-            print("[DEBUG][pdf_screenshot] paste_skip reason=no_clipboard_image")
             return
         image = clipboard.image()
         if image.isNull():
             self.lbl_status.setText("clipboard image is empty")
-            print("[DEBUG][pdf_screenshot] paste_skip reason=null_image")
             return
         data = QByteArray()
         buffer = QBuffer(data)
@@ -806,11 +858,6 @@ class PdfAnnotationDialog(QDialog):
         if item is None:
             self.lbl_status.setText("could not paste screenshot")
             return
-        print(
-            f"[DEBUG][pdf_screenshot] paste page={page_num + 1} "
-            f"image={image.width()}x{image.height()} "
-            f"rect={rect.x():.1f},{rect.y():.1f},{rect.width():.1f},{rect.height():.1f}"
-        )
         self._set_tool("image")
         self.canvas.select_image(page_num, item["id"])
         self.lbl_status.setText(f"pasted screenshot p.{page_num + 1}; press P to write")
@@ -861,22 +908,28 @@ class PdfAnnotationDialog(QDialog):
         self.canvas.update()
 
     def _save_pdf(self):
-        try:
-            changed_pages = self.session.save()
-        except Exception as ex:
-            QMessageBox.warning(self, "Annotation Save Failed", f"Could not update PDF:\n{ex}")
-            self.lbl_status.setText("save failed")
+        if self.__dict__.get("_save_in_progress", False):
             return
-        self._saved_pages = changed_pages
-        for page_num in changed_pages:
-            px = PAGE_CACHE.get(self.pdf_path, page_num)
-            if px is not None and not px.isNull():
-                self.canvas.replace_page(page_num, px)
-        self.canvas.update()
-        if changed_pages:
-            self.lbl_status.setText("saved " + ", ".join(f"p.{pn + 1}" for pn in changed_pages))
-        else:
-            self.lbl_status.setText("no changes")
+        self._save_in_progress = True
+        try:
+            try:
+                changed_pages = self.session.save()
+            except Exception as ex:
+                QMessageBox.warning(self, "Annotation Save Failed", f"Could not update PDF:\n{ex}")
+                self.lbl_status.setText("save failed")
+                return
+            self._saved_pages = changed_pages
+            for page_num in changed_pages:
+                px = PAGE_CACHE.get(self.pdf_path, page_num)
+                if px is not None and not px.isNull():
+                    self.canvas.replace_page(page_num, px)
+            self.canvas.update()
+            if changed_pages:
+                self.lbl_status.setText("saved " + ", ".join(f"p.{pn + 1}" for pn in changed_pages))
+            else:
+                self.lbl_status.setText("no changes")
+        finally:
+            self._save_in_progress = False
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -884,10 +937,7 @@ class PdfAnnotationDialog(QDialog):
             QTimer.singleShot(0, self._viewer.on_resize)
 
     def closeEvent(self, event):
-        if self._loader_thread and self._loader_thread.isRunning():
-            self._loader_thread.stop()
-            self._loader_thread.quit()
-            self._loader_thread.wait(500)
+        self._stop_loader_thread()
         self.return_page = self._current_page_zero
         self.return_anchor_y = self.scroll.verticalScrollBar().value()
         self.session.close()

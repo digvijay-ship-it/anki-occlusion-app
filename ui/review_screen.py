@@ -520,6 +520,10 @@ class ReviewScreen(QWidget):
         self._flush_pending_background_inserts()
 
     def _on_pdf_reload_requested(self, path, current_page, target_page):
+        key = os.path.abspath(path) if path else ""
+        suppress_until = float(getattr(self, "_suppress_pdf_reload_until", {}).get(key, 0.0) or 0.0)
+        if suppress_until and time.monotonic() <= suppress_until:
+            return
         self._pending_reload_page = target_page
         self._reload_current_canvas()
 
@@ -650,12 +654,6 @@ class ReviewScreen(QWidget):
         else:
             self._reload_current_canvas()
 
-        print(
-            f"[DEBUG][review_pen] preserve_on_card_switch "
-            f"active={getattr(self.canvas, '_ink_active', False)} "
-            f"strokes={len(getattr(self.canvas, '_ink_strokes', []))}"
-        )
-
         self.canvas.setFocus() # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
         self._rating_frame.hide()   # ← rating frame explicitly hide karo
         QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
@@ -719,7 +717,6 @@ class ReviewScreen(QWidget):
                 self._zoom_fit()
                 self._center_on_target()
                 self._user_zoom_scale = self.canvas._scale  # C = user set zoom
-            self._debug_report("C key")
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
         elif mods & Qt.ControlModifier and key == Qt.Key_Z:
@@ -1293,7 +1290,6 @@ class ReviewScreen(QWidget):
         except (TypeError, ValueError):
             width = 1.2
         width = max(0.4, min(12.0, width))
-        print(f"[DEBUG][review_pen] load width={width:.1f}")
         return width
 
     def _save_review_ink_width(self):
@@ -1302,18 +1298,12 @@ class ReviewScreen(QWidget):
         settings = QSettings("AnkiOcclusion", "App")
         settings.setValue("review/ink_width", width)
         settings.sync()
-        print(f"[DEBUG][review_pen] save width={width:.1f}")
-
     def _capture_review_ink_width(self, reason=""):
         canvas = getattr(self, "canvas", None)
         if canvas is None:
             return
         self._review_ink_width = float(getattr(canvas, "_ink_width", self._review_ink_width))
         self._save_review_ink_width()
-        print(
-            f"[DEBUG][review_pen] capture_width reason={reason} "
-            f"width={self._review_ink_width:.1f}"
-        )
 
     def _toggle_review_mode(self):
         if self._btn_mode.isChecked():
@@ -1348,8 +1338,7 @@ class ReviewScreen(QWidget):
         return
 
     def _pdf_quality_debug(self, action: str, **data):
-        parts = " ".join(f"{key}={value}" for key, value in data.items())
-        print(f"[DEBUG][pdf_quality][review] {action} {parts}".rstrip())
+        return
 
     def _set_review_page_ui(self, current_zero: int):
         self._pdf_viewer.set_page_ui(current_zero)
@@ -1661,23 +1650,61 @@ class ReviewScreen(QWidget):
             initial_page=page_zero,
             initial_anchor_y=scroll_y,
         )
-        dialog.exec_()
+        self._pause_review_lazy_activity_for_annotation()
+        try:
+            dialog.exec_()
+        finally:
+            self._resume_review_lazy_activity_after_annotation(path)
         self._apply_annotation_beta_refresh(path, dialog._saved_pages, dialog.return_page)
+
+    def _pause_review_lazy_activity_for_annotation(self):
+        self._review_lazy_trace_suspended = True
+        timer = getattr(self, "_ui_idle_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._background_fill_state = None
+        self._bg_pending_inserts.clear()
+        self._pending_visible_request = False
+        self._stop_ondemand_thread()
+        watcher = self.__dict__.get("_pdf_watcher")
+        if watcher is not None:
+            watcher.stop_watch()
+
+    def _resume_review_lazy_activity_after_annotation(self, path: str | None = None):
+        self._review_lazy_trace_suspended = False
+        if path:
+            watcher = self.__dict__.get("_pdf_watcher")
+            if watcher is not None:
+                watcher.watch_pdf(path)
+
+    def _start_review_lazy_trace(self, page_nums, ttl_seconds: float = 8.0):
+        pages = {int(page_num) for page_num in (page_nums or [])}
+        if not pages:
+            self._review_lazy_trace_pages = set()
+            self._review_lazy_trace_seen_pages = set()
+            self._review_lazy_trace_until = 0.0
+            return
+        self._review_lazy_trace_pages = pages
+        self._review_lazy_trace_seen_pages = set()
+        self._review_lazy_trace_until = time.monotonic() + max(0.5, float(ttl_seconds))
 
     def _apply_annotation_beta_refresh(self, path: str, changed_pages, return_page: int | None):
         if not changed_pages:
             if return_page is not None:
                 QTimer.singleShot(0, lambda pg=return_page: self.canvas.scroll_to_page(pg, self._canvas_scroll))
             return
-        self._pdf_watcher.ignore_next_change(path)
-        self._pdf_quality_debug(
-            "annotation_refresh",
-            pages=[pn + 1 for pn in changed_pages],
-            zoom=self._pdf_render_zoom,
-        )
-        for page_num in sorted(set(int(pn) for pn in changed_pages)):
+        refreshed_pages = sorted(set(int(pn) for pn in changed_pages))
+        self._start_review_lazy_trace(refreshed_pages)
+        key = os.path.abspath(path)
+        if "_suppress_pdf_reload_until" not in self.__dict__:
+            self._suppress_pdf_reload_until = {}
+        self._suppress_pdf_reload_until[key] = time.monotonic() + 2.5
+        self._pdf_watcher.ignore_next_change(path, count=3)
+        print("[DEBUG][review_after_edit] " + ", ".join(f"p.{page_num + 1}" for page_num in refreshed_pages))
+        for page_num in refreshed_pages:
             px = PAGE_CACHE.get(path, page_num)
             if px is not None and not px.isNull():
+                self._debug_review_lazy_page_loaded(source="render", page_num=page_num, pixmap=px)
                 self.canvas.inject_page(page_num, px)
         self._update_review_page_nav_ui()
         if return_page is not None:
@@ -1760,6 +1787,7 @@ class ReviewScreen(QWidget):
             if total_pages > 0 and len(clean_pages) == total_pages:
                 t_ms = (time.perf_counter() - t_start) * 1000
                 self._canvas_pdf_path = path   # FIX 1: stamp
+                self._debug_review_lazy_pages_loaded(source="cache", page_nums=range(total_pages))
                 self._apply_canvas_pages(card, box_idx, [clean_pages[i] for i in range(total_pages)])
                 self._wire_scroll_ondemand(path, total_pages)
                 return
@@ -1878,6 +1906,7 @@ class ReviewScreen(QWidget):
                 pages[i] = pg
         if clean_pages:
             cached_idxs = sorted(clean_pages.keys())
+            self._debug_review_lazy_pages_loaded(source="cache", page_nums=cached_idxs)
         self._apply_canvas_pages(card, box_idx, pages)
         self.canvas._show_toast(f"⏳ Loading p.1–{skel.total_pages}...")
         t_skel_ms = (time.perf_counter() - t_start) * 1000
@@ -1917,6 +1946,13 @@ class ReviewScreen(QWidget):
         for pn in already_cached:
             pg = PAGE_CACHE.get(path, pn)
             if pg and not pg.isNull():
+                self._debug_review_lazy_page_loaded(
+                    source="cache",
+                    page_num=pn,
+                    pixmap=pg,
+                    kind="priority",
+                    canvas_wh=f"{self.canvas.width()}x{self.canvas.height()}px",
+                )
                 self.canvas.inject_page(pn, pg)
 
         if not to_render:
@@ -2017,6 +2053,13 @@ class ReviewScreen(QWidget):
         ready_items = sorted(self._bg_pending_inserts.items())
         self._bg_pending_inserts.clear()
         for pn, pg in ready_items:
+            self._debug_review_lazy_page_loaded(
+                source="cache",
+                page_num=pn,
+                pixmap=pg,
+                kind="background",
+                canvas_wh=f"{self.canvas.width()}x{self.canvas.height()}px",
+            )
             self.canvas.inject_page(pn, pg)
         if ready_items:
             self._safe_canvas_toast("Inserted " + ", ".join(f"p.{pn+1}" for pn, _ in ready_items))
@@ -2223,11 +2266,31 @@ class ReviewScreen(QWidget):
         if canvas_len == 0:
             return
 
+        load_kind = getattr(self, "_ondemand_kind", None) or "visible"
+        self._debug_review_lazy_page_loaded(
+            source="render",
+            page_num=page_num,
+            pixmap=qpx,
+            kind=load_kind,
+            canvas_wh=canvas_wh,
+        )
+
         if getattr(self, "_ondemand_kind", None) == "background":
             self._bg_pending_inserts[page_num] = qpx
             return
         self.canvas.inject_page(page_num, qpx)
         self._update_review_page_nav_ui()
+
+    def _debug_review_lazy_page_loaded(self, source: str, page_num: int, pixmap, kind: str = "", canvas_wh: str = ""):
+        if self.__dict__.get("_review_lazy_trace_suspended", False):
+            return
+        page_num = int(page_num)
+        emoji = "⚡" if str(source).strip().lower() == "cache" else "👀"
+        print(f"[DEBUG][review_lazy] {emoji} p.{page_num + 1}")
+
+    def _debug_review_lazy_pages_loaded(self, source: str, page_nums):
+        for page_num in page_nums or []:
+            self._debug_review_lazy_page_loaded(source=source, page_num=page_num, pixmap=None)
     def _stop_ondemand_thread(self):
         """
         Safely stop any running PdfOnDemandThread.
@@ -2395,6 +2458,7 @@ class ReviewScreen(QWidget):
         self._pdf_loader_thread     = PdfLoaderThread(path, zoom=self._pdf_render_zoom, parent=self)
         self._pending_review_card   = card
         self._pending_review_box_idx = box_idx
+        self._review_loader_logged_pages = 0
 
         # [FIX] Show first chunk instantly as pages arrive
         self._pdf_loader_thread.pages_ready.connect(self._on_review_pages_chunk)
@@ -2410,6 +2474,11 @@ class ReviewScreen(QWidget):
         """Show first pages as soon as first chunk arrives — don't wait for full load."""
         card    = self._pending_review_card
         box_idx = self._pending_review_box_idx
+        start_idx = int(getattr(self, "_review_loader_logged_pages", 0) or 0)
+        end_idx = min(int(loaded or 0), len(pages or []))
+        if end_idx > start_idx:
+            self._debug_review_lazy_pages_loaded(source="render", page_nums=range(start_idx, end_idx))
+            self._review_loader_logged_pages = end_idx
         if pages:
             self._apply_canvas_pages(card, box_idx, pages)
         self.canvas._show_toast(f"⏳ Loading PDF... {loaded}/{total} pages")
@@ -2419,6 +2488,11 @@ class ReviewScreen(QWidget):
             return
         card    = self._pending_review_card
         box_idx = self._pending_review_box_idx
+        start_idx = int(getattr(self, "_review_loader_logged_pages", 0) or 0)
+        end_idx = len(pages or [])
+        if end_idx > start_idx:
+            self._debug_review_lazy_pages_loaded(source="render", page_nums=range(start_idx, end_idx))
+            self._review_loader_logged_pages = end_idx
         self._apply_canvas_pages(card, box_idx, pages)
         self.canvas._show_toast(f"✅ PDF loaded — {len(pages)} pages")
 

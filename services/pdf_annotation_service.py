@@ -145,7 +145,7 @@ class PdfAnnotationSession:
         "highlight": {"color": "#FFD54A", "width": 12.0, "opacity": 0.30},
     }
 
-    def __init__(self, pdf_path: str):
+    def __init__(self, pdf_path: str, initial_page: int = 0, preload_radius: int = 1):
         self.pdf_path = os.path.abspath(pdf_path)
         self.doc = _open_pdf_from_memory(self.pdf_path)
         if self.doc.is_encrypted:
@@ -169,7 +169,9 @@ class PdfAnnotationSession:
         self.new_items = {}
         self._undo_stack = []
         self._redo_stack = []
-        self._load_existing_annotations()
+        self._loaded_existing_pages = set()
+        self._preload_radius = max(0, int(preload_radius or 0))
+        self.ensure_existing_annotations_loaded(center_page=initial_page, radius=self._preload_radius)
 
     def close(self):
         if getattr(self, "doc", None) is not None:
@@ -177,8 +179,7 @@ class PdfAnnotationSession:
             self.doc = None
 
     def _debug(self, action: str, **data):
-        parts = " ".join(f"{key}={value}" for key, value in data.items())
-        print(f"[DEBUG][pdf_annotation] {action} {parts}".rstrip())
+        return
 
     def _page_scale_factors(self, page_num: int):
         if not (0 <= int(page_num) < self.page_count):
@@ -256,6 +257,38 @@ class PdfAnnotationSession:
                     kinds=dict(sorted(kind_counts.items())),
                     with_points=with_points,
                 )
+            self._loaded_existing_pages.add(page_num)
+
+    def _page_window(self, center_page: int, radius: int | None = None):
+        radius = self._preload_radius if radius is None else max(0, int(radius))
+        total_pages = int(getattr(self, "page_count", 0) or 0)
+        if total_pages <= 0:
+            return []
+        center = max(0, min(int(center_page), total_pages - 1))
+        start = max(0, center - radius)
+        end = min(total_pages - 1, center + radius)
+        return list(range(start, end + 1))
+
+    def ensure_existing_annotations_loaded(self, center_page: int | None = None, radius: int | None = None, page_nums=None):
+        if not hasattr(self, "_loaded_existing_pages"):
+            self._loaded_existing_pages = set()
+        total_pages = int(getattr(self, "page_count", 0) or 0)
+        if total_pages <= 0 and getattr(self, "doc", None) is None:
+            return []
+        if page_nums is None:
+            if center_page is None:
+                return []
+            target_pages = self._page_window(center_page, radius=radius)
+        else:
+            if total_pages > 0:
+                target_pages = sorted({int(pn) for pn in page_nums if 0 <= int(pn) < total_pages})
+            else:
+                target_pages = sorted({int(pn) for pn in page_nums if int(pn) >= 0})
+        missing = [pn for pn in target_pages if pn not in self._loaded_existing_pages]
+        if not missing:
+            return []
+        self._load_existing_annotations(missing)
+        return missing
 
     def _build_existing_item(self, page_num: int, annot):
         subtype = ""
@@ -323,6 +356,7 @@ class PdfAnnotationSession:
 
     def get_new_items_for_page(self, page_num: int):
         page_num = int(page_num)
+        self.ensure_existing_annotations_loaded(page_nums=[page_num])
         existing_visuals = [
             item for item in self.existing_annots.get(page_num, [])
             if item.get("kind") in self.SELECTABLE_VISUAL_KINDS
@@ -396,6 +430,7 @@ class PdfAnnotationSession:
 
     def move_image_item(self, page_num: int, item_id: str, new_rect: QRectF, old_rect: QRectF | None = None):
         page_num = int(page_num)
+        self.ensure_existing_annotations_loaded(page_nums=[page_num])
         item = self._find_new_item(page_num, item_id)
         if item is None:
             item = self._find_existing_item(page_num, item_id)
@@ -436,6 +471,7 @@ class PdfAnnotationSession:
 
     def delete_image_item(self, page_num: int, item_id: str):
         page_num = int(page_num)
+        self.ensure_existing_annotations_loaded(page_nums=[page_num])
         item = self._find_new_item(page_num, item_id)
         if item is not None and item.get("kind") == "image" and not item.get("deleted", False):
             item["deleted"] = True
@@ -468,6 +504,7 @@ class PdfAnnotationSession:
 
     def erase_at_point(self, page_num: int, point):
         page_num = int(page_num)
+        self.ensure_existing_annotations_loaded(page_nums=[page_num])
         point = point if isinstance(point, QPointF) else QPointF(point[0], point[1])
         self._debug(
             "erase_probe",
@@ -655,6 +692,7 @@ class PdfAnnotationSession:
 
     def build_page_preview(self, page_num: int):
         page_num = int(page_num)
+        self.ensure_existing_annotations_loaded(page_nums=[page_num])
         page_deletes = [
             item["xref"]
             for item in self.existing_annots.get(page_num, [])
@@ -695,9 +733,9 @@ class PdfAnnotationSession:
 
     def save(self):
         dirty_pages = sorted(self.dirty_pages)
-        self._debug("save_start", dirty_pages=dirty_pages, zoom=self.render_label)
+        if dirty_pages:
+            print("[DEBUG][annotation_save] dirty " + ", ".join(f"p.{page_num + 1}" for page_num in dirty_pages))
         if not dirty_pages and not self.has_unsaved_changes():
-            self._debug("save_skip", reason="no_changes")
             return []
 
         try:
@@ -794,10 +832,8 @@ class PdfAnnotationSession:
             self.dirty_pages.clear()
             self._undo_stack.clear()
             self._redo_stack.clear()
-            self._debug("save_success", dirty_pages=dirty_pages, rendered=len(rendered))
             return dirty_pages
-        except Exception as ex:
-            self._debug("save_error", message=str(ex))
+        except Exception:
             raise
 
     def _commit_new_item(self, page, item):

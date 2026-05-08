@@ -61,7 +61,6 @@ class CanvasInteractionMixin:
         # Track recent tablet/stylus activity so review ink can ignore the
         # synthesized mouse events that often follow a pen drag on Windows.
         self._last_tablet_event_time = time.monotonic()
-        print(f"[DEBUG][review_pen] tablet_event type={getattr(e, 'type', lambda: 'unknown')()}")
         e.ignore()
 
     def _is_recent_stylus_mouse_event(self, e) -> bool:
@@ -172,7 +171,6 @@ class CanvasInteractionMixin:
         self._ink_active = not self._ink_active
         self.setCursor(QCursor(Qt.CrossCursor if self._ink_active
                                else Qt.PointingHandCursor))
-        print(f"[DEBUG][review_pen] toggle active={self._ink_active} mode={self._mode}")
 
     def ink_set_active(self, active: bool):
         if not active:
@@ -180,7 +178,6 @@ class CanvasInteractionMixin:
         self._ink_active = bool(active)
         self.setCursor(QCursor(Qt.CrossCursor if self._ink_active
                                else Qt.PointingHandCursor))
-        print(f"[DEBUG][review_pen] set_active active={self._ink_active} mode={self._mode}")
 
     def ink_cycle_color(self):
         self._ink_color_idx = (self._ink_color_idx + 1) % len(self._ink_colors)
@@ -253,10 +250,6 @@ class CanvasInteractionMixin:
         self._ink_press(start_ip)
         if QPointF(ip) != start_ip:
             self._ink_move(ip)
-        print(
-            f"[DEBUG][review_pen] pending_mask_to_ink mask={mask_idx} "
-            f"elapsed={elapsed:.3f} moved={moved:.1f}"
-        )
         return True
 
     def _scroll_area(self):
@@ -284,11 +277,8 @@ class CanvasInteractionMixin:
                     self._ink_pending_press_ip = QPointF(ip)
                     self._ink_pending_press_sp = QPointF(sp)
                     self._ink_pending_press_time = time.monotonic()
-                    print(f"[DEBUG][review_pen] pending_mask_tap mask={hit}")
                     e.accept(); return
                 self._ink_press(ip); e.accept(); return
-            if self._ink_active and stylus_like:
-                print("[DEBUG][review_pen] stylus_press_suppressed")
             hit = self._hit_box(ip)
             if hit >= 0:
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
@@ -415,9 +405,6 @@ class CanvasInteractionMixin:
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
                 self._invalidate_mask_cache()
                 self.update()
-                print(f"[DEBUG][review_pen] tap_reveal mask={hit} elapsed={elapsed:.3f}")
-            else:
-                print(f"[DEBUG][review_pen] hold_on_mask_no_reveal mask={hit} elapsed={elapsed:.3f}")
             e.accept(); return
         if (
             self._mode == "review" and

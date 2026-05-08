@@ -55,6 +55,46 @@ class PdfAnnotationCanvasTests(unittest.TestCase):
 
 
 class PdfAnnotationDialogTests(unittest.TestCase):
+    def test_target_page_window_prefetches_current_plus_neighbors(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog.session = type("Session", (), {"page_count": 5})()
+
+        self.assertEqual(dialog._target_page_window(0), [0, 1])
+        self.assertEqual(dialog._target_page_window(2), [1, 2, 3])
+        self.assertEqual(dialog._target_page_window(4), [3, 4])
+
+    def test_on_scroll_changed_requests_new_window_when_page_changes(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog._current_page_zero = 1
+        dialog.canvas = type("Canvas", (), {"get_current_page": lambda self, value: 2})()
+        dialog._debug = lambda *args, **kwargs: None
+        dialog._ensure_annotation_window = MagicMock()
+        dialog._ensure_render_window = MagicMock()
+        dialog._viewer = type("Viewer", (), {"set_page_ui": MagicMock()})()
+        dialog.return_page = 1
+
+        dialog._on_scroll_changed(350)
+
+        dialog._ensure_annotation_window.assert_called_once_with(2, reason="scroll")
+        dialog._ensure_render_window.assert_called_once_with(2, reason="scroll")
+        dialog._viewer.set_page_ui.assert_called_once_with(2)
+        self.assertEqual(dialog._current_page_zero, 2)
+        self.assertEqual(dialog.return_page, 2)
+
+    def test_on_page_ready_prints_lazy_load_debug_and_replaces_page(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog.canvas = type("Canvas", (), {"replace_page": MagicMock()})()
+        dialog._debug = lambda *args, **kwargs: None
+        pixmap = QPixmap(120, 180)
+        pixmap.fill()
+
+        with patch("builtins.print") as fake_print:
+            dialog._on_page_ready(2, pixmap)
+
+        dialog.canvas.replace_page.assert_called_once_with(2, pixmap)
+        debug_line = fake_print.call_args_list[0][0][0]
+        self.assertEqual(debug_line, "[DEBUG][annotation_lazy] 👀 p.3")
+
     def test_pen_style_override_is_annotation_only(self):
         dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
         dialog._annotation_pen_color = "#11AAFF"
@@ -104,6 +144,15 @@ class PdfAnnotationDialogTests(unittest.TestCase):
             dialog._choose_pen_color()
 
         self.assertEqual(dialog._annotation_pen_color, "#00FFAA")
+
+    def test_save_pdf_ignores_reentrant_call(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog._save_in_progress = True
+        dialog.session = MagicMock()
+
+        dialog._save_pdf()
+
+        dialog.session.save.assert_not_called()
 
 
 if __name__ == "__main__":
