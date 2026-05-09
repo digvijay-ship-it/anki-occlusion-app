@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -21,6 +22,13 @@ from pdf_engine import (
     get_cached_pdf_page_set,
 )
 from perf_utils import get_pdf_page_count
+from storage_paths import (
+    build_archive_asset_path,
+    find_deck_segments,
+    has_mission_archive,
+    import_asset_into_archive,
+    resolve_asset_path,
+)
 
 from editor_ui import OcclusionCanvas, _ZoomableScrollArea, ToolBar, MaskPanel
 from ui.pdf_annotation_dialog import PdfAnnotationDialog
@@ -428,6 +436,57 @@ class CardEditorDialog(QDialog):
         elif key == Qt.Key_T: self.toolbar.select_tool("text")
         else: super().keyPressEvent(e)
 
+    def _resolve_source_path(self, stored_path: str) -> str:
+        return resolve_asset_path(stored_path)
+
+    def _current_deck_segments(self):
+        deck = getattr(self, "_deck", None)
+        deck_id = deck.get("_id") if isinstance(deck, dict) else None
+        if deck_id is None:
+            return []
+        return find_deck_segments(self._data, deck_id)
+
+    def _store_archive_asset(self, source_path: str, kind: str) -> str:
+        if not source_path:
+            return ""
+        if has_mission_archive():
+            deck_segments = self._current_deck_segments() if kind == "pdfs" else None
+            stored_path = import_asset_into_archive(
+                source_path,
+                kind,
+                deck_segments=deck_segments,
+            )
+            print(
+                "[DEBUG][mission_archive] editor_store_asset "
+                f"kind={kind} source={source_path} deck={'/'.join(deck_segments or [])} stored={stored_path}"
+            )
+            return stored_path
+        abs_path = os.path.abspath(source_path)
+        print(
+            "[DEBUG][mission_archive] editor_store_asset_legacy "
+            f"kind={kind} path={abs_path}"
+        )
+        return abs_path
+
+    def _prepare_pasted_image_target(self) -> tuple[str, str]:
+        if has_mission_archive():
+            abs_path, rel_path = build_archive_asset_path("images", "anki_paste.png")
+            print(
+                "[DEBUG][mission_archive] editor_paste_target "
+                f"abs={abs_path} stored={rel_path}"
+            )
+            return abs_path, rel_path
+        import tempfile as _tmp
+
+        fd, tmp_path = _tmp.mkstemp(
+            suffix=".png",
+            prefix="anki_paste_",
+            dir=os.path.expanduser("~"),
+        )
+        os.close(fd)
+        print(f"[DEBUG][mission_archive] editor_paste_target_legacy abs={tmp_path}")
+        return tmp_path, tmp_path
+
     # ── image / paste ─────────────────────────────────────────────────────────
 
     def _load_image(self):
@@ -436,7 +495,12 @@ class CardEditorDialog(QDialog):
         if not path: return
         px = QPixmap(path)
         if px.isNull(): QMessageBox.warning(self, "Error", "Could not load image."); return
-        self.card["image_path"] = path; self.card.pop("pdf_path", None)
+        try:
+            stored_path = self._store_archive_asset(path, "images")
+        except Exception as ex:
+            QMessageBox.warning(self, "Error", f"Could not archive image:\n{ex}")
+            return
+        self.card["image_path"] = stored_path; self.card.pop("pdf_path", None)
         self._pdf_pages = []; self.pdf_bar.hide()
         self.btn_open_ext.setVisible(False); self.lbl_sync.setVisible(False)
         self._stop_watch()
@@ -454,13 +518,10 @@ class CardEditorDialog(QDialog):
         if px.isNull():
             QMessageBox.information(self, "Nothing to paste",
                 "Clipboard mein koi image nahi hai."); return
-        import tempfile as _tmp
-        fd, tmp_path = _tmp.mkstemp(suffix=".png", prefix="anki_paste_",
-                                    dir=os.path.expanduser("~"))
-        os.close(fd)
+        tmp_path, stored_path = self._prepare_pasted_image_target()
         if not px.save(tmp_path, "PNG"):
             QMessageBox.warning(self, "Error", "Could not save pasted image."); return
-        self.card["image_path"] = tmp_path; self.card.pop("pdf_path", None)
+        self.card["image_path"] = stored_path; self.card.pop("pdf_path", None)
         self._pdf_pages = []; self.pdf_bar.hide()
         self.btn_open_ext.setVisible(False); self.lbl_sync.setVisible(False)
         self._stop_watch()
@@ -480,12 +541,18 @@ class CardEditorDialog(QDialog):
         if not path: return
         if getattr(self, "_deck", None):
             self._deck["pdf_dir"] = os.path.dirname(path)
-        self.card["pdf_path"] = path; self.card.pop("image_path", None)
+        try:
+            stored_path = self._store_archive_asset(path, "pdfs")
+        except Exception as ex:
+            QMessageBox.warning(self, "Error", f"Could not archive PDF:\n{ex}")
+            return
+        abs_path = self._resolve_source_path(stored_path)
+        self.card["pdf_path"] = stored_path; self.card.pop("image_path", None)
         self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
         self._pending_boxes = []
         self.btn_relink.setVisible(True)
         self._show_pdf_loading(True)
-        self._load_pdf_direct(path)
+        self._load_pdf_direct(abs_path)
 
     def _stop_pdf_threads(self):
         """Stop any running PDF render thread."""
@@ -656,7 +723,7 @@ class CardEditorDialog(QDialog):
     def _on_pdf_done(self, pages: list, err):
         """Called by PdfLoaderThread when all pages are rendered."""
         self._show_pdf_loading(False)
-        path = self.card.get("pdf_path", "")
+        path = self._resolve_source_path(self.card.get("pdf_path", ""))
         if not pages:
             QMessageBox.warning(self, "PDF Error", err or "Could not render PDF.")
             return
@@ -684,24 +751,25 @@ class CardEditorDialog(QDialog):
         self.inp_notes.setPlainText(card.get("notes",""))
         
         current_boxes = card.get("boxes", [])
+        image_path = self._resolve_source_path(card.get("image_path", ""))
+        pdf_path = self._resolve_source_path(card.get("pdf_path", ""))
 
-        if card.get("image_path") and os.path.exists(card["image_path"]):
-            px = QPixmap(card["image_path"])
+        if card.get("image_path") and os.path.exists(image_path):
+            px = QPixmap(image_path)
             if px and not px.isNull(): self.canvas.load_pixmap(px)
             if current_boxes:
                 self.canvas.set_boxes(current_boxes)
                 self.mask_panel._refresh(current_boxes)
             self._schedule_initial_view_restore("image_load")
-        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(card["pdf_path"]):
-            path = card["pdf_path"]
-            self.card["pdf_path"] = path
-            self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
+        elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(pdf_path):
+            self.card["pdf_path"] = card.get("pdf_path", "")
+            self._auto_subdeck_name = os.path.splitext(os.path.basename(pdf_path))[0]
             self._pending_boxes = current_boxes
             self._pending_boxes_need_pdf_adapt = True
             self.btn_relink.setVisible(True)
             self._show_pdf_loading(True)
-            self._load_pdf_direct(path)
-        elif card.get("pdf_path") and not os.path.exists(card["pdf_path"]):
+            self._load_pdf_direct(pdf_path)
+        elif card.get("pdf_path") and not os.path.exists(pdf_path):
             self.btn_relink.setVisible(True)
             self.lbl_sync.setVisible(True)
             self.lbl_sync.setText("⚠ PDF not found — click 🔄 Relink PDF to fix")
@@ -764,7 +832,7 @@ class CardEditorDialog(QDialog):
         self._load_pdf_direct(path)
 
     def _open_in_reader(self):
-        path = self.card.get("pdf_path") or self._watched_path
+        path = self._resolve_source_path(self.card.get("pdf_path") or self._watched_path)
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, "No PDF", "No PDF is currently loaded."); return
         import subprocess
@@ -781,7 +849,7 @@ class CardEditorDialog(QDialog):
             QMessageBox.warning(self,"Could not open",f"Could not open PDF:\n{ex}")
 
     def _open_annotation_beta(self):
-        path = self.card.get("pdf_path") or self._watched_path
+        path = self._resolve_source_path(self.card.get("pdf_path") or self._watched_path)
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
             return
@@ -823,7 +891,7 @@ class CardEditorDialog(QDialog):
         if not PDF_SUPPORT:
             QMessageBox.warning(self, "No PDF support", "pip install pymupdf"); return
 
-        old_path = self.card.get("pdf_path", "") or self._watched_path or ""
+        old_path = self._resolve_source_path(self.card.get("pdf_path", "") or self._watched_path or "")
         start_dir = os.path.dirname(old_path) if old_path else ""
         if not start_dir and getattr(self, "_deck", None):
             start_dir = self._deck.get("pdf_dir", "")
@@ -834,6 +902,12 @@ class CardEditorDialog(QDialog):
             return
         if getattr(self, "_deck", None):
             self._deck["pdf_dir"] = os.path.dirname(new_path)
+        try:
+            stored_new_path = self._store_archive_asset(new_path, "pdfs")
+        except Exception as ex:
+            QMessageBox.warning(self, "Error", f"Could not archive PDF:\n{ex}")
+            return
+        resolved_new_path = self._resolve_source_path(stored_new_path)
 
         # Confirm so user doesn't accidentally overwrite with wrong file
         reply = QMessageBox.question(
@@ -853,7 +927,7 @@ class CardEditorDialog(QDialog):
         # Invalidate old cache, update stored path
         if old_path:
             PAGE_CACHE.invalidate_pdf(old_path)
-        self.card["pdf_path"] = new_path
+        self.card["pdf_path"] = stored_new_path
         self.card.pop("image_path", None)
         self._auto_subdeck_name = os.path.splitext(os.path.basename(new_path))[0]
 
@@ -867,7 +941,7 @@ class CardEditorDialog(QDialog):
             f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;")
 
         self._show_pdf_loading(True)
-        self._load_pdf_direct(new_path)
+        self._load_pdf_direct(resolved_new_path)
 
     # ── save / close ──────────────────────────────────────────────────────────
 

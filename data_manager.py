@@ -223,6 +223,15 @@ class DirtyStore:
 
     @staticmethod
     def _backup_dir_for(data_file):
+        try:
+            from storage_paths import current_backup_dir, current_data_file
+
+            normalized = os.path.normcase(os.path.normpath(data_file or ""))
+            current = os.path.normcase(os.path.normpath(current_data_file()))
+            if normalized == current:
+                return current_backup_dir()
+        except Exception:
+            pass
         return os.path.join(os.path.dirname(data_file) or ".", BACKUP_DIR_NAME)
 
     @staticmethod

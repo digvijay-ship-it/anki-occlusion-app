@@ -92,6 +92,7 @@ from data_manager import (
     DATA_FILE, store
 )
 from perf_utils import get_pdf_page_count
+from storage_paths import resolve_asset_path
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -605,7 +606,7 @@ class ReviewScreen(QWidget):
             btn.setText(f"{parts[0]} {icon}  {val}  {color_lbl}")
 
         current_path = getattr(self.canvas, "_current_pdf_path", "") or getattr(self, "_canvas_pdf_path", "")
-        new_path = card.get("pdf_path", "")
+        new_path = resolve_asset_path(card.get("pdf_path", ""))
         same_pdf = bool(current_path and new_path and os.path.abspath(current_path) == os.path.abspath(new_path))
 
         if same_pdf and getattr(self.canvas, "_pages", None):
@@ -1476,7 +1477,7 @@ class ReviewScreen(QWidget):
                 f"  SM2 state       : {sm2_obj.get('sched_state','?')}  due={sm2_obj.get('sm2_due','?')}",
                 f"  Total boxes     : {len(card.get('boxes', []))}",
             ]
-            pdf_path = card.get("pdf_path", "")
+            pdf_path = resolve_asset_path(card.get("pdf_path", ""))
             if pdf_path:
                 cached_pages = 0
                 for i in range(10000):
@@ -1595,7 +1596,7 @@ class ReviewScreen(QWidget):
             return
 
         card, _, _ = self._items[idx]
-        path = card.get("pdf_path", "")
+        path = resolve_asset_path(card.get("pdf_path", ""))
         if not path or not os.path.exists(path):
             self.canvas._show_toast("No PDF loaded for this card")
             return
@@ -1655,7 +1656,7 @@ class ReviewScreen(QWidget):
         if not (0 <= idx < len(self._items)):
             return
         card, _box_idx, _ = self._items[idx]
-        path = card.get("pdf_path", "")
+        path = resolve_asset_path(card.get("pdf_path", ""))
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
             return
@@ -1756,18 +1757,20 @@ class ReviewScreen(QWidget):
 
         import time
         t_start = time.perf_counter()
-        fname   = os.path.basename(card.get("pdf_path", card.get("image_path", "?")))
+        display_path = resolve_asset_path(card.get("pdf_path", "") or card.get("image_path", "?"))
+        fname   = os.path.basename(display_path)
 
         # ── 1. IMAGE CARD ─────────────────────────────────────────────────────
-        if card.get("image_path") and os.path.exists(card["image_path"]):
-            px = QPixmap(card["image_path"])
+        image_path = resolve_asset_path(card.get("image_path", ""))
+        if card.get("image_path") and os.path.exists(image_path):
+            px = QPixmap(image_path)
             if px and not px.isNull():
                 self._apply_canvas(card, box_idx, px)
             return
 
         # ── 2. PDF CARD ───────────────────────────────────────────────────────
         if card.get("pdf_path") and PDF_SUPPORT:
-            path = card["pdf_path"]
+            path = resolve_asset_path(card.get("pdf_path", ""))
             self._pdf_watcher.watch_pdf(path)
 
             # ── 2a. PDF missing ───────────────────────────────────────────────
@@ -1838,7 +1841,7 @@ class ReviewScreen(QWidget):
         """
         boxes    = card.get("boxes", [])
         pages    = set()
-        card_path = path or card.get("pdf_path", "")
+        card_path = resolve_asset_path(path or card.get("pdf_path", ""))
 
         def _add_pages_from_card(c, box_ref):
             c_boxes = c.get("boxes", [])
@@ -1859,7 +1862,7 @@ class ReviewScreen(QWidget):
         # into a full-document background fill.
         if card_path:
             for c, box_ref, _sm2 in self._items:
-                if c.get("pdf_path", "") != card_path:
+                if resolve_asset_path(c.get("pdf_path", "")) != card_path:
                     continue
                 _add_pages_from_card(c, box_ref)
 
@@ -2338,7 +2341,7 @@ class ReviewScreen(QWidget):
     def _apply_canvas(self, card, box_idx, px):
         """Pixmap + boxes canvas pe set karo — sync aur async dono paths use karte hain."""
         self._current_pixmap = px
-        _pdf_path = card.get("pdf_path", "")
+        _pdf_path = resolve_asset_path(card.get("pdf_path", ""))
         # [PIXMAP REGISTRY] ReviewWindow ka current pixmap + canvas track karo
         from cache_manager import PIXMAP_REGISTRY
         PIXMAP_REGISTRY.register(
@@ -2387,7 +2390,7 @@ class ReviewScreen(QWidget):
 
     def _apply_canvas_pages(self, card, box_idx, pages):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
-        path = card.get("pdf_path", "")
+        path = resolve_asset_path(card.get("pdf_path", ""))
         self._canvas_pdf_path = path
         self.canvas._current_pdf_path = path
         if hasattr(self.canvas, "clear_peek_target"):
@@ -2458,7 +2461,7 @@ class ReviewScreen(QWidget):
         QTimer.singleShot(120, self._canvas_scroll._emit_visible_pages)
         
     def _start_review_pdf_thread(self, card, box_idx):
-        path = card.get("pdf_path", "")
+        path = resolve_asset_path(card.get("pdf_path", ""))
         if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()

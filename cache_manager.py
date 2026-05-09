@@ -48,7 +48,7 @@ from collections import OrderedDict
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QSizePolicy, QToolButton
+    QScrollArea, QFrame, QSizePolicy, QToolButton, QMessageBox
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QPalette, QFont
@@ -486,9 +486,9 @@ class DiskCombinedCache:
 PAGE_CACHE     = LRUPageCache()
 def _load_cache_dir() -> str:
     try:
-        from PyQt5.QtCore import QSettings
-        s = QSettings("AnkiOcclusion", "App")
-        return s.value("cache_dir", "")
+        from storage_paths import current_cache_dir
+
+        return current_cache_dir()
     except Exception:
         return ""
 
@@ -517,7 +517,10 @@ def _canonical_pdf_path(path: str) -> str:
     if not path:
         return ""
     try:
-        return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+        from storage_paths import resolve_asset_path
+
+        resolved = resolve_asset_path(path)
+        return os.path.normcase(os.path.normpath(os.path.abspath(resolved)))
     except Exception:
         return str(path)
 
@@ -725,6 +728,20 @@ class CacheManagerPanel(QWidget):
         self._lbl_location.setText(f"📂 {COMBINED_CACHE._dir}")
 
     def _change_cache_location(self):
+        try:
+            from storage_paths import get_mission_archive_root
+
+            archive_root = get_mission_archive_root()
+        except Exception:
+            archive_root = ""
+        if archive_root:
+            QMessageBox.information(
+                self,
+                "Mission Archive Active",
+                "Cache location is controlled by Mission Archive while it is active.",
+            )
+            print("[DEBUG][mission_archive] cache_manager_blocked_custom_cache_change")
+            return
         from PyQt5.QtWidgets import QFileDialog
         new_dir = QFileDialog.getExistingDirectory(
             self, "Select Cache Folder", COMBINED_CACHE._dir

@@ -85,6 +85,7 @@ from data_manager import (
     DATA_FILE, store
 )
 from services.native_pdf_backend import describe_pdf_backend
+from storage_paths import initialize_mission_archive
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -205,6 +206,7 @@ from ui.deck_view import DeckView
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        initialize_mission_archive()
         self._data = load_data()
         store.start_autosave()          # 🔒 DirtyStore — auto-save every 60s if dirty
         self.setWindowTitle("Anki Occlusion")

@@ -85,6 +85,7 @@ from data_manager import (
     DATA_FILE, store
 )
 from perf_utils import card_has_due_today, get_pdf_page_count
+from storage_paths import find_deck_segments, has_mission_archive, relocate_pdf_for_deck, resolve_asset_path
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -673,7 +674,7 @@ class DeckView(QWidget):
             badge = "🔴 Due" if self._card_has_due_today(c) else f"✅ {sm2_days_left(c)}d"
 
             # ── Pages count ───────────────────────────────────────────────────
-            pdf_path = c.get("pdf_path", "")
+            pdf_path = resolve_asset_path(c.get("pdf_path", ""))
             if pdf_path and os.path.exists(pdf_path) and PDF_SUPPORT:
                 n_pages = get_pdf_page_count(pdf_path)
                 pages_str = f"📄{n_pages}p  "
@@ -704,7 +705,7 @@ class DeckView(QWidget):
                 f"| Rep:{c.get('sm2_repetitions',0)}  "
                 f"| EF:{c.get('sm2_ease',2.5):.2f}  | {badge}")
 
-            img_path = c.get("image_path", "")
+            img_path = resolve_asset_path(c.get("image_path", ""))
             if img_path and os.path.exists(img_path):
                 if img_path not in self._thumb_cache:
                     px = QPixmap(img_path).scaled(
@@ -761,8 +762,14 @@ class DeckView(QWidget):
                         "created":  datetime.now().isoformat(),
                     }
                     self.deck.setdefault("children", []).append(target_deck)
+            if has_mission_archive() and card.get("pdf_path"):
+                deck_segments = find_deck_segments(self._data, target_deck.get("_id"))
+                relocate_pdf_for_deck(card, deck_segments)
             target_deck.setdefault("cards", []).append(card)
         else:
+            if has_mission_archive() and card.get("pdf_path"):
+                deck_segments = find_deck_segments(self._data, self.deck.get("_id"))
+                relocate_pdf_for_deck(card, deck_segments)
             self.deck.setdefault("cards", []).append(card)
 
         home = self._find_home()

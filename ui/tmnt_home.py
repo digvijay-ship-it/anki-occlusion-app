@@ -43,8 +43,9 @@ from PyQt5.QtWidgets import (
     QGraphicsDropShadowEffect,
     QStyledItemDelegate,
     QStyle,
+    QFileDialog,
 )
-from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QRect
+from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QRect, QPoint, QPropertyAnimation, QEasingCurve, QEvent
 from PyQt5.QtGui import (
     QPainter,
     QColor,
@@ -54,12 +55,20 @@ from PyQt5.QtGui import (
     QPixmap,
     QPainterPath,
     QLinearGradient,
+    QCursor,
 )
 
 from sm2_engine import sm2_init, is_due_today, sm2_days_left
 from data_manager import find_deck_by_id, next_deck_id, store
 from pdf_engine import PDF_SUPPORT
 from perf_utils import build_deck_rollups
+from storage_paths import (
+    archive_label,
+    archive_tooltip,
+    current_data_file,
+    get_mission_archive_root,
+    migrate_to_mission_archive,
+)
 from ui.deck_tree import DeckTree, _DeckTreeWidget
 from ui.deck_view import DeckView
 
@@ -2016,6 +2025,7 @@ class TMNTBgmWidget(QFrame):
 #  TOP BAR
 # ══════════════════════════════════════════════════════════════════════════════
 class TMNTTopBar(QFrame):
+    btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
     btn_theme_clicked = pyqtSignal()
@@ -2027,8 +2037,9 @@ class TMNTTopBar(QFrame):
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
         self._scale = _tmnt_scale(data)
+        self._data = data if isinstance(data, dict) else {}
         self.setObjectName("tmnt_topbar1")
-        self.setFixedHeight(_px(52, self._scale))
+        self.setFixedHeight(_px(58, self._scale))
         self.setStyleSheet(
             _scale_ss(
                 f"""
@@ -2042,7 +2053,23 @@ class TMNTTopBar(QFrame):
                 self._scale,
             )
         )
+        self._brand_glitch_idx = 0
+        self._brand_flicker_idx = 0
+        self._more_btn = None
+        self._settings_btn = None
+        self._more_panel = None
+        self._settings_panel = None
+        self._pending_panel = None
+        self._panel_hide_timer = QTimer(self)
+        self._panel_hide_timer.setSingleShot(True)
+        self._panel_hide_timer.timeout.connect(self._hide_unhovered_panel)
         self._build_ui()
+        self._brand_glitch_timer = QTimer(self)
+        self._brand_glitch_timer.timeout.connect(self._advance_brand_glitch)
+        self._brand_glitch_timer.start(240)
+        self._brand_flicker_timer = QTimer(self)
+        self._brand_flicker_timer.timeout.connect(self._advance_brand_flicker)
+        self._brand_flicker_timer.start(420)
         self._quote_idx = 0
         self._quote_timer = QTimer(self)
         self._quote_timer.timeout.connect(self._rotate_quote)
@@ -2050,88 +2077,47 @@ class TMNTTopBar(QFrame):
 
     def _build_ui(self):
         L = QHBoxLayout(self)
-        L.setContentsMargins(_px(16, self._scale), 0, _px(16, self._scale), 0)
+        L.setContentsMargins(
+            _px(16, self._scale),
+            _px(6, self._scale),
+            _px(16, self._scale),
+            _px(6, self._scale),
+        )
         L.setSpacing(_px(14, self._scale))
 
         left = QWidget()
         left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         left_l = QHBoxLayout(left)
         left_l.setContentsMargins(0, 0, 0, 0)
-        left_l.setSpacing(_px(12, self._scale))
+        left_l.setSpacing(0)
 
-        logo_box = QFrame()
-        logo_box.setStyleSheet(
-            _scale_ss(
-                f"QFrame {{ border: 2px solid {T_GREEN}; border-radius: 4px; "
-                f"background: transparent; padding: 2px 6px; }}"
-                f"QLabel {{ border: none; }}",
-                self._scale,
-            )
-        )
-        logo_box.setFixedSize(_px(46, self._scale), _px(38, self._scale))
-        ll = QHBoxLayout(logo_box)
-        ll.setContentsMargins(0, 0, 0, 0)
-        logo_icon = QLabel("🐢")
-        logo_icon.setStyleSheet(
-            _scale_ss("font-size: 22px; border: none;", self._scale)
-        )
-        logo_icon.setAlignment(Qt.AlignCenter)
-        # ll.addWidget(logo_icon)
-        # left_l.addWidget(logo_box, 0, Qt.AlignVCenter)
+        self.brand_name = QLabel("ANKI OCCLUSION")
+        self.brand_name.setObjectName("tmnt_brand_name")
+        self.brand_name.setStyleSheet(self._brand_name_ss())
 
-        app_name = QLabel("ANKI OCCLUSION")
-        app_name.setStyleSheet(
-            _scale_ss(
-                f"color: {T_NEON}; font-size: 18px; font-weight: 900; "
-                f"font-family: {T_PIXEL}; letter-spacing: 2px;",
-                self._scale,
-            )
-        )
-        left_l.addWidget(app_name, 0, Qt.AlignVCenter)
+        self._brand_name_glow = QGraphicsDropShadowEffect(self.brand_name)
+        self._brand_name_glow.setColor(QColor(102, 252, 241, 150))
+        self._brand_name_glow.setBlurRadius(_px(7, self._scale))
+        self._brand_name_glow.setOffset(0, 0)
+        self.brand_name.setGraphicsEffect(self._brand_name_glow)
+
+        left_l.addWidget(self.brand_name, 0, Qt.AlignVCenter)
         left_l.addStretch()
         L.addWidget(left, 1)
 
-        # ── Nav buttons ──
-        def _nav(text, tip):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setStyleSheet(
-                _scale_ss(
-                    f"""
-                QPushButton {{
-                background: transparent;
-                color: {T_SUBTEXT};
-                border: none;
-                border-bottom: 2px solid transparent;
-                font-family: {T_MONO};
-                font-size: 12px;
-                font-weight: bold;
-                padding: 6px 8px;
-                letter-spacing: 1px;
-                text-transform: uppercase;
-            }}
-                QPushButton:hover {{
-                    color: {T_GREEN};
-                    border-bottom: 2px solid {T_GREEN};
-                }}
-            """,
-                    self._scale,
-                )
-            )
-            return b
-
-        btn_math = _nav("📘 MATH", "Math Trainer")
-        btn_journal = _nav("📜 JOURNAL", "Daily Journal")
-        btn_theme = _nav("🖥 CLASSIC MODE", "Switch Theme")
-        btn_help = _nav("❓ HELP", "Help")
-        btn_about = _nav("ⓘ ABOUT", "About")
+        btn_math = self._make_nav_button("📘 MATH", "Math Trainer")
+        btn_journal = self._make_nav_button("📜 JOURNAL", "Daily Journal")
+        btn_theme = self._make_theme_nav_button("🖥 CLASSIC MODE", "Switch Theme")
+        self._more_btn = self._make_nav_button("MORE ▾", "More")
+        self._more_btn.installEventFilter(self)
+        self._more_panel = self._build_more_panel()
 
         btn_math.clicked.connect(self.btn_math_clicked)
         btn_journal.clicked.connect(self.btn_journal_clicked)
         btn_theme.clicked.connect(self.btn_theme_clicked)
-        btn_help.clicked.connect(self.btn_help_clicked)
-        btn_about.clicked.connect(self.btn_about_clicked)
+        self._more_btn.clicked.connect(
+            lambda: self._toggle_panel(self._more_panel, self._more_btn, "left")
+        )
 
         center = QWidget()
         center.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
@@ -2139,33 +2125,10 @@ class TMNTTopBar(QFrame):
         center_l.setContentsMargins(0, 0, 0, 0)
         center_l.setSpacing(_px(10, self._scale))
         center_l.addStretch()
-        for b in (btn_math, btn_journal, btn_theme, btn_help, btn_about):
+        for b in (btn_math, btn_journal, btn_theme, self._more_btn):
             center_l.addWidget(b, 0, Qt.AlignCenter)
         center_l.addStretch()
         L.addWidget(center, 1)
-
-        # ── Font buttons ──
-        def _font_btn(text, delta):
-            b = QPushButton(text)
-            b.setFixedSize(_px(28, self._scale), _px(26, self._scale))
-            b.setStyleSheet(
-                _scale_ss(
-                    f"""
-                QPushButton {{
-                    background: {T_PANEL};
-                    color: {T_SUBTEXT};
-                    border: 1px solid {T_BORDER};
-                    border-radius: 2px;
-                    font-size: 12px;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{ background: {T_CARD}; color: {T_TEXT}; border-color: {T_GREEN}; }}
-            """,
-                    self._scale,
-                )
-            )
-            b.clicked.connect(lambda _, d=delta: self.font_change.emit(d))
-            return b
 
         right = QWidget()
         right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -2174,29 +2137,58 @@ class TMNTTopBar(QFrame):
         right_l.setSpacing(_px(10, self._scale))
         right_l.addStretch()
 
-        font_box = QWidget()
-        font_l = QHBoxLayout(font_box)
-        font_l.setContentsMargins(0, 0, 0, 0)
-        font_l.setSpacing(_px(2, self._scale))
-        font_l.addWidget(_font_btn("A−", -1))
-        font_l.addWidget(_font_btn("A", 0))
-        font_l.addWidget(_font_btn("A+", +1))
-        right_l.addWidget(font_box, 0, Qt.AlignVCenter)
+        self._save_btn = self._make_square_action(
+            "💾",
+            T_PURPLE,
+            hover_color=T_PURPLE,
+            hover_fill="rgba(176,136,249,0.20)",
+        )
+        self._save_btn.setToolTip("Save now")
+        self._save_btn.clicked.connect(self._emit_save)
+        right_l.addWidget(self._save_btn, 0, Qt.AlignVCenter)
+
+        self._settings_btn = self._make_square_action(
+            "⚙",
+            T_SUBTEXT,
+            hover_color=T_NEON,
+        )
+        self._settings_btn.installEventFilter(self)
+        self._settings_panel = self._build_settings_panel()
+        self._settings_btn.clicked.connect(
+            lambda: self._toggle_panel(self._settings_panel, self._settings_btn, "right")
+        )
+        right_l.addWidget(self._settings_btn, 0, Qt.AlignVCenter)
 
         self.bgm_widget = TMNTBgmWidget(
             data={"_font_size": int(round(TMNT_BASE_SIZE * self._scale))}
         )
+        self.bgm_widget.setStyleSheet(
+            _scale_ss(
+                f"""
+                QFrame {{
+                    background: {T_PANEL};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                }}
+                QLabel {{ background: transparent; border: none; }}
+                QFrame:hover {{
+                    background: #2a313c;
+                    border-color: {T_GREEN};
+                }}
+            """,
+                self._scale,
+            )
+        )
         self.bgm_widget.clicked.connect(self.bgm_toggle)
         right_l.addWidget(self.bgm_widget, 0, Qt.AlignVCenter)
 
-        # ── Mentor / Quote card ──
         mentor = QFrame()
-        mentor.setFixedSize(_px(236, self._scale), _px(40, self._scale))
+        mentor.setFixedSize(_px(244, self._scale), _px(42, self._scale))
         mentor.setStyleSheet(
             _scale_ss(
                 f"""
             QFrame {{
-                background: rgba(176,136,249,0.08);
+                background: {T_PANEL};
                 border: 1px solid {T_PURPLE};
                 border-radius: 4px;
             }}
@@ -2214,13 +2206,13 @@ class TMNTTopBar(QFrame):
         )
         ml.setSpacing(_px(8, self._scale))
 
-        av = QLabel("🐢")
-        av.setFixedSize(_px(30, self._scale), _px(30, self._scale))
+        av = QLabel("◎")
+        av.setFixedSize(_px(28, self._scale), _px(28, self._scale))
         av.setAlignment(Qt.AlignCenter)
         av.setStyleSheet(
             _scale_ss(
-                f"font-size: 20px; background: rgba(176,136,249,0.15); "
-                f"border: 1px solid {T_PURPLE}; border-radius: 15px;",
+                f"font-size: 16px; color: {T_PURPLE}; background: rgba(176,136,249,0.10); "
+                f"border: 1px solid #5b616d; border-radius: 14px;",
                 self._scale,
             )
         )
@@ -2229,25 +2221,443 @@ class TMNTTopBar(QFrame):
         self.quote_lbl = QLabel(MENTOR_QUOTES[0][0])
         self.quote_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_PURPLE}; font-size: 7px; font-weight: 900; "
-                f"font-family: {T_PIXEL}; line-height: 1.4;",
+                f"color: {T_PURPLE}; font-size: 8px; font-weight: 900; "
+                f"font-family: {T_MONO};",
                 self._scale,
             )
         )
         self.name_lbl = QLabel(MENTOR_QUOTES[0][1])
         self.name_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 14px; font-family: {T_MONO};",
+                f"color: {T_SUBTEXT}; font-size: 9px; font-family: {T_MONO};",
                 self._scale,
             )
         )
         q_col = QVBoxLayout()
-        q_col.setSpacing(0)
+        q_col.setContentsMargins(0, 0, 0, 0)
+        q_col.setSpacing(_px(1, self._scale))
         q_col.addWidget(self.quote_lbl)
         q_col.addWidget(self.name_lbl)
         ml.addLayout(q_col)
         right_l.addWidget(mentor, 0, Qt.AlignVCenter)
         L.addWidget(right, 1)
+
+    def _make_nav_button(self, text, tip, color=None):
+        button = QPushButton(text)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tip)
+        button.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {T_SUBTEXT};
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    font-family: {T_MONO};
+                    font-size: 12px;
+                    font-weight: bold;
+                    padding: 6px 8px;
+                    letter-spacing: 1px;
+                    text-transform: uppercase;
+                }}
+                QPushButton:hover {{
+                    color: {T_GREEN};
+                    border-bottom: 2px solid {T_GREEN};
+                }}
+            """,
+                self._scale,
+            )
+        )
+        return button
+
+    def _make_theme_nav_button(self, text, tip):
+        button = QPushButton(text)
+        button.setObjectName("tmnt_mode_btn")
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tip)
+        button.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton#tmnt_mode_btn {{
+                    background: transparent;
+                    color: #60A5FA;
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    font-family: {T_MONO};
+                    font-size: 12px;
+                    font-weight: bold;
+                    padding: 6px 8px;
+                    letter-spacing: 1px;
+                    text-transform: uppercase;
+                }}
+                QPushButton#tmnt_mode_btn:hover {{
+                    color: {T_TEXT};
+                    border-bottom: 2px solid {T_NEON};
+                }}
+            """,
+                self._scale,
+            )
+        )
+        return button
+
+    def _make_square_action(self, text, border_color, hover_color=None, hover_fill="transparent"):
+        button = QPushButton(text)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFixedSize(_px(30, self._scale), _px(30, self._scale))
+        hover_color = hover_color or border_color
+        border = T_PURPLE if border_color == T_PURPLE else T_BORDER
+        bg = hover_fill if hover_fill != "transparent" else "#2a313c"
+        button.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_PANEL};
+                    color: {border_color};
+                    border: 1px solid {border};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 13px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background: {bg};
+                    color: {hover_color};
+                    border-color: {hover_color};
+                }}
+            """,
+                self._scale,
+            )
+        )
+        return button
+
+    def _build_more_panel(self):
+        panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
+        panel.installEventFilter(self)
+        panel.setAttribute(Qt.WA_StyledBackground, True)
+        panel.setObjectName("tmnt_more_panel")
+        panel.setStyleSheet(
+            _scale_ss(
+                f"""
+                QFrame#tmnt_more_panel {{
+                    background: {T_PANEL};
+                    border: 1px solid {T_GREEN};
+                    border-radius: 4px;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        _apply_glow(panel, T_GREEN, blur=_px(20, self._scale), alpha=110)
+        panel._fade = QPropertyAnimation(panel, b"windowOpacity", self)
+        panel._fade.setDuration(130)
+        panel._fade.setEasingCurve(QEasingCurve.OutCubic)
+        panel_l = QVBoxLayout(panel)
+        panel_l.setContentsMargins(0, _px(6, self._scale), 0, _px(6, self._scale))
+        panel_l.setSpacing(0)
+        panel_l.addWidget(self._menu_button("❓  HELP", T_RED, self._emit_help, divider=True))
+        panel_l.addWidget(self._menu_button("ⓘ  ABOUT", T_SUBTEXT, self._emit_about))
+        panel.adjustSize()
+        return panel
+
+    def _build_settings_panel(self):
+        panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
+        panel.installEventFilter(self)
+        panel.setAttribute(Qt.WA_StyledBackground, True)
+        panel.setObjectName("tmnt_settings_panel")
+        panel.setStyleSheet(
+            _scale_ss(
+                f"""
+                QFrame#tmnt_settings_panel {{
+                    background: {T_PANEL};
+                    border: 1px solid {T_NEON};
+                    border-radius: 4px;
+                }}
+                QLabel {{
+                    background: transparent;
+                    border: none;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        _apply_glow(panel, T_NEON, blur=_px(24, self._scale), alpha=90)
+        panel._fade = QPropertyAnimation(panel, b"windowOpacity", self)
+        panel._fade.setDuration(130)
+        panel._fade.setEasingCurve(QEasingCurve.OutCubic)
+        panel_l = QVBoxLayout(panel)
+        panel_l.setContentsMargins(_px(12, self._scale), _px(12, self._scale), _px(12, self._scale), _px(12, self._scale))
+        panel_l.setSpacing(_px(10, self._scale))
+
+        scale_lbl = QLabel("VISUAL SCALE")
+        scale_lbl.setStyleSheet(_scale_ss(f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;", self._scale))
+        panel_l.addWidget(scale_lbl)
+
+        scale_box = QFrame()
+        scale_box.setStyleSheet(_scale_ss(f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;", self._scale))
+        scale_l = QHBoxLayout(scale_box)
+        scale_l.setContentsMargins(_px(8, self._scale), _px(6, self._scale), _px(8, self._scale), _px(6, self._scale))
+        scale_l.setSpacing(_px(6, self._scale))
+        size_lbl = QLabel("SIZE")
+        size_lbl.setStyleSheet(_scale_ss(f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;", self._scale))
+        scale_l.addWidget(size_lbl)
+        scale_l.addStretch()
+        scale_l.addWidget(self._font_button("A−", -1))
+        scale_l.addWidget(self._font_button("A", 0, active=True))
+        scale_l.addWidget(self._font_button("A+", +1))
+        panel_l.addWidget(scale_box)
+
+        archive_lbl = QLabel("MISSION ARCHIVE")
+        archive_lbl.setStyleSheet(_scale_ss(f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;", self._scale))
+        panel_l.addWidget(archive_lbl)
+
+        archive_box = QFrame()
+        archive_box.setStyleSheet(_scale_ss(f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;", self._scale))
+        archive_l = QHBoxLayout(archive_box)
+        archive_l.setContentsMargins(_px(8, self._scale), _px(6, self._scale), _px(8, self._scale), _px(6, self._scale))
+        archive_l.setSpacing(_px(6, self._scale))
+        archive_icon = QLabel("⌂")
+        archive_icon.setStyleSheet(_scale_ss(f"color: {T_SUBTEXT}; font-size: 10px;", self._scale))
+        self._archive_val = QLabel()
+        self._archive_val.setStyleSheet(_scale_ss(f"color: {T_PURPLE}; font-family: {T_MONO}; font-size: 9px;", self._scale))
+        self._archive_btn = QPushButton("SET")
+        self._archive_btn.setCursor(Qt.PointingHandCursor)
+        self._archive_btn.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_CARD};
+                    color: {T_NEON};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(102,252,241,0.12);
+                    border-color: {T_NEON};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        self._archive_btn.clicked.connect(self._choose_mission_archive)
+        archive_l.addWidget(archive_icon)
+        archive_l.addWidget(self._archive_val, 1)
+        archive_l.addWidget(self._archive_btn, 0, Qt.AlignRight)
+        self._archive_box = archive_box
+        panel_l.addWidget(archive_box)
+        self._refresh_archive_display()
+
+        panel.adjustSize()
+        return panel
+
+    def _menu_button(self, text, accent_color, slot, divider=False):
+        button = QPushButton(text)
+        button.setCursor(Qt.PointingHandCursor)
+        line = f"border-bottom: 1px solid {T_BORDER};" if divider else "border-bottom: none;"
+        button.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {accent_color};
+                    border: none;
+                    {line}
+                    font-family: {T_MONO};
+                    font-size: 11px;
+                    font-weight: bold;
+                    text-align: left;
+                    padding: 8px 14px;
+                }}
+                QPushButton:hover {{
+                    background: {T_CARD};
+                    color: {T_NEON};
+                }}
+            """,
+                self._scale,
+            )
+        )
+        button.clicked.connect(slot)
+        return button
+
+    def _font_button(self, text, delta, active=False):
+        button = QPushButton(text)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFixedSize(_px(28, self._scale), _px(24, self._scale))
+        border = T_GREEN if active else T_BORDER
+        text_color = T_TEXT if active else T_SUBTEXT
+        button.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_CARD};
+                    color: {text_color};
+                    border: 1px solid {border};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 10px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background: rgba(69,162,71,0.25);
+                    color: #FFFFFF;
+                    border-color: {T_GREEN};
+                }}
+            """,
+                self._scale,
+            )
+        )
+        button.clicked.connect(lambda _, d=delta: self._emit_font(d))
+        return button
+
+    def _refresh_archive_display(self):
+        if not hasattr(self, "_archive_val") or self._archive_val is None:
+            return
+        label = archive_label()
+        tooltip = archive_tooltip()
+        if get_mission_archive_root():
+            label = f"{label}"
+        self._archive_val.setText(label)
+        self._archive_val.setToolTip(tooltip)
+        if hasattr(self, "_archive_box") and self._archive_box is not None:
+            self._archive_box.setToolTip(tooltip)
+        if hasattr(self, "_archive_btn") and self._archive_btn is not None:
+            self._archive_btn.setToolTip(tooltip)
+
+    def _choose_mission_archive(self):
+        start_dir = get_mission_archive_root() or os.path.dirname(current_data_file()) or os.path.expanduser("~")
+        new_root = QFileDialog.getExistingDirectory(self, "Select Mission Archive Folder", start_dir)
+        if not new_root:
+            return
+        print(f"[DEBUG][mission_archive] ui_select root={new_root}")
+        try:
+            summary = migrate_to_mission_archive(new_root, data=store.get())
+        except Exception as ex:
+            QMessageBox.warning(self, "Mission Archive", f"Could not switch Mission Archive:\n{ex}")
+            print(f"[DEBUG][mission_archive] ui_select_failed error={ex}")
+            return
+        self._refresh_archive_display()
+        self._hide_panel(self._settings_panel)
+        win = self.window()
+        if hasattr(win, "statusBar") and callable(win.statusBar):
+            sb = win.statusBar()
+            if sb is not None:
+                sb.showMessage(f"Mission Archive set to {new_root}", 5000)
+        QMessageBox.information(
+            self,
+            "Mission Archive",
+            "Mission Archive updated.\n\n"
+            f"Folder: {new_root}\n"
+            f"Cards rewritten: {summary['cards_rewritten']}\n"
+            f"PDFs copied: {summary['pdfs_copied']}\n"
+            f"Images copied: {summary['images_copied']}\n"
+            f"Cache entries copied: {summary['cache_entries_copied']}",
+        )
+
+    def _brand_name_ss(self):
+        return _scale_ss(
+            f"""
+            QLabel#tmnt_brand_name {{
+                color: {T_NEON};
+                background: transparent;
+                border: none;
+                font-family: {T_PIXEL};
+                font-size: 18px;
+                font-weight: 900;
+                letter-spacing: 2px;
+            }}
+        """,
+            self._scale,
+        )
+
+    def eventFilter(self, obj, event):
+        if obj in (self._more_btn, self._more_panel):
+            self._handle_panel_hover("more", event)
+        elif obj in (self._settings_btn, self._settings_panel):
+            self._handle_panel_hover("settings", event)
+        return super().eventFilter(obj, event)
+
+    def _handle_panel_hover(self, panel_name, event):
+        if event.type() == QEvent.Enter:
+            self._panel_hide_timer.stop()
+            panel = self._more_panel if panel_name == "more" else self._settings_panel
+            anchor = self._more_btn if panel_name == "more" else self._settings_btn
+            if panel and anchor and not panel.isVisible():
+                self._show_panel(panel, anchor, "left" if panel_name == "more" else "right")
+        elif event.type() == QEvent.Leave:
+            self._pending_panel = panel_name
+            self._panel_hide_timer.start(120)
+
+    def _toggle_panel(self, panel, anchor, align):
+        if panel.isVisible():
+            self._hide_panel(panel)
+        else:
+            self._show_panel(panel, anchor, align)
+
+    def _show_panel(self, panel, anchor, align):
+        if panel is self._more_panel and self._settings_panel and self._settings_panel.isVisible():
+            self._hide_panel(self._settings_panel)
+        if panel is self._settings_panel and self._more_panel and self._more_panel.isVisible():
+            self._hide_panel(self._more_panel)
+        panel.adjustSize()
+        x = 0 if align == "left" else anchor.width() - panel.width()
+        y = anchor.height() + _px(6, self._scale)
+        panel.move(anchor.mapToGlobal(QPoint(x, y)))
+        panel.setWindowOpacity(0.0)
+        panel.show()
+        panel.raise_()
+        panel._fade.stop()
+        panel._fade.setStartValue(0.0)
+        panel._fade.setEndValue(1.0)
+        panel._fade.start()
+
+    def _hide_panel(self, panel):
+        if panel:
+            panel.hide()
+
+    def _hide_unhovered_panel(self):
+        widget = QApplication.widgetAt(QCursor.pos())
+        while widget is not None:
+            if self._pending_panel == "more" and widget in (self._more_btn, self._more_panel):
+                return
+            if self._pending_panel == "settings" and widget in (self._settings_btn, self._settings_panel):
+                return
+            widget = widget.parentWidget()
+        if self._pending_panel == "more":
+            self._hide_panel(self._more_panel)
+        elif self._pending_panel == "settings":
+            self._hide_panel(self._settings_panel)
+
+    def _emit_help(self):
+        self._hide_panel(self._more_panel)
+        self.btn_help_clicked.emit()
+
+    def _emit_save(self):
+        print("[DEBUG][mission_archive] header_save_clicked")
+        self.btn_save_clicked.emit()
+
+    def _emit_about(self):
+        self._hide_panel(self._more_panel)
+        self.btn_about_clicked.emit()
+
+    def _emit_font(self, delta):
+        self._hide_panel(self._settings_panel)
+        self.font_change.emit(delta)
+
+    def _advance_brand_glitch(self):
+        strengths = [7, 5, 8, 4, 6, 7]
+        self._brand_name_glow.setBlurRadius(_px(strengths[self._brand_glitch_idx % len(strengths)], self._scale))
+        self._brand_glitch_idx += 1
+
+    def _advance_brand_flicker(self):
+        alphas = [160, 118, 170, 108, 150, 132, 176, 140]
+        alpha = alphas[self._brand_flicker_idx % len(alphas)]
+        self._brand_name_glow.setColor(QColor(102, 252, 241, alpha))
+        self._brand_flicker_idx += 1
 
     def _rotate_quote(self):
         self._quote_idx = (self._quote_idx + 1) % len(MENTOR_QUOTES)
@@ -2315,6 +2725,7 @@ class TMNTHomeLayout(QWidget):
     """
 
     # Forwarded to HomeScreen so it can wire buttons
+    btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
     btn_theme_clicked = pyqtSignal()
@@ -2368,6 +2779,7 @@ class TMNTHomeLayout(QWidget):
 
     def _wire_signals(self):
         # Topbar → HomeScreen
+        self.topbar.btn_save_clicked.connect(self.btn_save_clicked)
         self.topbar.btn_math_clicked.connect(self.btn_math_clicked)
         self.topbar.btn_journal_clicked.connect(self.btn_journal_clicked)
         self.topbar.btn_theme_clicked.connect(self.btn_theme_clicked)

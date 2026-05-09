@@ -85,6 +85,7 @@ from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
+from storage_paths import current_data_file, flush_runtime_state, resolve_asset_path
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -297,7 +298,7 @@ class AboutDialog(QDialog):
             "Alt+Click — multi-select   Hold Alt — temp select tool\n"
             "C — center on mask      Drag ↻ handle — rotate shape\n"
             "Space+drag — pan canvas  H — toggle pan lock")
-        _section("Data location", f"{DATA_FILE}")
+        _section("Data location", f"{current_data_file()}")
         bl.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet(
@@ -1214,7 +1215,7 @@ class HomeScreen(QWidget):
     def _find_first_pdf(self, deck):
         """DFS: deck aur uske children mein pehla pdf_path dhundho."""
         for card in deck.get("cards", []):
-            p = card.get("pdf_path", "")
+            p = resolve_asset_path(card.get("pdf_path", ""))
             if p and os.path.exists(p):
                 return p
         for child in deck.get("children", []):
@@ -1287,6 +1288,7 @@ class HomeScreen(QWidget):
 
     def _create_tmnt_layout(self):
         layout = TMNTHomeLayout(self._data, parent=self)
+        layout.btn_save_clicked.connect(self._save_current_data_now)
         layout.btn_math_clicked.connect(self._show_math_trainer)
         layout.btn_journal_clicked.connect(self._show_journal)
         layout.btn_theme_clicked.connect(self._toggle_theme)
@@ -1296,6 +1298,24 @@ class HomeScreen(QWidget):
         layout.bgm_toggle.connect(self._toggle_tmnt_bgm)
         layout.set_bgm_state(self.music_widget._playing)
         return layout
+
+    def _save_current_data_now(self):
+        print(f"[DEBUG][mission_archive] header_save_begin path={current_data_file()}")
+        try:
+            store.mark_dirty()
+            store.save_force()
+            flush_runtime_state()
+        except Exception as ex:
+            print(f"[DEBUG][mission_archive] header_save_failed error={ex}")
+            QMessageBox.warning(self, "Save Failed", f"Could not save current data:\n{ex}")
+            return
+
+        print(f"[DEBUG][mission_archive] header_save_done path={current_data_file()}")
+        win = self.window()
+        if hasattr(win, "statusBar") and callable(win.statusBar):
+            sb = win.statusBar()
+            if sb is not None:
+                sb.showMessage(f"Saved data to {current_data_file()}", 4000)
 
     def rebuild_tmnt_layout(self, force=False):
         if not _TMNT_HOME_AVAILABLE or self._tmnt_layout is None:
