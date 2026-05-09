@@ -61,23 +61,89 @@ class CanvasInteractionMixin:
         # Track recent tablet/stylus activity so review ink can ignore the
         # synthesized mouse events that often follow a pen drag on Windows.
         self._last_tablet_event_time = time.monotonic()
-        e.ignore()
+        if not self._handle_review_tablet_ink(e):
+            e.ignore()
+
+    def _tablet_pos(self, e):
+        for name in ("posF", "position", "pos"):
+            attr = getattr(e, name, None)
+            if attr is None:
+                continue
+            try:
+                value = attr()
+            except TypeError:
+                value = attr
+            return QPointF(value)
+        return QPointF()
+
+    def _tablet_pressure(self, e) -> float:
+        try:
+            return float(e.pressure())
+        except Exception:
+            return 0.0
+
+    def _handle_review_tablet_ink(self, e) -> bool:
+        if self._mode != "review" or not self._ink_active or not self.has_content():
+            return False
+
+        et = e.type()
+        sp = self._tablet_pos(e)
+        ip = self._ip(sp)
+        pressure = self._tablet_pressure(e)
+
+        if et == QEvent.TabletPress:
+            print(f"[DEBUG][review_pen_pressure] tablet_press pressure={pressure:.3f}")
+            hit = self._hit_box(ip)
+            if hit >= 0:
+                self._ink_pending_mask_idx = hit
+                self._ink_pending_press_ip = QPointF(ip)
+                self._ink_pending_press_sp = QPointF(sp)
+                self._ink_pending_press_time = time.monotonic()
+            else:
+                self._ink_press(ip, input_kind="tablet")
+            e.accept()
+            return True
+
+        if et == QEvent.TabletMove:
+            print(f"[DEBUG][review_pen_pressure] tablet_move pressure={pressure:.3f}")
+            if self._ink_pending_mask_idx >= 0:
+                if self._start_pending_mask_ink_if_needed(sp, ip, input_kind="tablet"):
+                    e.accept()
+                    return True
+            if self._ink_current and getattr(self, "_ink_input_kind", None) == "tablet":
+                self._ink_move(ip)
+            e.accept()
+            return True
+
+        if et == QEvent.TabletRelease:
+            print(f"[DEBUG][review_pen_pressure] tablet_release pressure={pressure:.3f}")
+            if self._ink_pending_mask_idx >= 0:
+                elapsed = time.monotonic() - float(self._ink_pending_press_time or 0.0)
+                hit = self._ink_pending_mask_idx
+                self._clear_pending_ink_mask_action()
+                if elapsed <= self._INK_MASK_TAP_THRESHOLD_S and 0 <= hit < len(self._boxes):
+                    self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
+                    self._invalidate_mask_cache()
+                    self.update()
+            elif getattr(self, "_ink_input_kind", None) == "tablet":
+                self._ink_release()
+            e.accept()
+            return True
+
+        return False
 
     def _is_recent_stylus_mouse_event(self, e) -> bool:
+        last = float(getattr(self, "_last_tablet_event_time", 0.0) or 0.0)
+        if (time.monotonic() - last) > self._STYLUS_SUPPRESS_WINDOW_S:
+            return False
+
         source = None
         try:
             source = e.source()
         except Exception:
             source = None
-        stylus_synthesized_sources = {
-            getattr(Qt, "MouseEventSynthesizedBySystem", None),
-            getattr(Qt, "MouseEventSynthesizedByQt", None),
-            getattr(Qt, "MouseEventSynthesizedByApplication", None),
-        }
-        if source not in stylus_synthesized_sources:
-            return False
-        last = float(getattr(self, "_last_tablet_event_time", 0.0) or 0.0)
-        return (time.monotonic() - last) <= self._STYLUS_SUPPRESS_WINDOW_S
+        print(f"[DEBUG][review_pen] suppress_mouse_after_tablet source={source}")
+        return True
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -193,6 +259,16 @@ class CanvasInteractionMixin:
         self._clear_pending_ink_mask_action()
         self.update(); self._show_toast("🧹 Ink cleared")
 
+    def clear_review_ink_for_card_switch(self):
+        had_ink = bool(self._ink_strokes or self._ink_current)
+        self._ink_strokes.clear()
+        self._ink_current.clear()
+        self._ink_input_kind = None
+        self._clear_pending_ink_mask_action()
+        if had_ink:
+            print("[DEBUG][review_pen] clear_on_card_switch")
+            self.update()
+
     def ink_undo_stroke(self):
         if self._ink_strokes: self._ink_strokes.pop(); self.update()
 
@@ -200,9 +276,9 @@ class CanvasInteractionMixin:
     def _ink_pen_color(self):
         return QColor(self._ink_colors[self._ink_color_idx])
 
-    def _ink_press(self, ip):
+    def _ink_press(self, ip, input_kind="mouse"):
         self._ink_current = [self._ink_pen_color, ip]
-        self._ink_input_kind = "mouse"
+        self._ink_input_kind = input_kind
 
     def _ink_move(self, ip):
         if not self._ink_current:
@@ -215,18 +291,20 @@ class CanvasInteractionMixin:
         pts = self._ink_current[1:]
         if len(pts) >= 2:
             p0, p1 = pts[-2], pts[-1]
-            pen_w = max(2.0, self._ink_width * self._scale) + 4  # padding
-            x0 = int(min(p0.x(), p1.x()) * self._scale - pen_w)
-            y0 = int(min(p0.y(), p1.y()) * self._scale - pen_w)
-            x1 = int(max(p0.x(), p1.x()) * self._scale + pen_w)
-            y1 = int(max(p0.y(), p1.y()) * self._scale + pen_w)
+            pen_w = max(2.0, self._ink_width * self._scale) + 10  # generous AA padding
+            x0 = math.floor(min(p0.x(), p1.x()) * self._scale - pen_w)
+            y0 = math.floor(min(p0.y(), p1.y()) * self._scale - pen_w)
+            x1 = math.ceil(max(p0.x(), p1.x()) * self._scale + pen_w)
+            y1 = math.ceil(max(p0.y(), p1.y()) * self._scale + pen_w)
             from PyQt5.QtCore import QRect
             self.update(QRect(x0, y0, x1 - x0, y1 - y0))
         else:
             self.update()
 
     def _ink_release(self):
-        if len(self._ink_current) >= 2: self._ink_strokes.append(list(self._ink_current))
+        if len(self._ink_current) >= 2:
+            self._ink_strokes.append(list(self._ink_current))
+            print(f"[DEBUG][review_pen] stroke_commit points={len(self._ink_current) - 1}")
         self._ink_current = []
         self._ink_input_kind = None
         self.update()
@@ -237,7 +315,7 @@ class CanvasInteractionMixin:
         self._ink_pending_press_sp = None
         self._ink_pending_press_time = 0.0
 
-    def _start_pending_mask_ink_if_needed(self, sp, ip):
+    def _start_pending_mask_ink_if_needed(self, sp, ip, input_kind="mouse"):
         if self._ink_pending_mask_idx < 0 or self._ink_pending_press_sp is None or self._ink_pending_press_ip is None:
             return False
         elapsed = time.monotonic() - float(self._ink_pending_press_time or 0.0)
@@ -247,7 +325,7 @@ class CanvasInteractionMixin:
         start_ip = QPointF(self._ink_pending_press_ip)
         mask_idx = self._ink_pending_mask_idx
         self._clear_pending_ink_mask_action()
-        self._ink_press(start_ip)
+        self._ink_press(start_ip, input_kind=input_kind)
         if QPointF(ip) != start_ip:
             self._ink_move(ip)
         return True
@@ -270,7 +348,9 @@ class CanvasInteractionMixin:
         stylus_like = self._is_recent_stylus_mouse_event(e)
 
         if self._mode == "review" and e.button() == Qt.LeftButton:
-            if self._ink_active and not stylus_like:
+            if self._ink_active and stylus_like:
+                e.accept(); return
+            if self._ink_active:
                 hit = self._hit_box(ip)
                 if hit >= 0:
                     self._ink_pending_mask_idx = hit
@@ -327,6 +407,9 @@ class CanvasInteractionMixin:
     def mouseMoveEvent(self, e):
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
+        stylus_like = self._is_recent_stylus_mouse_event(e)
+        if self._mode == "review" and self._ink_active and stylus_like:
+            e.accept(); return
         if self._mode == "review" and self._ink_active and self._ink_pending_mask_idx >= 0:
             if self._start_pending_mask_ink_if_needed(sp, ip):
                 e.accept(); return
@@ -397,6 +480,9 @@ class CanvasInteractionMixin:
                 self.setCursor(QCursor(Qt.ArrowCursor))
 
     def mouseReleaseEvent(self, e):
+        stylus_like = self._is_recent_stylus_mouse_event(e)
+        if self._mode == "review" and self._ink_active and e.button() == Qt.LeftButton and stylus_like:
+            e.accept(); return
         if self._mode == "review" and self._ink_active and e.button() == Qt.LeftButton and self._ink_pending_mask_idx >= 0:
             elapsed = time.monotonic() - float(self._ink_pending_press_time or 0.0)
             hit = self._ink_pending_mask_idx

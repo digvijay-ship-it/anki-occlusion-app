@@ -179,6 +179,40 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertFalse(self.canvas._boxes[0]["revealed"])
         self.assertEqual(len(self.canvas._ink_current), 2)
 
+    def test_review_ink_clear_for_card_switch_preserves_pen_mode(self):
+        self.canvas._debug_page_num = False
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_mode("review")
+        self.canvas.ink_set_active(True)
+        self.canvas._ink_strokes = [[QColor("#FF4444"), QPointF(1, 1), QPointF(2, 2)]]
+        self.canvas._ink_current = [QColor("#FF4444"), QPointF(3, 3), QPointF(4, 4)]
+        self.canvas._ink_pending_mask_idx = 0
+        self.canvas._ink_input_kind = "tablet"
+
+        self.canvas.clear_review_ink_for_card_switch()
+
+        self.assertTrue(self.canvas._ink_active)
+        self.assertEqual(self.canvas._ink_strokes, [])
+        self.assertEqual(self.canvas._ink_current, [])
+        self.assertEqual(self.canvas._ink_pending_mask_idx, -1)
+        self.assertIsNone(self.canvas._ink_input_kind)
+
+    def test_ink_release_commits_same_points_without_mutating_geometry(self):
+        self.canvas._debug_page_num = False
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_mode("review")
+        self.canvas.ink_set_active(True)
+        points = [QPointF(10, 10), QPointF(20, 20), QPointF(30, 20)]
+        self.canvas._ink_current = [QColor("#FF4444"), *points]
+        self.canvas._ink_input_kind = "tablet"
+
+        self.canvas._ink_release()
+
+        committed = self.canvas._ink_strokes[0][1:]
+        self.assertEqual([(p.x(), p.y()) for p in committed], [(p.x(), p.y()) for p in points])
+        self.assertEqual(self.canvas._ink_current, [])
+        self.assertIsNone(self.canvas._ink_input_kind)
+
     def test_review_mode_pen_tap_on_mask_reveals_instead_of_drawing(self):
         self.canvas._debug_page_num = False
         self.canvas.load_pixmap(self._pixmap(100, 100))
@@ -248,7 +282,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertFalse(self.canvas._boxes[0]["revealed"])
         self.assertEqual(len(self.canvas._ink_strokes), 1)
 
-    def test_review_mode_stylus_like_mouse_event_does_not_start_ink(self):
+    def test_review_mode_synthesized_mouse_fallback_tap_on_mask_reveals(self):
         self.canvas._debug_page_num = False
         self.canvas.load_pixmap(self._pixmap(100, 100))
         self.canvas.set_boxes_with_state([
@@ -256,10 +290,11 @@ class OcclusionCanvasTests(unittest.TestCase):
         ])
         self.canvas.set_mode("review")
         self.canvas.ink_set_active(True)
-        self.canvas._last_tablet_event_time = time.monotonic()
+        self.canvas._last_tablet_event_time = 0.0
 
         class _StylusLikeMouseEvent:
-            def __init__(self):
+            def __init__(self, pos):
+                self._pos = QPointF(pos)
                 self.accepted = False
                 self.ignored = False
 
@@ -267,7 +302,7 @@ class OcclusionCanvasTests(unittest.TestCase):
                 return Qt.LeftButton
 
             def pos(self):
-                return QPointF(5, 5)
+                return self._pos
 
             def modifiers(self):
                 return Qt.NoModifier
@@ -281,12 +316,257 @@ class OcclusionCanvasTests(unittest.TestCase):
             def ignore(self):
                 self.ignored = True
 
-        event = _StylusLikeMouseEvent()
-        self.canvas.mousePressEvent(event)
+        press = _StylusLikeMouseEvent(QPointF(5, 5))
+        release = _StylusLikeMouseEvent(QPointF(5, 5))
+
+        self.canvas.mousePressEvent(press)
+        self.canvas.mouseReleaseEvent(release)
 
         self.assertEqual(self.canvas._ink_current, [])
+        self.assertEqual(len(self.canvas._ink_strokes), 0)
         self.assertTrue(self.canvas._boxes[0]["revealed"])
-        self.assertFalse(event.accepted)
+        self.assertTrue(press.accepted)
+        self.assertTrue(release.accepted)
+
+    def test_review_mode_synthesized_mouse_fallback_drag_on_mask_starts_ink(self):
+        self.canvas._debug_page_num = False
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_boxes_with_state([
+            {"rect": [0, 0, 20, 20], "label": "", "shape": "rect", "angle": 0, "group_id": "", "box_id": "a", "revealed": False}
+        ])
+        self.canvas.set_mode("review")
+        self.canvas.ink_set_active(True)
+        self.canvas._last_tablet_event_time = 0.0
+
+        class _StylusLikeMouseEvent:
+            def __init__(self, pos):
+                self._pos = QPointF(pos)
+                self.accepted = False
+                self.ignored = False
+
+            def button(self):
+                return Qt.LeftButton
+
+            def pos(self):
+                return self._pos
+
+            def modifiers(self):
+                return Qt.NoModifier
+
+            def source(self):
+                return Qt.MouseEventSynthesizedBySystem
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                self.ignored = True
+
+        press = _StylusLikeMouseEvent(QPointF(5, 5))
+        move = _StylusLikeMouseEvent(QPointF(30, 30))
+        release = _StylusLikeMouseEvent(QPointF(30, 30))
+
+        self.canvas.mousePressEvent(press)
+        self.canvas.mouseMoveEvent(move)
+        self.canvas.mouseReleaseEvent(release)
+
+        self.assertEqual(self.canvas._ink_current, [])
+        self.assertFalse(self.canvas._boxes[0]["revealed"])
+        self.assertEqual(len(self.canvas._ink_strokes), 1)
+        self.assertTrue(press.accepted)
+        self.assertTrue(move.accepted)
+        self.assertTrue(release.accepted)
+
+    def test_review_mode_tablet_events_draw_with_light_pressure(self):
+        self.canvas._debug_page_num = False
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_mode("review")
+        self.canvas.ink_set_active(True)
+
+        class _TabletEvent:
+            def __init__(self, event_type, pos, pressure=0.05):
+                self._type = event_type
+                self._pos = QPointF(pos)
+                self._pressure = pressure
+                self.accepted = False
+                self.ignored = False
+
+            def type(self):
+                return self._type
+
+            def posF(self):
+                return self._pos
+
+            def pressure(self):
+                return self._pressure
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                self.ignored = True
+
+        press = _TabletEvent(QEvent.TabletPress, QPointF(5, 5), pressure=0.02)
+        move = _TabletEvent(QEvent.TabletMove, QPointF(20, 20), pressure=0.03)
+        release = _TabletEvent(QEvent.TabletRelease, QPointF(20, 20), pressure=0.0)
+
+        self.canvas.tabletEvent(press)
+        self.canvas.tabletEvent(move)
+        self.canvas.tabletEvent(release)
+
+        self.assertEqual(self.canvas._ink_current, [])
+        self.assertEqual(len(self.canvas._ink_strokes), 1)
+        self.assertTrue(press.accepted)
+        self.assertTrue(move.accepted)
+        self.assertTrue(release.accepted)
+
+    def test_review_mode_tablet_events_suppress_duplicate_synthesized_mouse(self):
+        self.canvas._debug_page_num = False
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_mode("review")
+        self.canvas.ink_set_active(True)
+
+        class _TabletEvent:
+            def __init__(self, event_type, pos, pressure=0.05):
+                self._type = event_type
+                self._pos = QPointF(pos)
+                self._pressure = pressure
+                self.accepted = False
+
+            def type(self):
+                return self._type
+
+            def posF(self):
+                return self._pos
+
+            def pressure(self):
+                return self._pressure
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                pass
+
+        class _StylusLikeMouseEvent:
+            def __init__(self, event_type, pos, button=Qt.NoButton):
+                self._type = event_type
+                self._pos = QPointF(pos)
+                self._button = button
+                self.accepted = False
+
+            def type(self):
+                return self._type
+
+            def button(self):
+                return self._button
+
+            def pos(self):
+                return self._pos
+
+            def modifiers(self):
+                return Qt.NoModifier
+
+            def source(self):
+                return Qt.MouseEventSynthesizedBySystem
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                pass
+
+        self.canvas.tabletEvent(_TabletEvent(QEvent.TabletPress, QPointF(5, 5)))
+        self.canvas.tabletEvent(_TabletEvent(QEvent.TabletMove, QPointF(20, 20)))
+        self.canvas.tabletEvent(_TabletEvent(QEvent.TabletRelease, QPointF(20, 20)))
+
+        press = _StylusLikeMouseEvent(QEvent.MouseButtonPress, QPointF(5, 5), Qt.LeftButton)
+        move = _StylusLikeMouseEvent(QEvent.MouseMove, QPointF(25, 25))
+        release = _StylusLikeMouseEvent(QEvent.MouseButtonRelease, QPointF(25, 25), Qt.LeftButton)
+
+        self.canvas.mousePressEvent(press)
+        self.canvas.mouseMoveEvent(move)
+        self.canvas.mouseReleaseEvent(release)
+
+        self.assertEqual(len(self.canvas._ink_strokes), 1)
+        self.assertTrue(press.accepted)
+        self.assertTrue(move.accepted)
+        self.assertTrue(release.accepted)
+
+    def test_review_mode_tablet_events_suppress_plain_mouse_echo(self):
+        self.canvas._debug_page_num = False
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_mode("review")
+        self.canvas.ink_set_active(True)
+
+        class _TabletEvent:
+            def __init__(self, event_type, pos, pressure=0.05):
+                self._type = event_type
+                self._pos = QPointF(pos)
+                self._pressure = pressure
+
+            def type(self):
+                return self._type
+
+            def posF(self):
+                return self._pos
+
+            def pressure(self):
+                return self._pressure
+
+            def accept(self):
+                pass
+
+            def ignore(self):
+                pass
+
+        class _PlainMouseEvent:
+            def __init__(self, event_type, pos, button=Qt.NoButton):
+                self._type = event_type
+                self._pos = QPointF(pos)
+                self._button = button
+                self.accepted = False
+
+            def type(self):
+                return self._type
+
+            def button(self):
+                return self._button
+
+            def pos(self):
+                return self._pos
+
+            def modifiers(self):
+                return Qt.NoModifier
+
+            def source(self):
+                return getattr(Qt, "MouseEventNotSynthesized", None)
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                pass
+
+        self.canvas.tabletEvent(_TabletEvent(QEvent.TabletPress, QPointF(5, 5)))
+        self.canvas.tabletEvent(_TabletEvent(QEvent.TabletMove, QPointF(12, 16)))
+        self.canvas.tabletEvent(_TabletEvent(QEvent.TabletMove, QPointF(20, 20)))
+        self.canvas.tabletEvent(_TabletEvent(QEvent.TabletRelease, QPointF(20, 20)))
+
+        press = _PlainMouseEvent(QEvent.MouseButtonPress, QPointF(5, 5), Qt.LeftButton)
+        move = _PlainMouseEvent(QEvent.MouseMove, QPointF(30, 30))
+        release = _PlainMouseEvent(QEvent.MouseButtonRelease, QPointF(30, 30), Qt.LeftButton)
+
+        self.canvas.mousePressEvent(press)
+        self.canvas.mouseMoveEvent(move)
+        self.canvas.mouseReleaseEvent(release)
+
+        self.assertEqual(len(self.canvas._ink_strokes), 1)
+        committed = self.canvas._ink_strokes[0][1:]
+        self.assertEqual([(p.x(), p.y()) for p in committed], [(5.0, 5.0), (12.0, 16.0), (20.0, 20.0)])
+        self.assertTrue(press.accepted)
+        self.assertTrue(move.accepted)
+        self.assertTrue(release.accepted)
 
     def test_target_scroll_position_is_centered_and_clamped(self):
         self.canvas.load_pages([self._pixmap(100, 100), self._pixmap(100, 100)])

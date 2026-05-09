@@ -210,13 +210,13 @@ class _DeckTreeWidget(QTreeWidget):
         p.end()
 
 
-from dojo_assets import DojoAssets
-import ui.home_screen
+DECK_TREE_DISPLAY_FONT = "Segoe UI"
 
 class DeckItemDelegate(QStyledItemDelegate):
     def __init__(self, parent=None, theme="classic"):
         super().__init__(parent)
-        self.theme = theme
+        from theme_manager import normalize_theme
+        self.theme = normalize_theme(theme)
 
     def paint(self, painter, option, index):
         if self.theme != "dojo":
@@ -246,6 +246,7 @@ class DeckItemDelegate(QStyledItemDelegate):
         due_str = index.data(Qt.UserRole + 1)
         due = int(due_str) if due_str else 0
         
+        from dojo_assets import DojoAssets
         icon = DojoAssets.get().get_clan_icon(name, 32)
         
         # Draw Icon (Centered vertically)
@@ -264,7 +265,7 @@ class DeckItemDelegate(QStyledItemDelegate):
             
         # Draw Text
         painter.setPen(QColor("#A86CFF" if is_selected else "#CDD6F4"))
-        font = QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold)
+        font = QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold)
         painter.setFont(font)
         text_rect = QRect(icon_rect.right() + 12, rect.top(), rect.width() - icon_rect.width() - 60, rect.height())
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, name.upper())
@@ -294,7 +295,7 @@ class DeckItemDelegate(QStyledItemDelegate):
         if self.theme != "dojo":
             return super().sizeHint(option, index)
         name = index.data(Qt.UserRole + 2) or "Unknown"
-        font = QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold)
+        font = QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold)
         from PyQt5.QtGui import QFontMetrics
         fm = QFontMetrics(font)
         w = fm.horizontalAdvance(name.upper())
@@ -305,8 +306,9 @@ class DeckTree(QWidget):
 
     def __init__(self, data: dict, theme="classic", parent=None):
         super().__init__(parent)
+        from theme_manager import normalize_theme
         self._data = data
-        self._theme = theme
+        self._theme = normalize_theme(theme)
         self._last_drop_pos  = None
         self._last_drop_item = None
         self._last_drop_ctrl = False
@@ -367,6 +369,8 @@ class DeckTree(QWidget):
             _filter_item(self.tree.topLevelItem(i))
 
     def set_theme(self, theme):
+        from theme_manager import normalize_theme
+        theme = normalize_theme(theme)
         self._theme = theme
         self._delegate.theme = theme
         if theme == "dojo":
@@ -405,7 +409,7 @@ class DeckTree(QWidget):
         logo.setStyleSheet(f"color:{C_GREEN};font-size:18px;")
         top_row.addWidget(logo)
         title = QLabel("DOJO CAVA")
-        title.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 14, QFont.Bold))
+        title.setFont(QFont(DECK_TREE_DISPLAY_FONT, 14, QFont.Bold))
         title.setStyleSheet(f"color:{C_GREEN};letter-spacing:2px;")
         top_row.addWidget(title)
         top_row.addStretch()
@@ -484,11 +488,11 @@ class DeckTree(QWidget):
         dbl = QHBoxLayout(self._dojo_btns_w)
         dbl.setContentsMargins(12,0,12,12)
         db_new = QPushButton("⊕ NEW DOJO")
-        db_new.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold))
+        db_new.setFont(QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold))
         db_new.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
         db_new.clicked.connect(lambda: self._new_deck(None))
         db_sub = QPushButton("⊕ SUB")
-        db_sub.setFont(QFont(ui.home_screen.NARUTO_FONT_FAMILY, 9, QFont.Bold))
+        db_sub.setFont(QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold))
         db_sub.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
         db_sub.clicked.connect(self._new_subdeck)
         db_del = QPushButton("⚙")
@@ -615,6 +619,7 @@ class DeckTree(QWidget):
                 return
             parent.setdefault("children", []).append(new_deck)
         store.mark_dirty()
+        store.save_soon(min_interval=0.0)
         self.refresh()
         self._select_by_id(new_deck["_id"])
 
@@ -1271,6 +1276,8 @@ class CacheWidget(QWidget):
         l.addWidget(self.stack)
 
     def set_theme(self, theme):
+        from theme_manager import normalize_theme
+        theme = normalize_theme(theme)
         if theme == "dojo":
             self.stack.setCurrentWidget(self.dojo_widget)
             self.dojo_widget.refresh()

@@ -115,12 +115,8 @@ def load_custom_fonts():
     global NARUTO_FONT_FAMILY
     if not QApplication.instance():
         return
-    
-    font_path = os.path.join(os.path.dirname(__file__), "..", "ninja-naruto-font", "njnaruto.ttf")
-    if os.path.exists(font_path):
-        fid = QFontDatabase.addApplicationFont(font_path)
-        if fid != -1:
-            NARUTO_FONT_FAMILY = QFontDatabase.applicationFontFamilies(fid)[0]
+
+    print("[DEBUG][theme] ninja_font_skipped")
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
@@ -498,8 +494,9 @@ class MentorWidget(QFrame):
         self.av_lbl.setFixedSize(38, 38)
         self.av_lbl.setObjectName("mentor_avatar")
         
+        from theme_manager import NINJA_THEME_ENABLED
         av_path = "assets/themes/dojo/Cyber_ninja_turtle_202604270705.jpeg_clean.png"
-        if os.path.exists(av_path):
+        if NINJA_THEME_ENABLED and os.path.exists(av_path):
             original_px = QPixmap(av_path)
             # Create circular mask
             size = 38
@@ -518,6 +515,7 @@ class MentorWidget(QFrame):
             self.av_lbl.setPixmap(rounded_px)
         else:
             self.av_lbl.setStyleSheet("background: #A86CFF; border-radius: 19px; border: 2px solid #A86CFF;")
+            print("[DEBUG][theme] ninja_avatar_skipped")
 
         txt_l = QVBoxLayout()
         txt_l.setSpacing(0)
@@ -541,6 +539,8 @@ class MentorWidget(QFrame):
         l.addLayout(txt_l)
 
     def set_style(self, theme):
+        from theme_manager import normalize_theme
+        theme = normalize_theme(theme)
         if theme == "dojo":
             self.show()
             self.setStyleSheet("""
@@ -764,6 +764,8 @@ class MusicWidget(QFrame):
             """)
 
     def set_theme(self, theme: str):
+        from theme_manager import normalize_theme
+        theme = normalize_theme(theme)
         self._refresh_style(dojo=(theme == "dojo"))
 
     # click = toggle
@@ -893,9 +895,11 @@ class HomeScreen(QWidget):
         btn_about.clicked.connect(self._show_about)
 
         # Theme Toggle Button
-        self._current_theme = self._data.get("_theme", "classic")
-        _next_lbl = {"classic": "🥷 NINJA MODE", "dojo": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
-        btn_text = _next_lbl.get(self._current_theme, "🥷 NINJA MODE")
+        from theme_manager import normalize_theme
+        saved_theme = self._data.get("_theme", "classic")
+        self._current_theme = normalize_theme(saved_theme)
+        _next_lbl = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
+        btn_text = _next_lbl.get(self._current_theme, "🐢 TMNT MODE")
         self._btn_theme = _topbtn(btn_text, "Switch Theme")
         self._btn_theme.clicked.connect(self._toggle_theme)
 
@@ -977,6 +981,89 @@ class HomeScreen(QWidget):
                 self.window().statusBar().hide()
                 if self.window() and self.window().statusBar() else None
             ))
+        self._install_home_ram_shortcut()
+
+    def _install_home_ram_shortcut(self):
+        from PyQt5.QtGui import QKeySequence
+        from PyQt5.QtWidgets import QShortcut
+
+        self._clear_home_ram_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
+        self._clear_home_ram_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._clear_home_ram_shortcut.activated.connect(self._clear_home_ram_caches)
+
+    def _clear_home_ram_caches(self):
+        if getattr(self, "_active_review", None) is not None or getattr(self, "_active_editor", None) is not None:
+            print("[DEBUG][home_ram] ctrl_c_ignored active_workflow=True")
+            return
+
+        from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+        import gc
+
+        page_count = len(getattr(PAGE_CACHE, "_cache", {}) or {})
+        mask_pdfs = list(MASK_REGISTRY.all_registered_pdfs())
+        pixmap_entries = list(getattr(PIXMAP_REGISTRY, "_entries", {}).items())
+        hidden_count = len(pixmap_entries)
+        thumb_count = 0
+        canvas_count = 0
+
+        PAGE_CACHE.clear_ram_only()
+
+        for pdf_path in mask_pdfs:
+            canvases = list(getattr(MASK_REGISTRY, "_map", {}).get(pdf_path, []) or [])
+            for canvas in canvases:
+                try:
+                    canvas_count += 1
+                    canvas._mask_cache_layer = None
+                    canvas._mask_cache_dirty = True
+                    if hasattr(canvas, "_spx_cache"):
+                        canvas._spx_cache.clear()
+                    if not canvas.isVisible():
+                        canvas._pages = []
+                        canvas._px = None
+                        canvas._page_tops = []
+                        canvas._total_w = 0
+                        canvas._total_h = 0
+                except RuntimeError:
+                    pass
+            MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
+
+        for label, (wref, attr, _path) in pixmap_entries:
+            obj = wref()
+            if obj is not None:
+                try:
+                    setattr(obj, attr, None)
+                except RuntimeError:
+                    pass
+            PIXMAP_REGISTRY.unregister(label)
+
+        deck_view = getattr(self, "deck_view", None)
+        if deck_view is not None and hasattr(deck_view, "_thumb_cache"):
+            thumb_count += len(deck_view._thumb_cache)
+            deck_view._thumb_cache.clear()
+
+        tmnt_main = getattr(getattr(self, "_tmnt_layout", None), "main", None)
+        if tmnt_main is not None and hasattr(tmnt_main, "_thumb_cache"):
+            thumb_count += len(tmnt_main._thumb_cache)
+            tmnt_main._thumb_cache.clear()
+
+        gc.collect()
+
+        cache_widget = getattr(self, "_cache_widget", None)
+        if cache_widget is not None and hasattr(cache_widget, "refresh"):
+            cache_widget.refresh()
+        tmnt_banga = getattr(getattr(self, "_tmnt_layout", None), "banga", None)
+        if tmnt_banga is not None and hasattr(tmnt_banga, "refresh"):
+            tmnt_banga.refresh()
+
+        win = self.window()
+        if win is not None and hasattr(win, "statusBar") and win.statusBar():
+            win.statusBar().showMessage("RAM cache cleared", 2500)
+
+        print(
+            "[DEBUG][home_ram] ctrl_c_clear "
+            f"pages={page_count} masks={len(mask_pdfs)} canvases={canvas_count} "
+            f"pixmaps={hidden_count} thumbs={thumb_count}"
+        )
 
     def show_review(self, cards, data, _on_batch_done=None):
         """Replace the DeckView panel with ReviewScreen inline."""
@@ -1247,14 +1334,14 @@ class HomeScreen(QWidget):
             self._tmnt_layout.set_bgm_state(self.music_widget._playing)
 
     def _toggle_theme(self):
-        from theme_manager import build_stylesheet
+        from theme_manager import build_stylesheet, normalize_theme
         from PyQt5.QtGui import QFont
 
-        _cycle    = {"classic": "dojo", "dojo": "tmnt", "tmnt": "classic"}
-        _btn_next = {"classic": "🥷 NINJA MODE", "dojo": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
+        _cycle    = {"classic": "tmnt", "tmnt": "classic"}
+        _btn_next = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
 
-        self._current_theme = _cycle.get(self._current_theme, "dojo")
-        self._btn_theme.setText(_btn_next.get(self._current_theme, "🥷 NINJA MODE"))
+        self._current_theme = normalize_theme(_cycle.get(self._current_theme, "classic"))
+        self._btn_theme.setText(_btn_next.get(self._current_theme, "🐢 TMNT MODE"))
         self._data["_theme"] = self._current_theme
         store.mark_dirty()
 
@@ -1280,7 +1367,7 @@ class HomeScreen(QWidget):
                 if win: win.setStyleSheet(ss)
                 print(f"[DEBUG] Applied TMNT layout and stylesheet")
         else:
-            # ── Swap back to splitter (classic / dojo) ───────────────────────
+            # ── Swap back to splitter (classic; Ninja/Dojo is disabled) ─────
             self.top_frame.show()
             win_sb = self.window().statusBar() if self.window() else None
             if win_sb: win_sb.show()
@@ -1292,17 +1379,10 @@ class HomeScreen(QWidget):
             self._apply_topbar_style()
             if app:
                 app._active_theme = self._current_theme
-                if self._current_theme == "classic":
-                    app.setFont(QFont("Segoe UI", current_size))
-                    app.setStyleSheet(_build_ss(current_size))
-                    if win: win.setStyleSheet("")
-                    print(f"[DEBUG] Applied Classic layout and stylesheet")
-                else:
-                    app.setFont(QFont(NARUTO_FONT_FAMILY, current_size))
-                    ss = build_stylesheet("dojo", current_size)
-                    app.setStyleSheet(ss)
-                    if win: win.setStyleSheet(ss)
-                    print(f"[DEBUG] Applied Dojo layout and stylesheet")
+                app.setFont(QFont("Segoe UI", current_size))
+                app.setStyleSheet(_build_ss(current_size))
+                if win: win.setStyleSheet("")
+                print(f"[DEBUG] Applied Classic layout and stylesheet")
 
     def _emit_font(self, direction: int):
         print(f"[DEBUG] _emit_font called with direction: {direction}")
@@ -1315,6 +1395,14 @@ class HomeScreen(QWidget):
         mods = e.modifiers()
         ctrl  = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
+
+        if ctrl and key == Qt.Key_S:
+            store.save_soon(min_interval=0.0)
+            if hasattr(self, 'canvas'):
+                self.canvas._show_toast("💾 Manual Save")
+            print("[HomeScreen][key] Ctrl+S — manual save triggered")
+            e.accept()
+            return
 
         if ctrl and key == Qt.Key_Z:
             if getattr(self, "_active_review", None) is None:

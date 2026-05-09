@@ -104,7 +104,7 @@ from PyQt5.QtWidgets import (
     QSplitter, QStatusBar, QProgressBar, QDialog, QFormLayout,
     QLineEdit, QTextEdit, QSizePolicy, QTreeWidget,
     QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
-    QHeaderView
+    QHeaderView, QShortcut
 )
 from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl, QSettings
 from PyQt5.QtGui import QGuiApplication as _QGA
@@ -583,6 +583,8 @@ class ReviewScreen(QWidget):
             return
 
         card, box_idx, sm2_obj = self._items[self._idx]
+        if hasattr(self.canvas, "clear_review_ink_for_card_switch"):
+            self.canvas.clear_review_ink_for_card_switch()
         self._rebuild_queue()           # sync queue panel on every card load
 
         # UI updates...
@@ -1035,6 +1037,17 @@ class ReviewScreen(QWidget):
             lambda *_: self._note_user_activity())
         self._canvas_scroll.verticalScrollBar().valueChanged.connect(
             self._on_review_scroll_page_changed)
+
+        self._sc_prev_page = QShortcut(Qt.Key_Left, self)
+        self._sc_prev_page.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_prev_page.setAutoRepeat(False)
+        self._sc_prev_page.activated.connect(self._go_prev_review_page)
+
+        self._sc_next_page = QShortcut(Qt.Key_Right, self)
+        self._sc_next_page.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_next_page.setAutoRepeat(False)
+        self._sc_next_page.activated.connect(self._go_next_review_page)
+
         self._pdf_viewer = PdfViewerController(
             canvas=self.canvas,
             scroll_area=self._canvas_scroll,

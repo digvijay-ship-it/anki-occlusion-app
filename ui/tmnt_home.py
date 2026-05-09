@@ -966,6 +966,22 @@ class TMNTDeckEngine(DeckTree):
     def set_theme(self, theme):
         self._theme = "tmnt"
 
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key_Delete, Qt.Key_Backspace):
+            print("[DEBUG][tmnt_deck_tree] key_delete")
+            self._delete_selected()
+            event.accept()
+            return
+        if key == Qt.Key_F2:
+            deck_id = self._get_selected_id()
+            if deck_id is not None:
+                print(f"[DEBUG][tmnt_deck_tree] key_rename id={deck_id}")
+                self._rename_by_id(deck_id)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def _make_item(self, deck):
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         item = QTreeWidgetItem([deck["name"].upper()])
@@ -982,6 +998,11 @@ class TMNTDeckEngine(DeckTree):
 
     def refresh(self):
         sel_id = self._get_selected_id()
+        query = ""
+        sidebar = self.parent()
+        search = getattr(sidebar, "search_in", None)
+        if search is not None:
+            query = search.text()
         expanded_ids = set()
 
         def _collect(item):
@@ -1011,6 +1032,13 @@ class TMNTDeckEngine(DeckTree):
 
         if sel_id is not None:
             self._select_by_id(sel_id)
+            selected = self.tree.currentItem()
+            if selected:
+                self.tree.scrollToItem(selected)
+
+        if query:
+            self._on_search(query)
+        print(f"[DEBUG][tmnt_deck_tree] refresh decks={len(self._data.get('decks', []))} search={bool(query)}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1190,7 +1218,7 @@ class TMNTSidebar(QFrame):
         )  # icon fills the whole button
         btn_open.setFixedSize(btn_w, btn_h)
 
-        btn_open.setToolTip("Focus selected dojo")
+        btn_open.setToolTip("Delete selected dojo")
         btn_open.setStyleSheet(
             _scale_ss(
                 f"""
@@ -1209,11 +1237,18 @@ class TMNTSidebar(QFrame):
 
         btn_new.clicked.connect(self._new_top)
         btn_sub.clicked.connect(self._new_child)
-        btn_open.clicked.connect(self._focus_selected)
+        btn_open.clicked.connect(self._delete_selected)
         fl.addWidget(btn_new, stretch=1)
         fl.addWidget(btn_sub, stretch=1)
         fl.addWidget(btn_open)
         L.addWidget(foot)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_K and event.modifiers() & Qt.ControlModifier:
+            self._focus_search()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _on_deck_clicked(self, deck):
         self._selected_deck = deck
@@ -1221,6 +1256,7 @@ class TMNTSidebar(QFrame):
 
     def _on_search(self, text):
         self._engine._on_search(text)
+        print(f"[DEBUG][tmnt_deck_tree] search query='{text.strip()}'")
 
     def _new_top(self):
         self._engine._new_deck(None)
@@ -1233,7 +1269,19 @@ class TMNTSidebar(QFrame):
     def _focus_selected(self):
         item = self._engine.tree.currentItem()
         if item:
+            print(f"[DEBUG][tmnt_deck_tree] focus_selected id={item.data(0, Qt.UserRole)}")
             self._engine.tree.scrollToItem(item)
+
+    def _focus_search(self):
+        print("[DEBUG][tmnt_deck_tree] focus_search")
+        self.search_in.setFocus(Qt.ShortcutFocusReason)
+        self.search_in.selectAll()
+
+    def _delete_selected(self):
+        selected_id = self._engine._get_selected_id()
+        print(f"[DEBUG][tmnt_deck_tree] footer_delete id={selected_id}")
+        self._engine._delete_selected()
+        self._sync_from_engine()
 
     def _sync_from_engine(self):
         self._selected_deck = self._engine.get_selected_deck()
@@ -2333,6 +2381,21 @@ class TMNTHomeLayout(QWidget):
         self.sidebar.new_deck.connect(self._new_deck)
         self.sidebar.new_sub.connect(self._new_sub)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_K and event.modifiers() & Qt.ControlModifier:
+            print("[DEBUG][tmnt_deck_tree] home_focus_search")
+            self.sidebar._focus_search()
+            event.accept()
+            return
+        if event.key() == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
+            store.save_soon(min_interval=0.0)
+            print("[TMNTHome][key] Ctrl+S — manual save triggered")
+            # If we want a toast, we could potentially call it on self.main.canvas if it was open,
+            # but usually TMNT uses a separate toast mechanism or we just print to console.
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 
     # ── Deck ops ─────────────────────────────────────────────────────────────
@@ -2355,6 +2418,7 @@ class TMNTHomeLayout(QWidget):
             }
             self._data.setdefault("decks", []).append(deck)
             store.mark_dirty()
+            store.save_soon(min_interval=0.0)
             self.refresh()
 
     def _new_sub(self):
@@ -2374,6 +2438,7 @@ class TMNTHomeLayout(QWidget):
             }
             self._selected_deck.setdefault("children", []).append(child)
             store.mark_dirty()
+            store.save_soon(min_interval=0.0)
             self.refresh()
 
     def _reload_main(self):

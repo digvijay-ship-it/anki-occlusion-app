@@ -114,8 +114,8 @@ def load_custom_fonts():
     if not QApplication.instance():
         return
     global NARUTO_FONT_FAMILY
+    print("[DEBUG][theme] ninja_font_skipped")
     font_paths = [
-        os.path.join(os.path.dirname(__file__), "ninja-naruto-font", "njnaruto.ttf"),
         os.path.join(os.path.dirname(__file__), "assets", "fonts", "PressStart2P-Regular.ttf"),
         os.path.join(os.path.dirname(__file__), "assets", "fonts", "RobotoMono-Regular.ttf"),
     ]
@@ -214,7 +214,9 @@ class MainWindow(QMainWindow):
 
         # Apply saved theme/font before building HomeScreen so TMNT widgets
         # construct with the correct cold-start sizing context.
-        theme = self._data.get("_theme", "classic")
+        from theme_manager import normalize_theme
+        saved_theme = self._data.get("_theme", "classic")
+        theme = normalize_theme(saved_theme)
         app = QApplication.instance()
         if app:
             app._active_theme = theme
@@ -316,6 +318,14 @@ class MainWindow(QMainWindow):
         elif mods & Qt.ControlModifier and key == Qt.Key_C:
             # Ctrl+C → RAM cache clear (disk untouched)
             from cache_manager import PAGE_CACHE, MASK_REGISTRY
+            try:
+                from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE
+                _SKELETON_CACHE.clear()
+                _SKELETON_PLACEHOLDER_CACHE.clear()
+                import fitz
+                fitz.TOOLS.store_shrink(100) # Purge PyMuPDF internal caches
+            except Exception as ex:
+                pass
             before = len(PAGE_CACHE._cache)
             PAGE_CACHE.clear_ram_only()
             for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):

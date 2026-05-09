@@ -252,8 +252,12 @@ class DojoMissionBanner(QFrame):
         
         self.btn_train = QPushButton("▶ START TRAINING\nREVIEW DUE SCROLLS")
         self.btn_all = QPushButton("  TRAIN SELECTED SCROLL")
-        from dojo_assets import DojoAssets
-        self.btn_all.setIcon(QIcon(DojoAssets.get().get_ui_icon(2, 32)))
+        from theme_manager import NINJA_THEME_ENABLED
+        if NINJA_THEME_ENABLED:
+            from dojo_assets import DojoAssets
+            self.btn_all.setIcon(QIcon(DojoAssets.get().get_ui_icon(2, 32)))
+        else:
+            print("[DEBUG][theme] dojo_banner_icon_skipped")
         
         right_l.addWidget(self.btn_train)
         right_l.addWidget(self.btn_all)
@@ -469,9 +473,11 @@ class DeckView(QWidget):
         self._refresh()
 
     def set_theme(self, theme):
-        from dojo_assets import DojoAssets
+        from theme_manager import normalize_theme
+        theme = normalize_theme(theme)
         self._theme = theme
         if theme == "dojo":
+            from dojo_assets import DojoAssets
             self.lbl_deck_sub.show()
             self.lbl_deck_icon.show()
             self.dojo_container.show()
@@ -738,20 +744,23 @@ class DeckView(QWidget):
         subdeck_name = card.pop("_auto_subdeck", None)
 
         if subdeck_name:
-            target_deck = None
-            for child in self.deck.get("children", []):
-                if child.get("name", "").strip().lower() == subdeck_name.strip().lower():
-                    target_deck = child
-                    break
-            if target_deck is None:
-                target_deck = {
-                    "_id":      next_deck_id(self._data),
-                    "name":     subdeck_name,
-                    "cards":    [],
-                    "children": [],
-                    "created":  datetime.now().isoformat(),
-                }
-                self.deck.setdefault("children", []).append(target_deck)
+            if self.deck.get("name", "").strip().lower() == subdeck_name.strip().lower():
+                target_deck = self.deck
+            else:
+                target_deck = None
+                for child in self.deck.get("children", []):
+                    if child.get("name", "").strip().lower() == subdeck_name.strip().lower():
+                        target_deck = child
+                        break
+                if target_deck is None:
+                    target_deck = {
+                        "_id":      next_deck_id(self._data),
+                        "name":     subdeck_name,
+                        "cards":    [],
+                        "children": [],
+                        "created":  datetime.now().isoformat(),
+                    }
+                    self.deck.setdefault("children", []).append(target_deck)
             target_deck.setdefault("cards", []).append(card)
         else:
             self.deck.setdefault("cards", []).append(card)
@@ -762,6 +771,7 @@ class DeckView(QWidget):
         else:
             self._refresh()
         store.mark_dirty()  # 🔒 DirtyStore
+        store.save_soon(min_interval=0.0)
 
     def _find_home(self):
         from ui.home_screen import HomeScreen
@@ -799,6 +809,7 @@ class DeckView(QWidget):
             cards[idx] = c
             self._refresh()
             store.mark_dirty()
+            store.save_soon(min_interval=0.0)
         else:
             self._undo_stack.pop() if self._undo_stack else None
 

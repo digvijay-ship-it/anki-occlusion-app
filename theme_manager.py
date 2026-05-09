@@ -1,5 +1,21 @@
 from PyQt5.QtGui import QColor
 
+# ── Theme Feature Gates ───────────────────────────────────────────────────────
+
+NINJA_THEME_ENABLED = False
+DISABLED_THEMES = {"dojo", "ninja"}
+
+
+def _raw_mode(mode="classic"):
+    if mode == "ninja":
+        return "dojo"
+    return mode or "classic"
+
+
+def is_theme_enabled(mode="classic"):
+    return _raw_mode(mode) not in DISABLED_THEMES
+
+
 # ── Color Palettes ────────────────────────────────────────────────────────────
 
 PALETTES = {
@@ -109,23 +125,30 @@ LABELS = {
 }
 
 
-def _normalize_mode(mode="dojo"):
-    if mode == "ninja":
-        return "dojo"
-    return mode
+def _normalize_mode(mode="classic"):
+    raw_mode = _raw_mode(mode)
+    if raw_mode in DISABLED_THEMES:
+        print(f"[DEBUG][theme] ninja_disabled fallback=classic source={mode}")
+        return "classic"
+    if raw_mode not in PALETTES:
+        return "classic"
+    return raw_mode
 
 
-def get_palette(mode="dojo"):
+normalize_theme = _normalize_mode
+
+
+def get_palette(mode="classic"):
     mode = _normalize_mode(mode)
-    return PALETTES.get(mode, PALETTES["dojo"])
+    return PALETTES.get(mode, PALETTES["classic"])
 
 
-def get_label(key, mode="dojo"):
+def get_label(key, mode="classic"):
     mode = _normalize_mode(mode)
-    return LABELS.get(mode, LABELS["dojo"]).get(key, key)
+    return LABELS.get(mode, LABELS["classic"]).get(key, key)
 
 
-def build_stylesheet(mode="dojo", font_size=14):
+def build_stylesheet(mode="classic", font_size=14):
     mode = _normalize_mode(mode)
     p = get_palette(mode)
 

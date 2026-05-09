@@ -409,7 +409,12 @@ class CardEditorDialog(QDialog):
 
     def keyPressEvent(self, e):
         key = e.key(); mods = e.modifiers()
-        if mods & Qt.ControlModifier and key == Qt.Key_Z:  self.canvas.undo()
+        if key == Qt.Key_F11:
+            if self.isFullScreen():
+                self.showMaximized()
+            else:
+                self.showFullScreen()
+        elif mods & Qt.ControlModifier and key == Qt.Key_Z:  self.canvas.undo()
         elif mods & Qt.ControlModifier and key == Qt.Key_Y: self.canvas.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_S: self._save()
         elif mods & Qt.ControlModifier and key == Qt.Key_E: self._open_in_reader()
@@ -468,8 +473,13 @@ class CardEditorDialog(QDialog):
     def _load_pdf(self):
         if not PDF_SUPPORT:
             QMessageBox.warning(self, "No PDF support", "pip install pymupdf"); return
-        path, _ = QFileDialog.getOpenFileName(self, "Load PDF", "", "PDF (*.pdf)")
+        start_dir = ""
+        if getattr(self, "_deck", None):
+            start_dir = self._deck.get("pdf_dir", "")
+        path, _ = QFileDialog.getOpenFileName(self, "Load PDF", start_dir, "PDF (*.pdf)")
         if not path: return
+        if getattr(self, "_deck", None):
+            self._deck["pdf_dir"] = os.path.dirname(path)
         self.card["pdf_path"] = path; self.card.pop("image_path", None)
         self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
         self._pending_boxes = []
@@ -815,11 +825,15 @@ class CardEditorDialog(QDialog):
 
         old_path = self.card.get("pdf_path", "") or self._watched_path or ""
         start_dir = os.path.dirname(old_path) if old_path else ""
+        if not start_dir and getattr(self, "_deck", None):
+            start_dir = self._deck.get("pdf_dir", "")
 
         new_path, _ = QFileDialog.getOpenFileName(
             self, "Choose New PDF File", start_dir, "PDF (*.pdf)")
         if not new_path:
             return
+        if getattr(self, "_deck", None):
+            self._deck["pdf_dir"] = os.path.dirname(new_path)
 
         # Confirm so user doesn't accidentally overwrite with wrong file
         reply = QMessageBox.question(
