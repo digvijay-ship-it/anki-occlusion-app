@@ -3,7 +3,8 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -67,7 +68,8 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertEqual(self.canvas._page_tops, [0, 100 + PAGE_GAP])
         self.assertEqual(self.canvas._total_h, 100 + PAGE_GAP + 50)
         self.assertEqual(self.canvas._total_w, 100)
-        self.assertIn("deck.pdf", MASK_REGISTRY.all_registered_pdfs())
+        registered = {str(path).lower() for path in MASK_REGISTRY.all_registered_pdfs()}
+        self.assertTrue(any(path.endswith("deck.pdf") for path in registered))
 
     def test_inject_page_replaces_page_and_clears_scaled_cache_for_that_page(self):
         self.canvas.load_pages([self._pixmap(50, 40)])
@@ -695,6 +697,67 @@ class CardEditorDialogTests(unittest.TestCase):
         self.assertEqual(calls, [0, 25, 50])
         self.assertEqual(self.dialog._sc.verticalScrollBar().value(), 225)
         self.assertIsNone(self.dialog._initial_img_y)
+
+    def test_exec_opens_editor_in_fullscreen_by_default(self):
+        with patch.object(self.dialog, "showFullScreen") as show_fullscreen, \
+             patch("ui.editor_dialog.QDialog.exec_", return_value=321) as qdialog_exec, \
+             patch("builtins.print") as fake_print:
+            result = self.dialog.exec_()
+
+        show_fullscreen.assert_called_once_with()
+        qdialog_exec.assert_called_once_with()
+        fake_print.assert_any_call("[DEBUG][editor_mode] enter_fullscreen_default")
+        self.assertEqual(result, 321)
+
+    def test_load_pdf_direct_uses_skeleton_and_wires_ondemand(self):
+        pages = [self._pixmap(50, 60), self._pixmap(50, 60), self._pixmap(50, 60)]
+        skeleton = SimpleNamespace(placeholders=pages, page_dims=[], error=None)
+
+        with patch("ui.editor_dialog.get_pdf_page_count", return_value=3), \
+             patch("ui.editor_dialog.choose_pdf_render_zoom", return_value=2.0), \
+             patch("ui.editor_dialog.ensure_pdf_cache_profile", return_value=False), \
+             patch("ui.editor_dialog.load_pdf_skeleton", return_value=skeleton), \
+             patch("ui.editor_dialog.QTimer.singleShot", side_effect=lambda delay, fn: None) as single_shot, \
+             patch.object(self.dialog, "_wire_editor_scroll_ondemand") as wire_ondemand:
+            self.dialog._load_pdf_direct(self.pdf_path)
+
+        self.assertEqual(len(self.dialog.canvas._pages), 3)
+        wire_ondemand.assert_called_once_with(self.pdf_path, 3)
+        single_shot.assert_called()
+        self.assertEqual(self.dialog.lbl_sync.text(), "⏳ PDF ready on demand")
+
+    def test_editor_visible_pages_changed_injects_cache_hot_gray_pages(self):
+        self.dialog._editor_ondemand_path = self.pdf_path
+        self.dialog._editor_ondemand_total = 5
+        self.dialog._editor_canvas_real_pages = set()
+        self.dialog._editor_render_inflight_pages = set()
+        self.dialog._editor_visible_debug_seen_pages = set()
+        placeholder = self._pixmap(40, 50)
+        self.dialog.canvas.load_pages([placeholder for _ in range(5)])
+        cached = self._pixmap(40, 50)
+
+        with patch("ui.editor_dialog.PAGE_CACHE.get", side_effect=lambda path, pn: cached if pn == 2 else None):
+            self.dialog._start_editor_visible_page_request = MagicMock()
+            self.dialog._on_editor_visible_pages_changed(2, 2)
+
+        self.assertIs(self.dialog.canvas._pages[2], cached)
+        self.dialog._start_editor_visible_page_request.assert_not_called()
+        self.assertIn(2, self.dialog._editor_canvas_real_pages)
+
+    def test_editor_visible_pages_changed_requests_missing_visible_pages(self):
+        self.dialog._editor_ondemand_path = self.pdf_path
+        self.dialog._editor_ondemand_total = 5
+        self.dialog._editor_canvas_real_pages = set()
+        self.dialog._editor_render_inflight_pages = set()
+        self.dialog._editor_visible_debug_seen_pages = set()
+        placeholder = self._pixmap(40, 50)
+        self.dialog.canvas.load_pages([placeholder for _ in range(5)])
+        self.dialog._start_editor_visible_page_request = MagicMock()
+
+        with patch("ui.editor_dialog.PAGE_CACHE.get", return_value=None):
+            self.dialog._on_editor_visible_pages_changed(1, 3)
+
+        self.dialog._start_editor_visible_page_request.assert_called_once_with(self.pdf_path, [1, 2, 3])
 
 
 if __name__ == "__main__":

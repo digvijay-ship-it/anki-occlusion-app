@@ -357,6 +357,8 @@ class ReviewScreen(QWidget):
         self._ondemand_thread = None
         self._bg_pending_inserts = {}
         self._bg_accept_mode = False
+        self._review_canvas_real_pages = set()
+        self._review_render_inflight_pages = set()
         self._bg_prefetch_dialog = None
         self._bg_prefetch_total_pages = 0
         self._bg_prefetch_cached_count = 0
@@ -803,7 +805,6 @@ class ReviewScreen(QWidget):
             self.canvas.set_peek_active(True)
         self._rebuild_queue(peek_idx=idx)
         self._center_on_target()
-        self._debug_report(f"queue jump -> {idx}")
 
     def _on_queue_item_clicked(self, item):
         idx = item.data(QUEUE_INDEX_ROLE)
@@ -1734,13 +1735,12 @@ class ReviewScreen(QWidget):
 
         Flow:
           1. Image card      → unchanged (direct QPixmap load)
-          2. PDF, full cache → instant (same as before)
-          3. PDF, no/partial cache → NEW lazy path:
+          2. PDF             → always skeleton-first lazy path:
                a. load_pdf_skeleton() — grey placeholders, ~5ms
                b. canvas ready instantly with correct layout + page_tops
-               c. _start_priority_render() — due-mask pages first
+               c. _start_priority_render() — queue pages first
                d. scroll → _on_visible_pages_changed() → on-demand rest
-          4. PDF missing     → grey fallback (unchanged)
+          3. PDF missing     → grey fallback (unchanged)
 
         Terminal prints every decision point.
         """
@@ -1790,7 +1790,9 @@ class ReviewScreen(QWidget):
                 self.setFocus()
                 return
 
-            # ── 2b. Full cache hit — instant ──────────────────────────────────
+            # ── 2b. Review always stays queue-first lazy, even if the disk cache
+            #        already has every page. We do not hydrate the whole PDF into
+            #        the review canvas upfront anymore.
             total_pages = get_pdf_page_count(path)
             self._pdf_render_zoom = choose_pdf_render_zoom(total_pages)
             profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)
@@ -1801,22 +1803,11 @@ class ReviewScreen(QWidget):
                 reset_cache=profile_reset,
             )
 
-            cache_state = get_cached_pdf_page_set(path, total_pages)
-            clean_pages = cache_state["cached_pages_by_index"]
-
-            if total_pages > 0 and len(clean_pages) == total_pages:
-                t_ms = (time.perf_counter() - t_start) * 1000
-                self._canvas_pdf_path = path   # FIX 1: stamp
-                self._debug_review_lazy_pages_loaded(source="cache", page_nums=range(total_pages))
-                self._apply_canvas_pages(card, box_idx, [clean_pages[i] for i in range(total_pages)])
-                self._wire_scroll_ondemand(path, total_pages)
-                return
-
             # ── 2c. NEW LAZY PATH — skeleton first ────────────────────────────
             self._pending_skeleton_result = {
                 "card": card,
                 "box_idx": box_idx,
-                "clean_pages": clean_pages,
+                "clean_pages": {},
                 "path": path,
                 "t_start": t_start,
             }
@@ -1829,17 +1820,15 @@ class ReviewScreen(QWidget):
 
     def _get_priority_pages(self, card, box_idx, total_pages, path=None):
         """
-        Return the current mask page, every other due page from the same PDF,
-        plus immediate neighbours. These pages render FIRST so the viewport
-        stays responsive while the current review session is warming up.
+        Return only the queued review pages from this same PDF.
+        These pages render FIRST so the viewport stays responsive while the
+        current review session is warming up.
 
         The goal is simple:
           1. current mask page
           2. other review pages from the same PDF
-          3. one page before / after each priority page
         Everything else stays lazy and scroll-driven.
         """
-        boxes    = card.get("boxes", [])
         pages    = set()
         card_path = resolve_asset_path(path or card.get("pdf_path", ""))
 
@@ -1868,14 +1857,15 @@ class ReviewScreen(QWidget):
 
         # Current box's page — always priority #1
         _add_pages_from_card(card, box_idx)
-        # Also add pages adjacent to priority pages (±1) for smooth scroll
-        adjacent = set()
-        for pn in pages:
-            if pn > 0:             adjacent.add(pn - 1)
-            if pn < total_pages-1: adjacent.add(pn + 1)
-        pages.update(adjacent)
-
-        result = sorted(pages)
+        result = sorted({
+            max(0, min(int(pn), max(0, int(total_pages) - 1)))
+            for pn in pages
+            if pn is not None
+        })
+        if result:
+            print("[DEBUG][review_queue_pages] priority " + ", ".join(f"p.{pn + 1}" for pn in result))
+        else:
+            print("[DEBUG][review_queue_pages] priority none")
         return result
 
     def _stop_skeleton_thread(self):
@@ -1928,6 +1918,8 @@ class ReviewScreen(QWidget):
             cached_idxs = sorted(clean_pages.keys())
             self._debug_review_lazy_pages_loaded(source="cache", page_nums=cached_idxs)
         self._apply_canvas_pages(card, box_idx, pages)
+        self._review_canvas_real_pages = {int(i) for i in clean_pages.keys()}
+        self._review_render_inflight_pages = set()
         self.canvas._show_toast(f"⏳ Loading p.1–{skel.total_pages}...")
         t_skel_ms = (time.perf_counter() - t_start) * 1000
 
@@ -1939,7 +1931,7 @@ class ReviewScreen(QWidget):
         """
         Launch PdfOnDemandThread for priority pages.
         On each page_ready → canvas.inject_page().
-        On batch_done → start background fill for remaining pages.
+        Non-priority pages stay lazy until they become visible.
 
         FIX 1: We stamp self._canvas_pdf_path = path here.
         _on_page_ready checks this stamp before injecting —
@@ -1960,6 +1952,7 @@ class ReviewScreen(QWidget):
                           if PAGE_CACHE.get(path, p) is not None]
         to_render      = [p for p in priority_pages
                           if PAGE_CACHE.get(path, p) is None]
+        self._review_render_inflight_pages = set(int(p) for p in to_render)
 
 
         # Inject already-cached pages immediately (no thread needed)
@@ -1974,11 +1967,12 @@ class ReviewScreen(QWidget):
                     canvas_wh=f"{self.canvas.width()}x{self.canvas.height()}px",
                 )
                 self.canvas.inject_page(pn, pg)
+                self.__dict__.setdefault("_review_canvas_real_pages", set()).add(int(pn))
+                self._debug_review_page_injection(page_num=pn, injected=True, kind="priority")
 
         if not to_render:
             self._background_fill_state = None
             self._ondemand_kind = None
-            self._start_background_fill(path, priority_pages, total_pages)
             return
 
         self._ondemand_thread = PdfOnDemandThread(path, to_render, zoom=self._pdf_render_zoom, parent=self)
@@ -1997,8 +1991,6 @@ class ReviewScreen(QWidget):
     def _on_priority_batch_done(self, path, priority_pages, total_pages):
         self._background_fill_state = None
         self._ondemand_kind = None
-        if getattr(self, "_canvas_pdf_path", None) == path:
-            self._start_background_fill(path, priority_pages, total_pages)
 
     # ── LRU window size for background fill ───────────────────────────────────
     # Background fill renders at most this many pages beyond priority set.
@@ -2051,8 +2043,6 @@ class ReviewScreen(QWidget):
     def _flush_pending_background_inserts(self):
         if not self._bg_pending_inserts:
             return
-        if not self._bg_accept_mode:
-            return
         current_path = getattr(self, "_canvas_pdf_path", None)
         if not current_path:
             self._bg_pending_inserts.clear()
@@ -2070,6 +2060,9 @@ class ReviewScreen(QWidget):
             print("[DEBUG][review_bg] insert_skip reason=canvas_deleted")
             self._bg_pending_inserts.clear()
             return
+        # The old prefetch-accept dialog was removed, so background-ready pages
+        # must auto-insert as soon as the UI is idle instead of waiting on a
+        # flag that no longer has a user-facing control.
         ready_items = sorted(self._bg_pending_inserts.items())
         self._bg_pending_inserts.clear()
         for pn, pg in ready_items:
@@ -2081,6 +2074,8 @@ class ReviewScreen(QWidget):
                 canvas_wh=f"{self.canvas.width()}x{self.canvas.height()}px",
             )
             self.canvas.inject_page(pn, pg)
+            self.__dict__.setdefault("_review_canvas_real_pages", set()).add(int(pn))
+            self._debug_review_page_injection(page_num=pn, injected=True, kind="background")
         if ready_items:
             self._safe_canvas_toast("Inserted " + ", ".join(f"p.{pn+1}" for pn, _ in ready_items))
 
@@ -2151,6 +2146,7 @@ class ReviewScreen(QWidget):
         self._ondemand_path   = path
         self._ondemand_total  = total_pages
         self._ondemand_kind   = "background"
+        self._review_render_inflight_pages = set(int(p) for p in windowed)
 
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(
@@ -2199,6 +2195,7 @@ class ReviewScreen(QWidget):
         # Store path+total for use in the slot
         self._ondemand_path  = path
         self._ondemand_total = total_pages
+        self._visible_debug_seen_pages = set()
 
         self._canvas_scroll.visible_pages_changed.connect(
             self._on_visible_pages_changed)
@@ -2215,6 +2212,25 @@ class ReviewScreen(QWidget):
         if not path:
             return
 
+        first = max(0, int(first))
+        last = max(first, int(last))
+        visible_pages = list(range(first, last + 1))
+        prev_visible = set(self.__dict__.get("_visible_debug_seen_pages", set()) or set())
+        entered_pages = [pn for pn in visible_pages if pn not in prev_visible]
+        self._visible_debug_seen_pages = set(visible_pages)
+        if entered_pages:
+            current_page = visible_pages[len(visible_pages) // 2]
+            entered_states = ", ".join(
+                f"p.{pn + 1}:{self._review_page_view_state(path, pn)}"
+                for pn in entered_pages
+            )
+            print(
+                f"[DEBUG][review_viewport] visible=p.{first + 1}-p.{last + 1} "
+                f"current=p.{current_page + 1}:{self._review_page_view_state(path, current_page)} "
+                f"entered={entered_states}"
+            )
+
+        self._inject_cached_visible_pages(path, visible_pages)
         needed = [pn for pn in range(first, last + 1) if PAGE_CACHE.get(path, pn) is None]
 
         if not needed:
@@ -2233,8 +2249,39 @@ class ReviewScreen(QWidget):
 
         self._start_visible_page_request(path, needed)
 
+    def _inject_cached_visible_pages(self, path, visible_pages):
+        visible_pages = [int(pn) for pn in (visible_pages or [])]
+        real_pages = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
+        pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
+        inflight = set(self.__dict__.get("_review_render_inflight_pages", set()) or set())
+        injected = []
+        for pn in visible_pages:
+            if pn in real_pages or pn in pending_bg or pn in inflight:
+                continue
+            cached = PAGE_CACHE.get(path, pn)
+            if cached is None or cached.isNull():
+                continue
+            self._debug_review_lazy_page_loaded(
+                source="cache",
+                page_num=pn,
+                pixmap=cached,
+                kind="visible_cache",
+                canvas_wh=f"{self.canvas.width()}x{self.canvas.height()}px",
+            )
+            self.canvas.inject_page(pn, cached)
+            self.__dict__.setdefault("_review_canvas_real_pages", set()).add(pn)
+            self._debug_review_page_injection(page_num=pn, injected=True, kind="visible_cache")
+            injected.append(pn)
+        if injected:
+            print("[DEBUG][review_visible_cache] hydrate " + ", ".join(f"p.{pn + 1}" for pn in injected))
+            self._update_review_page_nav_ui()
+
     def _start_visible_page_request(self, path, needed):
         self._pending_visible_request = None
+        needed = sorted({int(pn) for pn in (needed or [])})
+        if needed:
+            print("[DEBUG][review_ondemand] render_request " + ", ".join(f"p.{pn + 1}" for pn in needed))
+        self.__dict__.setdefault("_review_render_inflight_pages", set()).update(needed)
         self._ondemand_kind = "visible"
         self._ondemand_thread = PdfOnDemandThread(path, needed, zoom=self._pdf_render_zoom, parent=self)
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
@@ -2275,8 +2322,16 @@ class ReviewScreen(QWidget):
         """
         current_path = getattr(self, "_canvas_pdf_path", None)
         thread_path  = getattr(self, "_ondemand_path", None)
+        page_num = int(page_num)
+        self.__dict__.setdefault("_review_render_inflight_pages", set()).discard(page_num)
 
         if current_path != thread_path:
+            self._debug_review_page_injection(
+                page_num=page_num,
+                injected=False,
+                kind=getattr(self, "_ondemand_kind", None) or "visible",
+                reason="stale_path",
+            )
             return
 
         canvas_len = len(self.canvas._pages)
@@ -2284,6 +2339,12 @@ class ReviewScreen(QWidget):
 
         # Guard: canvas wiped — should not happen after _stop_ondemand_thread fix
         if canvas_len == 0:
+            self._debug_review_page_injection(
+                page_num=page_num,
+                injected=False,
+                kind=getattr(self, "_ondemand_kind", None) or "visible",
+                reason="canvas_empty",
+            )
             return
 
         load_kind = getattr(self, "_ondemand_kind", None) or "visible"
@@ -2297,8 +2358,22 @@ class ReviewScreen(QWidget):
 
         if getattr(self, "_ondemand_kind", None) == "background":
             self._bg_pending_inserts[page_num] = qpx
+            self._debug_review_page_injection(
+                page_num=page_num,
+                injected=False,
+                kind=load_kind,
+                reason="queued_pending_insert",
+            )
             return
         self.canvas.inject_page(page_num, qpx)
+        self.__dict__.setdefault("_review_canvas_real_pages", set()).add(page_num)
+        self._debug_review_page_injection(
+            page_num=page_num,
+            injected=True,
+            kind=load_kind,
+        )
+        if load_kind == "visible":
+            print(f"[DEBUG][review_ondemand] loaded p.{page_num + 1}")
         self._update_review_page_nav_ui()
 
     def _debug_review_lazy_page_loaded(self, source: str, page_num: int, pixmap, kind: str = "", canvas_wh: str = ""):
@@ -2307,6 +2382,35 @@ class ReviewScreen(QWidget):
         page_num = int(page_num)
         emoji = "⚡" if str(source).strip().lower() == "cache" else "👀"
         print(f"[DEBUG][review_lazy] {emoji} p.{page_num + 1}")
+
+    def _review_page_view_state(self, path: str, page_num: int) -> str:
+        page_num = int(page_num)
+        if page_num in set(self.__dict__.get("_review_canvas_real_pages", set()) or set()):
+            return "canvas_real"
+        if page_num in set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys()):
+            return "rendered_waiting_inject"
+        pending = self.__dict__.get("_pending_visible_request")
+        if pending and pending[0] == path and page_num in set(pending[1] or []):
+            return "queued_visible_render"
+        if page_num in set(self.__dict__.get("_review_render_inflight_pages", set()) or set()):
+            return "rendering"
+        cached = PAGE_CACHE.get(path, page_num)
+        if cached is not None and not cached.isNull():
+            return "cache_hot_canvas_gray"
+        pages = getattr(getattr(self, "canvas", None), "_pages", None) or []
+        if 0 <= page_num < len(pages) and pages[page_num] is not None and not pages[page_num].isNull():
+            return "placeholder_gray"
+        return "canvas_missing"
+
+    def _debug_review_page_injection(self, page_num: int, injected: bool, kind: str = "", reason: str = ""):
+        page_num = int(page_num)
+        status = "yes" if injected else "no"
+        parts = [f"[DEBUG][review_inject] p.{page_num + 1} injected={status}"]
+        if kind:
+            parts.append(f"kind={kind}")
+        if reason:
+            parts.append(f"reason={reason}")
+        print(" ".join(parts))
 
     def _debug_review_lazy_pages_loaded(self, source: str, page_nums):
         for page_num in page_nums or []:
@@ -2501,6 +2605,8 @@ class ReviewScreen(QWidget):
             self._review_loader_logged_pages = end_idx
         if pages:
             self._apply_canvas_pages(card, box_idx, pages)
+            self._review_canvas_real_pages = set(range(len(pages)))
+            self._review_render_inflight_pages.clear()
         self.canvas._show_toast(f"⏳ Loading PDF... {loaded}/{total} pages")
 
     def _on_review_pages_ready(self, pages, err):
@@ -2514,6 +2620,8 @@ class ReviewScreen(QWidget):
             self._debug_review_lazy_pages_loaded(source="render", page_nums=range(start_idx, end_idx))
             self._review_loader_logged_pages = end_idx
         self._apply_canvas_pages(card, box_idx, pages)
+        self._review_canvas_real_pages = set(range(len(pages)))
+        self._review_render_inflight_pages.clear()
         self.canvas._show_toast(f"✅ PDF loaded — {len(pages)} pages")
 
 

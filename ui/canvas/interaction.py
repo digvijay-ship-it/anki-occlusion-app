@@ -304,7 +304,6 @@ class CanvasInteractionMixin:
     def _ink_release(self):
         if len(self._ink_current) >= 2:
             self._ink_strokes.append(list(self._ink_current))
-            print(f"[DEBUG][review_pen] stroke_commit points={len(self._ink_current) - 1}")
         self._ink_current = []
         self._ink_input_kind = None
         self.update()
