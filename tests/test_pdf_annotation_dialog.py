@@ -95,6 +95,19 @@ class PdfAnnotationDialogTests(unittest.TestCase):
         debug_line = fake_print.call_args_list[0][0][0]
         self.assertEqual(debug_line, "[DEBUG][annotation_lazy] 👀 p.3")
 
+    def test_apply_initial_anchor_position_uses_image_space_y(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog.initial_anchor_y = 240.0
+        dialog.canvas = type("Canvas", (), {"_scale": 1.25})()
+        bar = MagicMock()
+        dialog.scroll = type("Scroll", (), {"verticalScrollBar": lambda self: bar})()
+
+        applied = dialog._apply_initial_anchor_position("test_anchor", finalize=True)
+
+        self.assertTrue(applied)
+        bar.setValue.assert_called_once_with(300)
+        self.assertIsNone(dialog.initial_anchor_y)
+
     def test_pen_style_override_is_annotation_only(self):
         dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
         dialog._annotation_pen_color = "#11AAFF"

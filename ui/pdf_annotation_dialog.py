@@ -755,9 +755,38 @@ class PdfAnnotationDialog(QDialog):
         self.canvas.load_pages(base_pages)
         self._viewer.reset_fit()
         self._viewer.set_page_ui(self.initial_page)
-        self._viewer.restore_position(page_zero=self.initial_page)
+        if self.initial_anchor_y is not None:
+            self._schedule_initial_anchor_restore("open")
+        else:
+            self._viewer.restore_position(page_zero=self.initial_page)
         self._ensure_annotation_window(self.initial_page, reason="open")
         self._ensure_render_window(self.initial_page, reason="open")
+
+    def _apply_initial_anchor_position(self, reason: str = "manual", finalize: bool = False):
+        if self.initial_anchor_y is None:
+            return False
+        img_y = float(self.initial_anchor_y)
+        scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
+        scroll_y = int(img_y * scale)
+        print(
+            f"[DEBUG][annotation_restore] apply_img_y reason={reason} "
+            f"img_y={img_y:.2f} scale={scale:.4f} scroll_y={scroll_y}"
+        )
+        self.scroll.verticalScrollBar().setValue(scroll_y)
+        if finalize:
+            self.initial_anchor_y = None
+        return True
+
+    def _schedule_initial_anchor_restore(self, reason: str, delays_ms=(0, 35, 90)):
+        if self.initial_anchor_y is None:
+            return
+        delays = list(delays_ms) if delays_ms else [0]
+        for idx, delay in enumerate(delays):
+            finalize = idx == len(delays) - 1
+            QTimer.singleShot(
+                int(delay),
+                lambda rsn=f"{reason}@{delay}ms", fin=finalize: self._apply_initial_anchor_position(rsn, finalize=fin),
+            )
 
     def _on_page_ready(self, page_num, qpx):
         if qpx is None:
@@ -935,6 +964,8 @@ class PdfAnnotationDialog(QDialog):
         super().resizeEvent(event)
         if hasattr(self, "_viewer"):
             QTimer.singleShot(0, self._viewer.on_resize)
+        if self.initial_anchor_y is not None:
+            self._schedule_initial_anchor_restore("resize", delays_ms=(0, 35))
 
     def closeEvent(self, event):
         self._stop_loader_thread()

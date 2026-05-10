@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
-from PyQt5.QtGui import QColor, QMouseEvent, QPixmap
+from PyQt5.QtGui import QColor, QKeyEvent, QMouseEvent, QPixmap
 from PyQt5.QtWidgets import QApplication
 
 from cache_manager import MASK_REGISTRY
@@ -673,6 +673,61 @@ class CardEditorDialogTests(unittest.TestCase):
 
         url = open_url.call_args[0][0]
         self.assertEqual(url.fragment(), "page=4")
+
+    def test_l_key_copies_current_pdf_file_in_editor(self):
+        with patch.object(self.dialog, "_copy_current_pdf_file_to_clipboard") as copy_pdf:
+            event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_L, Qt.NoModifier)
+            self.dialog.keyPressEvent(event)
+
+        copy_pdf.assert_called_once_with()
+
+    def test_ctrl_l_reveals_current_pdf_folder_in_editor(self):
+        with patch.object(self.dialog, "_reveal_current_pdf_in_folder") as reveal_pdf:
+            event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_L, Qt.ControlModifier)
+            self.dialog.keyPressEvent(event)
+
+        reveal_pdf.assert_called_once_with()
+
+    def test_editor_copy_pdf_file_places_file_url_on_clipboard(self):
+        self.dialog.card["pdf_path"] = self.pdf_path
+        fake_clipboard = MagicMock()
+
+        with patch("ui.editor_dialog.QApplication.clipboard", return_value=fake_clipboard):
+            self.dialog._copy_current_pdf_file_to_clipboard()
+
+        mime = fake_clipboard.setMimeData.call_args.args[0]
+        self.assertEqual(
+            [os.path.normpath(url.toLocalFile()) for url in mime.urls()],
+            [os.path.normpath(self.pdf_path)],
+        )
+        self.assertEqual(self.dialog.lbl_sync.text(), "Copied PDF file")
+
+    def test_editor_hint_label_mentions_pdf_shortcuts(self):
+        hint_text = self.dialog._hint_label.text()
+
+        self.assertIn("L=copy PDF", hint_text)
+        self.assertIn("Ctrl+L=open folder", hint_text)
+
+    def test_open_annotation_beta_passes_image_space_anchor_y(self):
+        self.dialog.card["pdf_path"] = self.pdf_path
+        self.dialog.canvas._scale = 1.25
+        bar = MagicMock()
+        bar.value.return_value = 250
+        self.dialog._sc = MagicMock()
+        self.dialog._sc.verticalScrollBar.return_value = bar
+
+        with patch.object(self.dialog, "_current_visible_page", return_value=3), \
+             patch("ui.editor_dialog.PdfAnnotationDialog") as dialog_cls:
+            dialog_instance = MagicMock()
+            dialog_instance._saved_pages = []
+            dialog_instance.return_page = None
+            dialog_instance.return_anchor_y = None
+            dialog_cls.return_value = dialog_instance
+
+            self.dialog._open_annotation_beta()
+
+        self.assertEqual(dialog_cls.call_args.kwargs["initial_page"], 3)
+        self.assertAlmostEqual(dialog_cls.call_args.kwargs["initial_anchor_y"], 200.0)
 
     def test_apply_initial_view_position_uses_current_canvas_scale_for_img_y(self):
         self.dialog._initial_img_y = 240.0

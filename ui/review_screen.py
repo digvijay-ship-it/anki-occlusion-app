@@ -730,6 +730,10 @@ class ReviewScreen(QWidget):
             self._review_redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_E:
             self._open_current_pdf_in_reader()
+        elif mods & Qt.ControlModifier and key == Qt.Key_L:
+            self._reveal_current_pdf_in_folder()
+        elif key == Qt.Key_L and not mods and not e.isAutoRepeat():
+            self._copy_current_pdf_file_to_clipboard()
         elif key == Qt.Key_T and not mods and not e.isAutoRepeat():
             self._open_annotation_beta()
         elif key == Qt.Key_E and not mods:
@@ -1174,12 +1178,15 @@ class ReviewScreen(QWidget):
 
         hint_text = (
             "SPACE=REVEAL  •  1/2/3/4=RATE  •  C=FIT  •  D=DEBUG  •  "
-            "CTRL+SCROLL=ZOOM  •  H=PAN  •  ALT/P=PEN  •  X=COLOR  •  +/-=SIZE  •  DEL=CLEAR  •  F11"
+            "CTRL+SCROLL=ZOOM  •  H=PAN  •  L=COPY PDF  •  CTRL+L=OPEN FOLDER  •  "
+            "ALT/P=PEN  •  X=COLOR  •  +/-=SIZE  •  DEL=CLEAR  •  F11"
             if dojo else
             "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  "
-            "Ctrl+Scroll = zoom  •  H = pan  •  Alt/P = pen  •  X = color  •  +/- = size  •  Del = clear pen  •  F11"
+            "Ctrl+Scroll = zoom  •  H = pan  •  L = copy PDF  •  Ctrl+L = open folder  •  "
+            "Alt/P = pen  •  X = color  •  +/- = size  •  Del = clear pen  •  F11"
         )
         hint = QLabel(hint_text)
+        self._hint_label = hint
         hint.setAlignment(Qt.AlignCenter)
         hint.setFixedHeight(22)
         if dojo:
@@ -1590,16 +1597,14 @@ class ReviewScreen(QWidget):
         self._reload_current_canvas()
 
     def _open_current_pdf_in_reader(self):
+        path = self._current_pdf_path_for_shortcuts()
+        if not path:
+            self.canvas._show_toast("No PDF loaded for this card")
+            return
         idx = self._idx
         if idx >= len(self._items):
             idx = len(self._items) - 1
         if not (0 <= idx < len(self._items)):
-            return
-
-        card, _, _ = self._items[idx]
-        path = resolve_asset_path(card.get("pdf_path", ""))
-        if not path or not os.path.exists(path):
-            self.canvas._show_toast("No PDF loaded for this card")
             return
 
         scroll_pos        = self._canvas_scroll.verticalScrollBar().value()
@@ -1650,6 +1655,47 @@ class ReviewScreen(QWidget):
         except Exception as ex:
             QMessageBox.warning(self, "Could not open PDF", f"Could not open PDF:\n{ex}")
 
+    def _current_pdf_path_for_shortcuts(self):
+        idx = self._idx
+        if idx >= len(self._items):
+            idx = len(self._items) - 1
+        if not (0 <= idx < len(self._items)):
+            return ""
+        card, _, _ = self._items[idx]
+        path = resolve_asset_path(card.get("pdf_path", ""))
+        if not path or not os.path.exists(path):
+            return ""
+        return path
+
+    def _copy_current_pdf_file_to_clipboard(self):
+        path = self._current_pdf_path_for_shortcuts()
+        if not path:
+            self.canvas._show_toast("No PDF loaded for this card")
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(path)])
+        QApplication.clipboard().setMimeData(mime)
+        print(f"[DEBUG][review_pdf_shortcut] copied_file {path}")
+        self.canvas._show_toast("Copied PDF file")
+
+    def _reveal_current_pdf_in_folder(self):
+        path = self._current_pdf_path_for_shortcuts()
+        if not path:
+            self.canvas._show_toast("No PDF loaded for this card")
+            return
+        try:
+            import subprocess
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+            print(f"[DEBUG][review_pdf_shortcut] reveal_path {path}")
+            self.canvas._show_toast("Opened PDF folder")
+        except Exception as ex:
+            QMessageBox.warning(self, "Could not open location", f"Could not open PDF location:\n{ex}")
+
     def _open_annotation_beta(self):
         idx = self._idx
         if idx >= len(self._items):
@@ -1663,11 +1709,17 @@ class ReviewScreen(QWidget):
             return
         page_zero = self.canvas.get_current_page(self._canvas_scroll.verticalScrollBar().value())
         scroll_y = self._canvas_scroll.verticalScrollBar().value()
+        review_scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
+        img_y = float(scroll_y) / review_scale
+        print(
+            f"[DEBUG][review_annotation] handoff "
+            f"page={page_zero + 1} scroll_y={scroll_y} scale={review_scale:.4f} img_y={img_y:.2f}"
+        )
         dialog = PdfAnnotationDialog(
             path,
             parent=self,
             initial_page=page_zero,
-            initial_anchor_y=scroll_y,
+            initial_anchor_y=img_y,
         )
         self._pause_review_lazy_activity_for_annotation()
         try:

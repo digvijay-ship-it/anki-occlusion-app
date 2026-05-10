@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QListWidget, QFrame, QScrollArea, QMessageBox, QFileDialog,
     QFormLayout, QTextEdit, QSizePolicy, QDialog, QApplication, QSplitter, QShortcut
 )
-from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QFileSystemWatcher, QUrl
+from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QFileSystemWatcher, QMimeData, QUrl
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
 from sm2_engine import sm2_init
 from data_manager import new_box_id
@@ -347,12 +347,14 @@ class CardEditorDialog(QDialog):
             "QFrame{background:#E8E8E8;border-top:1px solid #CCC;border-radius:0;}"
             "QLabel{background:transparent;color:#777;font-size:10px;}")
         hl = QHBoxLayout(hint_bar); hl.setContentsMargins(10,0,10,0)
-        hl.addWidget(QLabel(
+        self._hint_label = QLabel(
             "V=Select  R=Rect  E=Ellipse  T=Label  |  "
             "Hold Alt=temp select  Alt+Click=multi-select  |  "
             "G=group  Shift+G=ungroup  |  "
-            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo  |  "
-            "Middle-click drag or H = Pan  (tablet/stylus)"))
+            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo  Ctrl+S=save  |  "
+            "L=copy PDF  Ctrl+L=open folder  |  "
+            "Middle-click drag or H = Pan  (tablet/stylus)")
+        hl.addWidget(self._hint_label)
         hl.addStretch(); L.addWidget(hint_bar)
 
         btn_zi.clicked.connect(lambda: self.canvas.zoom_in())
@@ -439,8 +441,10 @@ class CardEditorDialog(QDialog):
         elif mods & Qt.ControlModifier and key == Qt.Key_Y: self.canvas.redo()
         elif mods & Qt.ControlModifier and key == Qt.Key_S: self._save()
         elif mods & Qt.ControlModifier and key == Qt.Key_E: self._open_in_reader()
+        elif mods & Qt.ControlModifier and key == Qt.Key_L: self._reveal_current_pdf_in_folder()
         elif mods & Qt.ControlModifier and key == Qt.Key_T: self._open_annotation_beta()
         elif mods & Qt.ControlModifier and key == Qt.Key_V: self._paste_image()
+        elif key == Qt.Key_L and not mods and not e.isAutoRepeat(): self._copy_current_pdf_file_to_clipboard()
         elif key == Qt.Key_Left and not mods and not e.isAutoRepeat(): self._go_prev_page()
         elif key == Qt.Key_Right and not mods and not e.isAutoRepeat(): self._go_next_page()
         elif key == Qt.Key_V: self.toolbar.select_tool("select")
@@ -974,7 +978,7 @@ class CardEditorDialog(QDialog):
         self._load_pdf_direct(path)
 
     def _open_in_reader(self):
-        path = self._resolve_source_path(self.card.get("pdf_path") or self._watched_path)
+        path = self._current_pdf_path_for_shortcuts()
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, "No PDF", "No PDF is currently loaded."); return
         import subprocess
@@ -990,6 +994,43 @@ class CardEditorDialog(QDialog):
         except Exception as ex:
             QMessageBox.warning(self,"Could not open",f"Could not open PDF:\n{ex}")
 
+    def _current_pdf_path_for_shortcuts(self) -> str:
+        path = self._resolve_source_path(self.card.get("pdf_path") or self._watched_path)
+        if not path or not os.path.exists(path):
+            return ""
+        return path
+
+    def _copy_current_pdf_file_to_clipboard(self):
+        path = self._current_pdf_path_for_shortcuts()
+        if not path:
+            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(path)])
+        QApplication.clipboard().setMimeData(mime)
+        print(f"[DEBUG][editor_pdf_shortcut] copied_file {path}")
+        self.lbl_sync.setVisible(True)
+        self.lbl_sync.setText("Copied PDF file")
+
+    def _reveal_current_pdf_in_folder(self):
+        path = self._current_pdf_path_for_shortcuts()
+        if not path:
+            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
+            return
+        try:
+            import subprocess
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+            print(f"[DEBUG][editor_pdf_shortcut] reveal_path {path}")
+            self.lbl_sync.setVisible(True)
+            self.lbl_sync.setText("Opened PDF folder")
+        except Exception as ex:
+            QMessageBox.warning(self, "Could not open location", f"Could not open PDF location:\n{ex}")
+
     def _open_annotation_beta(self):
         path = self._resolve_source_path(self.card.get("pdf_path") or self._watched_path)
         if not path or not os.path.exists(path):
@@ -997,11 +1038,17 @@ class CardEditorDialog(QDialog):
             return
         page_zero = self._current_visible_page()
         scroll_y = self._sc.verticalScrollBar().value()
+        editor_scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
+        img_y = float(scroll_y) / editor_scale
+        print(
+            f"[DEBUG][editor_annotation] handoff "
+            f"page={page_zero + 1} scroll_y={scroll_y} scale={editor_scale:.4f} img_y={img_y:.2f}"
+        )
         dialog = PdfAnnotationDialog(
             path,
             parent=self,
             initial_page=page_zero,
-            initial_anchor_y=scroll_y,
+            initial_anchor_y=img_y,
         )
         dialog.exec_()
         self._apply_annotation_beta_refresh(path, dialog._saved_pages, dialog.return_page, dialog.return_anchor_y)

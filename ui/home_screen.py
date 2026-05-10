@@ -85,7 +85,15 @@ from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
-from storage_paths import current_data_file, flush_runtime_state, resolve_asset_path
+from storage_paths import (
+    archive_label,
+    archive_tooltip,
+    current_data_file,
+    flush_runtime_state,
+    get_mission_archive_root,
+    migrate_to_mission_archive,
+    resolve_asset_path,
+)
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -297,7 +305,8 @@ class AboutDialog(QDialog):
             "Ctrl+A — select all     Ctrl+Scroll — zoom\n"
             "Alt+Click — multi-select   Hold Alt — temp select tool\n"
             "C — center on mask      Drag ↻ handle — rotate shape\n"
-            "Space+drag — pan canvas  H — toggle pan lock")
+            "Space+drag — pan canvas  H — toggle pan lock\n"
+            "L — copy current PDF file   Ctrl+L — open current PDF folder")
         _section("Data location", f"{current_data_file()}")
         bl.addStretch()
         close_btn = QPushButton("Close")
@@ -844,6 +853,10 @@ class HomeScreen(QWidget):
         self._data = data
         self._preload_thread = None   # background PDF preload thread
         self._active_editor = None
+        self._classic_settings_panel = None
+        self._classic_archive_value = None
+        self._classic_archive_box = None
+        self._classic_archive_btn = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -885,13 +898,17 @@ class HomeScreen(QWidget):
             b.setObjectName("nav_btn")
             return b
 
-        btn_math    = _topbtn("🧮 MATH",    "Practice Tables, Squares & Cubes")
+        btn_math    = _topbtn("🧮 MATH", "Practice Tables, Squares & Cubes")
         btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
-        btn_help    = _topbtn("❓ HELP",    "Show quick-start guide")
-        btn_about   = _topbtn("ℹ ABOUT",   "About Anki Occlusion")
+        self._btn_save = _topbtn("💾 SAVE", "Save now  Ctrl+S")
+        self._btn_settings = _topbtn("⚙ SETTINGS", "Visual scale and Mission Archive")
+        btn_help    = _topbtn("❓ HELP", "Show quick-start guide")
+        btn_about   = _topbtn("ℹ ABOUT", "About Anki Occlusion")
         
         btn_math.clicked.connect(self._show_math_trainer)
         btn_journal.clicked.connect(self._show_journal)
+        self._btn_save.clicked.connect(self._on_classic_save_clicked)
+        self._btn_settings.clicked.connect(self._toggle_classic_settings_panel)
         btn_help.clicked.connect(self._show_help)
         btn_about.clicked.connect(self._show_about)
 
@@ -922,6 +939,8 @@ class HomeScreen(QWidget):
 
         tl.addWidget(btn_math)
         tl.addWidget(btn_journal)
+        tl.addWidget(self._btn_save)
+        tl.addWidget(self._btn_settings)
         tl.addWidget(self._btn_theme)
         tl.addWidget(btn_help)
         tl.addWidget(btn_about)
@@ -941,6 +960,7 @@ class HomeScreen(QWidget):
         
         self._top_bar = self.top_frame
         self._apply_topbar_style()  # Initial style
+        self._classic_settings_panel = self._build_classic_settings_panel()
         L.addWidget(self.top_frame)
 
         # ── BODY STACK: index 0 = splitter (classic/dojo), index 1 = TMNT ──
@@ -1317,6 +1337,167 @@ class HomeScreen(QWidget):
             if sb is not None:
                 sb.showMessage(f"Saved data to {current_data_file()}", 4000)
 
+    def _on_classic_save_clicked(self):
+        print("[DEBUG][classic_topbar] save_clicked")
+        self._save_current_data_now()
+
+    def _build_classic_settings_panel(self):
+        panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
+        panel.setObjectName("classic_settings_panel")
+        panel.setAttribute(Qt.WA_StyledBackground, True)
+        panel.setStyleSheet(
+            f"""
+            QFrame#classic_settings_panel {{
+                background: {C_SURFACE};
+                border: 1px solid {C_BORDER};
+                border-radius: 10px;
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+            }}
+            QPushButton {{
+                background: {C_CARD};
+                color: {C_SUBTEXT};
+                border: 1px solid {C_BORDER};
+                border-radius: 6px;
+                padding: 5px 10px;
+                font-family: 'Segoe UI';
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {C_BG};
+                color: {C_TEXT};
+                border-color: {C_ACCENT};
+            }}
+            """
+        )
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        scale_title = QLabel("VISUAL SCALE")
+        scale_title.setStyleSheet(f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;")
+        layout.addWidget(scale_title)
+
+        scale_box = QFrame()
+        scale_box.setStyleSheet(f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;")
+        scale_layout = QHBoxLayout(scale_box)
+        scale_layout.setContentsMargins(10, 8, 10, 8)
+        scale_layout.setSpacing(8)
+        scale_label = QLabel("Size")
+        scale_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        scale_layout.addWidget(scale_label)
+        scale_layout.addStretch()
+        scale_layout.addWidget(self._classic_font_button("A−", -1))
+        scale_layout.addWidget(self._classic_font_button("A", 0))
+        scale_layout.addWidget(self._classic_font_button("A+", +1))
+        layout.addWidget(scale_box)
+
+        archive_title = QLabel("MISSION ARCHIVE")
+        archive_title.setStyleSheet(f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;")
+        layout.addWidget(archive_title)
+
+        archive_box = QFrame()
+        archive_box.setStyleSheet(f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;")
+        archive_layout = QHBoxLayout(archive_box)
+        archive_layout.setContentsMargins(10, 8, 10, 8)
+        archive_layout.setSpacing(8)
+        archive_icon = QLabel("Folder")
+        archive_icon.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        archive_layout.addWidget(archive_icon)
+        self._classic_archive_value = QLabel()
+        self._classic_archive_value.setStyleSheet(f"color:{C_TEXT};font-size:12px;font-weight:bold;")
+        archive_layout.addWidget(self._classic_archive_value, 1)
+        self._classic_archive_btn = QPushButton("SET")
+        self._classic_archive_btn.setCursor(Qt.PointingHandCursor)
+        self._classic_archive_btn.setObjectName("font_btn")
+        self._classic_archive_btn.setToolTip("Choose Mission Archive folder")
+        self._classic_archive_btn.clicked.connect(self._choose_classic_mission_archive)
+        archive_layout.addWidget(self._classic_archive_btn, 0, Qt.AlignRight)
+        self._classic_archive_box = archive_box
+        layout.addWidget(archive_box)
+
+        self._refresh_classic_archive_display()
+        panel.adjustSize()
+        return panel
+
+    def _classic_font_button(self, text, direction):
+        button = QPushButton(text)
+        button.setObjectName("font_btn")
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFixedWidth(34)
+        button.clicked.connect(lambda _, d=direction: self._on_classic_font_clicked(d))
+        return button
+
+    def _on_classic_font_clicked(self, direction):
+        print(f"[DEBUG][classic_settings] font_clicked direction={direction}")
+        self._emit_font(direction)
+
+    def _refresh_classic_archive_display(self):
+        if self._classic_archive_value is None:
+            return
+        label = archive_label()
+        tooltip = archive_tooltip()
+        self._classic_archive_value.setText(label)
+        self._classic_archive_value.setToolTip(tooltip)
+        if self._classic_archive_box is not None:
+            self._classic_archive_box.setToolTip(tooltip)
+        if self._classic_archive_btn is not None:
+            self._classic_archive_btn.setToolTip(tooltip)
+        print(f"[DEBUG][classic_settings] archive_refresh label={label}")
+
+    def _toggle_classic_settings_panel(self):
+        panel = self._classic_settings_panel
+        if panel is None or self._btn_settings is None:
+            return
+        if panel.isVisible():
+            panel.hide()
+            print("[DEBUG][classic_settings] panel_hide")
+            return
+        self._refresh_classic_archive_display()
+        panel.adjustSize()
+        pos = self._btn_settings.mapToGlobal(QPoint(0, self._btn_settings.height() + 6))
+        panel.move(pos)
+        panel.show()
+        panel.raise_()
+        panel.activateWindow()
+        print("[DEBUG][classic_settings] panel_show")
+
+    def _choose_classic_mission_archive(self):
+        start_dir = get_mission_archive_root() or os.path.dirname(current_data_file()) or os.path.expanduser("~")
+        new_root = QFileDialog.getExistingDirectory(self, "Select Mission Archive Folder", start_dir)
+        if not new_root:
+            return
+        print(f"[DEBUG][classic_settings] archive_select root={new_root}")
+        try:
+            summary = migrate_to_mission_archive(new_root, data=store.get())
+        except Exception as ex:
+            QMessageBox.warning(self, "Mission Archive", f"Could not switch Mission Archive:\n{ex}")
+            print(f"[DEBUG][classic_settings] archive_select_failed error={ex}")
+            return
+        self._refresh_classic_archive_display()
+        if self._classic_settings_panel is not None:
+            self._classic_settings_panel.hide()
+        self.refresh()
+        win = self.window()
+        if hasattr(win, "statusBar") and callable(win.statusBar):
+            sb = win.statusBar()
+            if sb is not None:
+                sb.showMessage(f"Mission Archive set to {new_root}", 5000)
+        QMessageBox.information(
+            self,
+            "Mission Archive",
+            "Mission Archive updated.\n\n"
+            f"Folder: {new_root}\n"
+            f"Cards rewritten: {summary['cards_rewritten']}\n"
+            f"PDFs copied: {summary['pdfs_copied']}\n"
+            f"Images copied: {summary['images_copied']}\n"
+            f"Cache entries copied: {summary['cache_entries_copied']}",
+        )
+        print(f"[DEBUG][classic_settings] archive_select_done root={new_root}")
+
     def rebuild_tmnt_layout(self, force=False):
         if not _TMNT_HOME_AVAILABLE or self._tmnt_layout is None:
             print("[DEBUG] rebuild_tmnt_layout aborted: TMNT not available or layout is None")
@@ -1373,6 +1554,8 @@ class HomeScreen(QWidget):
 
         if self._current_theme == "tmnt" and self._tmnt_layout:
             # ── Swap to TMNT full layout ──────────────────────────────────────
+            if self._classic_settings_panel is not None and self._classic_settings_panel.isVisible():
+                self._classic_settings_panel.hide()
             self.top_frame.hide()
             win_sb = self.window().statusBar() if self.window() else None
             if win_sb: win_sb.hide()
@@ -1397,6 +1580,7 @@ class HomeScreen(QWidget):
             self.music_widget.set_theme(self._current_theme)
             self._cache_widget.set_theme(self._current_theme)
             self._apply_topbar_style()
+            self._refresh_classic_archive_display()
             if app:
                 app._active_theme = self._current_theme
                 app.setFont(QFont("Segoe UI", current_size))

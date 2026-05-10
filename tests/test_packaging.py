@@ -12,6 +12,7 @@ class PyInstallerSpecTests(unittest.TestCase):
 
         self.assertIn("anki_occlusion_v19.py", spec)
         self.assertNotIn("anki_occlusion_v17.py", spec)
+        self.assertNotIn("anki_pdf_native.dll", spec)
 
     def test_spec_does_not_reference_missing_icon_file(self):
         spec_path = ROOT / "AnkiOcclusion.spec"

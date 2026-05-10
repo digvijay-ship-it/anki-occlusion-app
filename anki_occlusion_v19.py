@@ -84,7 +84,6 @@ from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
-from services.native_pdf_backend import describe_pdf_backend
 from storage_paths import initialize_mission_archive
 
 import sys, os, copy, uuid, math, time
@@ -241,10 +240,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(home)
 
         sb = QStatusBar()
-        pdf_status = (
-            f"PDF backend: {describe_pdf_backend()}"
-            if PDF_SUPPORT else "⚠ pip install pymupdf  for PDF support"
-        )
+        pdf_status = "PDF backend: PyMuPDF" if PDF_SUPPORT else "⚠ pip install pymupdf  for PDF support"
         sb.showMessage(f"✅ SM-2 Active  |  {pdf_status}")
         self.setStatusBar(sb)
 

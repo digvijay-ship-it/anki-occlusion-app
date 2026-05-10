@@ -3,7 +3,7 @@ Math Trainer — Ninja Dojo Edition
 Native PyQt5 page for Anki Occlusion.
 Matches the Ninja theme: Orbitron font, #07070B bg, #72FF4F green, particle canvas.
 """
-import random, json, os, threading, math
+import random, json, os, math
 from theme_manager import get_palette
 from PyQt5.QtWidgets import QApplication
 
@@ -11,17 +11,11 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QScrollArea, QLineEdit, QGridLayout, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QThread, pyqtSlot, QEvent, QRect
+from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QEvent, QRect
 from PyQt5.QtGui import (
     QPainter, QColor, QPen, QFont, QBrush,
     QPainterPath, QLinearGradient, QPolygonF, QCursor
 )
-
-try:
-    import speech_recognition as sr
-    _VOICE = True
-except ImportError:
-    _VOICE = False
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), "math_trainer_config.json")
 
@@ -245,32 +239,6 @@ class ScanCard(QWidget):
         p.end()
 
 
-# ── Voice Thread ──────────────────────────────────────────────────────────────
-class VoiceThread(QThread):
-    result = pyqtSignal(str)
-    error  = pyqtSignal(str)
-
-    def run(self):
-        if not _VOICE:
-            self.error.emit("pip install speechrecognition"); return
-        r = sr.Recognizer()
-        try:
-            with sr.Microphone() as src:
-                r.adjust_for_ambient_noise(src, duration=0.5)
-                audio = r.listen(src, timeout=4, phrase_time_limit=4)
-                text = r.recognize_google(audio, language="hi-IN").lower()
-                wmap = {"to":"2","too":"2","two":"2","do":"2","three":"3","tree":"3",
-                        "four":"4","for":"4","ate":"8","eight":"8","one":"1","won":"1",
-                        "teen":"3","char":"4","paanch":"5","five":"5","chhe":"6","six":"6",
-                        "saat":"7","seven":"7","aath":"8","nau":"9","nine":"9","ek":"1"}
-                digits = "".join(filter(str.isdigit,
-                    "".join(wmap.get(w, w) for w in text.split())))
-                if digits: self.result.emit(digits)
-                else: self.error.emit(f"Heard '{text}' — no numbers")
-        except Exception as ex:
-            self.error.emit(str(ex))
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN PAGE WIDGET
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -290,7 +258,7 @@ class MathTrainerPage(QWidget):
         self.setStyleSheet(f"QWidget{{background:{p.get('C_BG', '#07070B')};color:{p.get('C_TEXT', '#E0E0FF')};}}")
         self._mode = 1; self._ans = 0; self._streak = 0; self._qn = 0
         self._tchk = {}; self._rchk = {}
-        self._voice_thread = None; self._config = {}
+        self._config = {}
         self._load_config(); self._build(); self._show(0)
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -642,14 +610,6 @@ class MathTrainerPage(QWidget):
         self._ans_in.installEventFilter(self)
         al.addWidget(self._ans_in)
 
-        self._mic_btn = QPushButton("🎙"); self._mic_btn.setFixedSize(52,52)
-        self._mic_btn.setFont(QFont("Segoe UI Emoji",18))
-        self._mic_btn.setStyleSheet(
-            f"QPushButton{{background:{self._p.get('C_CARD', _h(CARD))};border:1px solid {self._p.get('C_BORDER', _h(BORDER))};"
-            f"border-radius:4px;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};}} "
-            f"QPushButton:hover{{border-color:{self._p.get('C_GREEN', _h(GREEN))};color:{self._p.get('C_GREEN', _h(GREEN))};}} "
-        )
-        self._mic_btn.clicked.connect(self._voice); al.addWidget(self._mic_btn)
         bl.addWidget(ans_row)
 
         self._fb_lbl = QLabel("")
@@ -806,25 +766,3 @@ class MathTrainerPage(QWidget):
         else:
             self._fb_lbl.setText(f"ANSWER:  {q.replace('?',str(self._ans))}")
             self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;letter-spacing:1px;")
-
-    # ── Voice ─────────────────────────────────────────────────────────────────
-    def _voice(self):
-        if not _VOICE:
-            self._fb_lbl.setText("pip install speechrecognition"); return
-        self._mic_btn.setText("…")
-        self._fb_lbl.setText("LISTENING...")
-        self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;letter-spacing:1px;")
-        self._voice_thread = VoiceThread()
-        self._voice_thread.result.connect(self._voice_done)
-        self._voice_thread.error.connect(self._voice_err)
-        self._voice_thread.finished.connect(lambda: self._mic_btn.setText("🎙"))
-        self._voice_thread.start()
-
-    @pyqtSlot(str)
-    def _voice_done(self, digits):
-        self._ans_in.setText(digits); self._check()
-
-    @pyqtSlot(str)
-    def _voice_err(self, msg):
-        self._fb_lbl.setText(msg[:50])
-        self._fb_lbl.setStyleSheet(f"color:{self._p.get('C_YELLOW', _h(YELLOW))};background:transparent;letter-spacing:1px;")

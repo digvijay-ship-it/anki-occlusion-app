@@ -105,6 +105,78 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen._debug_report.assert_not_called()
         self.assertEqual(screen._user_zoom_scale, 1.1)
 
+    def test_l_key_copies_current_pdf_file_in_review(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen._rating_frame = MagicMock()
+        screen._rating_frame.isVisible.return_value = False
+        screen._peek_idx = None
+        screen._copy_current_pdf_file_to_clipboard = MagicMock()
+
+        event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_L, Qt.NoModifier)
+
+        screen.keyPressEvent(event)
+
+        screen._copy_current_pdf_file_to_clipboard.assert_called_once()
+
+    def test_review_copy_pdf_file_places_file_url_on_clipboard(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen.canvas = MagicMock()
+        screen._current_pdf_path_for_shortcuts = MagicMock(return_value=r"C:\tmp\deck.pdf")
+        fake_clipboard = MagicMock()
+
+        with patch("ui.review_screen.QApplication.clipboard", return_value=fake_clipboard):
+            screen._copy_current_pdf_file_to_clipboard()
+
+        mime = fake_clipboard.setMimeData.call_args.args[0]
+        self.assertEqual(
+            [os.path.normpath(url.toLocalFile()) for url in mime.urls()],
+            [os.path.normpath(r"C:\tmp\deck.pdf")],
+        )
+
+    def test_ctrl_l_reveals_current_pdf_folder_in_review(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen._rating_frame = MagicMock()
+        screen._rating_frame.isVisible.return_value = False
+        screen._peek_idx = None
+        screen._reveal_current_pdf_in_folder = MagicMock()
+
+        event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_L, Qt.ControlModifier)
+
+        screen.keyPressEvent(event)
+
+        screen._reveal_current_pdf_in_folder.assert_called_once()
+
+    def test_open_annotation_beta_passes_image_space_anchor_y_from_review(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen.mgr = MagicMock()
+        screen.mgr._idx = 0
+        screen._items = [({"pdf_path": "deck.pdf"}, 0, {})]
+        screen.canvas = MagicMock()
+        screen.canvas._scale = 1.25
+        screen.canvas.get_current_page.return_value = 2
+        bar = MagicMock()
+        bar.value.return_value = 250
+        screen._canvas_scroll = MagicMock()
+        screen._canvas_scroll.verticalScrollBar.return_value = bar
+        screen._pause_review_lazy_activity_for_annotation = MagicMock()
+        screen._resume_review_lazy_activity_after_annotation = MagicMock()
+        screen._apply_annotation_beta_refresh = MagicMock()
+
+        with patch("ui.review_screen.resolve_asset_path", return_value=r"C:\tmp\deck.pdf"), \
+             patch("ui.review_screen.os.path.exists", return_value=True), \
+             patch("ui.review_screen.PdfAnnotationDialog") as dialog_cls:
+            dialog_instance = MagicMock()
+            dialog_instance._saved_pages = []
+            dialog_instance.return_page = None
+            dialog_cls.return_value = dialog_instance
+
+            screen._open_annotation_beta()
+
+        self.assertEqual(dialog_cls.call_args.kwargs["initial_page"], 2)
+        self.assertAlmostEqual(dialog_cls.call_args.kwargs["initial_anchor_y"], 200.0)
+
     def test_queue_jump_does_not_print_debug_report(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
         screen.mgr = MagicMock()
