@@ -574,17 +574,17 @@ class MathTrainerPage(QWidget):
         L.addStretch()
 
         hero = QLabel("MATH DOJO")
-        hero.setFont(QFont(self._hf, 28, QFont.Black))
+        hero.setFont(QFont(self._hf, 42, QFont.Black))
         hero.setStyleSheet(
-            f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:4px;"
+            f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:4px;font-size:42pt;"
         )
         hero.setAlignment(Qt.AlignCenter)
         L.addWidget(hero)
 
         sub = QLabel("— CHOOSE YOUR DISCIPLINE —")
-        sub.setFont(QFont(self._hf, 8))
+        sub.setFont(QFont(self._hf, 12))
         sub.setStyleSheet(
-            f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:3px;"
+            f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:3px;font-size:12pt;"
         )
         sub.setAlignment(Qt.AlignCenter)
         L.addWidget(sub)
@@ -609,8 +609,8 @@ class MathTrainerPage(QWidget):
             ol.setContentsMargins(12, 0, 12, 0)
             ol.setSpacing(12)
             ic = QLabel(icon)
-            ic.setFont(QFont(self._hf, 18, QFont.Black))
-            ic.setStyleSheet(f"color:{c_hex};background:transparent;min-width:36px;")
+            ic.setFont(QFont(self._hf, 24, QFont.Black))
+            ic.setStyleSheet(f"color:{c_hex};background:transparent;min-width:48px;font-size:24pt;")
             ic.setAttribute(Qt.WA_TransparentForMouseEvents)
             ic.setAlignment(Qt.AlignCenter)
             ol.addWidget(ic)
@@ -621,16 +621,16 @@ class MathTrainerPage(QWidget):
             tvl.setContentsMargins(0, 0, 0, 0)
             tvl.setSpacing(2)
             nl = QLabel(name)
-            nl.setFont(QFont(self._hf, 11, QFont.Bold))
+            nl.setFont(QFont(self._hf, 14, QFont.Bold))
             nl.setAttribute(Qt.WA_TransparentForMouseEvents)
             nl.setStyleSheet(
-                f"color:{c_hex};background:transparent;letter-spacing:1px;"
+                f"color:{c_hex};background:transparent;letter-spacing:1px;font-size:14pt;"
             )
             dl = QLabel(desc)
-            dl.setFont(QFont(self._hf, 8))
+            dl.setFont(QFont(self._hf, 10))
             dl.setAttribute(Qt.WA_TransparentForMouseEvents)
             dl.setStyleSheet(
-                f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"
+                f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;font-size:10pt;"
             )
             tvl.addWidget(nl)
             tvl.addWidget(dl)
@@ -901,7 +901,7 @@ class MathTrainerPage(QWidget):
         self._q_lbl = QLabel("?")
         self._q_lbl.setFont(QFont(self._hf, 96, QFont.Black))  # BIG font
         self._q_lbl.setStyleSheet(
-            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:4px;"
+            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:4px;font-size:96pt;"
         )
         self._q_lbl.setAlignment(Qt.AlignCenter)
         inner.addWidget(self._q_lbl)
@@ -915,7 +915,7 @@ class MathTrainerPage(QWidget):
         self._ans_in.setFixedHeight(120)
         self._ans_in.setFont(QFont(self._hf, 72, QFont.Bold))
         self._ANS_SS = (
-            f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_TEXT', _h(TEXT))};"
+            f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_TEXT', _h(TEXT))};font-size:72pt;"
             f"border:2px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:6px;padding:6px;}}"
             f"QLineEdit:focus{{border:2px solid {self._p.get('C_GREEN', _h(GREEN))};}} "
         )
@@ -1297,7 +1297,7 @@ class MathTrainerPage(QWidget):
                     f"color:{color};background:transparent;min-width:24px;"
                 )
                 self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};"
+                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};font-size:72pt;"
                     f"border:2px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:6px;padding:6px;}}"
                 )
                 msgs = [
@@ -1328,7 +1328,7 @@ class MathTrainerPage(QWidget):
                     f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;"
                 )
                 self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};"
+                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};font-size:72pt;"
                     f"border:2px solid {self._p.get('C_RED', _h(RED))};border-radius:6px;padding:6px;}}"
                 )
                 self._fb_lbl.setText("WRONG! ADJUST OR REVEAL.")
