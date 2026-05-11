@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QGridLayout,
     QSizePolicy,
+    QShortcut,
 )
 from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QEvent, QRect, QUrl
 from PyQt5.QtGui import (
@@ -31,6 +32,7 @@ from PyQt5.QtGui import (
     QLinearGradient,
     QPolygonF,
     QCursor,
+    QKeySequence,
 )
 from PyQt5.QtMultimedia import QSoundEffect
 
@@ -951,6 +953,10 @@ class MathTrainerPage(QWidget):
         self._show_ans_btn.hide()
         self._show_ans_btn.clicked.connect(self._reveal)
         left_layout.addWidget(self._show_ans_btn)
+        
+        # Spacebar shortcut to reveal
+        self._space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
+        self._space_shortcut.activated.connect(self._reveal)
 
         # ── RIGHT PANEL (40%) — reveal / reference ────────────────────────
         self._right_panel = QFrame()
