@@ -623,12 +623,11 @@ class PdfOnDemandThread(QThread):
                     continue
 
                 t_page_start = time.perf_counter()
-                cached = PAGE_CACHE.get(self._path, page_num, variant=self._cache_variant) if self._use_cache else None
+                cached = PAGE_CACHE.get_image(self._path, page_num, variant=self._cache_variant) if self._use_cache else None
                 if cached and not cached.isNull():
                     t_ms = (time.perf_counter() - t_page_start) * 1000
                     _render_debug(f"[DEBUG][on_demand]   p.{page_num+1:>3} cache hit  ({t_ms:.1f}ms)  {cached.width()}x{cached.height()}px")
-                    # PAGE_CACHE stores QPixmap — convert to QImage for thread-safe emit
-                    self.page_ready.emit(page_num, cached.toImage())
+                    self.page_ready.emit(page_num, cached)
                     rendered.append(page_num)
                     continue
 
@@ -641,17 +640,6 @@ class PdfOnDemandThread(QThread):
                     if img.isNull():
                         _render_debug(f"[DEBUG][on_demand]   p.{page_num+1:>3} render returned null image")
                         continue
-
-                    # Store as QPixmap in cache (cache is GUI-thread-read only)
-                    if self._store_cache:
-                        qpx = QPixmap.fromImage(img)
-                        PAGE_CACHE.put(
-                            self._path,
-                            page_num,
-                            qpx,
-                            variant=self._cache_variant,
-                            render_zoom=self._zoom,
-                        )
 
                     _render_debug(f"[DEBUG][on_demand]   p.{page_num+1:>3} rendered   ({t_ms:.1f}ms)  {img.width()}x{img.height()}px")
                     self.page_ready.emit(page_num, img)   # emit QImage — thread-safe
