@@ -2097,6 +2097,16 @@ class TMNTTopBar(QFrame):
         self.brand_name.setObjectName("tmnt_brand_name")
         self.brand_name.setStyleSheet(self._brand_name_ss())
 
+        self.ghost_r = QLabel("ANKI OCCLUSION", self.brand_name)
+        self.ghost_r.setStyleSheet(self._brand_name_ss().replace(T_NEON, "rgba(255, 77, 77, 180)"))
+        self.ghost_r.move(_px(-3, self._scale), _px(-1, self._scale))
+        self.ghost_r.hide()
+
+        self.ghost_c = QLabel("ANKI OCCLUSION", self.brand_name)
+        self.ghost_c.setStyleSheet(self._brand_name_ss().replace(T_NEON, "rgba(102, 252, 241, 180)"))
+        self.ghost_c.move(_px(3, self._scale), _px(1, self._scale))
+        self.ghost_c.hide()
+
         self._brand_name_glow = QGraphicsDropShadowEffect(self.brand_name)
         self._brand_name_glow.setColor(QColor(102, 252, 241, 150))
         self._brand_name_glow.setBlurRadius(_px(7, self._scale))
@@ -2650,9 +2660,36 @@ class TMNTTopBar(QFrame):
         self._hide_panel(self._settings_panel)
         self.font_change.emit(delta)
 
+    def _reset_brand_glitch(self):
+        self.brand_name.setText("ANKI OCCLUSION")
+        self.brand_name.setStyleSheet(self._brand_name_ss())
+        if hasattr(self, 'ghost_r'):
+            self.ghost_r.hide()
+            self.ghost_c.hide()
+
     def _advance_brand_glitch(self):
         strengths = [7, 5, 8, 4, 6, 7]
-        self._brand_name_glow.setBlurRadius(_px(strengths[self._brand_glitch_idx % len(strengths)], self._scale))
+        import random
+        
+        if random.random() < 0.15:
+            self.ghost_r.show()
+            self.ghost_c.show()
+            self.brand_name.setStyleSheet(self._brand_name_ss().replace(T_NEON, "white"))
+            self._brand_name_glow.setBlurRadius(0)
+            
+            chars = list("ANKI OCCLUSION")
+            idx = random.randint(0, len(chars) - 1)
+            if chars[idx] != ' ':
+                chars[idx] = random.choice("!@#$%^&*()_+{}|:<>?~")
+            scrambled = "".join(chars)
+            self.brand_name.setText(scrambled)
+            self.ghost_r.setText(scrambled)
+            self.ghost_c.setText(scrambled)
+            
+            QTimer.singleShot(150, self._reset_brand_glitch)
+        else:
+            self._brand_name_glow.setBlurRadius(_px(strengths[self._brand_glitch_idx % len(strengths)], self._scale))
+
         self._brand_glitch_idx += 1
 
     def _advance_brand_flicker(self):
