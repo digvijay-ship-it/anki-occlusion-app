@@ -110,13 +110,13 @@ class DirtyStoreTests(unittest.TestCase):
             import copy
             store.set(copy.deepcopy(payload))
 
-            original_write = store._write_to_disk
-            def side_effect_write(data_snapshot):
+            original_write = store._write_serialized_to_disk
+            def side_effect_write(serialized_snapshot, snapshot_summary):
                 # Modify the in-memory data during the write to simulate a race condition
                 store._data["decks"][0]["name"] = "Hacked"
-                original_write(data_snapshot)
+                original_write(serialized_snapshot, snapshot_summary)
 
-            with patch.object(store, "_write_to_disk", side_effect=side_effect_write):
+            with patch.object(store, "_write_serialized_to_disk", side_effect=side_effect_write):
                 saved = store.save_if_dirty()
 
         self.assertTrue(saved)
@@ -144,12 +144,12 @@ class DirtyStoreTests(unittest.TestCase):
             store._data = copy.deepcopy(payload)
             store._dirty = True
 
-            original_write = store._write_to_disk
-            def side_effect_write(data_snapshot):
+            original_write = store._write_serialized_to_disk
+            def side_effect_write(serialized_snapshot, snapshot_summary):
                 store._data["decks"][0]["name"] = "Hacked"
-                original_write(data_snapshot)
+                original_write(serialized_snapshot, snapshot_summary)
 
-            with patch.object(store, "_write_to_disk", side_effect=side_effect_write):
+            with patch.object(store, "_write_serialized_to_disk", side_effect=side_effect_write):
                 store.save_force()
 
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
@@ -203,6 +203,39 @@ class WrapperAndHelperTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(len(first), 36)
         self.assertEqual(len(second), 36)
+
+
+class DeckHistoryTests(unittest.TestCase):
+    def test_undo_restores_snapshot_even_after_source_dict_is_mutated(self):
+        history = data_manager._DeckHistory()
+        store = data_manager.DirtyStore()
+        data = {"decks": [{"_id": 1, "name": "Alpha"}]}
+
+        store.set(data)
+        history.push(store.get())
+        data["decks"][0]["name"] = "Beta"
+        store.set(data)
+
+        restored = history.undo(store)
+
+        self.assertTrue(restored)
+        self.assertEqual(store.get()["decks"][0]["name"], "Alpha")
+
+    def test_redo_restores_forward_snapshot_after_undo(self):
+        history = data_manager._DeckHistory()
+        store = data_manager.DirtyStore()
+        original = {"decks": [{"_id": 1, "name": "Alpha"}]}
+        updated = {"decks": [{"_id": 1, "name": "Beta"}]}
+
+        store.set(original)
+        history.push(store.get())
+        store.set(updated)
+        history.undo(store)
+
+        redone = history.redo(store)
+
+        self.assertTrue(redone)
+        self.assertEqual(store.get()["decks"][0]["name"], "Beta")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@ import tempfile
 import uuid
 import threading
 import time
-import copy
 import shutil
 from datetime import datetime
 
@@ -87,12 +86,11 @@ class DirtyStore:
         with self._lock:
             if not self._dirty:
                 return False
-            # ── FIX: snapshot inside lock so json.dump never races with _rate() ──
-            snapshot = copy.deepcopy(self._data)
-            self._dirty = False          # clear flag while we still hold the lock
-        # json.dump outside the lock — slow I/O should never block _rate()
+            snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
+            snapshot_summary = DirtyStore._data_summary(self._data)
+            self._dirty = False
         try:
-            self._write_to_disk(snapshot)
+            self._write_serialized_to_disk(snapshot_text, snapshot_summary)
         except Exception:
             with self._lock:
                 self._dirty = True
@@ -102,11 +100,11 @@ class DirtyStore:
     def save_force(self):
         """Force write regardless of dirty flag (use on app exit)."""
         with self._lock:
-            # ── FIX: snapshot inside lock so json.dump never races with _rate() ──
-            snapshot = copy.deepcopy(self._data)
+            snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
+            snapshot_summary = DirtyStore._data_summary(self._data)
             self._dirty = False
         try:
-            self._write_to_disk(snapshot)
+            self._write_serialized_to_disk(snapshot_text, snapshot_summary)
         except Exception:
             with self._lock:
                 self._dirty = True
@@ -165,20 +163,19 @@ class DirtyStore:
     # ── Atomic write + local safety backups ───────────────────────────────────
 
     @staticmethod
-    def _write_to_disk(data):
+    def _write_serialized_to_disk(serialized_text, new_summary):
         dir_ = os.path.dirname(DATA_FILE) or "."
         fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write(serialized_text)
                 f.flush()
                 os.fsync(f.fileno())
 
             DirtyStore._validate_saved_json(tmp)
             existing_data = DirtyStore._read_json_file(DATA_FILE)
-            if DirtyStore._is_dangerous_empty_overwrite(existing_data, data):
-                existing_summary = DirtyStore._data_summary(existing_data)
-                new_summary = DirtyStore._data_summary(data)
+            existing_summary = DirtyStore._data_summary(existing_data)
+            if existing_summary["decks"] > 0 and new_summary["decks"] == 0:
                 print(
                     "[DEBUG][data_safety] refused_empty_overwrite "
                     f"existing_decks={existing_summary['decks']} "
@@ -190,12 +187,11 @@ class DirtyStore:
 
             backup_path = DirtyStore._backup_existing_file(DATA_FILE, existing_data)
             os.replace(tmp, DATA_FILE)
-            summary = DirtyStore._data_summary(data)
             backup_name = os.path.basename(backup_path) if backup_path else "none"
             print(
                 "[DEBUG][data_save] saved "
-                f"decks={summary['decks']} cards={summary['cards']} "
-                f"boxes={summary['boxes']} backup={backup_name}"
+                f"decks={new_summary['decks']} cards={new_summary['cards']} "
+                f"boxes={new_summary['boxes']} backup={backup_name}"
             )
         except Exception:
             try:
@@ -203,6 +199,12 @@ class DirtyStore:
             except Exception:
                 pass
             raise
+
+    @staticmethod
+    def _write_to_disk(data):
+        serialized_text = json.dumps(data, ensure_ascii=False, indent=2)
+        new_summary = DirtyStore._data_summary(data)
+        DirtyStore._write_serialized_to_disk(serialized_text, new_summary)
 
     @staticmethod
     def _read_json_file(path):
@@ -359,7 +361,6 @@ def new_box_id():
 #      deck_history.undo(store)         # Ctrl+Z
 #      deck_history.redo(store)         # Ctrl+Shift+Z
 # ═══════════════════════════════════════════════════════════════════════════════
-import copy
 
 class _DeckHistory:
     MAX = 50
@@ -369,10 +370,18 @@ class _DeckHistory:
         self._redo_stack = []
         self._lock       = threading.Lock()
 
+    @staticmethod
+    def _snapshot(data: dict) -> str:
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _restore(snapshot: str) -> dict:
+        return json.loads(snapshot)
+
     def push(self, data: dict):
         """Mutate se PEHLE call karo."""
         with self._lock:
-            self._undo_stack.append(copy.deepcopy(data))
+            self._undo_stack.append(self._snapshot(data))
             if len(self._undo_stack) > self.MAX:
                 self._undo_stack.pop(0)
             self._redo_stack.clear()
@@ -384,8 +393,8 @@ class _DeckHistory:
             if not self._undo_stack:
                 print("[DeckHistory][undo] ⚠ stack empty")
                 return False
-            self._redo_stack.append(copy.deepcopy(store_ref.get()))
-            snap = self._undo_stack.pop()
+            self._redo_stack.append(self._snapshot(store_ref.get()))
+            snap = self._restore(self._undo_stack.pop())
             store_ref.set(snap)
             print(f"[DeckHistory][undo] ↩ restored — "
                   f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}")
@@ -396,8 +405,8 @@ class _DeckHistory:
             if not self._redo_stack:
                 print("[DeckHistory][redo] ⚠ stack empty")
                 return False
-            self._undo_stack.append(copy.deepcopy(store_ref.get()))
-            snap = self._redo_stack.pop()
+            self._undo_stack.append(self._snapshot(store_ref.get()))
+            snap = self._restore(self._redo_stack.pop())
             store_ref.set(snap)
             print(f"[DeckHistory][redo] ↪ re-applied — "
                   f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}")
