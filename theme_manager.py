@@ -1,4 +1,7 @@
+import os
+
 from PyQt5.QtGui import QColor
+from storage_paths import app_resource_path, app_resource_url
 
 # ── Theme Feature Gates ───────────────────────────────────────────────────────
 
@@ -154,6 +157,12 @@ def build_stylesheet(mode="classic", font_size=14):
 
     hf = p["header_font"]
     bf = p["body_font"]
+    dojo_wall_hex = app_resource_url("assets", "themes", "dojo", "wall_hex_accent.png")
+    dojo_wall_main = app_resource_url("assets", "themes", "dojo", "wall_main.png")
+    overlay_name = "panel_overlay_subtle.png"
+    if not os.path.exists(app_resource_path("assets", "themes", "dojo", overlay_name)):
+        overlay_name = "panel_overlay.png"
+    dojo_panel_overlay_subtle = app_resource_url("assets", "themes", "dojo", overlay_name)
 
     if mode == "tmnt":
         return f"""
@@ -258,7 +267,7 @@ QFrame#top_bar {{
 }}
 QFrame#cache_panel {{
     background-color: {p['C_SURFACE']};
-    background-image: {f"url(assets/themes/dojo/wall_hex_accent.png)" if mode == "dojo" else "none"};
+    background-image: {f"url({dojo_wall_hex})" if mode == "dojo" else "none"};
     background-position: right top;
     background-repeat: no-repeat;
     border-left: 1px solid {p['C_BORDER']};
@@ -266,7 +275,7 @@ QFrame#cache_panel {{
 }}
 QWidget#side_panel, QFrame#side_panel {{
     background-color: {p['C_SURFACE']};
-    background-image: {f"url(assets/themes/dojo/wall_main.png)" if mode == "dojo" else "none"};
+    background-image: {f"url({dojo_wall_main})" if mode == "dojo" else "none"};
     background-position: left bottom;
     background-repeat: no-repeat;
     border-right: 1px solid {p['C_BORDER']};
@@ -421,7 +430,7 @@ QStatusBar {{
 /* Dashboard Specific */
 QFrame#dash_pane {{
     background-color: transparent;
-    background-image: {f"url(assets/themes/dojo/panel_overlay_subtle.png)" if mode == "dojo" else "none"};
+    background-image: {f"url({dojo_panel_overlay_subtle})" if mode == "dojo" else "none"};
     background-position: center;
     background-repeat: no-repeat;
     border: none;
@@ -548,7 +557,7 @@ QLabel#mentor_quote {{
 /* ═══ DOJO UI — Sidebar ═══════════════════════════════════════════════ */
 QWidget#side_panel, QFrame#side_panel {{
     background-color: {p['C_SURFACE']};
-    background-image: {f"url(assets/themes/dojo/wall_main.png)" if mode == "dojo" else "none"};
+    background-image: {f"url({dojo_wall_main})" if mode == "dojo" else "none"};
     background-position: left bottom;
     background-repeat: no-repeat;
     border-right: 1px solid {p['C_BORDER']};

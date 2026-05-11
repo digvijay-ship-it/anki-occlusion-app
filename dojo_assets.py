@@ -2,8 +2,9 @@ import os
 from PyQt5.QtGui import QPixmap, QPainter, QPainterPath, QImage
 from PyQt5.QtCore import QRect, Qt
 from PyQt5.QtWidgets import QLabel, QFrame, QVBoxLayout, QHBoxLayout
+from storage_paths import app_resource_path
 
-_ASSETS_DIR = "assets/themes/dojo"
+_ASSETS_DIR = app_resource_path("assets", "themes", "dojo")
 
 class DojoAssets:
     _instance = None

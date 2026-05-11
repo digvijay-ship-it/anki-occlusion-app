@@ -1,5 +1,6 @@
 import os
 import shutil
+import sys
 import uuid
 from pathlib import Path
 
@@ -42,6 +43,26 @@ def _current_archive_root(root: str | None = None) -> str:
 
 def _home_file(name: str) -> str:
     return os.path.join(os.path.expanduser("~"), name)
+
+
+def app_base_dir() -> str:
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            return _normalize_path(meipass)
+        return _normalize_path(os.path.dirname(sys.executable))
+    return _normalize_path(os.path.dirname(os.path.abspath(__file__)))
+
+
+def app_resource_path(*parts: str) -> str:
+    clean_parts = [str(part).strip("\\/") for part in (parts or []) if str(part).strip("\\/")]
+    if not clean_parts:
+        return app_base_dir()
+    return _normalize_path(os.path.join(app_base_dir(), *clean_parts))
+
+
+def app_resource_url(*parts: str) -> str:
+    return app_resource_path(*parts).replace("\\", "/")
 
 
 def get_mission_archive_root() -> str:

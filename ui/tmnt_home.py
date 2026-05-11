@@ -63,6 +63,8 @@ from data_manager import find_deck_by_id, next_deck_id, store
 from pdf_engine import PDF_SUPPORT
 from perf_utils import build_deck_rollups
 from storage_paths import (
+    app_resource_path,
+    app_resource_url,
     archive_label,
     archive_tooltip,
     current_data_file,
@@ -925,11 +927,11 @@ class TMNTDeckEngine(DeckTree):
             QTreeWidget::branch:closed:has-children,
             QTreeWidget::branch:closed:has-children:has-siblings,
             QTreeWidget::branch:closed:has-children:adjoins-item {{
-                image: url(assets/themes/dojo/tmnt_tree_closed.svg);
+                image: url({app_resource_url("assets", "themes", "dojo", "tmnt_tree_closed.svg")});
             }}
             QTreeWidget::branch:open:has-children:has-siblings,
             QTreeWidget::branch:open:has-children {{
-                image: url(assets/themes/dojo/tmnt_tree_open.svg);
+                image: url({app_resource_url("assets", "themes", "dojo", "tmnt_tree_open.svg")});
             }}
             QScrollBar:vertical {{
                 background: {T_BG};
@@ -1217,7 +1219,7 @@ class TMNTSidebar(QFrame):
         from PyQt5.QtCore import QSize
 
         btn_open = QPushButton()
-        btn_open.setIcon(QIcon("assets/themes/dojo/sewer_icon.png"))
+        btn_open.setIcon(QIcon(app_resource_path("assets", "themes", "dojo", "sewer_icon.png")))
         btn_h = _px(34, self._scale)  # same height as NEW DOJO / SUB
         btn_w = _px(34, self._scale)  # square — logo is circular anyway
         btn_Icon_height = _px(74, self._scale)  # square — logo is circular anyway

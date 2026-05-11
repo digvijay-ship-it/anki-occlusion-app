@@ -84,7 +84,7 @@ from data_manager import (
     load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
     DATA_FILE, store
 )
-from storage_paths import initialize_mission_archive
+from storage_paths import app_base_dir, app_resource_path, initialize_mission_archive
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -116,9 +116,13 @@ def load_custom_fonts():
     global NARUTO_FONT_FAMILY
     print("[DEBUG][theme] ninja_font_skipped")
     font_paths = [
-        os.path.join(os.path.dirname(__file__), "assets", "fonts", "PressStart2P-Regular.ttf"),
-        os.path.join(os.path.dirname(__file__), "assets", "fonts", "RobotoMono-Regular.ttf"),
+        app_resource_path("assets", "fonts", "PressStart2P-Regular.ttf"),
+        app_resource_path("assets", "fonts", "RobotoMono-Regular.ttf"),
     ]
+    print(
+        f"[DEBUG][packaging] font_probe frozen={getattr(sys, 'frozen', False)} "
+        f"base={app_base_dir()} count={len(font_paths)}"
+    )
     for font_path in font_paths:
         if not os.path.exists(font_path):
             continue
@@ -360,6 +364,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     app = QApplication(sys.argv)
+    print(f"[DEBUG][packaging] startup frozen={getattr(sys, 'frozen', False)} base={app_base_dir()}")
     load_custom_fonts()
     app.setStyleSheet(SS)
     app.setApplicationName("Anki Occlusion")

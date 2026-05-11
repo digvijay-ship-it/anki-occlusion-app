@@ -86,6 +86,7 @@ from data_manager import (
     DATA_FILE, store
 )
 from storage_paths import (
+    app_resource_path,
     archive_label,
     archive_tooltip,
     current_data_file,
@@ -505,7 +506,7 @@ class MentorWidget(QFrame):
         self.av_lbl.setObjectName("mentor_avatar")
         
         from theme_manager import NINJA_THEME_ENABLED
-        av_path = "assets/themes/dojo/Cyber_ninja_turtle_202604270705.jpeg_clean.png"
+        av_path = app_resource_path("assets", "themes", "dojo", "Cyber_ninja_turtle_202604270705.jpeg_clean.png")
         if NINJA_THEME_ENABLED and os.path.exists(av_path):
             original_px = QPixmap(av_path)
             # Create circular mask
@@ -591,7 +592,7 @@ class MusicWidget(QFrame):
     - Click the widget → same as M
     Tracks: assets/music/*.mp3  (or .ogg)
     """
-    MUSIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "music")
+    MUSIC_DIR = app_resource_path("assets", "music")
 
     def __init__(self, parent=None):
         super().__init__(parent)
