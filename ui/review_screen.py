@@ -480,12 +480,15 @@ class ReviewScreen(QWidget):
 
     def eventFilter(self, obj, event):
         et = event.type()
-        if et in (QEvent.MouseMove, QEvent.HoverMove, QEvent.Wheel):
+        if et in (QEvent.MouseMove, QEvent.HoverMove, QEvent.Wheel,
+                  QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
             self._note_user_activity()
         return super().eventFilter(obj, event)
 
     def _note_user_activity(self):
         self._ui_idle_timer.start()
+        if self._stimer:
+            self._stimer.note_activity()
 
     def _on_ui_idle_timeout(self):
         self._flush_pending_background_inserts()
@@ -2417,6 +2420,14 @@ class ReviewScreen(QWidget):
                 reason="queued_pending_insert",
             )
             return
+        from PyQt5.QtGui import QImage, QPixmap
+        cache_px = None
+        if isinstance(qpx, QPixmap):
+            cache_px = qpx
+        elif isinstance(qpx, QImage):
+            cache_px = QPixmap.fromImage(qpx)
+        if cache_px is not None and not cache_px.isNull():
+            PAGE_CACHE.put(thread_path, page_num, cache_px, render_zoom=self._pdf_render_zoom)
         self.canvas.inject_page(page_num, qpx)
         self.__dict__.setdefault("_review_canvas_real_pages", set()).add(page_num)
         self._debug_review_page_injection(

@@ -22,8 +22,8 @@ import json
 import tempfile
 from datetime import date
 
-from PyQt5.QtCore    import QTimer
-from PyQt5.QtWidgets import QLabel
+from PyQt5.QtCore    import QTimer, Qt
+from PyQt5.QtWidgets import QLabel, QApplication
 
 # ── File paths ────────────────────────────────────────────────────────────────
 _STATE_FILE   = os.path.join(os.path.expanduser("~"), "anki_timer_state.json")
@@ -158,6 +158,7 @@ class SessionTimer:
         self._current_day = date.today().isoformat()
         self._elapsed = _load_state()
         self._session_elapsed = 0
+        self._idle_seconds = 0
         self._running = False
 
         self.label = QLabel(self._make_text(), parent)
@@ -173,6 +174,9 @@ class SessionTimer:
         self._save_timer = QTimer(parent)
         self._save_timer.setInterval(30_000)
         self._save_timer.timeout.connect(lambda: _save_state(self._elapsed))
+
+    def note_activity(self):
+        self._idle_seconds = 0
 
     def _rollover_if_needed(self):
         today = date.today().isoformat()
@@ -214,6 +218,19 @@ class SessionTimer:
 
     def _tick(self):
         self._rollover_if_needed()
+
+        # Check if application has focus (active window)
+        if not QApplication.activeWindow():
+            return
+
+        self._idle_seconds += 1
+
+        if self._idle_seconds == 120:
+            QApplication.beep()
+
+        if self._idle_seconds > 60:
+            return
+
         self._elapsed += 1
         self._session_elapsed += 1
         self.label.setText(self._make_text())

@@ -112,7 +112,8 @@ class SessionTimerTests(unittest.TestCase):
             self.assertEqual(len(entry["texts"]), 1) # Still 1 item
 
     @patch('session_timer._load_state', return_value=10)
-    def test_SessionTimer_initializes_with_loaded_state(self, mock_load):
+    @patch('session_timer.QApplication.activeWindow', return_value=True)
+    def test_SessionTimer_initializes_with_loaded_state(self, mock_active_window, mock_load):
         timer = SessionTimer()
         self.assertEqual(timer.elapsed_seconds, 10)
         self.assertEqual(timer.elapsed_str(), "0:00:10")
@@ -125,7 +126,8 @@ class SessionTimerTests(unittest.TestCase):
 
     @patch('session_timer._STATE_FILE', new_callable=lambda: None)
     @patch('session_timer._JOURNAL_FILE', new_callable=lambda: None)
-    def test_SessionTimer_rolls_over_at_midnight(self, mock_journal_file, mock_state_file):
+    @patch('session_timer.QApplication.activeWindow', return_value=True)
+    def test_SessionTimer_rolls_over_at_midnight(self, mock_active_window, mock_journal_file, mock_state_file):
         session_timer._STATE_FILE = self.test_state_file
         session_timer._JOURNAL_FILE = self.test_journal_file
 
