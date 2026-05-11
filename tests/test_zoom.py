@@ -5,7 +5,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtGui import QImage, QKeyEvent, QPixmap
 
 from anki_occlusion_v19 import ReviewScreen
 from ui.review_screen import ReviewScreen as UiReviewScreen
@@ -283,6 +283,33 @@ class ReviewScreenZoomTests(unittest.TestCase):
         printed = [call.args[0] for call in fake_print.call_args_list]
         self.assertEqual(printed[0], "[DEBUG][review_lazy] 👀 p.2")
         self.assertEqual(printed[1], "[DEBUG][review_inject] p.2 injected=no kind=background reason=queued_pending_insert")
+
+    def test_review_on_page_ready_caches_qimage_on_gui_thread_before_inject(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._canvas_pdf_path = "deck.pdf"
+        screen._ondemand_path = "deck.pdf"
+        screen._ondemand_kind = "visible"
+        screen._review_render_inflight_pages = {1}
+        screen._review_canvas_real_pages = set()
+        screen._bg_pending_inserts = {}
+        screen._pdf_render_zoom = 2.0
+        screen.canvas = MagicMock()
+        screen.canvas._pages = [MagicMock(), MagicMock(), MagicMock()]
+        screen.canvas.width.return_value = 900
+        screen.canvas.height.return_value = 1400
+        screen._update_review_page_nav_ui = MagicMock()
+        image = QImage(20, 30, QImage.Format_RGB32)
+        image.fill(0)
+
+        with patch("ui.review_screen.PAGE_CACHE.put") as cache_put:
+            screen._on_page_ready(1, image)
+
+        cache_put.assert_called_once()
+        args, kwargs = cache_put.call_args
+        self.assertEqual(args[:2], ("deck.pdf", 1))
+        self.assertIsInstance(args[2], QPixmap)
+        self.assertEqual(kwargs["render_zoom"], 2.0)
+        screen.canvas.inject_page.assert_called_once_with(1, image)
 
     def test_review_start_visible_page_request_prints_ondemand_render_request(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)

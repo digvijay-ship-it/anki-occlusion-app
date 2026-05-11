@@ -89,16 +89,22 @@ QScrollBar::handle:vertical {{ background:{C_BORDER}; border-radius:3px; }}
 # ═══════════════════════════════════════════════════════════════════════════════
 
 DEFAULT_PDF_IDLE_MINUTES = 5
+DEFAULT_RAM_PAGE_LIMIT = 48
 
 class LRUPageCache:
     """
     In-RAM page cache with per-PDF inactivity expiry.
     If a PDF has not been touched for idle_minutes, all its cached pages are cleared.
     """
-    def __init__(self, idle_minutes: float = DEFAULT_PDF_IDLE_MINUTES):
+    def __init__(
+        self,
+        idle_minutes: float = DEFAULT_PDF_IDLE_MINUTES,
+        max_pages: int | None = DEFAULT_RAM_PAGE_LIMIT,
+    ):
         self._cache = OrderedDict()
-        self._hashes = {}   
-        self._pdf_last_access  = {}   
+        self._hashes = {}
+        self._pdf_last_access  = {}
+        self._max_pages = None if max_pages is None else max(0, int(max_pages))
 
     def _touch(self, path: str, now=None):
         pass   # No longer needed
@@ -214,6 +220,24 @@ class LRUPageCache:
         except Exception:
             return None
 
+    def _load_image_from_disk(self, path: str, page_num: int, variant: str | None = None):
+        """Try to load a QImage from disk. Safe for worker threads."""
+        try:
+            fpath = self._disk_page_path_variant(path, page_num, variant)
+            if not os.path.exists(fpath):
+                return None
+            from PyQt5.QtGui import QImage
+            img = QImage(fpath)
+            return img if not img.isNull() else None
+        except Exception:
+            return None
+
+    def _enforce_ram_limit(self):
+        if self._max_pages is None:
+            return
+        while len(self._cache) > self._max_pages:
+            self._cache.popitem(last=False)
+
     # ── Main API ──────────────────────────────────────────────────────────────
 
     def get(self, path: str, page_num: int, variant: str | None = None):
@@ -237,6 +261,14 @@ class LRUPageCache:
 
         return None
 
+    def get_image(self, path: str, page_num: int, variant: str | None = None):
+        path = _canonical_pdf_path(path)
+        self.expire_stale()
+        img = self._load_image_from_disk(path, page_num, variant=variant)
+        if img is not None:
+            self._touch(path)
+        return img
+
     def put(self, path: str, page_num: int, pixmap, variant: str | None = None, render_zoom: float | None = None):
         path = _canonical_pdf_path(path)
         self.expire_stale()
@@ -244,6 +276,7 @@ class LRUPageCache:
         self._cache[key] = pixmap
         self._cache.move_to_end(key)
         self._touch(path)
+        self._enforce_ram_limit()
         if render_zoom is not None:
             self.set_render_zoom(path, render_zoom, variant=variant)
         # Save to disk asynchronously — silent, non-blocking

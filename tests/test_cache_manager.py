@@ -100,6 +100,40 @@ class LRUPageCacheTests(unittest.TestCase):
             self.assertIsNotNone(cache.get(path_b, 0))
             self.assertEqual(len(cache.all_cached_pdfs()), 1)
 
+    def test_ram_cache_evicts_least_recently_used_pages_when_limit_is_hit(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache(max_pages=2)
+            px0 = QPixmap(6, 6)
+            px1 = QPixmap(7, 7)
+            px2 = QPixmap(8, 8)
+            for px in (px0, px1, px2):
+                px.fill()
+
+            cache.put("doc.pdf", 0, px0)
+            cache.put("doc.pdf", 1, px1)
+            cache.put("doc.pdf", 2, px2)
+
+            canonical = cache_manager._canonical_pdf_path("doc.pdf")
+            self.assertEqual(len(cache._cache), 2)
+            self.assertNotIn((canonical, 0, "default"), cache._cache)
+            self.assertIn((canonical, 1, "default"), cache._cache)
+            self.assertIn((canonical, 2, "default"), cache._cache)
+            self.assertIsNotNone(cache.get("doc.pdf", 0))
+
+    def test_get_image_loads_worker_safe_image_from_disk(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache()
+            px = QPixmap(10, 14)
+            px.fill()
+
+            cache.put("doc.pdf", 0, px, render_zoom=1.0)
+
+            img = cache.get_image("doc.pdf", 0)
+
+            self.assertIsNotNone(img)
+            self.assertFalse(img.isNull())
+            self.assertEqual((img.width(), img.height()), (10, 14))
+
 class DiskCombinedCacheTests(unittest.TestCase):
     def setUp(self):
         tmp_root = Path(__file__).resolve().parent / "_tmp"

@@ -779,6 +779,8 @@ class CardEditorDialog(QDialog):
                 self._start_editor_visible_page_request(path, fresh_needed)
 
     def _on_editor_page_ready(self, page_num, qpx):
+        from PyQt5.QtGui import QImage, QPixmap
+
         path = getattr(self, "_editor_ondemand_path", None)
         page_num = int(page_num)
         self.__dict__.setdefault("_editor_render_inflight_pages", set()).discard(page_num)
@@ -789,6 +791,13 @@ class CardEditorDialog(QDialog):
             print(f"[DEBUG][editor_inject] p.{page_num + 1} injected=no reason=canvas_empty")
             return
         print(f"[DEBUG][editor_lazy] 👀 p.{page_num + 1}")
+        cache_px = None
+        if isinstance(qpx, QPixmap):
+            cache_px = qpx
+        elif isinstance(qpx, QImage):
+            cache_px = QPixmap.fromImage(qpx)
+        if cache_px is not None and not cache_px.isNull():
+            PAGE_CACHE.put(path, page_num, cache_px, render_zoom=self._pdf_render_zoom)
         self.canvas.inject_page(page_num, qpx)
         self.__dict__.setdefault("_editor_canvas_real_pages", set()).add(page_num)
         print(f"[DEBUG][editor_inject] p.{page_num + 1} injected=yes kind=visible")
