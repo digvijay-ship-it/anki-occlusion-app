@@ -210,7 +210,10 @@ except Exception as _tmnt_err:
 try:
     from .math_trainer import MathTrainerPage
     _MATH_AVAILABLE = True
-except ImportError:
+except Exception as _math_err:
+    import traceback as _tb
+    print(f"[MATH TRAINER IMPORT ERROR] {type(_math_err).__name__}: {_math_err}")
+    _tb.print_exc()
     _MATH_AVAILABLE = False
 
 #  HOME SCREEN
