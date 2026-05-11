@@ -10,6 +10,7 @@ tests/_tmp/
 # Distribution / packaging
 .Python
 build/
+release/
 develop-eggs/
 dist/
 downloads/
@@ -66,6 +67,7 @@ debug_log.txt
 # Refactoring and temporary files
 README copy.md
 _refactoring_scripts/
+installer/_generated/
 test.html
 tests/_tmp_files/
 *.new
