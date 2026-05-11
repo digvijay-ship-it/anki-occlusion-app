@@ -553,6 +553,13 @@ class MathTrainerPage(QWidget):
             return
         super().keyPressEvent(e)
 
+    def eventFilter(self, obj, e):
+        if hasattr(self, "_ans_in") and obj == self._ans_in and e.type() == QEvent.KeyPress:
+            if e.key() == Qt.Key_Space:
+                self._reveal()
+                return True
+        return super().eventFilter(obj, e)
+
     def _toggle_pen(self):
         if hasattr(self, "_scratchpad"):
             if self._scratchpad._strokes or len(self._scratchpad._current) > 0:
@@ -911,6 +918,7 @@ class MathTrainerPage(QWidget):
 
         # Answer input — large
         self._ans_in = QLineEdit()
+        self._ans_in.installEventFilter(self)
         self._ans_in.setPlaceholderText("?")
         self._ans_in.setAlignment(Qt.AlignCenter)
         self._ans_in.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -953,10 +961,6 @@ class MathTrainerPage(QWidget):
         self._show_ans_btn.hide()
         self._show_ans_btn.clicked.connect(self._reveal)
         left_layout.addWidget(self._show_ans_btn)
-        
-        # Spacebar shortcut to reveal
-        self._space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
-        self._space_shortcut.activated.connect(self._reveal)
 
         # ── RIGHT PANEL (40%) — reveal / reference ────────────────────────
         self._right_panel = QFrame()
