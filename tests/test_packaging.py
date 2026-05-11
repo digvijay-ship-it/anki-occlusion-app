@@ -31,6 +31,20 @@ class PyInstallerSpecTests(unittest.TestCase):
             for icon in icons:
                 self.assertTrue((ROOT / icon).exists(), f"Missing icon referenced by {spec_path.name}: {icon}")
 
+    def test_spec_collects_assets_and_multimedia_plugin(self):
+        spec = (ROOT / "AnkiOcclusion.spec").read_text(encoding="utf-8")
+
+        self.assertIn('ASSET_ROOT = ROOT / "assets"', spec)
+        self.assertIn('hiddenimports=["PyQt5.QtMultimedia"]', spec)
+        self.assertIn("COLLECT(", spec)
+
+    def test_build_script_uses_pyinstaller_and_iexpress(self):
+        script = (ROOT / "build_installer.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("pyinstaller --noconfirm AnkiOcclusion.spec", script)
+        self.assertIn("iexpress.exe", script)
+        self.assertIn("[DEBUG][installer]", script)
+
 
 if __name__ == "__main__":
     unittest.main()
