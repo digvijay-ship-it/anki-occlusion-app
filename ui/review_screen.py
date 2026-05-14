@@ -471,12 +471,27 @@ class ReviewScreen(QWidget):
         self.mgr._promote_expired_learning(insert_pos)
 
     def _trigger_center_fit(self):
-        if self._peek_idx is not None:
+        if self.__dict__.get("_peek_idx") is not None:
             self._exit_peek()
-        else:
-            self._zoom_fit()
-            self._center_on_target()
-            self._user_zoom_scale = self.canvas._scale
+            return
+
+        zoom_fit = self.__dict__.get("_zoom_fit")
+        if zoom_fit is None:
+            if "_canvas_scroll" not in self.__dict__ or "canvas" not in self.__dict__:
+                return
+            zoom_fit = self._zoom_fit
+
+        center_on_target = self.__dict__.get("_center_on_target")
+        if center_on_target is None:
+            if "canvas" not in self.__dict__:
+                return
+            center_on_target = self._center_on_target
+
+        zoom_fit()
+        center_on_target()
+        canvas = self.__dict__.get("canvas")
+        if canvas is not None:
+            self._user_zoom_scale = canvas._scale
 
     def _update_queue_label(self, total):
         dojo = _is_dojo()
@@ -887,6 +902,12 @@ class ReviewScreen(QWidget):
             self._rate(4)
         elif key == Qt.Key_4 and self._rating_frame.isVisible():
             self._rate(5)
+        elif mods & Qt.ControlModifier and key in (Qt.Key_Equal, Qt.Key_Plus):
+            self.canvas.zoom_in()
+            self._user_zoom_scale = self.canvas._scale
+        elif mods & Qt.ControlModifier and key == Qt.Key_Minus:
+            self.canvas.zoom_out()
+            self._user_zoom_scale = self.canvas._scale
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
             self._zoom_fit()
             self._user_zoom_scale = None  # reset to auto-fit
@@ -1117,8 +1138,15 @@ class ReviewScreen(QWidget):
         self._page_jump.returnPressed.connect(self._jump_to_review_page_from_input)
         self._page_total = QLabel("/ 0")
         self._page_total.setStyleSheet(f"color:{subtext};background:transparent;")
-        b_zin.clicked.connect(lambda: self.canvas.zoom_in())
-        b_zout.clicked.connect(lambda: self.canvas.zoom_out())
+        def _manual_zoom(direction: int):
+            if direction > 0:
+                self.canvas.zoom_in()
+            else:
+                self.canvas.zoom_out()
+            self._user_zoom_scale = self.canvas._scale
+
+        b_zin.clicked.connect(lambda: _manual_zoom(+1))
+        b_zout.clicked.connect(lambda: _manual_zoom(-1))
         b_zfit.clicked.connect(self._zoom_fit)
         b_center.clicked.connect(self._center_on_target)
         self._btn_prev_page.clicked.connect(self._go_prev_review_page)
@@ -2461,6 +2489,9 @@ class ReviewScreen(QWidget):
         ready_items = sorted(self._bg_pending_inserts.items())
         self._bg_pending_inserts.clear()
         for pn, pg in ready_items:
+            pg = self._coerce_page_pixmap(pg)
+            if pg is None:
+                continue
             self._debug_review_lazy_page_loaded(
                 source="cache",
                 page_num=pn,
@@ -2779,17 +2810,27 @@ class ReviewScreen(QWidget):
             )
             return
 
+        cache_px = self._coerce_page_pixmap(qpx)
+        if cache_px is None:
+            self._debug_review_page_injection(
+                page_num=page_num,
+                injected=False,
+                kind=getattr(self, "_ondemand_kind", None) or "visible",
+                reason="null_page",
+            )
+            return
+
         load_kind = getattr(self, "_ondemand_kind", None) or "visible"
         self._debug_review_lazy_page_loaded(
             source="render",
             page_num=page_num,
-            pixmap=qpx,
+            pixmap=cache_px,
             kind=load_kind,
             canvas_wh=canvas_wh,
         )
 
         if getattr(self, "_ondemand_kind", None) == "background":
-            self._bg_pending_inserts[page_num] = qpx
+            self._bg_pending_inserts[page_num] = cache_px
             self._debug_review_page_injection(
                 page_num=page_num,
                 injected=False,
@@ -2797,18 +2838,13 @@ class ReviewScreen(QWidget):
                 reason="queued_pending_insert",
             )
             return
-        from PyQt5.QtGui import QImage, QPixmap
+        from PyQt5.QtGui import QPixmap
 
-        cache_px = None
-        if isinstance(qpx, QPixmap):
-            cache_px = qpx
-        elif isinstance(qpx, QImage):
-            cache_px = QPixmap.fromImage(qpx)
-        if cache_px is not None and not cache_px.isNull():
+        if isinstance(cache_px, QPixmap):
             PAGE_CACHE.put(
                 thread_path, page_num, cache_px, render_zoom=self._pdf_render_zoom
             )
-        self.canvas.inject_page(page_num, qpx)
+        self.canvas.inject_page(page_num, cache_px)
         self.__dict__.setdefault("_review_canvas_real_pages", set()).add(page_num)
         self._debug_review_page_injection(
             page_num=page_num,
@@ -2818,6 +2854,25 @@ class ReviewScreen(QWidget):
         if load_kind == "visible":
             print(f"[DEBUG][review_ondemand] loaded p.{page_num + 1}")
         self._update_review_page_nav_ui()
+
+    @staticmethod
+    def _coerce_page_pixmap(page_obj):
+        from PyQt5.QtGui import QImage, QPixmap
+
+        if isinstance(page_obj, QPixmap):
+            return page_obj if not page_obj.isNull() else None
+        if isinstance(page_obj, QImage):
+            px = QPixmap.fromImage(page_obj)
+            return px if not px.isNull() else None
+        if page_obj is not None and hasattr(page_obj, "isNull"):
+            try:
+                is_null = page_obj.isNull()
+                if isinstance(is_null, bool) and is_null:
+                    return None
+                return page_obj
+            except Exception:
+                return page_obj
+        return None
 
     def _debug_review_lazy_page_loaded(
         self, source: str, page_num: int, pixmap, kind: str = "", canvas_wh: str = ""

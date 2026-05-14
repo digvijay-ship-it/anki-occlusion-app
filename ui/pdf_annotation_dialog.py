@@ -1099,6 +1099,7 @@ class PdfAnnotationDialog(QDialog):
         pixmap = qpx if isinstance(qpx, QPixmap) else QPixmap.fromImage(qpx)
         if pixmap.isNull():
             return
+        print(f"[DEBUG][annotation_lazy] 👀 p.{int(page_num) + 1}")
         self.canvas.replace_page(page_num, pixmap)
 
     def _on_render_window_done(self, rendered_pages):

@@ -41,6 +41,9 @@ class DirtyStore:
         self._stop_event = threading.Event()
         self._save_thread = None
         self._save_thread_lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._save_seq = 0
+        self._latest_save_request_seq = 0
         self._last_async_save_ts = 0.0
 
     # ── Load / Get / Set ──────────────────────────────────────────────────────
@@ -89,27 +92,42 @@ class DirtyStore:
                 return False
             snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
             snapshot_summary = DirtyStore._data_summary(self._data)
+            self._save_seq += 1
+            save_seq = self._save_seq
+            self._latest_save_request_seq = save_seq
             self._dirty = False
         try:
-            self._write_serialized_to_disk(snapshot_text, snapshot_summary)
+            return self._write_snapshot_to_disk(
+                save_seq, snapshot_text, snapshot_summary
+            )
         except Exception:
             with self._lock:
                 self._dirty = True
             raise
-        return True
 
     def save_force(self):
         """Force write regardless of dirty flag (use on app exit)."""
         with self._lock:
             snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
             snapshot_summary = DirtyStore._data_summary(self._data)
+            self._save_seq += 1
+            save_seq = self._save_seq
+            self._latest_save_request_seq = save_seq
             self._dirty = False
         try:
-            self._write_serialized_to_disk(snapshot_text, snapshot_summary)
+            self._write_snapshot_to_disk(save_seq, snapshot_text, snapshot_summary)
         except Exception:
             with self._lock:
                 self._dirty = True
             raise
+
+    def _write_snapshot_to_disk(self, save_seq, snapshot_text, snapshot_summary):
+        with self._write_lock:
+            with self._lock:
+                if save_seq < self._latest_save_request_seq:
+                    return False
+            self._write_serialized_to_disk(snapshot_text, snapshot_summary)
+            return True
 
     def save_soon(self, min_interval: float = 3.0):
         """

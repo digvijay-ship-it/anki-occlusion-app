@@ -22,8 +22,8 @@ import json
 import tempfile
 from datetime import date
 
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtWidgets import QLabel, QApplication
+from PyQt5.QtCore import QObject, QEvent, QTimer, Qt
+from PyQt5.QtWidgets import QLabel, QApplication, QWidget
 
 # ── File paths ────────────────────────────────────────────────────────────────
 _STATE_FILE = os.path.join(os.path.expanduser("~"), "anki_timer_state.json")
@@ -157,6 +157,39 @@ def _write_focus_to_journal(seconds: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_ACTIVITY_EVENTS = frozenset(
+    (
+        QEvent.MouseMove,
+        QEvent.HoverMove,
+        QEvent.Wheel,
+        QEvent.KeyPress,
+        QEvent.MouseButtonPress,
+        QEvent.MouseButtonRelease,
+        QEvent.TabletMove,
+        QEvent.TabletPress,
+        QEvent.TabletRelease,
+        QEvent.TouchBegin,
+        QEvent.TouchUpdate,
+    )
+)
+
+
+class _ActivityEventFilter(QObject):
+    def __init__(self, timer):
+        super().__init__()
+        self._timer = timer
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.ChildAdded:
+            try:
+                self._timer._enable_mouse_tracking(event.child())
+            except Exception:
+                pass
+        elif event.type() in _ACTIVITY_EVENTS and self._timer._is_activity_scope(obj):
+            self._timer.note_activity()
+        return False
+
+
 class SessionTimer:
     """
     Persistent per-day stopwatch.
@@ -170,10 +203,16 @@ class SessionTimer:
         self._elapsed = _load_state()
         self._session_elapsed = 0
         self._idle_seconds = 0
+        self._idle_limit_seconds = 60
         self._running = False
+        self._activity_parent = parent
+        self._activity_filter = _ActivityEventFilter(self)
+        self._activity_filter_installed = False
 
         self.label = QLabel(self._make_text(), parent)
-        self.label.setToolTip("Time studied today  \u2022  resets at midnight")
+        self.label.setToolTip(
+            "Time studied today  \u2022  pauses after 1 minute without app activity"
+        )
 
         self.label_session = QLabel(self._fmt(self._session_elapsed), parent)
         self.label_today = QLabel(self._fmt(self._elapsed), parent)
@@ -189,6 +228,48 @@ class SessionTimer:
     def note_activity(self):
         self._idle_seconds = 0
 
+    def _is_activity_scope(self, obj) -> bool:
+        root = self._activity_parent
+        if root is None:
+            return True
+        cur = obj
+        while cur is not None:
+            if cur is root:
+                return True
+            try:
+                cur = cur.parent()
+            except Exception:
+                return False
+        return False
+
+    def _enable_mouse_tracking(self, root=None):
+        root = root or self._activity_parent
+        if root is None:
+            return
+        if isinstance(root, QWidget):
+            root.setMouseTracking(True)
+            for child in root.findChildren(QWidget):
+                child.setMouseTracking(True)
+
+    def _install_activity_filter(self):
+        if self._activity_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        self._enable_mouse_tracking()
+        app.installEventFilter(self._activity_filter)
+        self._activity_filter_installed = True
+        self.note_activity()
+
+    def _remove_activity_filter(self):
+        if not self._activity_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self._activity_filter)
+        self._activity_filter_installed = False
+
     def _rollover_if_needed(self):
         today = date.today().isoformat()
         if today == self._current_day:
@@ -203,6 +284,7 @@ class SessionTimer:
     def start(self):
         if not self._running:
             self._rollover_if_needed()
+            self._install_activity_filter()
             self._running = True
             self._tick_timer.start()
             self._save_timer.start()
@@ -213,6 +295,7 @@ class SessionTimer:
             self._running = False
             self._tick_timer.stop()
             self._save_timer.stop()
+            self._remove_activity_filter()
             _save_state(self._elapsed)
 
     def flush_to_journal(self):
@@ -239,7 +322,7 @@ class SessionTimer:
         if self._idle_seconds == 120:
             QApplication.beep()
 
-        if self._idle_seconds > 60:
+        if self._idle_seconds > self._idle_limit_seconds:
             return
 
         self._elapsed += 1

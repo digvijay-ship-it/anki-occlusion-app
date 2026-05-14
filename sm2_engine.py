@@ -59,16 +59,23 @@ def _fuzz_interval(iv: int, seed_val: int = None) -> int:
     if iv <= 2:
         return iv  # No fuzz for very short intervals
 
-    rng = random.Random(seed_val) if seed_val is not None else random
+    use_seed = seed_val is not None
+    if use_seed:
+        state = random.getstate()
+        random.seed(seed_val)
 
-    if iv <= 7:
-        fuzz = rng.randint(-1, 1)  # ±1 day
-    elif iv <= 30:
-        fuzz = rng.randint(-2, 2)  # ±2 days
-    elif iv <= 90:
-        fuzz = rng.randint(-3, 4)  # -3 to +4 days
-    else:
-        fuzz = rng.randint(-4, 7)  # -4 to +7 days
+    try:
+        if iv <= 7:
+            fuzz = random.randint(-1, 1)  # ±1 day
+        elif iv <= 30:
+            fuzz = random.randint(-2, 2)  # ±2 days
+        elif iv <= 90:
+            fuzz = random.randint(-3, 4)  # -3 to +4 days
+        else:
+            fuzz = random.randint(-4, 7)  # -4 to +7 days
+    finally:
+        if use_seed:
+            random.setstate(state)
     return max(1, iv + fuzz)
 
 
@@ -176,7 +183,9 @@ def sched_update(c, quality):
             if good_iv_raw > 1:
                 hard_iv_raw = min(hard_iv_raw, good_iv_raw - 1)
 
-            iv = _fuzz_interval(hard_iv_raw, seed_val)
+            hard_iv = _fuzz_interval(hard_iv_raw, seed_val)
+            good_iv_for_order = _fuzz_interval(good_iv_raw, seed_val)
+            iv = min(hard_iv, good_iv_for_order)
             due = _due_in_days(iv)
 
     # ── EASY (quality == 5) ───────────────────────────────────────────────────
@@ -191,7 +200,9 @@ def sched_update(c, quality):
             # ⚡ ALGORITHMIC ENFORCEMENT: Easy > Good
             easy_iv_raw = max(easy_iv_raw, good_iv_raw + 1)
 
-            iv = _fuzz_interval(easy_iv_raw, seed_val)
+            easy_iv = _fuzz_interval(easy_iv_raw, seed_val)
+            good_iv_for_order = _fuzz_interval(good_iv_raw, seed_val)
+            iv = max(easy_iv, good_iv_for_order + 1)
         else:
             iv = EASY_IV
             iv = _fuzz_interval(iv, seed_val)

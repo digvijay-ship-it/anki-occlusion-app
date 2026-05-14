@@ -115,11 +115,16 @@ class LRUPageCache:
         self,
         idle_minutes: float = DEFAULT_PDF_IDLE_MINUTES,
         max_pages: int | None = DEFAULT_RAM_PAGE_LIMIT,
+        async_disk_writes: bool = False,
     ):
         self._cache = OrderedDict()
         self._hashes = {}
         self._pdf_last_access = {}
         self._max_pages = None if max_pages is None else max(0, int(max_pages))
+        self._async_disk_writes = bool(async_disk_writes)
+        self._pending_images = {}
+        self._write_tokens = {}
+        self._state_lock = threading.RLock()
         # ── Async disk write queue ────────────────────────────────────────────
         # put() enqueues here; daemon thread drains it — never blocks callers.
         self._disk_write_queue = []
@@ -140,8 +145,14 @@ class LRUPageCache:
                     if not self._disk_write_queue:
                         break
                     item = self._disk_write_queue.pop(0)
-                path, page_num, pixmap, variant = item
-                self._save_to_disk(path, page_num, pixmap, variant)
+                path, page_num, image, variant, token = item
+                key = (path, page_num, self._variant_name(variant))
+                with self._disk_write_lock:
+                    if self._write_tokens.get(key) != token:
+                        continue
+                    self._save_to_disk(path, page_num, image, variant)
+                    if self._write_tokens.get(key) == token:
+                        self._pending_images.pop(key, None)
 
     # ── Disk helpers ──────────────────────────────────────────────────────────
 
@@ -242,14 +253,14 @@ class LRUPageCache:
         return os.path.join(page_dir, f"page_{page_num:04d}{suffix}.png")
 
     def _save_to_disk(
-        self, path: str, page_num: int, pixmap, variant: str | None = None
+        self, path: str, page_num: int, image, variant: str | None = None
     ) -> None:
-        """Save a QPixmap as PNG to disk. Silent on failure."""
+        """Save a QImage/QPixmap as PNG to disk. Silent on failure."""
         try:
             fpath = self._disk_page_path_variant(path, page_num, variant)
             os.makedirs(os.path.dirname(fpath), exist_ok=True)
             if not os.path.exists(fpath):  # already saved → skip
-                pixmap.save(fpath, "PNG")
+                image.save(fpath, "PNG")
         except Exception as e:
             print(f"[cache][_save_to_disk] ⚠ failed to save p.{page_num+1} → {e}")
 
@@ -287,28 +298,61 @@ class LRUPageCache:
         while len(self._cache) > self._max_pages:
             self._cache.popitem(last=False)
 
+    def _page_key(self, path: str, page_num: int, variant: str | None = None):
+        return (path, int(page_num), self._variant_name(variant))
+
+    def _pixmap_to_image(self, page_obj):
+        from PyQt5.QtGui import QImage, QPixmap
+
+        if isinstance(page_obj, QImage):
+            return page_obj.copy()
+        if isinstance(page_obj, QPixmap):
+            return page_obj.toImage()
+        if hasattr(page_obj, "toImage"):
+            return page_obj.toImage()
+        return None
+
     # ── Main API ──────────────────────────────────────────────────────────────
 
     def get(self, path: str, page_num: int, variant: str | None = None):
         path = _canonical_pdf_path(path)
-        key = (path, page_num, self._variant_name(variant))
+        key = self._page_key(path, page_num, variant)
 
         # 1. RAM hit — fastest
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            return self._cache[key]
+        with self._state_lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+
+            pending = self._pending_images.get(key)
+            if pending is not None and not pending.isNull():
+                from PyQt5.QtGui import QPixmap
+
+                px = QPixmap.fromImage(pending)
+                if not px.isNull():
+                    self._cache[key] = px
+                    self._cache.move_to_end(key)
+                    self._enforce_ram_limit()
+                    return px
 
         # 2. Disk hit — load PNG → put back in RAM
         px = self._load_from_disk(path, page_num, variant=variant)
         if px is not None:
-            self._cache[key] = px
-            self._cache.move_to_end(key)
+            with self._state_lock:
+                self._cache[key] = px
+                self._cache.move_to_end(key)
+                self._enforce_ram_limit()
             return px
 
         return None
 
     def get_image(self, path: str, page_num: int, variant: str | None = None):
         path = _canonical_pdf_path(path)
+        key = self._page_key(path, page_num, variant)
+        with self._state_lock:
+            pending = self._pending_images.get(key)
+            if pending is not None and not pending.isNull():
+                return pending.copy()
         return self._load_image_from_disk(path, page_num, variant=variant)
 
     def put(
@@ -320,30 +364,62 @@ class LRUPageCache:
         render_zoom: float | None = None,
     ):
         path = _canonical_pdf_path(path)
-        key = (path, page_num, self._variant_name(variant))
-        self._cache[key] = pixmap
-        self._cache.move_to_end(key)
-        self._enforce_ram_limit()
+        key = self._page_key(path, page_num, variant)
+        image = self._pixmap_to_image(pixmap)
+        with self._state_lock:
+            self._cache[key] = pixmap
+            self._cache.move_to_end(key)
+            self._enforce_ram_limit()
         if render_zoom is not None and not self.matches_render_zoom(
             path, render_zoom, variant=variant
         ):
             self.set_render_zoom(path, render_zoom, variant=variant)
-        # Enqueue disk write — handled by background daemon thread
-        with self._disk_write_lock:
-            self._disk_write_queue.append((path, page_num, pixmap, variant))
-        self._disk_write_event.set()
+        if image is None or image.isNull():
+            return
+        token = object()
+        if self._async_disk_writes:
+            # Enqueue disk write — handled by background daemon thread. Tokens
+            # prevent stale queued writes from resurrecting invalidated pages.
+            with self._disk_write_lock:
+                self._write_tokens[key] = token
+                self._pending_images[key] = image
+                self._disk_write_queue.append((path, page_num, image, variant, token))
+            self._disk_write_event.set()
+        else:
+            with self._disk_write_lock:
+                self._write_tokens[key] = token
+                self._save_to_disk(path, page_num, image, variant)
+                self._write_tokens.pop(key, None)
 
     def invalidate_pdf(self, path: str, variant: str | None = None):
         path = _canonical_pdf_path(path)
         # RAM
         variant_name = self._variant_name(variant) if variant is not None else None
-        keys = [
-            k
-            for k in self._cache
-            if k[0] == path and (variant_name is None or k[2] == variant_name)
-        ]
-        for k in keys:
-            del self._cache[k]
+        with self._disk_write_lock, self._state_lock:
+            keys = [
+                k
+                for k in self._cache
+                if k[0] == path and (variant_name is None or k[2] == variant_name)
+            ]
+            for k in keys:
+                del self._cache[k]
+                self._pending_images.pop(k, None)
+                self._write_tokens.pop(k, None)
+            for k in [
+                k
+                for k in self._pending_images
+                if k[0] == path and (variant_name is None or k[2] == variant_name)
+            ]:
+                self._pending_images.pop(k, None)
+                self._write_tokens.pop(k, None)
+            self._disk_write_queue = [
+                item
+                for item in self._disk_write_queue
+                if not (
+                    item[0] == path
+                    and (variant_name is None or self._variant_name(item[3]) == variant_name)
+                )
+            ]
         # Disk
         try:
             v_dir = self._disk_cache_dir(path)
@@ -379,15 +455,36 @@ class LRUPageCache:
         if not target_pages:
             return
         # Single-pass RAM eviction — O(cache_size) instead of O(N * cache_size)
-        keys_to_del = [
-            k
-            for k in self._cache
-            if k[0] == path
-            and k[1] in target_pages
-            and (variant_name is None or k[2] == variant_name)
-        ]
-        for k in keys_to_del:
-            del self._cache[k]
+        with self._disk_write_lock, self._state_lock:
+            keys_to_del = [
+                k
+                for k in self._cache
+                if k[0] == path
+                and k[1] in target_pages
+                and (variant_name is None or k[2] == variant_name)
+            ]
+            for k in keys_to_del:
+                del self._cache[k]
+                self._pending_images.pop(k, None)
+                self._write_tokens.pop(k, None)
+            for k in [
+                k
+                for k in self._pending_images
+                if k[0] == path
+                and k[1] in target_pages
+                and (variant_name is None or k[2] == variant_name)
+            ]:
+                self._pending_images.pop(k, None)
+                self._write_tokens.pop(k, None)
+            self._disk_write_queue = [
+                item
+                for item in self._disk_write_queue
+                if not (
+                    item[0] == path
+                    and int(item[1]) in target_pages
+                    and (variant_name is None or self._variant_name(item[3]) == variant_name)
+                )
+            ]
         # Disk eviction — one listdir per pdf (not per page)
         try:
             v_dir = self._disk_cache_dir(path)
@@ -416,8 +513,12 @@ class LRUPageCache:
 
     def clear(self):
         ram_count = len(self._cache)
-        self._cache.clear()
-        self._pdf_last_access.clear()
+        with self._disk_write_lock, self._state_lock:
+            self._cache.clear()
+            self._pending_images.clear()
+            self._write_tokens.clear()
+            self._disk_write_queue.clear()
+            self._pdf_last_access.clear()
         # Wipe all vcache_ folders from disk
         disk_deleted = 0
         try:
@@ -440,7 +541,8 @@ class LRUPageCache:
     def clear_ram_only(self):
         """Sirf RAM clear karo — disk PNG files safe rehte hain."""
         ram_count = len(self._cache)
-        self._cache.clear()
+        with self._state_lock:
+            self._cache.clear()
         print(
             f"[cache][clear_ram_only] ✅ RAM cleared — {ram_count} pages removed, disk untouched"
         )
@@ -451,13 +553,15 @@ class LRUPageCache:
         """Estimate RAM bytes for all cached pages of one PDF."""
         path = _canonical_pdf_path(path)
         total = 0
-        for (p, _, _variant), px in self._cache.items():
-            if p == path:
-                total += px.width() * px.height() * 4  # RGBA = 4 bytes/pixel
+        with self._state_lock:
+            for (p, _, _variant), px in self._cache.items():
+                if p == path:
+                    total += px.width() * px.height() * 4  # RGBA = 4 bytes/pixel
         return total
 
     def all_cached_pdfs(self) -> set:
-        return {p for (p, _, _variant) in self._cache}
+        with self._state_lock:
+            return {p for (p, _, _variant) in self._cache}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -600,7 +704,7 @@ class DiskCombinedCache:
 #  MODULE-LEVEL SINGLETONS  (same names as before — drop-in replacement)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-PAGE_CACHE = LRUPageCache()
+PAGE_CACHE = LRUPageCache(async_disk_writes=True)
 
 
 def _load_cache_dir() -> str:

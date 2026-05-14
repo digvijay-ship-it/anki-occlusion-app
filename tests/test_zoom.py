@@ -309,7 +309,9 @@ class ReviewScreenZoomTests(unittest.TestCase):
         self.assertEqual(args[:2], ("deck.pdf", 1))
         self.assertIsInstance(args[2], QPixmap)
         self.assertEqual(kwargs["render_zoom"], 2.0)
-        screen.canvas.inject_page.assert_called_once_with(1, image)
+        injected = screen.canvas.inject_page.call_args.args[1]
+        self.assertIsInstance(injected, QPixmap)
+        self.assertEqual((injected.width(), injected.height()), (20, 30))
 
     def test_review_start_visible_page_request_prints_ondemand_render_request(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)

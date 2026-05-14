@@ -1,4 +1,5 @@
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +11,7 @@ _APP = QApplication.instance() or QApplication([])
 
 from anki_occlusion_v19 import HomeScreen
 import anki_occlusion_v19
-from ui.home_screen import AboutDialog
+from ui.home_screen import AboutDialog, MusicWidget
 
 class HomeScreenJournalTests(unittest.TestCase):
     def setUp(self):
@@ -42,6 +43,34 @@ class HomeScreenJournalTests(unittest.TestCase):
         self.assertEqual(args[0], self.home_screen)
         self.assertEqual(args[1], "Journal")
         self.assertTrue("journal.py not found" in args[2])
+
+
+class HomeScreenMusicWidgetTests(unittest.TestCase):
+    def test_music_scan_excludes_math_trainer_sound_effects(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name in (
+                "Teenage Mutant Ninja Turtles III - Scene 1.mp3",
+                "ambient.ogg",
+                "pickupCoin.wav",
+                "powerUp.wav",
+                "hitHurt.wav",
+            ):
+                with open(os.path.join(tmpdir, name), "wb") as fh:
+                    fh.write(b"audio")
+
+            with patch.object(MusicWidget, "MUSIC_DIR", tmpdir), patch.object(
+                MusicWidget, "_init_audio", lambda self: None
+            ):
+                widget = MusicWidget()
+                self.addCleanup(widget.close)
+
+        self.assertEqual(
+            {os.path.basename(path) for path in widget._tracks},
+            {
+                "Teenage Mutant Ninja Turtles III - Scene 1.mp3",
+                "ambient.ogg",
+            },
+        )
 
 
 class HomeScreenClassicUiTests(unittest.TestCase):

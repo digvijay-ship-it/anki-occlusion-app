@@ -16,15 +16,60 @@ _pdf_page_count_lock = threading.Lock()
 # ── Deck Stats Memoization ────────────────────────────────────────────────────
 _DECK_STATS_CACHE = {}
 _CACHE_DATE = None
+_CACHE_FINGERPRINT = None
 _STATS_LOCK = threading.Lock()
 
 
 def invalidate_deck_stats():
     """Clear the memoized deck statistics. Call this when data changes."""
-    global _DECK_STATS_CACHE, _CACHE_DATE
+    global _DECK_STATS_CACHE, _CACHE_DATE, _CACHE_FINGERPRINT
     with _STATS_LOCK:
         _DECK_STATS_CACHE = {}
         _CACHE_DATE = None
+        _CACHE_FINGERPRINT = None
+
+
+def _deck_stats_fingerprint(decks):
+    parts = []
+
+    def _walk(items):
+        for deck in items or []:
+            if not isinstance(deck, dict):
+                continue
+            cards = deck.get("cards", []) or []
+            children = deck.get("children", []) or []
+            parts.append(("deck", deck.get("_id"), len(cards), len(children)))
+            for card in cards:
+                if not isinstance(card, dict):
+                    continue
+                boxes = card.get("boxes", []) or []
+                parts.append(
+                    (
+                        "card",
+                        card.get("_id"),
+                        card.get("sched_state"),
+                        card.get("sm2_due"),
+                        card.get("reviews"),
+                        len(boxes),
+                    )
+                )
+                for box in boxes:
+                    if not isinstance(box, dict):
+                        continue
+                    parts.append(
+                        (
+                            "box",
+                            box.get("box_id"),
+                            box.get("group_id"),
+                            box.get("sched_state"),
+                            box.get("sm2_due"),
+                            box.get("reviews"),
+                        )
+                    )
+            _walk(children)
+
+    _walk(decks)
+    return tuple(parts)
 
 
 def card_has_due_today(card):
@@ -67,13 +112,18 @@ def count_due_units_in_card(card):
 
 
 def build_deck_rollups(decks):
-    global _DECK_STATS_CACHE, _CACHE_DATE
+    global _DECK_STATS_CACHE, _CACHE_DATE, _CACHE_FINGERPRINT
 
     today = date.today()
+    fingerprint = _deck_stats_fingerprint(decks)
 
     # Single lock scope: check cache, compute if stale, store — no double-entry gap
     with _STATS_LOCK:
-        if _CACHE_DATE == today and _DECK_STATS_CACHE:
+        if (
+            _CACHE_DATE == today
+            and _CACHE_FINGERPRINT == fingerprint
+            and _DECK_STATS_CACHE
+        ):
             return _DECK_STATS_CACHE
 
         total_cards = {}
@@ -113,6 +163,7 @@ def build_deck_rollups(decks):
             "due_units": due_units,
         }
         _CACHE_DATE = today
+        _CACHE_FINGERPRINT = _deck_stats_fingerprint(decks)
         return _DECK_STATS_CACHE
 
 

@@ -724,8 +724,7 @@ REQUIREMENTS:
 """
 
 # ── PASTE THIS IMPORT at top of home_screen.py (near other imports) ──────────
-# (already have os, sys, etc — just add these two)
-import glob
+# (already have os, sys, etc — just add this)
 import random
 
 # ── PASTE THIS CLASS after MentorWidget, before HomeScreen ───────────────────
@@ -741,6 +740,7 @@ class MusicWidget(QFrame):
     """
 
     MUSIC_DIR = app_resource_path("assets", "music")
+    BGM_EXTENSIONS = {".mp3", ".ogg"}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -819,11 +819,12 @@ class MusicWidget(QFrame):
     def _scan_tracks(self):
         if not os.path.isdir(self.MUSIC_DIR):
             return
-        self._tracks = (
-            glob.glob(os.path.join(self.MUSIC_DIR, "*.mp3"))
-            + glob.glob(os.path.join(self.MUSIC_DIR, "*.ogg"))
-            + glob.glob(os.path.join(self.MUSIC_DIR, "*.wav"))
-        )
+        self._tracks = [
+            os.path.join(self.MUSIC_DIR, name)
+            for name in os.listdir(self.MUSIC_DIR)
+            if os.path.isfile(os.path.join(self.MUSIC_DIR, name))
+            and os.path.splitext(name)[1].lower() in self.BGM_EXTENSIONS
+        ]
         random.shuffle(self._tracks)
 
         if self._playlist:

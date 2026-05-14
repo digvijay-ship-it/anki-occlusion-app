@@ -8,7 +8,8 @@ from unittest.mock import patch, MagicMock
 
 # Enable headless Qt tests
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QEvent
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -123,6 +124,47 @@ class SessionTimerTests(unittest.TestCase):
         self.assertEqual(timer.elapsed_seconds, 11)
         self.assertEqual(timer.elapsed_str(), "0:00:11")
         self.assertEqual(timer.label.text(), "0:00:11")
+
+    @patch('session_timer._load_state', return_value=0)
+    @patch('session_timer.QApplication.activeWindow', return_value=True)
+    def test_SessionTimer_pauses_after_one_minute_without_activity(self, mock_active_window, mock_load):
+        timer = SessionTimer()
+
+        for _ in range(60):
+            timer._tick()
+        self.assertEqual(timer.elapsed_seconds, 60)
+
+        timer._tick()
+        self.assertEqual(timer.elapsed_seconds, 60)
+
+        timer.note_activity()
+        timer._tick()
+        self.assertEqual(timer.elapsed_seconds, 61)
+
+    @patch('session_timer._load_state', return_value=0)
+    def test_activity_filter_resets_idle_for_child_widget_mouse_activity(self, mock_load):
+        parent = QWidget()
+        self.addCleanup(parent.close)
+        child = QLabel(parent)
+        timer = SessionTimer(parent)
+        timer._idle_seconds = 42
+
+        timer._activity_filter.eventFilter(child, QEvent(QEvent.MouseMove))
+
+        self.assertEqual(timer._idle_seconds, 0)
+
+    @patch('session_timer._load_state', return_value=0)
+    def test_activity_filter_ignores_widgets_outside_timer_scope(self, mock_load):
+        parent = QWidget()
+        other = QWidget()
+        self.addCleanup(parent.close)
+        self.addCleanup(other.close)
+        timer = SessionTimer(parent)
+        timer._idle_seconds = 42
+
+        timer._activity_filter.eventFilter(other, QEvent(QEvent.MouseMove))
+
+        self.assertEqual(timer._idle_seconds, 42)
 
     @patch('session_timer._STATE_FILE', new_callable=lambda: None)
     @patch('session_timer._JOURNAL_FILE', new_callable=lambda: None)

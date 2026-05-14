@@ -41,6 +41,7 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.ruff_cache/
 
 # Environments (If you use virtualenv)
 .env
@@ -68,6 +69,11 @@ debug_log.txt
 README copy.md
 _refactoring_scripts/
 installer/_generated/
+code.html
+release.zip
+services/ocr_import_error.log
+test2.pdf
+test3.pdf
 test.html
 tests/_tmp_files/
 *.new

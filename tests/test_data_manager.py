@@ -1,5 +1,7 @@
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -153,6 +155,43 @@ class DirtyStoreTests(unittest.TestCase):
                 store.save_force()
 
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
+
+    def test_newer_save_request_prevents_older_snapshot_from_writing_last(self):
+        store = data_manager.DirtyStore()
+        old_payload = {"decks": [{"_id": 1, "name": "Old"}]}
+        new_payload = {"decks": [{"_id": 2, "name": "New"}]}
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            store._write_lock.acquire()
+            try:
+                store.set(old_payload)
+                old_done = []
+                old_thread = threading.Thread(
+                    target=lambda: old_done.append(store.save_if_dirty())
+                )
+                old_thread.start()
+
+                deadline = time.time() + 2
+                while store._latest_save_request_seq < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(store._latest_save_request_seq, 1)
+
+                store.set(new_payload)
+                force_thread = threading.Thread(target=store.save_force)
+                force_thread.start()
+
+                deadline = time.time() + 2
+                while store._latest_save_request_seq < 2 and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(store._latest_save_request_seq, 2)
+            finally:
+                store._write_lock.release()
+
+            old_thread.join(2)
+            force_thread.join(2)
+
+        self.assertEqual(old_done, [False])
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), new_payload)
 
 
 class WrapperAndHelperTests(unittest.TestCase):

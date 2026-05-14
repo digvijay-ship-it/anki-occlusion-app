@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QImage, QPixmap
 
 from pdf_engine import PdfOnDemandThread
 from cache_manager import PAGE_CACHE
@@ -205,8 +205,14 @@ class PageScheduler(QObject):
         self._worker.error.connect(lambda err: None)  # silent
         self._worker.start()
 
-    def _on_worker_page_ready(self, page_num: int, qpx: QPixmap) -> None:
+    def _on_worker_page_ready(self, page_num: int, qpx) -> None:
         if page_num not in self.pages:
+            return
+        if isinstance(qpx, QImage):
+            qpx = QPixmap.fromImage(qpx)
+        if qpx is None or qpx.isNull():
+            self.pages[page_num].status = "not_loaded"
+            self.pages[page_num].pixmap = None
             return
         ps = self.pages[page_num]
         ps.pixmap = qpx

@@ -8,15 +8,17 @@ import time
 _worker_process = None
 _worker_lock = threading.Lock()
 _worker_ready = False
+_worker_started = False
+_worker_thread = None
 
 
 def _init_worker_thread():
-    global _worker_process, _worker_ready
+    global _worker_process, _worker_ready, _worker_started
     script_path = os.path.join(os.path.dirname(__file__), "tf_worker.py")
     try:
         print("[ocr_engine] Booting local TF background worker...")
         proc = subprocess.Popen(
-            ["python", script_path],
+            [os.sys.executable, script_path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -32,15 +34,29 @@ def _init_worker_thread():
                 _worker_ready = True
             print("[ocr_engine] Local TF background worker is READY!")
         else:
+            with _worker_lock:
+                _worker_started = False
             print(f"[ocr_engine] TF background worker error: {ready_msg}")
     except Exception as e:
+        with _worker_lock:
+            _worker_started = False
         print(f"[ocr_engine] Failed to start local worker process: {e}")
 
 
-threading.Thread(target=_init_worker_thread, daemon=True).start()
+def _ensure_worker_started():
+    global _worker_started, _worker_thread
+    with _worker_lock:
+        if _worker_started:
+            return
+        _worker_started = True
+        _worker_thread = threading.Thread(
+            target=_init_worker_thread, daemon=True, name="OCR-TF-Worker-Boot"
+        )
+        _worker_thread.start()
 
 
 def ocr_number(pil_img) -> str:
+    _ensure_worker_started()
     print("[ocr_engine] Requesting local subprocess OCR prediction...")
 
     # Wait up to 30s for worker to boot (first call after Anki loads)

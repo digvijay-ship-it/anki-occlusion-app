@@ -1,5 +1,6 @@
 import gc
 import os
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -133,6 +134,18 @@ class LRUPageCacheTests(unittest.TestCase):
             self.assertIsNotNone(img)
             self.assertFalse(img.isNull())
             self.assertEqual((img.width(), img.height()), (10, 14))
+
+    def test_async_invalidation_prevents_queued_disk_write_from_reappearing(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache(async_disk_writes=True)
+            px = QPixmap(10, 10)
+            px.fill()
+
+            cache.put("doc.pdf", 0, px)
+            cache.invalidate_pdf("doc.pdf")
+            time.sleep(0.2)
+
+            self.assertIsNone(cache.get("doc.pdf", 0))
 
 class DiskCombinedCacheTests(unittest.TestCase):
     def setUp(self):

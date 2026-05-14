@@ -996,7 +996,7 @@ class CardEditorDialog(QDialog):
             cache_px = QPixmap.fromImage(qpx)
         if cache_px is not None and not cache_px.isNull():
             PAGE_CACHE.put(path, page_num, cache_px, render_zoom=self._pdf_render_zoom)
-        self.canvas.inject_page(page_num, qpx)
+        self.canvas.inject_page(page_num, cache_px if cache_px is not None else qpx)
         self.__dict__.setdefault("_editor_canvas_real_pages", set()).add(page_num)
         print(f"[DEBUG][editor_inject] p.{page_num + 1} injected=yes kind=visible")
         print(f"[DEBUG][editor_ondemand] loaded p.{page_num + 1}")
