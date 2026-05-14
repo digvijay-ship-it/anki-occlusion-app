@@ -77,7 +77,9 @@ def _parse_saved_points(annot) -> list[QPointF]:
         return []
 
 
-def _replace_file_with_retry(src_path: str, dst_path: str, attempts: int = 12, delay: float = 0.08):
+def _replace_file_with_retry(
+    src_path: str, dst_path: str, attempts: int = 12, delay: float = 0.08
+):
     last_error = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
@@ -159,7 +161,10 @@ class PdfAnnotationSession:
         self.skeleton = load_pdf_skeleton(self.pdf_path, zoom=self.render_zoom)
         self.page_pixel_dims = list(getattr(self.skeleton, "page_dims", []) or [])
         self.page_pdf_dims = [
-            (float(self.doc.load_page(i).rect.width), float(self.doc.load_page(i).rect.height))
+            (
+                float(self.doc.load_page(i).rect.width),
+                float(self.doc.load_page(i).rect.height),
+            )
             for i in range(self.page_count)
         ]
         self.dirty_pages = set()
@@ -167,11 +172,15 @@ class PdfAnnotationSession:
         self.pending_image_moves = {}
         self.existing_annots = {}
         self.new_items = {}
-        self._undo_stack = []
-        self._redo_stack = []
+        from collections import deque
+
+        self._undo_stack = deque(maxlen=100)
+        self._redo_stack = deque(maxlen=100)
         self._loaded_existing_pages = set()
         self._preload_radius = max(0, int(preload_radius or 0))
-        self.ensure_existing_annotations_loaded(center_page=initial_page, radius=self._preload_radius)
+        self.ensure_existing_annotations_loaded(
+            center_page=initial_page, radius=self._preload_radius
+        )
 
     def close(self):
         if getattr(self, "doc", None) is not None:
@@ -184,7 +193,11 @@ class PdfAnnotationSession:
     def _page_scale_factors(self, page_num: int):
         if not (0 <= int(page_num) < self.page_count):
             return 1.0, 1.0
-        px_w, px_h = (self.page_pixel_dims[page_num] if page_num < len(self.page_pixel_dims) else (0, 0))
+        px_w, px_h = (
+            self.page_pixel_dims[page_num]
+            if page_num < len(self.page_pixel_dims)
+            else (0, 0)
+        )
         pdf_w, pdf_h = self.page_pdf_dims[page_num]
         sx = float(px_w) / max(float(pdf_w), 1.0)
         sy = float(px_h) / max(float(pdf_h), 1.0)
@@ -213,7 +226,9 @@ class PdfAnnotationSession:
             float(rect_tuple[3]) * sy,
         )
 
-    def _canvas_rect_to_pdf_rect(self, page_num: int, rect) -> tuple[float, float, float, float]:
+    def _canvas_rect_to_pdf_rect(
+        self, page_num: int, rect
+    ) -> tuple[float, float, float, float]:
         sx, sy = self._page_scale_factors(page_num)
         qrect = rect if isinstance(rect, QRectF) else QRectF(*rect)
         return (
@@ -235,7 +250,9 @@ class PdfAnnotationSession:
         if page_nums is None:
             targets = range(self.page_count)
         else:
-            targets = sorted({int(pn) for pn in page_nums if 0 <= int(pn) < self.page_count})
+            targets = sorted(
+                {int(pn) for pn in page_nums if 0 <= int(pn) < self.page_count}
+            )
 
         for page_num in targets:
             page = self.doc.load_page(page_num)
@@ -269,7 +286,9 @@ class PdfAnnotationSession:
         end = min(total_pages - 1, center + radius)
         return list(range(start, end + 1))
 
-    def ensure_existing_annotations_loaded(self, center_page: int | None = None, radius: int | None = None, page_nums=None):
+    def ensure_existing_annotations_loaded(
+        self, center_page: int | None = None, radius: int | None = None, page_nums=None
+    ):
         if not hasattr(self, "_loaded_existing_pages"):
             self._loaded_existing_pages = set()
         total_pages = int(getattr(self, "page_count", 0) or 0)
@@ -281,7 +300,9 @@ class PdfAnnotationSession:
             target_pages = self._page_window(center_page, radius=radius)
         else:
             if total_pages > 0:
-                target_pages = sorted({int(pn) for pn in page_nums if 0 <= int(pn) < total_pages})
+                target_pages = sorted(
+                    {int(pn) for pn in page_nums if 0 <= int(pn) < total_pages}
+                )
             else:
                 target_pages = sorted({int(pn) for pn in page_nums if int(pn) >= 0})
         missing = [pn for pn in target_pages if pn not in self._loaded_existing_pages]
@@ -358,16 +379,20 @@ class PdfAnnotationSession:
         page_num = int(page_num)
         self.ensure_existing_annotations_loaded(page_nums=[page_num])
         existing_visuals = [
-            item for item in self.existing_annots.get(page_num, [])
+            item
+            for item in self.existing_annots.get(page_num, [])
             if item.get("kind") in self.SELECTABLE_VISUAL_KINDS
             and item.get("xref") not in self.pending_deleted_xrefs
         ]
         return existing_visuals + [
-            item for item in self.new_items.get(page_num, [])
+            item
+            for item in self.new_items.get(page_num, [])
             if not item.get("deleted", False)
         ]
 
-    def add_new_item(self, page_num: int, tool: str, points, style_override: dict | None = None):
+    def add_new_item(
+        self, page_num: int, tool: str, points, style_override: dict | None = None
+    ):
         if tool not in self.TOOL_STYLES:
             return None
         pts = _to_qpointf_list(points)
@@ -375,7 +400,9 @@ class PdfAnnotationSession:
             return None
         style = dict(self.TOOL_STYLES[tool])
         if style_override:
-            style.update({k: v for k, v in dict(style_override).items() if v is not None})
+            style.update(
+                {k: v for k, v in dict(style_override).items() if v is not None}
+            )
         item = {
             "id": f"new:{uuid.uuid4().hex}",
             "page": int(page_num),
@@ -389,7 +416,9 @@ class PdfAnnotationSession:
         }
         self.new_items.setdefault(int(page_num), []).append(item)
         self.dirty_pages.add(int(page_num))
-        self._undo_stack.append({"type": "add_new", "page": int(page_num), "item_id": item["id"]})
+        self._undo_stack.append(
+            {"type": "add_new", "page": int(page_num), "item_id": item["id"]}
+        )
         self._redo_stack.clear()
         self._debug(
             "add_new",
@@ -401,7 +430,9 @@ class PdfAnnotationSession:
         )
         return item
 
-    def add_image_item(self, page_num: int, image_bytes: bytes, pixmap: QPixmap, rect: QRectF):
+    def add_image_item(
+        self, page_num: int, image_bytes: bytes, pixmap: QPixmap, rect: QRectF
+    ):
         page_num = int(page_num)
         if not image_bytes or pixmap is None or pixmap.isNull():
             return None
@@ -417,7 +448,9 @@ class PdfAnnotationSession:
         }
         self.new_items.setdefault(page_num, []).append(item)
         self.dirty_pages.add(page_num)
-        self._undo_stack.append({"type": "add_new", "page": page_num, "item_id": item["id"]})
+        self._undo_stack.append(
+            {"type": "add_new", "page": page_num, "item_id": item["id"]}
+        )
         self._redo_stack.clear()
         self._debug(
             "image_add",
@@ -428,16 +461,26 @@ class PdfAnnotationSession:
         )
         return item
 
-    def move_image_item(self, page_num: int, item_id: str, new_rect: QRectF, old_rect: QRectF | None = None):
+    def move_image_item(
+        self,
+        page_num: int,
+        item_id: str,
+        new_rect: QRectF,
+        old_rect: QRectF | None = None,
+    ):
         page_num = int(page_num)
         self.ensure_existing_annotations_loaded(page_nums=[page_num])
         item = self._find_new_item(page_num, item_id)
         if item is None:
             item = self._find_existing_item(page_num, item_id)
         if item is None or item.get("kind") != "image" or item.get("deleted", False):
-            self._debug("image_move_skip", page=page_num + 1, item=item_id, reason="not_found")
+            self._debug(
+                "image_move_skip", page=page_num + 1, item=item_id, reason="not_found"
+            )
             return False
-        old_rect = QRectF(old_rect if old_rect is not None else item.get("rect", QRectF()))
+        old_rect = QRectF(
+            old_rect if old_rect is not None else item.get("rect", QRectF())
+        )
         rect = QRectF(new_rect)
         item["rect"] = rect
         if item.get("source") == "existing":
@@ -469,21 +512,48 @@ class PdfAnnotationSession:
         )
         return True
 
+    def resize_image_item(
+        self,
+        page_num: int,
+        item_id: str,
+        new_rect: QRectF,
+        old_rect: QRectF | None = None,
+    ) -> bool:
+        # Resize = move + dimension change. Reuses move_image_item.
+        # Call sites in pdf_annotation_dialog should use this for handle drags
+        # so undo history labels the action correctly.
+        return self.move_image_item(page_num, item_id, new_rect, old_rect)
+
     def delete_image_item(self, page_num: int, item_id: str):
         page_num = int(page_num)
         self.ensure_existing_annotations_loaded(page_nums=[page_num])
         item = self._find_new_item(page_num, item_id)
-        if item is not None and item.get("kind") == "image" and not item.get("deleted", False):
+        if (
+            item is not None
+            and item.get("kind") == "image"
+            and not item.get("deleted", False)
+        ):
             item["deleted"] = True
             self.dirty_pages.add(page_num)
-            self._undo_stack.append({"type": "erase", "page": page_num, "new_ids": [item_id], "existing_xrefs": []})
+            self._undo_stack.append(
+                {
+                    "type": "erase",
+                    "page": page_num,
+                    "new_ids": [item_id],
+                    "existing_xrefs": [],
+                }
+            )
             self._redo_stack.clear()
-            self._debug("image_delete_apply", page=page_num + 1, source="new", item=item_id)
+            self._debug(
+                "image_delete_apply", page=page_num + 1, source="new", item=item_id
+            )
             return True
 
         item = self._find_existing_item(page_num, item_id)
         if item is None or item.get("kind") not in self.SELECTABLE_VISUAL_KINDS:
-            self._debug("image_delete_skip", page=page_num + 1, item=item_id, reason="not_found")
+            self._debug(
+                "image_delete_skip", page=page_num + 1, item=item_id, reason="not_found"
+            )
             return False
         xref = int(item["xref"])
         if xref in self.pending_deleted_xrefs:
@@ -491,7 +561,9 @@ class PdfAnnotationSession:
         self.pending_deleted_xrefs.add(xref)
         self.pending_image_moves.pop(xref, None)
         self.dirty_pages.add(page_num)
-        self._undo_stack.append({"type": "erase", "page": page_num, "new_ids": [], "existing_xrefs": [xref]})
+        self._undo_stack.append(
+            {"type": "erase", "page": page_num, "new_ids": [], "existing_xrefs": [xref]}
+        )
         self._redo_stack.clear()
         self._debug(
             "image_delete_apply",
@@ -639,11 +711,15 @@ class PdfAnnotationSession:
             if item is not None:
                 item["rect"] = QRectF(action["new_rect"])
                 if item.get("source") == "existing":
-                    saved_rect = self._rect_from_value(item.get("saved_rect", action["old_rect"]))
+                    saved_rect = self._rect_from_value(
+                        item.get("saved_rect", action["old_rect"])
+                    )
                     if self._rects_close(saved_rect, item["rect"]):
                         self.pending_image_moves.pop(int(item["xref"]), None)
                     else:
-                        self.pending_image_moves[int(item["xref"])] = QRectF(action["new_rect"])
+                        self.pending_image_moves[int(item["xref"])] = QRectF(
+                            action["new_rect"]
+                        )
                 else:
                     item["last_saved_rect"] = QRectF(action["new_rect"])
                 self.dirty_pages.add(page_num)
@@ -671,11 +747,15 @@ class PdfAnnotationSession:
             if item is not None:
                 item["rect"] = QRectF(action["old_rect"])
                 if item.get("source") == "existing":
-                    saved_rect = self._rect_from_value(item.get("saved_rect", action["old_rect"]))
+                    saved_rect = self._rect_from_value(
+                        item.get("saved_rect", action["old_rect"])
+                    )
                     if self._rects_close(saved_rect, item["rect"]):
                         self.pending_image_moves.pop(int(item["xref"]), None)
                     else:
-                        self.pending_image_moves[int(item["xref"])] = QRectF(action["old_rect"])
+                        self.pending_image_moves[int(item["xref"])] = QRectF(
+                            action["old_rect"]
+                        )
                 else:
                     item["last_saved_rect"] = QRectF(action["old_rect"])
                 self.dirty_pages.add(page_num)
@@ -704,7 +784,10 @@ class PdfAnnotationSession:
                 "item": self._find_existing_item(page_num, f"existing:{xref}"),
             }
             for xref, rect in self.pending_image_moves.items()
-            if any(item.get("xref") == xref for item in self.existing_annots.get(page_num, []))
+            if any(
+                item.get("xref") == xref
+                for item in self.existing_annots.get(page_num, [])
+            )
         }
         if not page_deletes and not page_moves:
             cached = PAGE_CACHE.get(self.pdf_path, page_num)
@@ -724,8 +807,10 @@ class PdfAnnotationSession:
                     item = dict(move.get("item") or {})
                     if item.get("image_bytes"):
                         item["rect"] = move["rect"]
-                        self._commit_image_item(page, item)
-            pix = pdf_page_to_pixmap(page, fitz.Matrix(self.render_zoom, self.render_zoom), show_annots=True)
+                        page = self._commit_image_item(page, item, doc=temp_doc)
+            pix = pdf_page_to_pixmap(
+                page, fitz.Matrix(self.render_zoom, self.render_zoom), show_annots=True
+            )
             return pix
         finally:
             if temp_doc is not None:
@@ -733,8 +818,7 @@ class PdfAnnotationSession:
 
     def save(self):
         dirty_pages = sorted(self.dirty_pages)
-        if dirty_pages:
-            print("[DEBUG][annotation_save] dirty " + ", ".join(f"p.{page_num + 1}" for page_num in dirty_pages))
+
         if not dirty_pages and not self.has_unsaved_changes():
             return []
 
@@ -749,7 +833,9 @@ class PdfAnnotationSession:
                     if xref in self.pending_deleted_xrefs:
                         page.delete_annot(annot)
                     elif xref in self.pending_image_moves:
-                        moved_item = self._find_existing_item(page_num, f"existing:{xref}")
+                        moved_item = self._find_existing_item(
+                            page_num, f"existing:{xref}"
+                        )
                         page.delete_annot(annot)
                         if moved_item is not None and moved_item.get("image_bytes"):
                             moved_copy = dict(moved_item)
@@ -762,7 +848,7 @@ class PdfAnnotationSession:
                                 rect=self._format_rect(self.pending_image_moves[xref]),
                             )
                 for moved_item in moved_items:
-                    self._commit_image_item(page, moved_item)
+                    page = self._commit_image_item(page, moved_item, doc=self.doc)
 
             for page_num, items in self.new_items.items():
                 page = self.doc.load_page(page_num)
@@ -770,7 +856,7 @@ class PdfAnnotationSession:
                     if item.get("deleted", False):
                         continue
                     if item.get("kind") == "image":
-                        self._commit_image_item(page, item)
+                        page = self._commit_image_item(page, item, doc=self.doc)
                 for item in items:
                     if item.get("deleted", False) or item.get("kind") == "image":
                         continue
@@ -822,7 +908,9 @@ class PdfAnnotationSession:
                     raise
 
             PAGE_CACHE.invalidate_pages(self.pdf_path, dirty_pages)
-            rendered = render_pdf_pages(self.pdf_path, dirty_pages, zoom=self.render_zoom, show_annots=True)
+            rendered = render_pdf_pages(
+                self.pdf_path, dirty_pages, zoom=self.render_zoom, show_annots=True
+            )
             update_page_hashes(self.pdf_path, dirty_pages)
             self._load_existing_annotations(dirty_pages)
             for page_num in dirty_pages:
@@ -846,7 +934,7 @@ class PdfAnnotationSession:
             return
         annot = page.add_ink_annot([points])
         color = item.get("color", "#FF4444").lstrip("#")
-        rgb = tuple(int(color[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+        rgb = tuple(int(color[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
         try:
             annot.set_colors(stroke=rgb)
         except Exception:
@@ -880,12 +968,10 @@ class PdfAnnotationSession:
             pdf_points=len(points),
             view_first=(
                 f"{view_points[0].x():.1f},{view_points[0].y():.1f}"
-                if view_points else ""
+                if view_points
+                else ""
             ),
-            pdf_first=(
-                f"{points[0][0]:.1f},{points[0][1]:.1f}"
-                if points else ""
-            ),
+            pdf_first=(f"{points[0][0]:.1f},{points[0][1]:.1f}" if points else ""),
             view_width=f"{_safe_float(item.get('width'), 2.0):.2f}",
             pdf_width=f"{pdf_width:.2f}",
         )
@@ -897,45 +983,61 @@ class PdfAnnotationSession:
             except Exception:
                 pass
 
-    def _commit_image_item(self, page, item):
+    def _commit_image_item(self, page, item, doc=None):
         page_num = int(item.get("page", 0))
         image_bytes = item.get("image_bytes") or b""
         if not image_bytes:
-            return
+            return page
         pdf_rect = self._canvas_rect_to_pdf_rect(page_num, item.get("rect", QRectF()))
         rect = fitz.Rect(*pdf_rect)
         if rect.is_empty or rect.width <= 0 or rect.height <= 0:
-            return
-        image_xref = page.insert_image(
-            fitz.Rect(-10000, -10000, -9999, -9999),
-            stream=image_bytes,
-            keep_proportion=True,
-        )
+            return page
+
+        # doc is passed explicitly to avoid page.parent returning None
+        # in some fitz versions when doc is a memory-stream document.
+        if doc is None:
+            doc = page.parent
+        if doc is None:
+            doc = self.doc
+        image_xref = self._register_image_xobject(doc, image_bytes)
+        if image_xref <= 0:
+            return page
+
+        # Registering the image xobject creates and deletes a temp page,
+        # which orphans our current `page` object in PyMuPDF. We MUST reload it.
+        page = doc.load_page(page_num)
+
         annot = page.add_rect_annot(rect)
-        try:
-            annot.set_border(width=0)
-        except Exception:
-            pass
+        # Set info BEFORE update() so fitz encodes our metadata
         try:
             annot.set_info(
                 title="AnkiOcclusion",
                 subject="anki_occlusion_image",
                 content=json.dumps(
-                    {
-                        "kind": "image",
-                        "tool": "screenshot",
-                        "id": item.get("id"),
-                    },
+                    {"kind": "image", "tool": "screenshot", "id": item.get("id")},
                     separators=(",", ":"),
                 ),
             )
         except Exception:
             pass
+        # Set border width 0 — hide the default blue rectangle border
         try:
-            annot.update()
+            annot.set_border(width=0)
         except Exception:
             pass
-        self._set_image_annotation_appearance(page.parent, annot, image_xref, rect)
+        # Build and attach the AP stream BEFORE update() so fitz won't
+        # overwrite it with a default appearance.
+        self._set_image_annotation_appearance(doc, annot, image_xref, rect)
+        # update() with opacity=1 — do NOT let it regenerate the appearance
+        try:
+            annot.update(opacity=1.0)
+        except Exception:
+            try:
+                annot.update()
+            except Exception:
+                pass
+        # Re-attach AP after update() in case fitz wiped it
+        self._set_image_annotation_appearance(doc, annot, image_xref, rect)
         self._debug(
             "image_commit",
             page=page_num + 1,
@@ -944,6 +1046,21 @@ class PdfAnnotationSession:
             pdf_rect=",".join(f"{value:.2f}" for value in pdf_rect),
             bytes=len(image_bytes),
         )
+        return page
+
+    def _register_image_xobject(self, doc, image_bytes: bytes) -> int:
+        """Register image bytes into doc and return the XObject xref.
+        Places image at an off-page rect on a temp page within the SAME doc,
+        then removes that page. The xref stays valid in doc."""
+        try:
+            page_count_before = doc.page_count
+            tmp_page = doc.new_page(-1, width=10, height=10)
+            xref = tmp_page.insert_image(fitz.Rect(0, 0, 10, 10), stream=image_bytes)
+            # Remove the temp page — xref remains valid in the doc
+            doc.delete_page(doc.page_count - 1)
+            return xref
+        except Exception:
+            return 0
 
     def _find_new_item(self, page_num: int, item_id: str):
         for item in self.new_items.get(int(page_num), []):
@@ -983,28 +1100,46 @@ class PdfAnnotationSession:
                 "pixmap": pixmap,
             }
         except Exception as ex:
-            self._debug("image_load_failed", xref=getattr(annot, "xref", ""), error=str(ex))
+            self._debug(
+                "image_load_failed", xref=getattr(annot, "xref", ""), error=str(ex)
+            )
             return {}
 
-    def _set_image_annotation_appearance(self, doc, annot, image_xref: int, rect: fitz.Rect):
+    def _set_image_annotation_appearance(
+        self, doc, annot, image_xref: int, rect: fitz.Rect
+    ):
         width = max(float(rect.width), 1.0)
         height = max(float(rect.height), 1.0)
         form_xref = doc.get_new_xref()
+        # Form XObject with BBox matching the annotation rect dimensions.
+        # The content stream draws Im0 scaled to fill the BBox exactly.
+        # PDF image space: origin bottom-left, y up. The CTM
+        #   "w 0 0 h 0 0 cm" scales unit-square image to [0..w] x [0..h].
+        # fitz maps the annotation rect to this space when rendering.
         obj = (
-            f"<< /Type /XObject /Subtype /Form /BBox [0 0 {width} {height}] "
+            f"<< /Type /XObject /Subtype /Form "
+            f"/BBox [0 0 {width:.4f} {height:.4f}] "
             f"/Matrix [1 0 0 1 0 0] "
-            f"/Resources << /XObject << /Im0 {int(image_xref)} 0 R >> >> "
-            f"/Length 0 >>"
+            f"/Resources << /XObject << /Im0 {int(image_xref)} 0 R >> >> >>"
         )
         doc.update_object(form_xref, obj)
-        doc.update_stream(form_xref, f"q {width} 0 0 {height} 0 0 cm /Im0 Do Q".encode("ascii"))
+        # Draw image: scale to fill BBox then paint
+        stream = f"q {width:.4f} 0 0 {height:.4f} 0 0 cm /Im0 Do Q"
+        doc.update_stream(form_xref, stream.encode("ascii"))
+        # Set AP — use direct xref_set_key so fitz can't overwrite it
         doc.xref_set_key(annot.xref, "AP", f"<</N {form_xref} 0 R>>")
-        self._debug("image_applied", xref=annot.xref, form=form_xref, image=image_xref)
+        # Also clear the default appearance string so no fallback border renders
+        try:
+            doc.xref_set_key(annot.xref, "BS", "<</W 0>>")
+        except Exception:
+            pass
 
     @staticmethod
     def _format_rect(rect) -> str:
         qrect = PdfAnnotationSession._rect_from_value(rect)
-        return f"{qrect.x():.1f},{qrect.y():.1f},{qrect.width():.1f},{qrect.height():.1f}"
+        return (
+            f"{qrect.x():.1f},{qrect.y():.1f},{qrect.width():.1f},{qrect.height():.1f}"
+        )
 
     @staticmethod
     def _rects_close(a: QRectF, b: QRectF, tolerance: float = 0.01) -> bool:
