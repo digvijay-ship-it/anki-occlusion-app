@@ -114,16 +114,25 @@ class PdfViewerController:
         page_zero = max(0, min(int(page_zero), total - 1))
         self._nav_seq += 1
         nav_seq = self._nav_seq
-        self.debug_hook("goto", seq=nav_seq, target=page_zero + 1, current=self._ui_page_zero + 1)
+        self.debug_hook(
+            "goto", seq=nav_seq, target=page_zero + 1, current=self._ui_page_zero + 1
+        )
         self.set_page_ui(page_zero)
         try:
             self.canvas.setFocus()
         except Exception:
             pass
         self.canvas.scroll_to_page(page_zero, self.scroll_area)
-        QTimer.singleShot(0, lambda pg=page_zero: self.canvas.scroll_to_page(pg, self.scroll_area))
-        QTimer.singleShot(35, lambda pg=page_zero: self.canvas.scroll_to_page(pg, self.scroll_area))
-        QTimer.singleShot(80, lambda seq=nav_seq, target=page_zero: self._finalize_page_jump(seq, target))
+        QTimer.singleShot(
+            0, lambda pg=page_zero: self.canvas.scroll_to_page(pg, self.scroll_area)
+        )
+        QTimer.singleShot(
+            35, lambda pg=page_zero: self.canvas.scroll_to_page(pg, self.scroll_area)
+        )
+        QTimer.singleShot(
+            80,
+            lambda seq=nav_seq, target=page_zero: self._finalize_page_jump(seq, target),
+        )
 
     def _finalize_page_jump(self, seq: int, target: int) -> None:
         if seq != self._nav_seq:
@@ -157,4 +166,9 @@ class PdfViewerController:
             QTimer.singleShot(0, lambda pg=int(page_zero): self.go_to_page(pg))
             return
         if scroll_value is not None:
-            QTimer.singleShot(0, lambda sv=int(scroll_value): self.scroll_area.verticalScrollBar().setValue(sv))
+            QTimer.singleShot(
+                0,
+                lambda sv=int(
+                    scroll_value
+                ): self.scroll_area.verticalScrollBar().setValue(sv),
+            )

@@ -44,19 +44,28 @@ v15 Bug Fixes:
   [FIX-3]  _start_review() — win.closeEvent double-save fixed
   [FIX-4]  is_due_today() called on un-initialised boxes in ReviewScreen
   [FIX-5]  Group dedup across cards
-  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas 
+  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas
             to eliminate mouseMoveEvent lag completely.
 """
 
 from sm2_engine import (
-    sched_init, sm2_init, sched_update, sm2_update, 
-    is_due_now, is_due_today, sm2_is_due, sm2_days_left, 
-    _fmt_due_interval, sm2_simulate, sm2_badge
+    sched_init,
+    sm2_init,
+    sched_update,
+    sm2_update,
+    is_due_now,
+    is_due_today,
+    sm2_is_due,
+    sm2_days_left,
+    _fmt_due_interval,
+    sm2_simulate,
+    sm2_badge,
 )
 
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
+
     _JOURNAL_AVAILABLE = True
 except ImportError:
     _JOURNAL_AVAILABLE = False
@@ -64,25 +73,37 @@ except ImportError:
 # Session Timer — safe import
 try:
     from session_timer import SessionTimer
+
     _TIMER_AVAILABLE = True
 except ImportError:
     _TIMER_AVAILABLE = False
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
-    pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
+    PDF_SUPPORT,
+    PAGE_CACHE,
+    PdfLoaderThread,
+    PdfSkeletonThread,
+    pdf_page_to_pixmap,
+    load_pdf_skeleton,
+    PdfOnDemandThread,
     build_skeleton_placeholders,
-    invalidate_pdf_skeleton        # STEP 2 + 3
+    invalidate_pdf_skeleton,  # STEP 2 + 3
 )
 
-from editor_ui import OcclusionCanvas,_ZoomableScrollArea
+from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
 
 import fitz
 
 from data_manager import (
-    load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
-    DATA_FILE, store
+    load_data,
+    save_data,
+    find_deck_by_id,
+    next_deck_id,
+    new_box_id,
+    deck_history,
+    DATA_FILE,
+    store,
 )
 from perf_utils import build_deck_rollups
 
@@ -90,18 +111,68 @@ import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
-    QFrame, QScrollArea, QInputDialog, QMessageBox,
-    QSplitter, QStatusBar, QProgressBar, QDialog, QFormLayout,
-    QLineEdit, QTextEdit, QSizePolicy, QTreeWidget,
-    QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
-    QHeaderView
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QListWidget,
+    QListWidgetItem,
+    QFrame,
+    QScrollArea,
+    QInputDialog,
+    QMessageBox,
+    QSplitter,
+    QStatusBar,
+    QProgressBar,
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QTextEdit,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QAbstractItemView,
+    QMenu,
+    QStyledItemDelegate,
+    QStyle,
+    QHeaderView,
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
+from PyQt5.QtCore import (
+    Qt,
+    QRect,
+    QPoint,
+    QSize,
+    QRectF,
+    QPointF,
+    pyqtSignal,
+    QLockFile,
+    QTimer,
+    QModelIndex,
+    QFileSystemWatcher,
+    QThread,
+    QEvent,
+    QMimeData,
+    QByteArray,
+    QUrl,
+)
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices
+    QPainter,
+    QPen,
+    QColor,
+    QPixmap,
+    QFont,
+    QCursor,
+    QIcon,
+    QBrush,
+    QTransform,
+    QPainterPath,
+    QDrag,
+    QDesktopServices,
 )
 
 import tempfile
@@ -114,18 +185,22 @@ LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
 #  THEME
 # ═══════════════════════════════════════════════════════════════════════════════
 
-C_BG      = "#1E1E2E"
-C_SURFACE = "#2A2A3E"
-C_CARD    = "#313145"
-C_ACCENT  = "#7C6AF7"
-C_GREEN   = "#50FA7B"
-C_RED     = "#FF5555"
-C_YELLOW  = "#F1FA8C"
-C_TEXT    = "#CDD6F4"
-C_SUBTEXT = "#A6ADC8"
-C_BORDER  = "#45475A"
-C_MASK    = "#F7916A"
-C_GROUP   = "#BD93F9"
+# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
+from theme_manager import get_palette as _get_palette, normalize_theme
+
+_DARK = _get_palette("dark")
+C_BG = _DARK["C_BG"]
+C_SURFACE = _DARK["C_SURFACE"]
+C_CARD = _DARK["C_CARD"]
+C_ACCENT = _DARK["C_ACCENT"]
+C_GREEN = _DARK["C_GREEN"]
+C_RED = _DARK["C_RED"]
+C_YELLOW = _DARK["C_YELLOW"]
+C_TEXT = _DARK["C_TEXT"]
+C_SUBTEXT = _DARK["C_SUBTEXT"]
+C_BORDER = _DARK["C_BORDER"]
+C_MASK = "#F7916A"
+C_GROUP = "#BD93F9"
 
 
 BASE_FONT_SIZE = 11
@@ -167,6 +242,7 @@ QMenu{{background:{C_SURFACE};color:{C_TEXT};border:1px solid {C_BORDER};border-
 QMenu::item:selected{{background:{C_ACCENT};}}
 """
 
+
 SS = _build_ss()
 
 CARD_DRAG_MIME = "application/x-anki-card"
@@ -174,16 +250,17 @@ CARD_DRAG_MIME = "application/x-anki-card"
 #  DECK TREE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class _DeckTreeWidget(QTreeWidget):
     """QTreeWidget with a custom bright drop-indicator line drawn in paintEvent."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._drop_line_y  = -1   # screen-y of indicator line, -1 = hidden
+        self._drop_line_y = -1  # screen-y of indicator line, -1 = hidden
         self._drop_line_indent = 0
 
     def set_drop_line(self, y: int, indent: int = 0):
-        self._drop_line_y      = y
+        self._drop_line_y = y
         self._drop_line_indent = indent
         self.viewport().update()
 
@@ -201,7 +278,7 @@ class _DeckTreeWidget(QTreeWidget):
         p.setPen(pen)
         x1 = self._drop_line_indent
         x2 = self.viewport().width() - 8
-        y  = self._drop_line_y
+        y = self._drop_line_y
         p.drawLine(x1, y, x2, y)
         # Draw a small circle on left to make it look like a insertion point
         p.setBrush(QColor("#7C6AF7"))
@@ -212,10 +289,10 @@ class _DeckTreeWidget(QTreeWidget):
 
 DECK_TREE_DISPLAY_FONT = "Segoe UI"
 
+
 class DeckItemDelegate(QStyledItemDelegate):
     def __init__(self, parent=None, theme="classic"):
         super().__init__(parent)
-        from theme_manager import normalize_theme
         self.theme = normalize_theme(theme)
 
     def paint(self, painter, option, index):
@@ -225,11 +302,11 @@ class DeckItemDelegate(QStyledItemDelegate):
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        
+
         is_selected = option.state & QStyle.State_Selected
         is_hovered = option.state & QStyle.State_MouseOver
         rect = option.rect
-        
+
         # Background
         if is_selected:
             painter.fillRect(rect, QColor(168, 108, 255, 38))  # rgba(168,108,255, 0.15)
@@ -240,17 +317,22 @@ class DeckItemDelegate(QStyledItemDelegate):
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 6, 6)
             painter.setPen(QPen(QColor("#50FA7B"), 4))
-            painter.drawLine(rect.left() + 2, rect.top() + 4, rect.left() + 2, rect.bottom() - 4)
-            
+            painter.drawLine(
+                rect.left() + 2, rect.top() + 4, rect.left() + 2, rect.bottom() - 4
+            )
+
         name = index.data(Qt.UserRole + 2) or "Unknown"
         due_str = index.data(Qt.UserRole + 1)
         due = int(due_str) if due_str else 0
-        
+
         from dojo_assets import DojoAssets
+
         icon = DojoAssets.get().get_clan_icon(name, 32)
-        
+
         # Draw Icon (Centered vertically)
-        icon_rect = QRect(rect.left() + 8, rect.top() + (rect.height() - 32) // 2, 32, 32)
+        icon_rect = QRect(
+            rect.left() + 8, rect.top() + (rect.height() - 32) // 2, 32, 32
+        )
         if not icon.isNull():
             # Clip icon to rounded rect to remove artifacts
             path = QPainterPath()
@@ -258,23 +340,33 @@ class DeckItemDelegate(QStyledItemDelegate):
             painter.setClipPath(path)
             painter.drawPixmap(icon_rect, icon)
             painter.setClipping(False)
-            
+
             # Subtle border around icon
             painter.setPen(QPen(QColor("#45475A"), 1))
             painter.drawRoundedRect(icon_rect, 6, 6)
-            
+
         # Draw Text
         painter.setPen(QColor("#A86CFF" if is_selected else "#CDD6F4"))
         font = QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold)
         painter.setFont(font)
-        text_rect = QRect(icon_rect.right() + 12, rect.top(), rect.width() - icon_rect.width() - 60, rect.height())
+        text_rect = QRect(
+            icon_rect.right() + 12,
+            rect.top(),
+            rect.width() - icon_rect.width() - 60,
+            rect.height(),
+        )
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, name.upper())
-        
+
         # Draw Badge
         badge_w = 24
         badge_h = 20
-        badge_rect = QRect(rect.right() - badge_w - 12, rect.top() + (rect.height() - badge_h) // 2, badge_w, badge_h)
-        
+        badge_rect = QRect(
+            rect.right() - badge_w - 12,
+            rect.top() + (rect.height() - badge_h) // 2,
+            badge_w,
+            badge_h,
+        )
+
         if due > 0:
             painter.setBrush(QColor("#FF5555"))
             painter.setPen(Qt.NoPen)
@@ -288,7 +380,7 @@ class DeckItemDelegate(QStyledItemDelegate):
             font = QFont("Segoe UI", 12, QFont.Bold)
             painter.setFont(font)
             painter.drawText(badge_rect, Qt.AlignCenter, "✓")
-            
+
         painter.restore()
 
     def sizeHint(self, option, index):
@@ -297,22 +389,23 @@ class DeckItemDelegate(QStyledItemDelegate):
         name = index.data(Qt.UserRole + 2) or "Unknown"
         font = QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold)
         from PyQt5.QtGui import QFontMetrics
+
         fm = QFontMetrics(font)
         w = fm.horizontalAdvance(name.upper())
         return QSize(w + 100, 48)
+
 
 class DeckTree(QWidget):
     deck_selected = pyqtSignal(object)
 
     def __init__(self, data: dict, theme="classic", parent=None):
         super().__init__(parent)
-        from theme_manager import normalize_theme
         self._data = data
         self._theme = normalize_theme(theme)
-        self._last_drop_pos  = None
+        self._last_drop_pos = None
         self._last_drop_item = None
         self._last_drop_ctrl = False
-        self._blink_state    = False
+        self._blink_state = False
         self._ensure_ids()
         self._setup_ui()
         # Blink timer — toggles due badge color every 800ms
@@ -324,33 +417,38 @@ class DeckTree(QWidget):
     def _blink_tick(self):
         """Toggle blink state and repaint all due items."""
         self._blink_state = not self._blink_state
+
         def _walk(item):
             due_str = item.data(0, Qt.UserRole + 1)
             if due_str and int(due_str) > 0:
-                name  = item.data(0, Qt.UserRole + 2)
-                due   = int(due_str)
+                name = item.data(0, Qt.UserRole + 2)
+                due = int(due_str)
                 badge = f"🔴{due}" if self._blink_state else f"⭕{due}"
-                if getattr(self, '_theme', 'classic') == "classic":
+                if getattr(self, "_theme", "classic") == "classic":
                     item.setText(0, f"  📂  {name}  {badge}")
                 else:
                     item.setText(0, "")
             for i in range(item.childCount()):
                 _walk(item.child(i))
+
         for i in range(self.tree.topLevelItemCount()):
             _walk(self.tree.topLevelItem(i))
 
     def _ensure_ids(self):
         counter = [0]
+
         def _walk(lst):
             for d in lst:
                 if "_id" not in d:
                     counter[0] += 1
                     d["_id"] = counter[0]
                 _walk(d.get("children", []))
+
         _walk(self._data.get("decks", []))
 
     def _on_search(self, text):
         query = text.strip().lower()
+
         def _filter_item(item):
             match = False
             name = item.data(0, Qt.UserRole + 2) or ""
@@ -364,12 +462,11 @@ class DeckTree(QWidget):
             if query and match:
                 item.setExpanded(True)
             return match
-        
+
         for i in range(self.tree.topLevelItemCount()):
             _filter_item(self.tree.topLevelItem(i))
 
     def set_theme(self, theme):
-        from theme_manager import normalize_theme
         theme = normalize_theme(theme)
         self._theme = theme
         self._delegate.theme = theme
@@ -402,10 +499,10 @@ class DeckTree(QWidget):
         dhl = QVBoxLayout(self._dojo_hdr_w)
         dhl.setContentsMargins(12, 16, 12, 0)
         dhl.setSpacing(10)
-        
+
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
-        logo = QLabel("⛩") 
+        logo = QLabel("⛩")
         logo.setStyleSheet(f"color:{C_GREEN};font-size:18px;")
         top_row.addWidget(logo)
         title = QLabel("DOJO CAVA")
@@ -415,9 +512,11 @@ class DeckTree(QWidget):
         top_row.addStretch()
         dhl.addLayout(top_row)
         dhl.addSpacing(4)
-        
+
         search_box = QFrame()
-        search_box.setStyleSheet(f"background:transparent;border:1px solid {C_BORDER};border-radius:4px;")
+        search_box.setStyleSheet(
+            f"background:transparent;border:1px solid {C_BORDER};border-radius:4px;"
+        )
         search_box.setFixedHeight(32)
         sh_l = QHBoxLayout(search_box)
         sh_l.setContentsMargins(8, 0, 8, 0)
@@ -426,23 +525,29 @@ class DeckTree(QWidget):
         sh_l.addWidget(search_icon)
         self.search_in = QLineEdit()
         self.search_in.setPlaceholderText("Search scrolls...")
-        self.search_in.setStyleSheet(f"background:transparent;border:none;color:{C_TEXT};")
+        self.search_in.setStyleSheet(
+            f"background:transparent;border:none;color:{C_TEXT};"
+        )
         self.search_in.textChanged.connect(self._on_search)
         sh_l.addWidget(self.search_in)
         shortcut_badge = QLabel("CTRL+K")
-        shortcut_badge.setStyleSheet(f"color:{C_SUBTEXT};background:rgba(255,255,255,0.05);border-radius:3px;padding:2px 4px;font-size:9px;border:none;")
+        shortcut_badge.setStyleSheet(
+            f"color:{C_SUBTEXT};background:rgba(255,255,255,0.05);border-radius:3px;padding:2px 4px;font-size:9px;border:none;"
+        )
         sh_l.addWidget(shortcut_badge)
         dhl.addWidget(search_box)
         dhl.addSpacing(6)
-        
+
         hdr_dojo = QLabel("— YOUR DOJOS —")
         hdr_dojo.setFont(QFont("Orbitron", 9, QFont.Bold))
-        hdr_dojo.setStyleSheet(f"color:{C_SUBTEXT};letter-spacing:2px;background:transparent;")
+        hdr_dojo.setStyleSheet(
+            f"color:{C_SUBTEXT};letter-spacing:2px;background:transparent;"
+        )
         dhl.addWidget(hdr_dojo)
         L.addWidget(self._dojo_hdr_w)
 
         self.tree = _DeckTreeWidget()
-        self._delegate = DeckItemDelegate(self.tree, getattr(self, '_theme', 'classic'))
+        self._delegate = DeckItemDelegate(self.tree, getattr(self, "_theme", "classic"))
         self.tree.setItemDelegate(self._delegate)
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -459,16 +564,16 @@ class DeckTree(QWidget):
         self.tree.setDropIndicatorShown(True)
         self.tree.setDragDropMode(QAbstractItemView.InternalMove)
         self.tree.viewport().setAcceptDrops(True)
-        self.tree.dropEvent    = self._on_tree_drop
+        self.tree.dropEvent = self._on_tree_drop
         self.tree.dragEnterEvent = self._on_drag_enter
-        self.tree.dragMoveEvent  = self._on_drag_move
+        self.tree.dragMoveEvent = self._on_drag_move
         self.tree.dragLeaveEvent = self._on_drag_leave
         L.addWidget(self.tree, stretch=1)
-        
+
         # --- Classic Buttons ---
         self._classic_btns_w = QWidget()
         cbl = QHBoxLayout(self._classic_btns_w)
-        cbl.setContentsMargins(0,0,0,0)
+        cbl.setContentsMargins(0, 0, 0, 0)
         cb_new = QPushButton("＋ Deck")
         cb_new.clicked.connect(lambda: self._new_deck(None))
         cb_sub = QPushButton("＋ Sub")
@@ -482,36 +587,44 @@ class DeckTree(QWidget):
         cbl.addStretch()
         cbl.addWidget(cb_del)
         L.addWidget(self._classic_btns_w)
-        
+
         # --- Dojo Buttons ---
         self._dojo_btns_w = QWidget()
         dbl = QHBoxLayout(self._dojo_btns_w)
-        dbl.setContentsMargins(12,0,12,12)
+        dbl.setContentsMargins(12, 0, 12, 12)
         db_new = QPushButton("⊕ NEW DOJO")
         db_new.setFont(QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold))
-        db_new.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
+        db_new.setStyleSheet(
+            f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}"
+        )
         db_new.clicked.connect(lambda: self._new_deck(None))
         db_sub = QPushButton("⊕ SUB")
         db_sub.setFont(QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold))
-        db_sub.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
+        db_sub.setStyleSheet(
+            f"QPushButton{{background:transparent;border:1px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:6px 12px;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}"
+        )
         db_sub.clicked.connect(self._new_subdeck)
         db_del = QPushButton("⚙")
         db_del.setFixedSize(32, 32)
-        db_del.setStyleSheet(f"QPushButton{{background:transparent;border:1px solid {C_BORDER};color:{C_SUBTEXT};border-radius:4px;font-size:16px;}} QPushButton:hover{{background:rgba(255,255,255,0.05);}}")
+        db_del.setStyleSheet(
+            f"QPushButton{{background:transparent;border:1px solid {C_BORDER};color:{C_SUBTEXT};border-radius:4px;font-size:16px;}} QPushButton:hover{{background:rgba(255,255,255,0.05);}}"
+        )
         dbl.addWidget(db_new)
         dbl.addWidget(db_sub)
         dbl.addStretch()
         dbl.addWidget(db_del)
         L.addWidget(self._dojo_btns_w)
-        
+
         # Drop hint
         self._drop_hint = QLabel("↕ Reorder — hold Ctrl to nest inside")
-        self._drop_hint.setStyleSheet("background:#534AB7;color:white;font-size:11px;padding:4px 8px;border-radius:4px;")
+        self._drop_hint.setStyleSheet(
+            "background:#534AB7;color:white;font-size:11px;padding:4px 8px;border-radius:4px;"
+        )
         self._drop_hint.setAlignment(Qt.AlignCenter)
         self._drop_hint.setVisible(False)
         L.addWidget(self._drop_hint)
-        
-        self.set_theme(getattr(self, '_theme', 'classic'))
+
+        self.set_theme(getattr(self, "_theme", "classic"))
 
     def refresh(self):
         sel_id = self._get_selected_id()
@@ -526,11 +639,15 @@ class DeckTree(QWidget):
     def _make_item(self, deck):
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         badge = f"🔴{due}" if due else "✅"
-        text = f"  📂  {deck['name']}  {badge}" if getattr(self, '_theme', 'classic') == "classic" else ""
-        item  = QTreeWidgetItem([text])
-        item.setData(0, Qt.UserRole,     deck.get("_id"))
-        item.setData(0, Qt.UserRole + 1, str(due))           
-        item.setData(0, Qt.UserRole + 2, deck['name'])       
+        text = (
+            f"  📂  {deck['name']}  {badge}"
+            if getattr(self, "_theme", "classic") == "classic"
+            else ""
+        )
+        item = QTreeWidgetItem([text])
+        item.setData(0, Qt.UserRole, deck.get("_id"))
+        item.setData(0, Qt.UserRole + 1, str(due))
+        item.setData(0, Qt.UserRole + 2, deck["name"])
         for child in deck.get("children", []):
             item.addChild(self._make_item(child))
         return item
@@ -540,7 +657,11 @@ class DeckTree(QWidget):
 
     def _get_deck_from_item(self, item):
         did = self._get_id_from_item(item)
-        return find_deck_by_id(did, self._data.get("decks", [])) if did is not None else None
+        return (
+            find_deck_by_id(did, self._data.get("decks", []))
+            if did is not None
+            else None
+        )
 
     def _get_selected_id(self):
         return self._get_id_from_item(self.tree.currentItem())
@@ -554,6 +675,7 @@ class DeckTree(QWidget):
                 if _walk(item.child(i)):
                     return True
             return False
+
         for i in range(self.tree.topLevelItemCount()):
             if _walk(self.tree.topLevelItem(i)):
                 break
@@ -573,11 +695,11 @@ class DeckTree(QWidget):
         menu = QMenu(self)
         if item:
             did = self._get_id_from_item(item)
-            menu.addAction("▶ Open",      lambda: self._on_double_click(item, 0))
+            menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
             menu.addAction("＋ Sub-deck", lambda: self._new_deck(did))
-            menu.addAction("✏ Rename",   lambda: self._rename_by_id(did))
+            menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             menu.addSeparator()
-            menu.addAction("🗑 Delete",   lambda: self._delete_by_id(did))
+            menu.addAction("🗑 Delete", lambda: self._delete_by_id(did))
         else:
             menu.addAction("＋ New Top-level Deck", lambda: self._new_deck(None))
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
@@ -587,9 +709,17 @@ class DeckTree(QWidget):
         if not ok or not name.strip():
             return
         # ── Duplicate name check ──────────────────────────────────────────────
-        siblings = (self._data.get("decks", []) if parent_id is None
-                    else (find_deck_by_id(parent_id, self._data.get("decks", [])) or {}).get("children", []))
-        dup = next((d for d in siblings if d["name"].strip().lower() == name.strip().lower()), None)
+        siblings = (
+            self._data.get("decks", [])
+            if parent_id is None
+            else (find_deck_by_id(parent_id, self._data.get("decks", [])) or {}).get(
+                "children", []
+            )
+        )
+        dup = next(
+            (d for d in siblings if d["name"].strip().lower() == name.strip().lower()),
+            None,
+        )
         if dup:
             action = self._duplicate_dialog(name.strip())
             if action == "show":
@@ -602,14 +732,14 @@ class DeckTree(QWidget):
                 return
         # ─────────────────────────────────────────────────────────────────────
         new_deck = {
-            "_id":      next_deck_id(self._data),
-            "name":     name.strip(),
-            "cards":    [],
+            "_id": next_deck_id(self._data),
+            "name": name.strip(),
+            "cards": [],
             "children": [],
-            "created":  datetime.now().isoformat()
+            "created": datetime.now().isoformat(),
         }
         print(f"[DeckTree][new_deck] ➕ creating '{name.strip()}' parent={parent_id}")
-        deck_history.push(self._data)   # ← undo snapshot
+        deck_history.push(self._data)  # ← undo snapshot
         if parent_id is None:
             self._data.setdefault("decks", []).append(new_deck)
         else:
@@ -619,6 +749,9 @@ class DeckTree(QWidget):
                 return
             parent.setdefault("children", []).append(new_deck)
         store.mark_dirty()
+        from perf_utils import invalidate_deck_stats
+
+        invalidate_deck_stats()
         store.save_soon(min_interval=0.0)
         self.refresh()
         self._select_by_id(new_deck["_id"])
@@ -626,8 +759,9 @@ class DeckTree(QWidget):
     def _new_subdeck(self):
         did = self._get_selected_id()
         if did is None:
-            QMessageBox.information(self, "Select first",
-                "Click a parent deck first, then press ＋ Sub.")
+            QMessageBox.information(
+                self, "Select first", "Click a parent deck first, then press ＋ Sub."
+            )
             return
         self._new_deck(did)
 
@@ -635,13 +769,24 @@ class DeckTree(QWidget):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))
         if not deck:
             return
-        name, ok = QInputDialog.getText(self, "Rename Deck", "New name:", text=deck.get("name", ""))
+        name, ok = QInputDialog.getText(
+            self, "Rename Deck", "New name:", text=deck.get("name", "")
+        )
         if ok and name.strip():
             # ── Duplicate name check ──────────────────────────────────────────
             parent = self._find_parent(deck_id, self._data.get("decks", []))
-            siblings = parent.get("children", []) if parent else self._data.get("decks", [])
-            dup = next((d for d in siblings if d["name"].strip().lower() == name.strip().lower()
-                        and d.get("_id") != deck_id), None)
+            siblings = (
+                parent.get("children", []) if parent else self._data.get("decks", [])
+            )
+            dup = next(
+                (
+                    d
+                    for d in siblings
+                    if d["name"].strip().lower() == name.strip().lower()
+                    and d.get("_id") != deck_id
+                ),
+                None,
+            )
             if dup:
                 action = self._duplicate_dialog(name.strip())
                 if action == "show":
@@ -654,7 +799,7 @@ class DeckTree(QWidget):
                     return
             # ─────────────────────────────────────────────────────────────────
             print(f"[DeckTree][rename] ✏ '{deck.get('name')}' → '{name.strip()}'")
-            deck_history.push(self._data)   # ← undo snapshot
+            deck_history.push(self._data)  # ← undo snapshot
             deck["name"] = name.strip()
             store.mark_dirty()
             self.refresh()
@@ -676,8 +821,8 @@ class DeckTree(QWidget):
         L.addWidget(msg)
 
         btn_row = QHBoxLayout()
-        b_show   = QPushButton("📍 Show Existing")
-        b_retry  = QPushButton("✏ Try Again")
+        b_show = QPushButton("📍 Show Existing")
+        b_retry = QPushButton("✏ Try Again")
         b_cancel = QPushButton("Cancel")
         b_cancel.setObjectName("flat")
         btn_row.addWidget(b_show)
@@ -713,12 +858,18 @@ class DeckTree(QWidget):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))
         if not deck:
             return
-        if QMessageBox.question(self, "Delete",
-            f"Delete '{deck['name']}' and ALL its cards / sub-decks?",
-            QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+        if (
+            QMessageBox.question(
+                self,
+                "Delete",
+                f"Delete '{deck['name']}' and ALL its cards / sub-decks?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            != QMessageBox.Yes
+        ):
             return
         print(f"[DeckTree][delete] 🗑 deleting '{deck['name']}' id={deck_id}")
-        deck_history.push(self._data)   # ← undo snapshot
+        deck_history.push(self._data)  # ← undo snapshot
         self._remove_from_tree(deck_id, self._data.get("decks", []))
         store.mark_dirty()  # 🔒 DirtyStore
         self.refresh()
@@ -733,16 +884,18 @@ class DeckTree(QWidget):
         return False
 
     def _on_drag_enter(self, event):
-        if (event.mimeData().hasFormat(CARD_DRAG_MIME) or
-                event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist")):
+        if event.mimeData().hasFormat(CARD_DRAG_MIME) or event.mimeData().hasFormat(
+            "application/x-qabstractitemmodeldatalist"
+        ):
             event.accept()
         else:
             event.ignore()
 
     def _on_drag_move(self, event):
-        if (event.mimeData().hasFormat(CARD_DRAG_MIME) or
-                event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist")):
-            self._last_drop_pos  = self.tree.dropIndicatorPosition()
+        if event.mimeData().hasFormat(CARD_DRAG_MIME) or event.mimeData().hasFormat(
+            "application/x-qabstractitemmodeldatalist"
+        ):
+            self._last_drop_pos = self.tree.dropIndicatorPosition()
             self._last_drop_item = self.tree.itemAt(event.pos())
             ctrl = bool(event.keyboardModifiers() & Qt.ControlModifier)
             self._last_drop_ctrl = ctrl
@@ -750,28 +903,32 @@ class DeckTree(QWidget):
 
             # ── Draw custom drop line ─────────────────────────────────────────
             if item and not ctrl:
-                rect  = self.tree.visualItemRect(item)
-                pos   = self._last_drop_pos
-                line_y = rect.top() if pos == QAbstractItemView.AboveItem else rect.bottom()
+                rect = self.tree.visualItemRect(item)
+                pos = self._last_drop_pos
+                line_y = (
+                    rect.top() if pos == QAbstractItemView.AboveItem else rect.bottom()
+                )
                 self.tree.set_drop_line(line_y, rect.left())
             else:
                 self.tree.clear_drop_line()
 
             # ── Hint label ────────────────────────────────────────────────────
             if item:
-                name  = item.data(0, Qt.UserRole)
-                deck  = find_deck_by_id(name, self._data.get("decks", []))
+                name = item.data(0, Qt.UserRole)
+                deck = find_deck_by_id(name, self._data.get("decks", []))
                 dname = deck["name"] if deck else "?"
                 if ctrl:
                     self._drop_hint.setText(f"📂 Drop INTO '{dname}' as child")
                     self._drop_hint.setStyleSheet(
                         "background:#1D9E75;color:white;font-size:11px;"
-                        "padding:4px 8px;border-radius:4px;")
+                        "padding:4px 8px;border-radius:4px;"
+                    )
                 else:
                     self._drop_hint.setText("↕ Reorder — hold Ctrl to nest inside")
                     self._drop_hint.setStyleSheet(
                         "background:#534AB7;color:white;font-size:11px;"
-                        "padding:4px 8px;border-radius:4px;")
+                        "padding:4px 8px;border-radius:4px;"
+                    )
             self._drop_hint.setVisible(True)
             event.accept()
         else:
@@ -786,25 +943,31 @@ class DeckTree(QWidget):
         if event.mimeData().hasFormat(CARD_DRAG_MIME):
             target_item = self.tree.itemAt(event.pos())
             if target_item is None:
-                event.ignore(); return
-            target_id   = self._get_id_from_item(target_item)
+                event.ignore()
+                return
+            target_id = self._get_id_from_item(target_item)
             target_deck = find_deck_by_id(target_id, self._data["decks"])
             if target_deck is None:
-                event.ignore(); return
+                event.ignore()
+                return
 
-            raw         = bytes(event.mimeData().data(CARD_DRAG_MIME)).decode()
+            raw = bytes(event.mimeData().data(CARD_DRAG_MIME)).decode()
             src_id_str, row_str = raw.split("|")
-            src_deck    = find_deck_by_id(int(src_id_str), self._data["decks"])
+            src_deck = find_deck_by_id(int(src_id_str), self._data["decks"])
             if src_deck is None or src_deck is target_deck:
-                event.ignore(); return
+                event.ignore()
+                return
 
             cards = src_deck.get("cards", [])
-            row   = int(row_str)
+            row = int(row_str)
             if not (0 <= row < len(cards)):
-                event.ignore(); return
-            
-            print(f"[DeckTree][drop] 🃏 card row={row} moved to '{target_deck.get('name')}'")
-            deck_history.push(self._data)   # ← undo snapshot
+                event.ignore()
+                return
+
+            print(
+                f"[DeckTree][drop] 🃏 card row={row} moved to '{target_deck.get('name')}'"
+            )
+            deck_history.push(self._data)  # ← undo snapshot
             card = cards.pop(row)
             target_deck.setdefault("cards", []).append(card)
             store.mark_dirty()
@@ -816,22 +979,24 @@ class DeckTree(QWidget):
         # ── Deck reorder (InternalMove) ───────────────────────────────────────
         self._drop_hint.setVisible(False)
         self.tree.clear_drop_line()
-        target_item = getattr(self, '_last_drop_item', self.tree.itemAt(event.pos()))
-        drop_pos    = getattr(self, '_last_drop_pos', self.tree.dropIndicatorPosition())
-        ctrl        = getattr(self, '_last_drop_ctrl', False)
-        dragged_id  = self._get_selected_id()
+        target_item = getattr(self, "_last_drop_item", self.tree.itemAt(event.pos()))
+        drop_pos = getattr(self, "_last_drop_pos", self.tree.dropIndicatorPosition())
+        ctrl = getattr(self, "_last_drop_ctrl", False)
+        dragged_id = self._get_selected_id()
         if dragged_id is None:
-            event.ignore(); return
+            event.ignore()
+            return
         print(f"[DeckTree][drop] 🗂 reordering id={dragged_id}, ctrl={ctrl}")
-        deck_history.push(self._data)   # ← undo snapshot
+        deck_history.push(self._data)  # ← undo snapshot
         deck = self._detach_deck(dragged_id, self._data["decks"])
         if deck is None:
-            event.ignore(); return
+            event.ignore()
+            return
 
         if target_item is None:
             self._data["decks"].append(deck)
         else:
-            tid   = self._get_id_from_item(target_item)
+            tid = self._get_id_from_item(target_item)
             tdeck = find_deck_by_id(tid, self._data["decks"])
             if tdeck is None:
                 self._data["decks"].append(deck)
@@ -844,11 +1009,15 @@ class DeckTree(QWidget):
                 if plist is None:
                     self._data["decks"].append(deck)
                 else:
-                    idx = next((i for i, d in enumerate(plist) if d["_id"] == tid), None)
+                    idx = next(
+                        (i for i, d in enumerate(plist) if d["_id"] == tid), None
+                    )
                     if idx is None:
                         self._data["decks"].append(deck)
                     else:
-                        insert_at = idx if drop_pos == QAbstractItemView.AboveItem else idx + 1
+                        insert_at = (
+                            idx if drop_pos == QAbstractItemView.AboveItem else idx + 1
+                        )
                         plist.insert(insert_at, deck)
 
         store.mark_dirty()
@@ -882,16 +1051,20 @@ class DeckTree(QWidget):
         return self._get_deck_from_item(self.tree.currentItem())
 
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CACHE WIDGET
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _fmt_bytes(n: int) -> str:
-    if n < 1024:     return f"{n} B"
-    if n < 1024**2:  return f"{n/1024:.1f} KB"
-    if n < 1024**3:  return f"{n/1024**2:.1f} MB"
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024**2:
+        return f"{n/1024:.1f} KB"
+    if n < 1024**3:
+        return f"{n/1024**2:.1f} MB"
     return f"{n/1024**3:.2f} GB"
+
 
 class ClassicCacheWidget(QFrame):
     def __init__(self, parent=None):
@@ -922,15 +1095,14 @@ class ClassicCacheWidget(QFrame):
         hdr.setFixedHeight(38)
         hdr.setStyleSheet(
             f"QFrame{{background:{C_CARD};"
-            f"border-bottom:1px solid {C_BORDER};border-radius:0px;}}")
+            f"border-bottom:1px solid {C_BORDER};border-radius:0px;}}"
+        )
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(10, 0, 10, 0)
         title = QLabel("💾 Cache")
-        title.setStyleSheet(
-            f"color:{C_TEXT};font-size:11px;font-weight:bold;")
+        title.setStyleSheet(f"color:{C_TEXT};font-size:11px;font-weight:bold;")
         self._lbl_total = QLabel("")
-        self._lbl_total.setStyleSheet(
-            f"color:{C_GREEN};font-size:10px;")
+        self._lbl_total.setStyleSheet(f"color:{C_GREEN};font-size:10px;")
         self._lbl_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         hl.addWidget(title)
         hl.addStretch()
@@ -944,7 +1116,8 @@ class ClassicCacheWidget(QFrame):
         scroll.setStyleSheet(
             f"QScrollArea{{border:none;background:transparent;}}"
             f"QScrollBar:vertical{{background:{C_SURFACE};width:5px;border-radius:2px;}}"
-            f"QScrollBar::handle:vertical{{background:{C_BORDER};border-radius:2px;}}")
+            f"QScrollBar::handle:vertical{{background:{C_BORDER};border-radius:2px;}}"
+        )
 
         self._list_container = QWidget()
         self._list_container.setStyleSheet("background:transparent;")
@@ -960,7 +1133,8 @@ class ClassicCacheWidget(QFrame):
         btn_all.setStyleSheet(
             f"background:#444460;color:{C_TEXT};border:none;"
             f"border-top:1px solid {C_BORDER};"
-            f"border-radius:0px;padding:8px;font-size:11px;")
+            f"border-radius:0px;padding:8px;font-size:11px;"
+        )
         btn_all.clicked.connect(self._clear_all)
         root.addWidget(btn_all)
 
@@ -982,13 +1156,12 @@ class ClassicCacheWidget(QFrame):
         total_bytes = 0
         for pdf_path in sorted(known):
             disk_b = COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
-            ram_b  = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
+            ram_b = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
             mask_b = MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
-            total  = disk_b + ram_b + mask_b
+            total = disk_b + ram_b + mask_b
             total_bytes += total
             card = self._make_card(pdf_path, disk_b, ram_b, mask_b, total)
-            self._list_layout.insertWidget(
-                self._list_layout.count() - 1, card)
+            self._list_layout.insertWidget(self._list_layout.count() - 1, card)
 
         if not known:
             empty = QLabel("No cached PDFs yet.")
@@ -998,32 +1171,37 @@ class ClassicCacheWidget(QFrame):
 
         count = len(known)
         self._lbl_total.setText(
-            f"{_fmt_bytes(total_bytes)}  {count} PDF{'s' if count!=1 else ''}")
+            f"{_fmt_bytes(total_bytes)}  {count} PDF{'s' if count!=1 else ''}"
+        )
 
     def _make_card(self, pdf_path, disk_b, ram_b, mask_b, total_b):
         card = QFrame()
         card.setStyleSheet(
             f"QFrame{{background:{C_CARD};"
             f"border:1px solid {C_BORDER};border-radius:6px;}}"
-            f"QLabel{{background:transparent;}}")
+            f"QLabel{{background:transparent;}}"
+        )
         vl = QVBoxLayout(card)
         vl.setContentsMargins(8, 6, 8, 6)
         vl.setSpacing(3)
 
         # File name
         name = os.path.basename(pdf_path)
-        if len(name) > 22: name = name[:19] + "..."
+        if len(name) > 22:
+            name = name[:19] + "..."
         name_lbl = QLabel(name)
-        name_lbl.setStyleSheet(
-            f"color:{C_TEXT};font-size:10px;font-weight:bold;")
+        name_lbl.setStyleSheet(f"color:{C_TEXT};font-size:10px;font-weight:bold;")
         name_lbl.setToolTip(pdf_path)
         vl.addWidget(name_lbl)
 
         def _row(icon, val):
-            w = QWidget(); w.setStyleSheet("background:transparent;")
+            w = QWidget()
+            w.setStyleSheet("background:transparent;")
             hl = QHBoxLayout(w)
-            hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(4)
-            il = QLabel(icon); il.setFixedWidth(16)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(4)
+            il = QLabel(icon)
+            il.setFixedWidth(16)
             il.setStyleSheet("font-size:10px;")
             vl2 = QLabel(val)
             vl2.setStyleSheet(f"color:{C_GREEN};font-size:10px;")
@@ -1040,14 +1218,14 @@ class ClassicCacheWidget(QFrame):
         # Total + remove button
         hl_bot = QHBoxLayout()
         tl = QLabel(_fmt_bytes(total_b))
-        tl.setStyleSheet(
-            f"color:{C_SUBTEXT};font-size:10px;font-weight:bold;")
+        tl.setStyleSheet(f"color:{C_SUBTEXT};font-size:10px;font-weight:bold;")
         btn = QPushButton("🗑")
         btn.setFixedSize(24, 24)
         btn.setToolTip("Remove this PDF cache")
         btn.setStyleSheet(
             f"background:{C_RED};color:white;border:none;"
-            f"border-radius:4px;font-size:11px;padding:0px;")
+            f"border-radius:4px;font-size:11px;padding:0px;"
+        )
         btn.clicked.connect(lambda _, p=pdf_path: self._remove_pdf(p))
         hl_bot.addWidget(tl)
         hl_bot.addStretch()
@@ -1056,23 +1234,38 @@ class ClassicCacheWidget(QFrame):
         return card
 
     def _remove_pdf(self, pdf_path):
-        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+        from cache_manager import (
+            PAGE_CACHE,
+            COMBINED_CACHE,
+            MASK_REGISTRY,
+            PIXMAP_REGISTRY,
+        )
+
         COMBINED_CACHE.invalidate(pdf_path)
         PAGE_CACHE.invalidate_pdf(pdf_path)
         MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
         MASK_REGISTRY._map.pop(pdf_path, None)
-        for label in [l for l, (_, _, p) in PIXMAP_REGISTRY._entries.items() if p == pdf_path]:
+        for label in [
+            l for l, (_, _, p) in PIXMAP_REGISTRY._entries.items() if p == pdf_path
+        ]:
             PIXMAP_REGISTRY.unregister(label)
         self.refresh()
 
     def _clear_all(self):
-        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+        from cache_manager import (
+            PAGE_CACHE,
+            COMBINED_CACHE,
+            MASK_REGISTRY,
+            PIXMAP_REGISTRY,
+        )
+
         COMBINED_CACHE.clear()
         PAGE_CACHE.clear_ram_only()
         MASK_REGISTRY._map.clear()
         for label in list(PIXMAP_REGISTRY._entries.keys()):
             PIXMAP_REGISTRY.unregister(label)
         self.refresh()
+
 
 class DojoCacheWidget(QFrame):
     def __init__(self, parent=None):
@@ -1104,9 +1297,11 @@ class DojoCacheWidget(QFrame):
         hdr.setSpacing(8)
         icon_lbl = QLabel("🧪")
         icon_lbl.setStyleSheet("font-size: 16px;")
-        
+
         title = QLabel("BANGA LAB")
-        title.setStyleSheet("color: #72FF4F; font-size: 13px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 1px;")
+        title.setStyleSheet(
+            "color: #72FF4F; font-size: 13px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 1px;"
+        )
         hdr.addWidget(icon_lbl)
         hdr.addWidget(title)
         hdr.addStretch()
@@ -1116,22 +1311,28 @@ class DojoCacheWidget(QFrame):
         status_v = QVBoxLayout()
         status_v.setSpacing(8)
         status_hdr = QLabel("— SYSTEM STATUS —")
-        status_hdr.setStyleSheet("color: #5F627D; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+        status_hdr.setStyleSheet(
+            "color: #5F627D; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;"
+        )
         status_v.addWidget(status_hdr)
-        
+
         def _stat_row(label, val, val_color):
             w = QWidget()
             l = QHBoxLayout(w)
             l.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label)
-            lbl.setStyleSheet("color: #5F627D; font-size: 11px; font-family: 'Orbitron'; font-weight: bold;")
+            lbl.setStyleSheet(
+                "color: #5F627D; font-size: 11px; font-family: 'Orbitron'; font-weight: bold;"
+            )
             v_lbl = QLabel(val)
-            v_lbl.setStyleSheet(f"color: {val_color}; font-size: 11px; font-weight: bold;")
+            v_lbl.setStyleSheet(
+                f"color: {val_color}; font-size: 11px; font-weight: bold;"
+            )
             l.addWidget(lbl)
             l.addStretch()
             l.addWidget(v_lbl)
             return w
-            
+
         status_v.addWidget(_stat_row("ALGORITHM", "SM-2", "#A86CFF"))
         status_v.addWidget(_stat_row("SCHEDULER", "● ACTIVE", "#72FF4F"))
         status_v.addWidget(_stat_row("PDF ENGINE", "PyMuPDF", "#A86CFF"))
@@ -1142,54 +1343,68 @@ class DojoCacheWidget(QFrame):
         res_v = QVBoxLayout()
         res_v.setSpacing(12)
         res_hdr = QLabel("— DOJO RESOURCES —")
-        res_hdr.setStyleSheet("color: #5F627D; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+        res_hdr.setStyleSheet(
+            "color: #5F627D; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;"
+        )
         res_v.addWidget(res_hdr)
-        
+
         def _prog_row(name, color):
             w = QWidget()
             vl = QVBoxLayout(w)
             vl.setContentsMargins(0, 0, 0, 0)
             vl.setSpacing(4)
             hl = QHBoxLayout()
-            hl.setContentsMargins(0,0,0,0)
+            hl.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(name)
-            lbl.setStyleSheet("color: #5F627D; font-size: 11px; font-family: 'Orbitron'; font-weight: bold;")
+            lbl.setStyleSheet(
+                "color: #5F627D; font-size: 11px; font-family: 'Orbitron'; font-weight: bold;"
+            )
             val_lbl = QLabel("0 MB")
-            val_lbl.setStyleSheet("color: #CDD6F4; font-size: 11px; font-family: monospace; font-weight: bold;")
+            val_lbl.setStyleSheet(
+                "color: #CDD6F4; font-size: 11px; font-family: monospace; font-weight: bold;"
+            )
             hl.addWidget(lbl)
             hl.addStretch()
             hl.addWidget(val_lbl)
             vl.addLayout(hl)
-            
+
             bg_bar = QFrame()
             bg_bar.setFixedHeight(6)
             bg_bar.setStyleSheet("background: #1E1E2E; border-radius: 3px;")
             bg_l = QHBoxLayout(bg_bar)
             bg_l.setContentsMargins(0, 0, 0, 0)
             bg_l.setAlignment(Qt.AlignLeft)
-            
+
             fill_bar = QFrame()
             fill_bar.setFixedHeight(6)
             fill_bar.setStyleSheet(f"background: {color}; border-radius: 3px;")
             fill_bar.setFixedWidth(0)
             bg_l.addWidget(fill_bar)
-            
+
             vl.addWidget(bg_bar)
             return w, val_lbl, fill_bar, bg_bar
-            
-        self.w_mem, self.lbl_mem, self.bar_mem, self.bg_mem = _prog_row("MEMORY", "#A86CFF")
-        self.w_cache, self.lbl_cache, self.bar_cache, self.bg_cache = _prog_row("CACHE", "#72FF4F")
-        self.w_media, self.lbl_media, self.bar_media, self.bg_media = _prog_row("MEDIA", "#FF5555")
-        self.w_tot, self.lbl_tot, self.bar_tot, self.bg_tot = _prog_row("TOTAL", "#A86CFF")
-        
+
+        self.w_mem, self.lbl_mem, self.bar_mem, self.bg_mem = _prog_row(
+            "MEMORY", "#A86CFF"
+        )
+        self.w_cache, self.lbl_cache, self.bar_cache, self.bg_cache = _prog_row(
+            "CACHE", "#72FF4F"
+        )
+        self.w_media, self.lbl_media, self.bar_media, self.bg_media = _prog_row(
+            "MEDIA", "#FF5555"
+        )
+        self.w_tot, self.lbl_tot, self.bar_tot, self.bg_tot = _prog_row(
+            "TOTAL", "#A86CFF"
+        )
+
         res_v.addWidget(self.w_mem)
         res_v.addWidget(self.w_cache)
         res_v.addWidget(self.w_media)
         res_v.addWidget(self.w_tot)
         root.addLayout(res_v)
-        
+
         root.addStretch()
-        
+
         # Fuel Up
         fuel_box = QFrame()
         fuel_box.setStyleSheet("""
@@ -1202,26 +1417,30 @@ class DojoCacheWidget(QFrame):
         fl = QHBoxLayout(fuel_box)
         fl.setContentsMargins(12, 12, 12, 12)
         fl.setSpacing(12)
-        
+
         pizza = QLabel("🍕")
         pizza.setStyleSheet("font-size: 24px; border: none;")
         fl.addWidget(pizza)
-        
+
         ftl = QVBoxLayout()
         ftl.setSpacing(4)
         ft = QLabel("FUEL UP, NINJA!")
-        ft.setStyleSheet("color: #72FF4F; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; border: none;")
+        ft.setStyleSheet(
+            "color: #72FF4F; font-size: 11px; font-weight: 900; font-family: 'Orbitron'; border: none;"
+        )
         fd = QLabel("Take breaks.\nYour brain is\nnot a robot.")
-        fd.setStyleSheet("color: #5F627D; font-size: 10px; border: none; font-family: monospace;")
+        fd.setStyleSheet(
+            "color: #5F627D; font-size: 10px; border: none; font-family: monospace;"
+        )
         ftl.addWidget(ft)
         ftl.addWidget(fd)
         fl.addLayout(ftl)
-        
+
         root.addWidget(fuel_box)
 
     def refresh(self):
         from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
-        
+
         known = set()
         known.update(COMBINED_CACHE.all_cached_pdfs())
         known.update(PAGE_CACHE.all_cached_pdfs())
@@ -1232,33 +1451,35 @@ class DojoCacheWidget(QFrame):
         mask_b = 0
         for pdf_path in known:
             disk_b += COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
-            ram_b  += PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
+            ram_b += PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
             mask_b += MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
-            
+
         tot_b = ram_b + disk_b + mask_b
-        
+
         ram_mb = ram_b / (1024**2)
         disk_mb = disk_b / (1024**2)
         mask_mb = mask_b / (1024**2)
         tot_mb = tot_b / (1024**2)
-        
+
         self.lbl_mem.setText(f"{ram_mb:.1f} MB")
         self.lbl_cache.setText(f"{disk_mb:.1f} MB")
         self.lbl_media.setText(f"{mask_mb:.1f} MB")
         self.lbl_tot.setText(f"{tot_mb:.1f} MB")
-        
+
         MAX_MB = 512.0
-        
+
         def _w(mb, bg):
             max_w = bg.width() if bg.width() > 0 else 188
             return int(min(mb / MAX_MB, 1.0) * max_w)
-            
+
         self.bar_mem.setFixedWidth(_w(ram_mb, self.bg_mem))
         self.bar_cache.setFixedWidth(_w(disk_mb, self.bg_cache))
         self.bar_media.setFixedWidth(_w(mask_mb, self.bg_media))
         self.bar_tot.setFixedWidth(_w(tot_mb, self.bg_tot))
 
+
 from PyQt5.QtWidgets import QStackedWidget
+
 
 class CacheWidget(QWidget):
     def __init__(self, parent=None):
@@ -1266,17 +1487,16 @@ class CacheWidget(QWidget):
         self.setFixedWidth(220)
         l = QVBoxLayout(self)
         l.setContentsMargins(0, 0, 0, 0)
-        
+
         self.stack = QStackedWidget(self)
         self.classic_widget = ClassicCacheWidget()
         self.dojo_widget = DojoCacheWidget()
-        
+
         self.stack.addWidget(self.classic_widget)
         self.stack.addWidget(self.dojo_widget)
         l.addWidget(self.stack)
 
     def set_theme(self, theme):
-        from theme_manager import normalize_theme
         theme = normalize_theme(theme)
         if theme == "dojo":
             self.stack.setCurrentWidget(self.dojo_widget)
@@ -1284,5 +1504,6 @@ class CacheWidget(QWidget):
         else:
             self.stack.setCurrentWidget(self.classic_widget)
             self.classic_widget.refresh()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════

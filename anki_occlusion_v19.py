@@ -44,19 +44,28 @@ v15 Bug Fixes:
   [FIX-3]  _start_review() — win.closeEvent double-save fixed
   [FIX-4]  is_due_today() called on un-initialised boxes in ReviewScreen
   [FIX-5]  Group dedup across cards
-  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas 
+  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas
             to eliminate mouseMoveEvent lag completely.
 """
 
 from sm2_engine import (
-    sched_init, sm2_init, sched_update, sm2_update, 
-    is_due_now, is_due_today, sm2_is_due, sm2_days_left, 
-    _fmt_due_interval, sm2_simulate, sm2_badge
+    sched_init,
+    sm2_init,
+    sched_update,
+    sm2_update,
+    is_due_now,
+    is_due_today,
+    sm2_is_due,
+    sm2_days_left,
+    _fmt_due_interval,
+    sm2_simulate,
+    sm2_badge,
 )
 
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
+
     _JOURNAL_AVAILABLE = True
 except ImportError:
     _JOURNAL_AVAILABLE = False
@@ -64,25 +73,37 @@ except ImportError:
 # Session Timer — safe import
 try:
     from session_timer import SessionTimer
+
     _TIMER_AVAILABLE = True
 except ImportError:
     _TIMER_AVAILABLE = False
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
-    pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
+    PDF_SUPPORT,
+    PAGE_CACHE,
+    PdfLoaderThread,
+    PdfSkeletonThread,
+    pdf_page_to_pixmap,
+    load_pdf_skeleton,
+    PdfOnDemandThread,
     build_skeleton_placeholders,
-    invalidate_pdf_skeleton        # STEP 2 + 3
+    invalidate_pdf_skeleton,  # STEP 2 + 3
 )
 
-from editor_ui import OcclusionCanvas,_ZoomableScrollArea
+from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
 
 import fitz
 
 from data_manager import (
-    load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
-    DATA_FILE, store
+    load_data,
+    save_data,
+    find_deck_by_id,
+    next_deck_id,
+    new_box_id,
+    deck_history,
+    DATA_FILE,
+    store,
 )
 from storage_paths import app_base_dir, app_resource_path, initialize_mission_archive
 
@@ -90,19 +111,69 @@ import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
-    QFrame, QScrollArea, QInputDialog, QMessageBox,
-    QSplitter, QStatusBar, QProgressBar, QDialog, QFormLayout,
-    QLineEdit, QTextEdit, QSizePolicy, QTreeWidget,
-    QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
-    QHeaderView
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QListWidget,
+    QListWidgetItem,
+    QFrame,
+    QScrollArea,
+    QInputDialog,
+    QMessageBox,
+    QSplitter,
+    QStatusBar,
+    QProgressBar,
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QTextEdit,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QAbstractItemView,
+    QMenu,
+    QStyledItemDelegate,
+    QStyle,
+    QHeaderView,
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
+from PyQt5.QtCore import (
+    Qt,
+    QRect,
+    QPoint,
+    QSize,
+    QRectF,
+    QPointF,
+    pyqtSignal,
+    QLockFile,
+    QTimer,
+    QModelIndex,
+    QFileSystemWatcher,
+    QThread,
+    QEvent,
+    QMimeData,
+    QByteArray,
+    QUrl,
+)
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices,
-    QFontDatabase
+    QPainter,
+    QPen,
+    QColor,
+    QPixmap,
+    QFont,
+    QCursor,
+    QIcon,
+    QBrush,
+    QTransform,
+    QPainterPath,
+    QDrag,
+    QDesktopServices,
+    QFontDatabase,
 )
 
 import tempfile
@@ -130,8 +201,9 @@ def load_custom_fonts():
         if font_id == -1:
             continue
         families = QFontDatabase.applicationFontFamilies(font_id)
-        if families and font_path.endswith("njnaruto.ttf"):
-            NARUTO_FONT_FAMILY = families[0]
+        if families and font_path.endswith("PressStart2P-Regular.ttf"):
+            pass  # reserved for future custom family override
+
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
@@ -141,18 +213,22 @@ LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
 #  THEME
 # ═══════════════════════════════════════════════════════════════════════════════
 
-C_BG      = "#1E1E2E"
-C_SURFACE = "#2A2A3E"
-C_CARD    = "#313145"
-C_ACCENT  = "#7C6AF7"
-C_GREEN   = "#50FA7B"
-C_RED     = "#FF5555"
-C_YELLOW  = "#F1FA8C"
-C_TEXT    = "#CDD6F4"
-C_SUBTEXT = "#A6ADC8"
-C_BORDER  = "#45475A"
-C_MASK    = "#F7916A"
-C_GROUP   = "#BD93F9"
+# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
+from theme_manager import get_palette as _get_palette
+
+_DARK = _get_palette("dark")
+C_BG = _DARK["C_BG"]
+C_SURFACE = _DARK["C_SURFACE"]
+C_CARD = _DARK["C_CARD"]
+C_ACCENT = _DARK["C_ACCENT"]
+C_GREEN = _DARK["C_GREEN"]
+C_RED = _DARK["C_RED"]
+C_YELLOW = _DARK["C_YELLOW"]
+C_TEXT = _DARK["C_TEXT"]
+C_SUBTEXT = _DARK["C_SUBTEXT"]
+C_BORDER = _DARK["C_BORDER"]
+C_MASK = "#F7916A"
+C_GROUP = "#BD93F9"
 
 
 BASE_FONT_SIZE = 11
@@ -194,8 +270,8 @@ QMenu{{background:{C_SURFACE};color:{C_TEXT};border:1px solid {C_BORDER};border-
 QMenu::item:selected{{background:{C_ACCENT};}}
 """
 
-SS = _build_ss()
 
+SS = _build_ss()
 
 
 from ui.home_screen import HomeScreen, make_app_icon, OnboardingDialog
@@ -206,12 +282,13 @@ from ui.deck_view import DeckView
 #  MAIN WINDOW
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         initialize_mission_archive()
         self._data = load_data()
-        store.start_autosave()          # 🔒 DirtyStore — auto-save every 60s if dirty
+        store.start_autosave()  # 🔒 DirtyStore — auto-save every 60s if dirty
         self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
         self.setWindowIcon(make_app_icon())
@@ -220,13 +297,15 @@ class MainWindow(QMainWindow):
         # Apply saved theme/font before building HomeScreen so TMNT widgets
         # construct with the correct cold-start sizing context.
         from theme_manager import normalize_theme
+
         saved_theme = self._data.get("_theme", "classic")
         theme = normalize_theme(saved_theme)
         app = QApplication.instance()
         if app:
             app._active_theme = theme
             from theme_manager import build_stylesheet
-            if theme == 'classic':
+
+            if theme == "classic":
                 app.setFont(QFont("Segoe UI", self._font_size))
                 app.setStyleSheet(_build_ss(self._font_size))
                 self.setStyleSheet("")
@@ -244,7 +323,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(home)
 
         sb = QStatusBar()
-        pdf_status = "PDF backend: PyMuPDF" if PDF_SUPPORT else "⚠ pip install pymupdf  for PDF support"
+        pdf_status = (
+            "PDF backend: PyMuPDF"
+            if PDF_SUPPORT
+            else "⚠ pip install pymupdf  for PDF support"
+        )
         sb.showMessage(f"✅ SM-2 Active  |  {pdf_status}")
         self.setStatusBar(sb)
 
@@ -264,11 +347,14 @@ class MainWindow(QMainWindow):
         self._data["_font_size"] = self._font_size
 
         from theme_manager import build_stylesheet
-        app = QApplication.instance()
-        theme = getattr(app, '_active_theme', 'classic')
-        print(f"[DEBUG] change_font_size called! Active theme: {theme}, Font size: {self._font_size}")
 
-        if theme == 'classic':
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        print(
+            f"[DEBUG] change_font_size called! Active theme: {theme}, Font size: {self._font_size}"
+        )
+
+        if theme == "classic":
             ss = _build_ss(self._font_size)
             app.setStyleSheet(ss)
             self.setStyleSheet("")
@@ -289,13 +375,12 @@ class MainWindow(QMainWindow):
                     home._tmnt_layout.main._font_size_val = self._font_size
                     if getattr(home._tmnt_layout.main, "deck", None):
                         home._tmnt_layout.main._refresh()
-            if hasattr(home, "deck_view") and hasattr(home.deck_view, "update_font_size"):
+            if hasattr(home, "deck_view") and hasattr(
+                home.deck_view, "update_font_size"
+            ):
                 home.deck_view.update_font_size(self._font_size)
 
-        store.mark_dirty()  # 🔒 DirtyStore
         store.save_force()
-    def _apply_font_size(self, size: int):
-        QApplication.instance().setStyleSheet(_build_ss(size))
 
     def _run_onboarding(self):
         dlg = OnboardingDialog(self)
@@ -304,7 +389,7 @@ class MainWindow(QMainWindow):
         store.mark_dirty()  # 🔒 DirtyStore
 
     def keyPressEvent(self, e):
-        key  = e.key()
+        key = e.key()
         mods = e.modifiers()
         if key == Qt.Key_F11:
             if self.isFullScreen():
@@ -320,20 +405,23 @@ class MainWindow(QMainWindow):
         elif mods & Qt.ControlModifier and key == Qt.Key_C:
             # Ctrl+C → RAM cache clear (disk untouched)
             from cache_manager import PAGE_CACHE, MASK_REGISTRY
+
             try:
                 from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE
+
                 _SKELETON_CACHE.clear()
                 _SKELETON_PLACEHOLDER_CACHE.clear()
-                import fitz
-                fitz.TOOLS.store_shrink(100) # Purge PyMuPDF internal caches
+                fitz.TOOLS.store_shrink(100)  # Purge PyMuPDF internal caches
             except Exception as ex:
                 pass
             before = len(PAGE_CACHE._cache)
             PAGE_CACHE.clear_ram_only()
             for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):
                 MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
-            print(f"[MainWindow][Ctrl+C] 🧹 RAM cache cleared — "
-                  f"{before} pages evicted, mask layers invalidated, disk untouched")
+            print(
+                f"[MainWindow][Ctrl+C] 🧹 RAM cache cleared — "
+                f"{before} pages evicted, mask layers invalidated, disk untouched"
+            )
             sb = self.statusBar()
             if sb:
                 sb.showMessage(f"🧹 RAM cache cleared — {before} pages freed", 3000)
@@ -346,7 +434,7 @@ class MainWindow(QMainWindow):
             active_editor = getattr(home, "_active_editor", None)
             if active_editor is not None:
                 active_editor.close()
-        store.stop_autosave()           # 🔒 Final force-save + background thread stop
+        store.stop_autosave()  # 🔒 Final force-save + background thread stop
         super().closeEvent(e)
 
 
@@ -359,12 +447,20 @@ if __name__ == "__main__":
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):
         app_tmp = QApplication(sys.argv)
-        QMessageBox.warning(None, "Already Running",
-            "Anki Occlusion is already open!\nCheck your taskbar.")
+        QMessageBox.warning(
+            None,
+            "Already Running",
+            "Anki Occlusion is already open!\nCheck your taskbar.",
+        )
         sys.exit(1)
 
+    # Suppress DirectShow codec warnings on Windows — Qt multimedia backend
+    # tries to enumerate DirectShow filters on startup; harmless but spammy.
+    import os as _os
+
+    _os.environ.setdefault("QT_MULTIMEDIA_PREFERRED_PLUGINS", "windowsmediafoundation")
+
     app = QApplication(sys.argv)
-    print(f"[DEBUG][packaging] startup frozen={getattr(sys, 'frozen', False)} base={app_base_dir()}")
     load_custom_fonts()
     app.setStyleSheet(SS)
     app.setApplicationName("Anki Occlusion")

@@ -44,19 +44,28 @@ v15 Bug Fixes:
   [FIX-3]  _start_review() — win.closeEvent double-save fixed
   [FIX-4]  is_due_today() called on un-initialised boxes in ReviewScreen
   [FIX-5]  Group dedup across cards
-  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas 
+  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas
             to eliminate mouseMoveEvent lag completely.
 """
 
 from sm2_engine import (
-    sched_init, sm2_init, sched_update, sm2_update, 
-    is_due_now, is_due_today, sm2_is_due, sm2_days_left, 
-    _fmt_due_interval, sm2_simulate, sm2_badge
+    sched_init,
+    sm2_init,
+    sched_update,
+    sm2_update,
+    is_due_now,
+    is_due_today,
+    sm2_is_due,
+    sm2_days_left,
+    _fmt_due_interval,
+    sm2_simulate,
+    sm2_badge,
 )
 
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
+
     _JOURNAL_AVAILABLE = True
 except ImportError:
     _JOURNAL_AVAILABLE = False
@@ -64,26 +73,39 @@ except ImportError:
 # Session Timer — safe import
 try:
     from session_timer import SessionTimer
+
     _TIMER_AVAILABLE = True
 except ImportError:
     _TIMER_AVAILABLE = False
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
-    pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
+    PDF_SUPPORT,
+    PAGE_CACHE,
+    PdfLoaderThread,
+    PdfSkeletonThread,
+    pdf_page_to_pixmap,
+    load_pdf_skeleton,
+    PdfOnDemandThread,
     build_skeleton_placeholders,
-    invalidate_pdf_skeleton        # STEP 2 + 3
+    invalidate_pdf_skeleton,  # STEP 2 + 3
 )
 
-from editor_ui import OcclusionCanvas,_ZoomableScrollArea
+from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
+from ui.deck_tree import CARD_DRAG_MIME
 from ui.review_screen import ReviewScreen
 
 import fitz
 
 from data_manager import (
-    load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
-    DATA_FILE, store
+    load_data,
+    save_data,
+    find_deck_by_id,
+    next_deck_id,
+    new_box_id,
+    deck_history,
+    DATA_FILE,
+    store,
 )
 from storage_paths import (
     app_resource_path,
@@ -100,25 +122,77 @@ import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
-    QFrame, QScrollArea, QInputDialog, QMessageBox,
-    QSplitter, QStatusBar, QProgressBar, QDialog, QFormLayout,
-    QLineEdit, QTextEdit, QSizePolicy, QTreeWidget,
-    QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
-    QHeaderView, QStackedWidget
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QListWidget,
+    QListWidgetItem,
+    QFrame,
+    QScrollArea,
+    QInputDialog,
+    QMessageBox,
+    QSplitter,
+    QStatusBar,
+    QProgressBar,
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QTextEdit,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QAbstractItemView,
+    QMenu,
+    QStyledItemDelegate,
+    QStyle,
+    QHeaderView,
+    QStackedWidget,
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
+from PyQt5.QtCore import (
+    Qt,
+    QRect,
+    QPoint,
+    QSize,
+    QRectF,
+    QPointF,
+    pyqtSignal,
+    QLockFile,
+    QTimer,
+    QModelIndex,
+    QFileSystemWatcher,
+    QThread,
+    QEvent,
+    QMimeData,
+    QByteArray,
+    QUrl,
+)
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices,
-    QFontDatabase
+    QPainter,
+    QPen,
+    QColor,
+    QPixmap,
+    QFont,
+    QCursor,
+    QIcon,
+    QBrush,
+    QTransform,
+    QPainterPath,
+    QDrag,
+    QDesktopServices,
+    QFontDatabase,
 )
 
 import tempfile
 
 # ── LOAD CUSTOM FONTS ────────────────────────────────────────────────────────
-NARUTO_FONT_FAMILY = "Segoe UI" # Global variable for easy access
+NARUTO_FONT_FAMILY = "Segoe UI"  # Global variable for easy access
+
 
 def load_custom_fonts():
     """Safe font loading. Only runs if QApplication instance exists."""
@@ -126,7 +200,6 @@ def load_custom_fonts():
     if not QApplication.instance():
         return
 
-    print("[DEBUG][theme] ninja_font_skipped")
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
@@ -136,18 +209,27 @@ LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
 #  THEME
 # ═══════════════════════════════════════════════════════════════════════════════
 
-C_BG      = "#1E1E2E"
-C_SURFACE = "#2A2A3E"
-C_CARD    = "#313145"
-C_ACCENT  = "#7C6AF7"
-C_GREEN   = "#50FA7B"
-C_RED     = "#FF5555"
-C_YELLOW  = "#F1FA8C"
-C_TEXT    = "#CDD6F4"
-C_SUBTEXT = "#A6ADC8"
-C_BORDER  = "#45475A"
-C_MASK    = "#F7916A"
-C_GROUP   = "#BD93F9"
+# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
+from theme_manager import (
+    get_palette as _get_palette,
+    get_palette,
+    normalize_theme,
+    NINJA_THEME_ENABLED,
+)
+
+_DARK = _get_palette("dark")
+C_BG = _DARK["C_BG"]
+C_SURFACE = _DARK["C_SURFACE"]
+C_CARD = _DARK["C_CARD"]
+C_ACCENT = _DARK["C_ACCENT"]
+C_GREEN = _DARK["C_GREEN"]
+C_RED = _DARK["C_RED"]
+C_YELLOW = _DARK["C_YELLOW"]
+C_TEXT = _DARK["C_TEXT"]
+C_SUBTEXT = _DARK["C_SUBTEXT"]
+C_BORDER = _DARK["C_BORDER"]
+C_MASK = "#F7916A"
+C_GROUP = "#BD93F9"
 
 
 BASE_FONT_SIZE = 11
@@ -189,8 +271,8 @@ QMenu{{background:{C_SURFACE};color:{C_TEXT};border:1px solid {C_BORDER};border-
 QMenu::item:selected{{background:{C_ACCENT};}}
 """
 
-SS = _build_ss()
 
+SS = _build_ss()
 
 
 from .deck_tree import DeckTree, CacheWidget
@@ -199,9 +281,11 @@ from .deck_view import DeckView
 # TMNT Home Layout — safe import
 try:
     from .tmnt_home import TMNTHomeLayout
+
     _TMNT_HOME_AVAILABLE = True
 except Exception as _tmnt_err:
     import traceback as _tb
+
     print(f"[TMNT IMPORT ERROR] {type(_tmnt_err).__name__}: {_tmnt_err}")
     _tb.print_exc()
     _TMNT_HOME_AVAILABLE = False
@@ -209,12 +293,15 @@ except Exception as _tmnt_err:
 # Math Trainer — safe import
 try:
     from .math_trainer import MathTrainerPage
+
     _MATH_AVAILABLE = True
 except Exception as _math_err:
     import traceback as _tb
+
     print(f"[MATH TRAINER IMPORT ERROR] {type(_math_err).__name__}: {_math_err}")
     _tb.print_exc()
     _MATH_AVAILABLE = False
+
 
 #  HOME SCREEN
 # ══════════════════════════════════════════════════════════════
@@ -253,8 +340,8 @@ class AboutDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("About Anki Occlusion")
         self.setFixedSize(480, 560)
-        from theme_manager import get_palette
         from PyQt5.QtWidgets import QApplication
+
         app = QApplication.instance()
         theme = getattr(app, "_active_theme", "classic")
         p = get_palette(theme)
@@ -264,7 +351,9 @@ class AboutDialog(QDialog):
         L.setSpacing(0)
         header = QFrame()
         header.setFixedHeight(140)
-        header.setStyleSheet(f"QFrame{{background:{p.get('C_SURFACE', C_SURFACE)};border-radius:0px;}}")
+        header.setStyleSheet(
+            f"QFrame{{background:{p.get('C_SURFACE', C_SURFACE)};border-radius:0px;}}"
+        )
         hl = QVBoxLayout(header)
         hl.setAlignment(Qt.AlignCenter)
         icon_lbl = QLabel()
@@ -272,15 +361,19 @@ class AboutDialog(QDialog):
         icon_px = make_app_icon().pixmap(72, 72)
         icon_lbl.setPixmap(icon_px)
         hl.addWidget(icon_lbl)
-        hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
-        bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
+        hf = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
+        bf = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
         name_lbl = QLabel("Anki Occlusion")
         name_lbl.setFont(QFont(hf, 18, QFont.Bold))
-        name_lbl.setStyleSheet(f"color:{p.get('C_ACCENT', C_ACCENT)};background:transparent;")
+        name_lbl.setStyleSheet(
+            f"color:{p.get('C_ACCENT', C_ACCENT)};background:transparent;"
+        )
         name_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(name_lbl)
         ver_lbl = QLabel("Version 1.0  •  Desktop Edition")
-        ver_lbl.setStyleSheet(f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:11px;background:transparent;font-family:{bf};")
+        ver_lbl.setStyleSheet(
+            f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:11px;background:transparent;font-family:{bf};"
+        )
         ver_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(ver_lbl)
         L.addWidget(header)
@@ -289,20 +382,27 @@ class AboutDialog(QDialog):
         bl = QVBoxLayout(body)
         bl.setContentsMargins(32, 24, 32, 24)
         bl.setSpacing(16)
+
         def _section(title, text):
             t = QLabel(title)
             t.setFont(QFont(hf, 10, QFont.Bold))
             t.setStyleSheet(f"color:{p.get('C_TEXT', C_TEXT)};")
             d = QLabel(text)
-            d.setStyleSheet(f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;font-family:{bf};")
+            d.setStyleSheet(
+                f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;font-family:{bf};"
+            )
             d.setWordWrap(True)
             bl.addWidget(t)
             bl.addWidget(d)
-        _section("What it does",
+
+        _section(
+            "What it does",
             "Draw rectangular masks over your PDF notes and images, "
             "then study them with a full Anki-style spaced repetition "
-            "scheduler — learning steps, review intervals, ease factors.")
-        _section("Keyboard shortcuts",
+            "scheduler — learning steps, review intervals, ease factors.",
+        )
+        _section(
+            "Keyboard shortcuts",
             "F11 — fullscreen        Ctrl+Z / Y — undo / redo\n"
             "Space — reveal answer   1/2/3/4 — rate Again/Hard/Good/Easy\n"
             "V=Select  R=Rect  E=Ellipse  T=Label  Del=delete selected\n"
@@ -310,13 +410,15 @@ class AboutDialog(QDialog):
             "Alt+Click — multi-select   Hold Alt — temp select tool\n"
             "C — center on mask      Drag ↻ handle — rotate shape\n"
             "Space+drag — pan canvas  H — toggle pan lock\n"
-            "L — copy current PDF file   Ctrl+L — open current PDF folder")
+            "L — copy current PDF file   Ctrl+L — open current PDF folder",
+        )
         _section("Data location", f"{current_data_file()}")
         bl.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet(
             f"background:{p.get('C_ACCENT', C_ACCENT)};color:{p.get('C_BG', 'white')};border:none;border-radius:8px;"
-            f"padding:8px 32px;font-weight:bold;font-size:13px;font-family:{hf};")
+            f"padding:8px 32px;font-weight:bold;font-size:13px;font-family:{hf};"
+        )
         close_btn.clicked.connect(self.accept)
         bl.addWidget(close_btn, alignment=Qt.AlignCenter)
         L.addWidget(body)
@@ -324,22 +426,34 @@ class AboutDialog(QDialog):
 
 class OnboardingDialog(QDialog):
     STEPS = [
-        {"icon": "🃏", "title": "Welcome to Anki Occlusion",
-         "body": "The fastest way to turn your PDF notes and images into Anki-style flashcards — without typing a single word.\n\nThis quick tour takes about 30 seconds."},
-        {"icon": "📂", "title": "Step 1 — Create a Deck",
-         "body": "Click  ＋ Deck  in the left sidebar to create your first deck.\n\nYou can nest decks inside each other — for example:\n  Biology  ›  Chapter 3  ›  Cell Division\n\nDrag and drop to reorganise them any time."},
-        {"icon": "🖼", "title": "Step 2 — Add a Card",
-         "body": "Select a deck, then click  ＋ Add Card.\n\nLoad a PDF or image, then use the toolbar:\n  ▶ Select — move, resize, rotate shapes\n  ▭ Rectangle — draw rectangular masks\n  ⬭ Ellipse — draw oval masks\n  T Text — click a mask to edit its label\n\nEach mask becomes one flashcard question automatically."},
-        {"icon": "🧠", "title": "Step 3 — Review",
-         "body": "Click  🔴 Review Due  to start your session.\n\nTwo review modes (toggle in review header):\n  🟧 Hide All, Guess One — all masks hidden one by one\n  👁 Hide One, Guess One — only the target mask hidden\n\nPress Space to reveal, then rate yourself:\n  1 = Again   2 = Hard   3 = Good   4 = Easy\n\nThe scheduler decides when you'll see each card next."},
+        {
+            "icon": "🃏",
+            "title": "Welcome to Anki Occlusion",
+            "body": "The fastest way to turn your PDF notes and images into Anki-style flashcards — without typing a single word.\n\nThis quick tour takes about 30 seconds.",
+        },
+        {
+            "icon": "📂",
+            "title": "Step 1 — Create a Deck",
+            "body": "Click  ＋ Deck  in the left sidebar to create your first deck.\n\nYou can nest decks inside each other — for example:\n  Biology  ›  Chapter 3  ›  Cell Division\n\nDrag and drop to reorganise them any time.",
+        },
+        {
+            "icon": "🖼",
+            "title": "Step 2 — Add a Card",
+            "body": "Select a deck, then click  ＋ Add Card.\n\nLoad a PDF or image, then use the toolbar:\n  ▶ Select — move, resize, rotate shapes\n  ▭ Rectangle — draw rectangular masks\n  ⬭ Ellipse — draw oval masks\n  T Text — click a mask to edit its label\n\nEach mask becomes one flashcard question automatically.",
+        },
+        {
+            "icon": "🧠",
+            "title": "Step 3 — Review",
+            "body": "Click  🔴 Review Due  to start your session.\n\nTwo review modes (toggle in review header):\n  🟧 Hide All, Guess One — all masks hidden one by one\n  👁 Hide One, Guess One — only the target mask hidden\n\nPress Space to reveal, then rate yourself:\n  1 = Again   2 = Hard   3 = Good   4 = Easy\n\nThe scheduler decides when you'll see each card next.",
+        },
     ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Welcome")
         self.setFixedSize(540, 440)
-        from theme_manager import get_palette
         from PyQt5.QtWidgets import QApplication
+
         app = QApplication.instance()
         theme = getattr(app, "_active_theme", "classic")
         self._p = get_palette(theme)
@@ -350,8 +464,8 @@ class OnboardingDialog(QDialog):
 
     def _setup_ui(self):
         p = self._p
-        hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
-        bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
+        hf = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
+        bf = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
         L = QVBoxLayout(self)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
@@ -364,7 +478,9 @@ class OnboardingDialog(QDialog):
         self._dots = []
         for _ in self.STEPS:
             dot = QLabel("●")
-            dot.setStyleSheet(f"color:{p.get('C_BORDER', C_BORDER)};font-size:10px;background:transparent;")
+            dot.setStyleSheet(
+                f"color:{p.get('C_BORDER', C_BORDER)};font-size:10px;background:transparent;"
+            )
             dl.addWidget(dot)
             self._dots.append(dot)
         L.addWidget(dot_bar)
@@ -379,11 +495,15 @@ class OnboardingDialog(QDialog):
         self._icon_lbl.setStyleSheet("background:transparent;")
         self._title_lbl = QLabel()
         self._title_lbl.setFont(QFont(hf, 16, QFont.Bold))
-        self._title_lbl.setStyleSheet(f"color:{p.get('C_TEXT', C_TEXT)};background:transparent;")
+        self._title_lbl.setStyleSheet(
+            f"color:{p.get('C_TEXT', C_TEXT)};background:transparent;"
+        )
         self._title_lbl.setAlignment(Qt.AlignCenter)
         self._title_lbl.setWordWrap(True)
         self._body_lbl = QLabel()
-        self._body_lbl.setStyleSheet(f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;background:transparent;font-family:{bf};")
+        self._body_lbl.setStyleSheet(
+            f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;background:transparent;font-family:{bf};"
+        )
         self._body_lbl.setWordWrap(True)
         self._body_lbl.setAlignment(Qt.AlignCenter)
         cl.addStretch()
@@ -396,22 +516,26 @@ class OnboardingDialog(QDialog):
         btn_bar.setFixedHeight(64)
         btn_bar.setStyleSheet(
             f"QFrame{{background:{p.get('C_SURFACE', C_SURFACE)};"
-            f"border-top:1px solid {p.get('C_BORDER', C_BORDER)};border-radius:0px;}}")
+            f"border-top:1px solid {p.get('C_BORDER', C_BORDER)};border-radius:0px;}}"
+        )
         bl = QHBoxLayout(btn_bar)
         bl.setContentsMargins(24, 0, 24, 0)
         self._skip_btn = QPushButton("Skip")
         self._skip_btn.setStyleSheet(
-            f"background:transparent;color:{p.get('C_SUBTEXT', C_SUBTEXT)};border:none;font-size:12px;padding:6px 16px;font-family:{hf};")
+            f"background:transparent;color:{p.get('C_SUBTEXT', C_SUBTEXT)};border:none;font-size:12px;padding:6px 16px;font-family:{hf};"
+        )
         self._skip_btn.clicked.connect(self.accept)
         self._back_btn = QPushButton("← Back")
         self._back_btn.setStyleSheet(
             f"background:{p.get('C_CARD', C_CARD)};color:{p.get('C_TEXT', C_TEXT)};border:1px solid {p.get('C_BORDER', C_BORDER)};"
-            f"border-radius:8px;padding:8px 20px;font-size:12px;font-family:{hf};")
+            f"border-radius:8px;padding:8px 20px;font-size:12px;font-family:{hf};"
+        )
         self._back_btn.clicked.connect(self._prev)
         self._next_btn = QPushButton("Next →")
         self._next_btn.setStyleSheet(
             f"background:{p.get('C_ACCENT', C_ACCENT)};color:{p.get('C_BG', 'white')};border:none;"
-            f"border-radius:8px;padding:8px 24px;font-weight:bold;font-size:13px;font-family:{hf};")
+            f"border-radius:8px;padding:8px 24px;font-weight:bold;font-size:13px;font-family:{hf};"
+        )
         self._next_btn.clicked.connect(self._next)
         bl.addWidget(self._skip_btn)
         bl.addStretch()
@@ -427,9 +551,10 @@ class OnboardingDialog(QDialog):
         for i, dot in enumerate(self._dots):
             dot.setStyleSheet(
                 f"color:{C_ACCENT if i == idx else C_BORDER};"
-                f"font-size:10px;background:transparent;")
-        is_last  = (idx == len(self.STEPS) - 1)
-        is_first = (idx == 0)
+                f"font-size:10px;background:transparent;"
+            )
+        is_last = idx == len(self.STEPS) - 1
+        is_first = idx == 0
         self._back_btn.setVisible(not is_first)
         self._skip_btn.setVisible(not is_last)
         self._next_btn.setText("🚀  Get Started!" if is_last else "Next →")
@@ -437,7 +562,8 @@ class OnboardingDialog(QDialog):
             f"background:{C_GREEN if is_last else C_ACCENT};"
             f"color:{'#1E1E2E' if is_last else 'white'};"
             f"border:none;border-radius:8px;padding:8px 24px;"
-            f"font-weight:bold;font-size:13px;")
+            f"font-weight:bold;font-size:13px;"
+        )
 
     def _next(self):
         if self._step < len(self.STEPS) - 1:
@@ -458,9 +584,10 @@ class _PreloadThread(QThread):
     Koi UI signal nahi, koi canvas update nahi. Sirf disk par PNG save hota hai.
     Deck switch hone par stop() call karo — thread cleanly exit ho jaayega.
     """
+
     def __init__(self, pdf_path: str, parent=None):
         super().__init__(parent)
-        self._path      = pdf_path
+        self._path = pdf_path
         self._stop_flag = False
 
     def stop(self):
@@ -470,18 +597,19 @@ class _PreloadThread(QThread):
         if not PDF_SUPPORT:
             return
         from pdf_engine import PAGE_CACHE, pdf_page_to_pixmap
+
         try:
             doc = fitz.open(self._path)
             if doc.is_encrypted:
                 return
             total = len(doc)
-            mat   = fitz.Matrix(1.5, 1.5)
-            
+            mat = fitz.Matrix(1.5, 1.5)
+
             for i in range(total):
                 if self._stop_flag:
                     doc.close()
                     return
-                
+
                 # Check if page is already in cache
                 cached = PAGE_CACHE.get(self._path, i)
                 if not cached:
@@ -489,16 +617,17 @@ class _PreloadThread(QThread):
                     qpx = pdf_page_to_pixmap(doc.load_page(i), mat)
                     if not qpx.isNull():
                         PAGE_CACHE.put(self._path, i, qpx)
-            
+
             doc.close()
         except Exception:
             pass
+
 
 class MentorWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("mentor_widget")
-        self.setFixedHeight(50)  
+        self.setFixedHeight(50)
         l = QHBoxLayout(self)
         l.setContentsMargins(10, 2, 12, 2)
         l.setSpacing(12)
@@ -507,53 +636,66 @@ class MentorWidget(QFrame):
         self.av_lbl = QLabel()
         self.av_lbl.setFixedSize(38, 38)
         self.av_lbl.setObjectName("mentor_avatar")
-        
-        from theme_manager import NINJA_THEME_ENABLED
-        av_path = app_resource_path("assets", "themes", "dojo", "Cyber_ninja_turtle_202604270705.jpeg_clean.png")
+
+        av_path = app_resource_path(
+            "assets", "themes", "dojo", "Cyber_ninja_turtle_202604270705.jpeg_clean.png"
+        )
         if NINJA_THEME_ENABLED and os.path.exists(av_path):
             original_px = QPixmap(av_path)
             # Create circular mask
             size = 38
             rounded_px = QPixmap(size, size)
             rounded_px.fill(Qt.transparent)
-            
+
             painter = QPainter(rounded_px)
             painter.setRenderHint(QPainter.Antialiasing)
             path = QPainterPath()
             path.addEllipse(0, 0, size, size)
             painter.setClipPath(path)
-            
-            painter.drawPixmap(0, 0, size, size, original_px.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+
+            painter.drawPixmap(
+                0,
+                0,
+                size,
+                size,
+                original_px.scaled(
+                    size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+                ),
+            )
             painter.end()
-            
+
             self.av_lbl.setPixmap(rounded_px)
         else:
-            self.av_lbl.setStyleSheet("background: #A86CFF; border-radius: 19px; border: 2px solid #A86CFF;")
-            print("[DEBUG][theme] ninja_avatar_skipped")
+            self.av_lbl.setStyleSheet(
+                "background: #A86CFF; border-radius: 19px; border: 2px solid #A86CFF;"
+            )
 
         txt_l = QVBoxLayout()
         txt_l.setSpacing(0)
         txt_l.setAlignment(Qt.AlignCenter)
-        
+
         self.q_lbl = QLabel('"FOCUS. TRAIN. MASTER."')
         self.q_lbl.setObjectName("mentor_quote")
         # +1.5px (was 10px -> 11.5px)
-        self.q_lbl.setStyleSheet("font-family: 'Orbitron'; font-size: 11.5px; font-weight: 900; color: #A86CFF;")
-        
+        self.q_lbl.setStyleSheet(
+            "font-family: 'Orbitron'; font-size: 11.5px; font-weight: 900; color: #A86CFF;"
+        )
+
         self.n_lbl = QLabel("— DONATELLO")
         self.n_lbl.setObjectName("mentor_name")
         # +1px (was 7px -> 8px)
-        self.n_lbl.setStyleSheet("font-family: 'Orbitron'; font-size: 8px; font-weight: 700; color: #A86CFF; opacity: 0.8;")
-        
+        self.n_lbl.setStyleSheet(
+            "font-family: 'Orbitron'; font-size: 8px; font-weight: 700; color: #A86CFF; opacity: 0.8;"
+        )
+
         txt_l.addWidget(self.q_lbl)
         txt_l.addWidget(self.n_lbl)
-        
+
         # Swapped layout: Image LEFT, Text RIGHT
         l.addWidget(self.av_lbl)
         l.addLayout(txt_l)
 
     def set_style(self, theme):
-        from theme_manager import normalize_theme
         theme = normalize_theme(theme)
         if theme == "dojo":
             self.show()
@@ -566,6 +708,7 @@ class MentorWidget(QFrame):
             """)
         else:
             self.hide()
+
 
 """
 MUSIC WIDGET PATCH  — drop this into home_screen.py
@@ -587,6 +730,7 @@ import random
 
 # ── PASTE THIS CLASS after MentorWidget, before HomeScreen ───────────────────
 
+
 class MusicWidget(QFrame):
     """
     Compact BGM player for the top navbar.
@@ -595,6 +739,7 @@ class MusicWidget(QFrame):
     - Click the widget → same as M
     Tracks: assets/music/*.mp3  (or .ogg)
     """
+
     MUSIC_DIR = app_resource_path("assets", "music")
 
     def __init__(self, parent=None):
@@ -604,13 +749,13 @@ class MusicWidget(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("BGM  [M] toggle  [N] next track")
 
-        self._playing   = False   # whether music is ON
-        self._paused    = False
-        self._tracks    = []
-        self._idx       = 0
+        self._playing = False  # whether music is ON
+        self._paused = False
+        self._tracks = []
+        self._idx = 0
         self._pygame_ok = False
-        self._player    = None
-        self._playlist  = None
+        self._player = None
+        self._playlist = None
 
         self._init_audio()
         self._scan_tracks()
@@ -623,14 +768,16 @@ class MusicWidget(QFrame):
         self._note_lbl = QLabel("♪")
         self._note_lbl.setObjectName("music_note")
         self._note_lbl.setStyleSheet(
-            "font-size:16px; color:#BD93F9; background:transparent;")
+            "font-size:16px; color:#BD93F9; background:transparent;"
+        )
         self._note_lbl.setFixedWidth(16)
 
         self._state_lbl = QLabel("BGM")
         self._state_lbl.setObjectName("music_state")
         self._state_lbl.setStyleSheet(
             "font-size:9px; font-weight:700; letter-spacing:1.5px;"
-            "color:#7C6AF7; background:transparent;")
+            "color:#7C6AF7; background:transparent;"
+        )
 
         self._badge = QLabel("OFF")
         self._badge.setObjectName("music_badge")
@@ -638,7 +785,8 @@ class MusicWidget(QFrame):
         self._badge.setAlignment(Qt.AlignCenter)
         self._badge.setStyleSheet(
             "font-size:8px; font-weight:700; border-radius:3px; padding:1px 3px;"
-            f"background:{C_CARD}; color:{C_SUBTEXT};")
+            f"background:{C_CARD}; color:{C_SUBTEXT};"
+        )
 
         hl.addWidget(self._note_lbl)
         hl.addWidget(self._state_lbl)
@@ -650,14 +798,18 @@ class MusicWidget(QFrame):
     def _init_audio(self):
         try:
             import pygame
+
             pygame.mixer.init()
             self._pygame = pygame
             self._pygame_ok = True
         except Exception as e:
             self._pygame_ok = False
-            print(f"[MusicWidget] pygame not available: {e}, falling back to QMediaPlayer")
+            print(
+                f"[MusicWidget] pygame not available: {e}, falling back to QMediaPlayer"
+            )
             try:
                 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist
+
                 self._player = QMediaPlayer()
                 self._playlist = QMediaPlaylist()
                 self._player.setPlaylist(self._playlist)
@@ -668,15 +820,16 @@ class MusicWidget(QFrame):
         if not os.path.isdir(self.MUSIC_DIR):
             return
         self._tracks = (
-            glob.glob(os.path.join(self.MUSIC_DIR, "*.mp3")) +
-            glob.glob(os.path.join(self.MUSIC_DIR, "*.ogg")) +
-            glob.glob(os.path.join(self.MUSIC_DIR, "*.wav"))
+            glob.glob(os.path.join(self.MUSIC_DIR, "*.mp3"))
+            + glob.glob(os.path.join(self.MUSIC_DIR, "*.ogg"))
+            + glob.glob(os.path.join(self.MUSIC_DIR, "*.wav"))
         )
         random.shuffle(self._tracks)
-        
+
         if self._playlist:
             from PyQt5.QtCore import QUrl
             from PyQt5.QtMultimedia import QMediaContent, QMediaPlaylist
+
             for track in self._tracks:
                 self._playlist.addMedia(QMediaContent(QUrl.fromLocalFile(track)))
             self._playlist.setPlaybackMode(QMediaPlaylist.Loop)
@@ -688,7 +841,7 @@ class MusicWidget(QFrame):
             return
         if not self._pygame_ok and not self._player:
             return
-            
+
         if self._playing:
             if self._pygame_ok:
                 self._pygame.mixer.music.pause()
@@ -714,7 +867,7 @@ class MusicWidget(QFrame):
             return
         if not self._pygame_ok and not self._player:
             return
-            
+
         self._idx = (self._idx + 1) % len(self._tracks)
         self._load_and_play(self._idx)
         self._playing = True
@@ -726,7 +879,7 @@ class MusicWidget(QFrame):
             if self._pygame_ok:
                 self._pygame.mixer.music.load(self._tracks[idx])
                 self._pygame.mixer.music.set_volume(0.4)
-                self._pygame.mixer.music.play(-1)   # -1 = loop
+                self._pygame.mixer.music.play(-1)  # -1 = loop
             elif self._player:
                 self._playlist.setCurrentIndex(idx)
                 self._player.setVolume(40)
@@ -740,16 +893,20 @@ class MusicWidget(QFrame):
             self._badge.setText("ON")
             self._badge.setStyleSheet(
                 "font-size:8px; font-weight:700; border-radius:3px; padding:1px 3px;"
-                f"background:{C_ACCENT}; color:white;")
+                f"background:{C_ACCENT}; color:white;"
+            )
             self._note_lbl.setStyleSheet(
-                "font-size:16px; color:#50FA7B; background:transparent;")
+                "font-size:16px; color:#50FA7B; background:transparent;"
+            )
         else:
             self._badge.setText("OFF")
             self._badge.setStyleSheet(
                 "font-size:8px; font-weight:700; border-radius:3px; padding:1px 3px;"
-                f"background:{C_CARD}; color:{C_SUBTEXT};")
+                f"background:{C_CARD}; color:{C_SUBTEXT};"
+            )
             self._note_lbl.setStyleSheet(
-                "font-size:16px; color:#BD93F9; background:transparent;")
+                "font-size:16px; color:#BD93F9; background:transparent;"
+            )
 
     def _refresh_style(self, dojo: bool):
         if dojo:
@@ -778,7 +935,6 @@ class MusicWidget(QFrame):
             """)
 
     def set_theme(self, theme: str):
-        from theme_manager import normalize_theme
         theme = normalize_theme(theme)
         self._refresh_style(dojo=(theme == "dojo"))
 
@@ -850,12 +1006,13 @@ class MusicWidget(QFrame):
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class HomeScreen(QWidget):
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
-        load_custom_fonts() # ── SAFE FONT LOAD ──
+        load_custom_fonts()  # ── SAFE FONT LOAD ──
         self._data = data
-        self._preload_thread = None   # background PDF preload thread
+        self._preload_thread = None  # background PDF preload thread
         self._active_editor = None
         self._classic_settings_panel = None
         self._classic_archive_value = None
@@ -872,7 +1029,7 @@ class HomeScreen(QWidget):
         self.top_frame = QFrame()
         self.top_frame.setFixedHeight(60)  # Larger height
         self.top_frame.setObjectName("topbar")
-        
+
         tl = QHBoxLayout(self.top_frame)
         tl.setContentsMargins(14, 0, 14, 0)
         tl.setSpacing(12)
@@ -880,15 +1037,15 @@ class HomeScreen(QWidget):
         # Logo Section
         logo_layout = QHBoxLayout()
         logo_layout.setSpacing(12)
-        
+
         self.l_box = QLabel("猿")
         self.l_box.setObjectName("logo_box")
-        self.l_box.setFixedSize(42, 42) # Significantly larger
+        self.l_box.setFixedSize(42, 42)  # Significantly larger
         self.l_box.setAlignment(Qt.AlignCenter)
-        
+
         self.l_text = QLabel("ANKI OCCLUSION")
         self.l_text.setObjectName("logo_text")
-        
+
         logo_layout.addWidget(self.l_box)
         logo_layout.addWidget(self.l_text)
         tl.addLayout(logo_layout)
@@ -902,13 +1059,13 @@ class HomeScreen(QWidget):
             b.setObjectName("nav_btn")
             return b
 
-        btn_math    = _topbtn("🧮 MATH", "Practice Tables, Squares & Cubes")
+        btn_math = _topbtn("🧮 MATH", "Practice Tables, Squares & Cubes")
         btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
         self._btn_save = _topbtn("💾 SAVE", "Save now  Ctrl+S")
         self._btn_settings = _topbtn("⚙ SETTINGS", "Visual scale and Mission Archive")
-        btn_help    = _topbtn("❓ HELP", "Show quick-start guide")
-        btn_about   = _topbtn("ℹ ABOUT", "About Anki Occlusion")
-        
+        btn_help = _topbtn("❓ HELP", "Show quick-start guide")
+        btn_about = _topbtn("ℹ ABOUT", "About Anki Occlusion")
+
         btn_math.clicked.connect(self._show_math_trainer)
         btn_journal.clicked.connect(self._show_journal)
         self._btn_save.clicked.connect(self._on_classic_save_clicked)
@@ -917,7 +1074,6 @@ class HomeScreen(QWidget):
         btn_about.clicked.connect(self._show_about)
 
         # Theme Toggle Button
-        from theme_manager import normalize_theme
         saved_theme = self._data.get("_theme", "classic")
         self._current_theme = normalize_theme(saved_theme)
         _next_lbl = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
@@ -934,9 +1090,9 @@ class HomeScreen(QWidget):
             return b
 
         btn_fa = _fontbtn("A−", "Decrease font size")
-        btn_fr = _fontbtn("A",  "Reset font size")
+        btn_fr = _fontbtn("A", "Reset font size")
         btn_fi = _fontbtn("A+", "Increase font size")
-        
+
         btn_fa.clicked.connect(lambda: self._emit_font(-1))
         btn_fr.clicked.connect(lambda: self._emit_font(0))
         btn_fi.clicked.connect(lambda: self._emit_font(+1))
@@ -953,15 +1109,15 @@ class HomeScreen(QWidget):
         tl.addWidget(btn_fr)
         tl.addWidget(btn_fi)
 
-        self.music_widget = MusicWidget()   
-        tl.addSpacing(4)                    
-        tl.addWidget(self.music_widget)  
+        self.music_widget = MusicWidget()
+        tl.addSpacing(4)
+        tl.addWidget(self.music_widget)
 
         # Mentor Section (Aligned with Cache Bar width ~220px)
         self.mentor = MentorWidget()
         self.mentor.setFixedWidth(220)
-        tl.addWidget(self.mentor)   
-        
+        tl.addWidget(self.mentor)
+
         self._top_bar = self.top_frame
         self._apply_topbar_style()  # Initial style
         self._classic_settings_panel = self._build_classic_settings_panel()
@@ -988,13 +1144,13 @@ class HomeScreen(QWidget):
         split.addWidget(self._cache_widget)
         split.setSizes([340, 760, 220])
         _sw_l.addWidget(split, stretch=1)
-        self._body_stack.addWidget(self._splitter_widget)   # index 0
+        self._body_stack.addWidget(self._splitter_widget)  # index 0
 
         # TMNT layout
         self._tmnt_layout = None
         if _TMNT_HOME_AVAILABLE:
             self._tmnt_layout = self._create_tmnt_layout()
-            self._body_stack.addWidget(self._tmnt_layout)   # index 1
+            self._body_stack.addWidget(self._tmnt_layout)  # index 1
 
         L.addWidget(self._body_stack, stretch=1)
 
@@ -1002,10 +1158,14 @@ class HomeScreen(QWidget):
         if self._current_theme == "tmnt" and self._tmnt_layout:
             self.top_frame.hide()
             self._body_stack.setCurrentIndex(1)
-            QTimer.singleShot(100, lambda: (
-                self.window().statusBar().hide()
-                if self.window() and self.window().statusBar() else None
-            ))
+            QTimer.singleShot(
+                100,
+                lambda: (
+                    self.window().statusBar().hide()
+                    if self.window() and self.window().statusBar()
+                    else None
+                ),
+            )
         self._install_home_ram_shortcut()
 
     def _install_home_ram_shortcut(self):
@@ -1017,8 +1177,10 @@ class HomeScreen(QWidget):
         self._clear_home_ram_shortcut.activated.connect(self._clear_home_ram_caches)
 
     def _clear_home_ram_caches(self):
-        if getattr(self, "_active_review", None) is not None or getattr(self, "_active_editor", None) is not None:
-            print("[DEBUG][home_ram] ctrl_c_ignored active_workflow=True")
+        if (
+            getattr(self, "_active_review", None) is not None
+            or getattr(self, "_active_editor", None) is not None
+        ):
             return
 
         from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
@@ -1084,12 +1246,6 @@ class HomeScreen(QWidget):
         if win is not None and hasattr(win, "statusBar") and win.statusBar():
             win.statusBar().showMessage("RAM cache cleared", 2500)
 
-        print(
-            "[DEBUG][home_ram] ctrl_c_clear "
-            f"pages={page_count} masks={len(mask_pdfs)} canvases={canvas_count} "
-            f"pixmaps={hidden_count} thumbs={thumb_count}"
-        )
-
     def show_review(self, cards, data, _on_batch_done=None):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
@@ -1137,7 +1293,6 @@ class HomeScreen(QWidget):
         rev.show()
         QTimer.singleShot(0, rev.canvas.setFocus)
 
-
     def show_review_sequential(self, groups, data):
         """Review card groups one PDF at a time.
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
@@ -1145,6 +1300,7 @@ class HomeScreen(QWidget):
 
         def _clear_ram():
             from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+
             PAGE_CACHE.clear_ram_only()
             MASK_REGISTRY._map.clear()
             for label in list(PIXMAP_REGISTRY._entries.keys()):
@@ -1169,6 +1325,7 @@ class HomeScreen(QWidget):
         self._active_review = None
         if rev and getattr(rev, "canvas", None) is not None:
             from cache_manager import MASK_REGISTRY
+
             MASK_REGISTRY.unregister(rev.canvas)
 
         if getattr(self, "_pre_review_tmnt", False) and self._tmnt_layout:
@@ -1253,16 +1410,24 @@ class HomeScreen(QWidget):
             JournalDialog(self).exec_()
         else:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Journal",
-                "journal.py not found!\nPlace journal.py next to anki_occlusion_v19.py")
+
+            QMessageBox.warning(
+                self,
+                "Journal",
+                "journal.py not found!\nPlace journal.py next to anki_occlusion_v19.py",
+            )
 
     def _show_math_trainer(self):
         if getattr(self, "_math_trainer", None) is not None:
             return
         if not _MATH_AVAILABLE:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Math Trainer",
-                "math_trainer.py not found!\n\nPlace math_trainer.py inside the ui/ folder.")
+
+            QMessageBox.warning(
+                self,
+                "Math Trainer",
+                "math_trainer.py not found!\n\nPlace math_trainer.py inside the ui/ folder.",
+            )
             return
         mt = MathTrainerPage(parent=self)
         mt.closed.connect(self._hide_math_trainer)
@@ -1324,17 +1489,16 @@ class HomeScreen(QWidget):
         return layout
 
     def _save_current_data_now(self):
-        print(f"[DEBUG][mission_archive] header_save_begin path={current_data_file()}")
         try:
             store.mark_dirty()
             store.save_force()
             flush_runtime_state()
         except Exception as ex:
-            print(f"[DEBUG][mission_archive] header_save_failed error={ex}")
-            QMessageBox.warning(self, "Save Failed", f"Could not save current data:\n{ex}")
+            QMessageBox.warning(
+                self, "Save Failed", f"Could not save current data:\n{ex}"
+            )
             return
 
-        print(f"[DEBUG][mission_archive] header_save_done path={current_data_file()}")
         win = self.window()
         if hasattr(win, "statusBar") and callable(win.statusBar):
             sb = win.statusBar()
@@ -1342,15 +1506,13 @@ class HomeScreen(QWidget):
                 sb.showMessage(f"Saved data to {current_data_file()}", 4000)
 
     def _on_classic_save_clicked(self):
-        print("[DEBUG][classic_topbar] save_clicked")
         self._save_current_data_now()
 
     def _build_classic_settings_panel(self):
         panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
         panel.setObjectName("classic_settings_panel")
         panel.setAttribute(Qt.WA_StyledBackground, True)
-        panel.setStyleSheet(
-            f"""
+        panel.setStyleSheet(f"""
             QFrame#classic_settings_panel {{
                 background: {C_SURFACE};
                 border: 1px solid {C_BORDER};
@@ -1375,18 +1537,21 @@ class HomeScreen(QWidget):
                 color: {C_TEXT};
                 border-color: {C_ACCENT};
             }}
-            """
-        )
+            """)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
         scale_title = QLabel("VISUAL SCALE")
-        scale_title.setStyleSheet(f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;")
+        scale_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
         layout.addWidget(scale_title)
 
         scale_box = QFrame()
-        scale_box.setStyleSheet(f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;")
+        scale_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
         scale_layout = QHBoxLayout(scale_box)
         scale_layout.setContentsMargins(10, 8, 10, 8)
         scale_layout.setSpacing(8)
@@ -1400,11 +1565,15 @@ class HomeScreen(QWidget):
         layout.addWidget(scale_box)
 
         archive_title = QLabel("MISSION ARCHIVE")
-        archive_title.setStyleSheet(f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;")
+        archive_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
         layout.addWidget(archive_title)
 
         archive_box = QFrame()
-        archive_box.setStyleSheet(f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;")
+        archive_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
         archive_layout = QHBoxLayout(archive_box)
         archive_layout.setContentsMargins(10, 8, 10, 8)
         archive_layout.setSpacing(8)
@@ -1412,7 +1581,9 @@ class HomeScreen(QWidget):
         archive_icon.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
         archive_layout.addWidget(archive_icon)
         self._classic_archive_value = QLabel()
-        self._classic_archive_value.setStyleSheet(f"color:{C_TEXT};font-size:12px;font-weight:bold;")
+        self._classic_archive_value.setStyleSheet(
+            f"color:{C_TEXT};font-size:12px;font-weight:bold;"
+        )
         archive_layout.addWidget(self._classic_archive_value, 1)
         self._classic_archive_btn = QPushButton("SET")
         self._classic_archive_btn.setCursor(Qt.PointingHandCursor)
@@ -1436,7 +1607,6 @@ class HomeScreen(QWidget):
         return button
 
     def _on_classic_font_clicked(self, direction):
-        print(f"[DEBUG][classic_settings] font_clicked direction={direction}")
         self._emit_font(direction)
 
     def _refresh_classic_archive_display(self):
@@ -1450,7 +1620,6 @@ class HomeScreen(QWidget):
             self._classic_archive_box.setToolTip(tooltip)
         if self._classic_archive_btn is not None:
             self._classic_archive_btn.setToolTip(tooltip)
-        print(f"[DEBUG][classic_settings] archive_refresh label={label}")
 
     def _toggle_classic_settings_panel(self):
         panel = self._classic_settings_panel
@@ -1458,7 +1627,6 @@ class HomeScreen(QWidget):
             return
         if panel.isVisible():
             panel.hide()
-            print("[DEBUG][classic_settings] panel_hide")
             return
         self._refresh_classic_archive_display()
         panel.adjustSize()
@@ -1467,19 +1635,24 @@ class HomeScreen(QWidget):
         panel.show()
         panel.raise_()
         panel.activateWindow()
-        print("[DEBUG][classic_settings] panel_show")
 
     def _choose_classic_mission_archive(self):
-        start_dir = get_mission_archive_root() or os.path.dirname(current_data_file()) or os.path.expanduser("~")
-        new_root = QFileDialog.getExistingDirectory(self, "Select Mission Archive Folder", start_dir)
+        start_dir = (
+            get_mission_archive_root()
+            or os.path.dirname(current_data_file())
+            or os.path.expanduser("~")
+        )
+        new_root = QFileDialog.getExistingDirectory(
+            self, "Select Mission Archive Folder", start_dir
+        )
         if not new_root:
             return
-        print(f"[DEBUG][classic_settings] archive_select root={new_root}")
         try:
             summary = migrate_to_mission_archive(new_root, data=store.get())
         except Exception as ex:
-            QMessageBox.warning(self, "Mission Archive", f"Could not switch Mission Archive:\n{ex}")
-            print(f"[DEBUG][classic_settings] archive_select_failed error={ex}")
+            QMessageBox.warning(
+                self, "Mission Archive", f"Could not switch Mission Archive:\n{ex}"
+            )
             return
         self._refresh_classic_archive_display()
         if self._classic_settings_panel is not None:
@@ -1500,19 +1673,15 @@ class HomeScreen(QWidget):
             f"Images copied: {summary['images_copied']}\n"
             f"Cache entries copied: {summary['cache_entries_copied']}",
         )
-        print(f"[DEBUG][classic_settings] archive_select_done root={new_root}")
 
     def rebuild_tmnt_layout(self, force=False):
         if not _TMNT_HOME_AVAILABLE or self._tmnt_layout is None:
-            print("[DEBUG] rebuild_tmnt_layout aborted: TMNT not available or layout is None")
             return
         current = self._body_stack.currentWidget()
         was_visible = current is self._tmnt_layout
         if not force and not was_visible:
-            print(f"[DEBUG] rebuild_tmnt_layout aborted: current {current} is not tmnt_layout {self._tmnt_layout}")
             return
-        
-        print("[DEBUG] rebuild_tmnt_layout is executing!")
+
         selected = self._tmnt_layout.get_selected_deck()
         selected_id = selected.get("_id") if selected else None
         old = self._tmnt_layout
@@ -1522,7 +1691,9 @@ class HomeScreen(QWidget):
             self._tmnt_layout.main._font_size_val = int(
                 self._data.get("_font_size", BASE_FONT_SIZE)
             )
-        self._body_stack.insertWidget(old_index if old_index >= 0 else 1, self._tmnt_layout)
+        self._body_stack.insertWidget(
+            old_index if old_index >= 0 else 1, self._tmnt_layout
+        )
         if was_visible:
             self._body_stack.setCurrentWidget(self._tmnt_layout)
         self._body_stack.removeWidget(old)
@@ -1542,10 +1713,12 @@ class HomeScreen(QWidget):
         from theme_manager import build_stylesheet, normalize_theme
         from PyQt5.QtGui import QFont
 
-        _cycle    = {"classic": "tmnt", "tmnt": "classic"}
+        _cycle = {"classic": "tmnt", "tmnt": "classic"}
         _btn_next = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
 
-        self._current_theme = normalize_theme(_cycle.get(self._current_theme, "classic"))
+        self._current_theme = normalize_theme(
+            _cycle.get(self._current_theme, "classic")
+        )
         self._btn_theme.setText(_btn_next.get(self._current_theme, "🐢 TMNT MODE"))
         self._data["_theme"] = self._current_theme
         store.mark_dirty()
@@ -1553,16 +1726,18 @@ class HomeScreen(QWidget):
         app = QApplication.instance()
         win = self.window()
         current_size = self._data.get("_font_size", BASE_FONT_SIZE)
-        
-        print(f"[DEBUG] _toggle_theme called! New theme: {self._current_theme}")
 
         if self._current_theme == "tmnt" and self._tmnt_layout:
             # ── Swap to TMNT full layout ──────────────────────────────────────
-            if self._classic_settings_panel is not None and self._classic_settings_panel.isVisible():
+            if (
+                self._classic_settings_panel is not None
+                and self._classic_settings_panel.isVisible()
+            ):
                 self._classic_settings_panel.hide()
             self.top_frame.hide()
             win_sb = self.window().statusBar() if self.window() else None
-            if win_sb: win_sb.hide()
+            if win_sb:
+                win_sb.hide()
             self._tmnt_layout.refresh()
             self._tmnt_layout.set_bgm_state(self.music_widget._playing)
             self._body_stack.setCurrentIndex(1)
@@ -1571,13 +1746,14 @@ class HomeScreen(QWidget):
                 app.setFont(QFont("Roboto Mono", current_size))
                 ss = build_stylesheet("tmnt", current_size)
                 app.setStyleSheet(ss)
-                if win: win.setStyleSheet(ss)
-                print(f"[DEBUG] Applied TMNT layout and stylesheet")
+                if win:
+                    win.setStyleSheet(ss)
         else:
             # ── Swap back to splitter (classic; Ninja/Dojo is disabled) ─────
             self.top_frame.show()
             win_sb = self.window().statusBar() if self.window() else None
-            if win_sb: win_sb.show()
+            if win_sb:
+                win_sb.show()
             self._body_stack.setCurrentIndex(0)
             self.deck_tree.set_theme(self._current_theme)
             self.deck_view.set_theme(self._current_theme)
@@ -1589,24 +1765,23 @@ class HomeScreen(QWidget):
                 app._active_theme = self._current_theme
                 app.setFont(QFont("Segoe UI", current_size))
                 app.setStyleSheet(_build_ss(current_size))
-                if win: win.setStyleSheet("")
-                print(f"[DEBUG] Applied Classic layout and stylesheet")
+                if win:
+                    win.setStyleSheet("")
 
     def _emit_font(self, direction: int):
-        print(f"[DEBUG] _emit_font called with direction: {direction}")
         win = self.window()
         if hasattr(win, "change_font_size"):
             win.change_font_size(direction)
 
     def keyPressEvent(self, e):
-        key  = e.key()
+        key = e.key()
         mods = e.modifiers()
-        ctrl  = bool(mods & Qt.ControlModifier)
+        ctrl = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
 
         if ctrl and key == Qt.Key_S:
             store.save_soon(min_interval=0.0)
-            if hasattr(self, 'canvas'):
+            if hasattr(self, "canvas"):
                 self.canvas._show_toast("💾 Manual Save")
             print("[HomeScreen][key] Ctrl+S — manual save triggered")
             e.accept()
@@ -1619,16 +1794,22 @@ class HomeScreen(QWidget):
                     ok = deck_history.redo(store)
                     if ok:
                         self.deck_tree.refresh()
-                        self.canvas._show_toast("↪ Deck redo") if hasattr(self, 'canvas') else None
+                        (
+                            self.canvas._show_toast("↪ Deck redo")
+                            if hasattr(self, "canvas")
+                            else None
+                        )
                     print(f"[HomeScreen][key] Ctrl+Shift+Z — deck redo, ok={ok}")
                 else:
                     # Ctrl+Z → try deck undo first, else mask undo
                     ok = deck_history.undo(store)
                     if ok:
                         # deck_tree ka sahi attribute name use karo
-                        dt = getattr(self, 'deck_tree', None) or getattr(self, '_deck_tree', None)
+                        dt = getattr(self, "deck_tree", None) or getattr(
+                            self, "_deck_tree", None
+                        )
                         if dt:
-                            dt._data = store.get()   # ← data bhi sync karo
+                            dt._data = store.get()  # ← data bhi sync karo
                             dt.refresh()
                             print("[HomeScreen][key] Ctrl+Z — deck_tree refreshed ✅")
                         else:
@@ -1652,7 +1833,7 @@ class HomeScreen(QWidget):
             e.accept()
             return
 
-        super().keyPressEvent(e)   # ← yeh already hai, sirf usse pehle add karo
+        super().keyPressEvent(e)  # ← yeh already hai, sirf usse pehle add karo
 
     def closeEvent(self, e):
         active_editor = getattr(self, "_active_editor", None)

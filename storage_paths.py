@@ -4,7 +4,6 @@ import sys
 import uuid
 from pathlib import Path
 
-
 APP_SETTINGS_ORG = "AnkiOcclusion"
 APP_SETTINGS_APP = "App"
 MISSION_ARCHIVE_KEY = "mission_archive_dir"
@@ -55,7 +54,9 @@ def app_base_dir() -> str:
 
 
 def app_resource_path(*parts: str) -> str:
-    clean_parts = [str(part).strip("\\/") for part in (parts or []) if str(part).strip("\\/")]
+    clean_parts = [
+        str(part).strip("\\/") for part in (parts or []) if str(part).strip("\\/")
+    ]
     if not clean_parts:
         return app_base_dir()
     return _normalize_path(os.path.join(app_base_dir(), *clean_parts))
@@ -76,7 +77,6 @@ def get_mission_archive_root() -> str:
 def set_mission_archive_root(root: str) -> str:
     root = _normalize_root(root)
     _settings().setValue(MISSION_ARCHIVE_KEY, root)
-    print(f"[DEBUG][mission_archive] settings_saved root={root}")
     return root
 
 
@@ -113,7 +113,9 @@ def current_backup_dir(root: str | None = None) -> str:
     root = _current_archive_root(root)
     if root:
         return archive_backup_dir(root)
-    return os.path.join(os.path.dirname(current_data_file(root)) or ".", "anki_occlusion_data.backups")
+    return os.path.join(
+        os.path.dirname(current_data_file(root)) or ".", "anki_occlusion_data.backups"
+    )
 
 
 def current_data_file(root: str | None = None) -> str:
@@ -203,7 +205,9 @@ def is_within_directory(path: str, directory: str) -> bool:
     if not path or not directory:
         return False
     try:
-        return os.path.commonpath([_normalize_path(path), _normalize_path(directory)]) == _normalize_path(directory)
+        return os.path.commonpath(
+            [_normalize_path(path), _normalize_path(directory)]
+        ) == _normalize_path(directory)
     except ValueError:
         return False
 
@@ -219,7 +223,9 @@ def to_archive_relative(path: str, root: str | None = None) -> str:
 
 
 def _sanitize_stem(stem: str, fallback: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (stem or ""))
+    cleaned = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (stem or "")
+    )
     cleaned = cleaned.strip("._")
     return cleaned or fallback
 
@@ -246,7 +252,9 @@ def find_deck_segments(data: dict, deck_id) -> list[str]:
             current = trail + [name]
             if deck.get("_id") == deck_id:
                 return current
-            found = _walk(deck.get("children", []) or deck.get("subdecks", []) or [], current)
+            found = _walk(
+                deck.get("children", []) or deck.get("subdecks", []) or [], current
+            )
             if found:
                 return found
         return None
@@ -254,7 +262,9 @@ def find_deck_segments(data: dict, deck_id) -> list[str]:
     return _walk((data or {}).get("decks", []) or [], []) or []
 
 
-def _archive_dir_for_kind(kind: str, root: str | None = None, deck_segments=None) -> str:
+def _archive_dir_for_kind(
+    kind: str, root: str | None = None, deck_segments=None
+) -> str:
     root = _current_archive_root(root)
     if kind == "pdfs":
         base = archive_pdf_dir(root)
@@ -265,7 +275,9 @@ def _archive_dir_for_kind(kind: str, root: str | None = None, deck_segments=None
     raise ValueError(f"Unsupported archive kind: {kind}")
 
 
-def build_archive_asset_path(kind: str, source_name: str, root: str | None = None, deck_segments=None) -> tuple[str, str]:
+def build_archive_asset_path(
+    kind: str, source_name: str, root: str | None = None, deck_segments=None
+) -> tuple[str, str]:
     root = _current_archive_root(root)
     if not root:
         raise RuntimeError("Mission archive is not configured.")
@@ -306,16 +318,8 @@ def import_asset_into_archive(
     if move_existing and is_within_directory(source_abs, root):
         os.makedirs(os.path.dirname(dest_abs) or ".", exist_ok=True)
         shutil.move(source_abs, dest_abs)
-        print(
-            "[DEBUG][mission_archive] asset_moved "
-            f"kind={kind} source={source_abs} dest={dest_abs}"
-        )
     else:
         shutil.copy2(source_abs, dest_abs)
-        print(
-            "[DEBUG][mission_archive] asset_copied "
-            f"kind={kind} source={source_abs} dest={dest_abs}"
-        )
     return dest_rel
 
 
@@ -371,13 +375,12 @@ def relocate_pdf_for_deck(card: dict, deck_segments, root: str | None = None) ->
 
 
 def flush_runtime_state():
-    print("[DEBUG][mission_archive] flush_runtime_state start")
     try:
         import data_manager
 
         data_manager.store.save_force()
     except Exception as ex:
-        print(f"[DEBUG][mission_archive] store_flush_failed error={ex}")
+        pass
     try:
         from PyQt5.QtWidgets import QApplication
 
@@ -387,11 +390,14 @@ def flush_runtime_state():
         seen = set()
         for widget in app.allWidgets():
             timer = getattr(widget, "_stimer", None)
-            if timer is None or id(timer) in seen or not hasattr(timer, "flush_to_journal"):
+            if (
+                timer is None
+                or id(timer) in seen
+                or not hasattr(timer, "flush_to_journal")
+            ):
                 continue
             seen.add(id(timer))
             was_running = bool(getattr(timer, "_running", False))
-            print(f"[DEBUG][mission_archive] timer_flush running={was_running}")
             try:
                 if was_running and hasattr(timer, "stop"):
                     timer.stop()
@@ -399,9 +405,9 @@ def flush_runtime_state():
                 if was_running and hasattr(timer, "start"):
                     timer.start()
             except Exception as ex:
-                print(f"[DEBUG][mission_archive] timer_flush_failed error={ex}")
+                pass
     except Exception as ex:
-        print(f"[DEBUG][mission_archive] widget_flush_failed error={ex}")
+        pass
 
 
 def _copy_file_if_present(source: str, target: str) -> bool:
@@ -448,7 +454,7 @@ def apply_mission_archive(root: str | None = None) -> dict:
 
         journal_manager.JOURNAL_FILE = current_journal_file(root)
     except Exception as ex:
-        print(f"[DEBUG][mission_archive] journal_module_apply_failed error={ex}")
+        pass
 
     try:
         import cache_manager
@@ -458,7 +464,7 @@ def apply_mission_archive(root: str | None = None) -> dict:
         cache_manager.COMBINED_CACHE._index.clear()
         cache_manager.COMBINED_CACHE._rebuild_index()
     except Exception as ex:
-        print(f"[DEBUG][mission_archive] cache_apply_failed error={ex}")
+        pass
 
     applied = {
         "root": root,
@@ -467,12 +473,6 @@ def apply_mission_archive(root: str | None = None) -> dict:
         "journal_file": session_timer._JOURNAL_FILE,
         "cache_dir": current_cache_dir(root),
     }
-    print(
-        "[DEBUG][mission_archive] apply "
-        f"root={applied['root'] or '<legacy>'} "
-        f"data={applied['data_file']} "
-        f"cache={applied['cache_dir']}"
-    )
     return applied
 
 
@@ -491,11 +491,6 @@ def migrate_to_mission_archive(new_root: str, data: dict | None = None) -> dict:
     source_journal_file = current_journal_file(old_root)
     source_cache_dir = current_cache_dir(old_root)
     source_backup_dir = current_backup_dir(old_root)
-
-    print(
-        "[DEBUG][mission_archive] migrate_start "
-        f"from_root={old_root or '<legacy>'} to_root={new_root}"
-    )
     flush_runtime_state()
     ensure_archive_dirs(new_root)
 
@@ -527,17 +522,11 @@ def migrate_to_mission_archive(new_root: str, data: dict | None = None) -> dict:
                     if new_value != stored_path:
                         card[field] = new_value
                         changed = True
-                        summary["pdfs_copied" if field == "pdf_path" else "images_copied"] += 1
-                        print(
-                            "[DEBUG][mission_archive] asset_rewritten "
-                            f"field={field} stored={stored_path} new={new_value}"
-                        )
+                        summary[
+                            "pdfs_copied" if field == "pdf_path" else "images_copied"
+                        ] += 1
                 except Exception as ex:
                     summary["assets_skipped"] += 1
-                    print(
-                        "[DEBUG][mission_archive] asset_copy_failed "
-                        f"field={field} path={stored_path} error={ex}"
-                    )
             if changed:
                 summary["cards_rewritten"] += 1
 
@@ -550,8 +539,12 @@ def migrate_to_mission_archive(new_root: str, data: dict | None = None) -> dict:
     if _copy_file_if_present(source_journal_file, current_journal_file(new_root)):
         summary["state_files_copied"] += 1
 
-    summary["backup_entries_copied"] = _copy_dir_contents(source_backup_dir, archive_backup_dir(new_root))
-    summary["cache_entries_copied"] = _copy_dir_contents(source_cache_dir, archive_cache_dir(new_root))
+    summary["backup_entries_copied"] = _copy_dir_contents(
+        source_backup_dir, archive_backup_dir(new_root)
+    )
+    summary["cache_entries_copied"] = _copy_dir_contents(
+        source_cache_dir, archive_cache_dir(new_root)
+    )
 
     set_mission_archive_root(new_root)
     apply_mission_archive(new_root)
@@ -560,6 +553,4 @@ def migrate_to_mission_archive(new_root: str, data: dict | None = None) -> dict:
         import data_manager
 
         data_manager.store.save_force()
-
-    print(f"[DEBUG][mission_archive] migrate_done summary={summary}")
     return summary

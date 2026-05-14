@@ -76,16 +76,43 @@ import copy
 import uuid
 
 from PyQt5.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLineEdit, QListWidget, QFrame, QScrollArea, QMessageBox, QFileDialog,
-    QFormLayout, QTextEdit, QSizePolicy, QDialog, QApplication
+    QWidget,
+    QLabel,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLineEdit,
+    QListWidget,
+    QFrame,
+    QScrollArea,
+    QMessageBox,
+    QFileDialog,
+    QFormLayout,
+    QTextEdit,
+    QSizePolicy,
+    QDialog,
+    QApplication,
 )
 from PyQt5.QtCore import (
-    Qt, QPointF, QRectF, QTimer, pyqtSignal, QSize, QEvent, QUrl,
-    QFileSystemWatcher
+    Qt,
+    QPointF,
+    QRectF,
+    QTimer,
+    pyqtSignal,
+    QSize,
+    QEvent,
+    QUrl,
+    QFileSystemWatcher,
 )
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QBrush, QDesktopServices
+    QPainter,
+    QPen,
+    QColor,
+    QPixmap,
+    QFont,
+    QCursor,
+    QBrush,
+    QDesktopServices,
 )
 
 from sm2_engine import sm2_init
@@ -97,11 +124,11 @@ from pdf_engine import (
 from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
 from data_manager import new_box_id
 
-C_GREEN  = "#50FA7B"
-C_MASK   = "#F7916A"
+C_GREEN = "#50FA7B"
+C_MASK = "#F7916A"
 C_ACCENT = "#7C6AF7"
 C_YELLOW = "#F1FA8C"
-PAGE_GAP = 12   # vertical gap between pages in image-space pixels
+PAGE_GAP = 12  # vertical gap between pages in image-space pixels
 EDITOR_PDF_ZOOM = 1.5
 
 _QT_MAX_PX = 32_767  # Qt GPU texture hard limit — QPixmap silently fails above this
@@ -111,69 +138,83 @@ _QT_MAX_PX = 32_767  # Qt GPU texture hard limit — QPixmap silently fails abov
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     dx, dy = px - cx, py - cy
-    lx =  dx * cos_a - dy * sin_a
-    ly =  dx * sin_a + dy * cos_a
+    lx = dx * cos_a - dy * sin_a
+    ly = dx * sin_a + dy * cos_a
     return abs(lx) <= w / 2 and abs(ly) <= h / 2
+
 
 def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     dx, dy = px - cx, py - cy
-    lx =  dx * cos_a - dy * sin_a
-    ly =  dx * sin_a + dy * cos_a
+    lx = dx * cos_a - dy * sin_a
+    ly = dx * sin_a + dy * cos_a
     if rx < 1 or ry < 1:
         return False
     return (lx / rx) ** 2 + (ly / ry) ** 2 <= 1.0
 
 
-
 from ui.canvas.core import OcclusionCanvas
-
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TOOL BAR
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class ToolBar(QWidget):
     tool_changed = pyqtSignal(str)
-    _TOOLS = [("select","⬡","Select / Move / Resize / Rotate  [V]"),
-              ("rect",  "□","Rectangle mask  [R]"),
-              ("ellipse","○","Ellipse mask  [E]"),
-              ("text",  "T","Edit label  [T]")]
+    _TOOLS = [
+        ("select", "⬡", "Select / Move / Resize / Rotate  [V]"),
+        ("rect", "□", "Rectangle mask  [R]"),
+        ("ellipse", "○", "Ellipse mask  [E]"),
+        ("text", "T", "Edit label  [T]"),
+    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(50)
-        self.setStyleSheet("QWidget{background:#F0F0F0;border-right:1px solid #C8C8C8;}")
-        L = QVBoxLayout(self); L.setContentsMargins(5,8,5,8); L.setSpacing(3)
+        self.setStyleSheet(
+            "QWidget{background:#F0F0F0;border-right:1px solid #C8C8C8;}"
+        )
+        L = QVBoxLayout(self)
+        L.setContentsMargins(5, 8, 5, 8)
+        L.setSpacing(3)
         self._btns = {}
         for tool, icon, tip in self._TOOLS:
-            b = QPushButton(icon); b.setToolTip(tip); b.setCheckable(True)
-            b.setFixedSize(40,40)
+            b = QPushButton(icon)
+            b.setToolTip(tip)
+            b.setCheckable(True)
+            b.setFixedSize(40, 40)
             b.setStyleSheet(
                 "QPushButton{background:transparent;color:#333;border:none;"
                 "border-radius:5px;font-size:20px;font-weight:bold;}"
                 "QPushButton:checked{background:#4A90D9;color:white;}"
-                "QPushButton:hover:!checked{background:#E0E0E0;}")
+                "QPushButton:hover:!checked{background:#E0E0E0;}"
+            )
             b.clicked.connect(lambda _, t=tool: self._select(t))
-            L.addWidget(b); self._btns[tool] = b
-        L.addStretch(); self._select("rect")
+            L.addWidget(b)
+            self._btns[tool] = b
+        L.addStretch()
+        self._select("rect")
 
     def _select(self, tool):
-        for t, b in self._btns.items(): b.setChecked(t == tool)
+        for t, b in self._btns.items():
+            b.setChecked(t == tool)
         self.tool_changed.emit(tool)
 
-    def select_tool(self, tool): self._select(tool)
+    def select_tool(self, tool):
+        self._select(tool)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MASK PANEL
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class MaskPanel(QWidget):
     def __init__(self, canvas: OcclusionCanvas, parent=None):
@@ -183,7 +224,9 @@ class MaskPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        L = QVBoxLayout(self); L.setContentsMargins(6,6,6,6); L.setSpacing(4)
+        L = QVBoxLayout(self)
+        L.setContentsMargins(6, 6, 6, 6)
+        L.setSpacing(4)
         self.list_w = QListWidget()
         self.list_w.currentRowChanged.connect(self._on_select)
         L.addWidget(self.list_w, stretch=1)
@@ -194,20 +237,26 @@ class MaskPanel(QWidget):
         self.inp_label.setPlaceholderText("e.g. Mitochondria")
         self.inp_label.textChanged.connect(self._on_label_change)
         L.addWidget(self.inp_label)
-        btn_row = QHBoxLayout(); btn_row.setSpacing(4)
-        b_del = QPushButton("🗑 Delete"); b_del.setObjectName("danger")
-        b_del.setFixedHeight(26); b_del.clicked.connect(self._delete_selected)
-        b_clr = QPushButton("✕ Clear All"); b_clr.setFixedHeight(26)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+        b_del = QPushButton("🗑 Delete")
+        b_del.setObjectName("danger")
+        b_del.setFixedHeight(26)
+        b_del.clicked.connect(self._delete_selected)
+        b_clr = QPushButton("✕ Clear All")
+        b_clr.setFixedHeight(26)
         b_clr.clicked.connect(self._canvas.clear_all)
-        btn_row.addWidget(b_del); btn_row.addWidget(b_clr)
+        btn_row.addWidget(b_del)
+        btn_row.addWidget(b_clr)
         L.addLayout(btn_row)
 
     def _refresh(self, boxes):
-        self.list_w.blockSignals(True); self.list_w.clear()
+        self.list_w.blockSignals(True)
+        self.list_w.clear()
         for i, b in enumerate(boxes):
-            lbl   = b.get("label") or f"Mask #{i+1}"
-            gid   = b.get("group_id","")
-            icon  = "🔵" if gid else "🟧"
+            lbl = b.get("label") or f"Mask #{i+1}"
+            gid = b.get("group_id", "")
+            icon = "🔵" if gid else "🟧"
             badge = f" [{gid[:4]}]" if gid else ""
             self.list_w.addItem(f"  {icon} {lbl}{badge}")
         sel = self._canvas._selected_idx
@@ -215,7 +264,7 @@ class MaskPanel(QWidget):
             self.list_w.setCurrentRow(sel)
             box = self._canvas._boxes[sel]
             self.inp_label.blockSignals(True)
-            self.inp_label.setText(box.get("label",""))
+            self.inp_label.setText(box.get("label", ""))
             self.inp_label.blockSignals(False)
         self.list_w.blockSignals(False)
 
@@ -223,24 +272,25 @@ class MaskPanel(QWidget):
         self._canvas.highlight(row)
         if 0 <= row < len(self._canvas._boxes):
             self.inp_label.blockSignals(True)
-            self.inp_label.setText(self._canvas._boxes[row].get("label",""))
+            self.inp_label.setText(self._canvas._boxes[row].get("label", ""))
             self.inp_label.blockSignals(False)
 
     def _on_label_change(self, text):
         row = self.list_w.currentRow()
         if row >= 0:
             self._canvas.update_label(row, text)
-            self.list_w.currentItem().setText(
-                f"  🟧 {text or f'Mask #{row+1}'}")
+            self.list_w.currentItem().setText(f"  🟧 {text or f'Mask #{row+1}'}")
 
     def _delete_selected(self):
         row = self.list_w.currentRow()
-        if row >= 0: self._canvas.delete_box(row)
+        if row >= 0:
+            self._canvas.delete_box(row)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ZOOMABLE SCROLL AREA  (unchanged from v19)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class _ZoomableScrollArea(QScrollArea):
     # ── NEW: emitted when vertical scroll position changes ────────────────────
@@ -249,28 +299,28 @@ class _ZoomableScrollArea(QScrollArea):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._canvas              = None
-        self._pan_active          = False
-        self._pan_start_pos       = None
-        self._pan_hval            = 0
-        self._pan_vval            = 0
-        self._pan_mode            = False
-        self._space_held          = False
-        self._drag_threshold      = 10
+        self._canvas = None
+        self._pan_active = False
+        self._pan_start_pos = None
+        self._pan_hval = 0
+        self._pan_vval = 0
+        self._pan_mode = False
+        self._space_held = False
+        self._drag_threshold = 10
         self._is_actually_panning = False
-        self._last_scroll_value   = None
-        self._last_scroll_ts      = None
+        self._last_scroll_value = None
+        self._last_scroll_ts = None
         self._last_visible_emit_ts = None
-        self._last_scroll_range   = None
-        self._last_viewport_size  = None
-        self._scroll_direction    = 0
+        self._last_scroll_range = None
+        self._last_viewport_size = None
+        self._scroll_direction = 0
         self.setFocusPolicy(Qt.StrongFocus)
         self.viewport().installEventFilter(self)
 
         # ── Scroll debounce timer — avoids firing on every pixel of scroll ───
         self._scroll_debounce = QTimer(self)
         self._scroll_debounce.setSingleShot(True)
-        self._scroll_debounce.setInterval(150)   # backup emit after motion settles
+        self._scroll_debounce.setInterval(150)  # backup emit after motion settles
         self._scroll_debounce.timeout.connect(self._emit_visible_pages)
 
         # Connect scrollbar AFTER it exists (post __init__)
@@ -284,7 +334,8 @@ class _ZoomableScrollArea(QScrollArea):
         self.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
 
     @property
-    def pan_mode(self): return self._pan_mode
+    def pan_mode(self):
+        return self._pan_mode
 
     def _on_scroll(self, value):
         """Raw scroll event — debounce so we don't fire 60× per swipe."""
@@ -298,7 +349,11 @@ class _ZoomableScrollArea(QScrollArea):
             self._scroll_direction = 1
         elif delta < 0:
             self._scroll_direction = -1
-        page = self._canvas.get_current_page(value) + 1 if self._canvas and self._canvas._page_tops else 0
+        page = (
+            self._canvas.get_current_page(value) + 1
+            if self._canvas and self._canvas._page_tops
+            else 0
+        )
         vp = self.viewport()
         range_now = (vbar.minimum(), vbar.maximum())
         viewport_now = (vp.width(), vp.height())
@@ -328,32 +383,32 @@ class _ZoomableScrollArea(QScrollArea):
         if not self._canvas or not self._canvas._page_tops:
             return
 
-        vp_h     = self.viewport().height()
+        vp_h = self.viewport().height()
         scroll_y = self.verticalScrollBar().value()
-        scale    = self._canvas._scale
+        scale = self._canvas._scale
 
         # Convert screen coords → image-space
-        img_top    = scroll_y / max(scale, 0.01)
+        img_top = scroll_y / max(scale, 0.01)
         img_bottom = (scroll_y + vp_h) / max(scale, 0.01)
 
         page_tops = self._canvas._page_tops
-        pages     = self._canvas._pages
-        total     = len(page_tops)
+        pages = self._canvas._pages
+        total = len(page_tops)
 
         first = 0
-        last  = total - 1
+        last = total - 1
 
         for i, top in enumerate(page_tops):
-            h        = pages[i].height() if i < len(pages) else 0
+            h = pages[i].height() if i < len(pages) else 0
             page_bot = top + h
             if page_bot < img_top:
-                first = i + 1     # this page is above viewport
+                first = i + 1  # this page is above viewport
             if top > img_bottom:
-                last = i - 1      # this page is below viewport
+                last = i - 1  # this page is below viewport
                 break
 
         first = max(0, min(first, total - 1))
-        last  = max(0, min(last,  total - 1))
+        last = max(0, min(last, total - 1))
 
         # Prefetch just one page in the scroll direction so the current page
         # and its neighbor stay ready without adding extra render churn.
@@ -378,32 +433,43 @@ class _ZoomableScrollArea(QScrollArea):
             t = e.type()
             if t == QEvent.MouseButtonRelease:
                 if self._pan_active:
-                    self._pan_active = False; self._pan_start_pos = None
-                    self._is_actually_panning = False; self._clear_pan_cursor()
-                    if self._pan_mode: self._enter_pan_cursor()
+                    self._pan_active = False
+                    self._pan_start_pos = None
+                    self._is_actually_panning = False
+                    self._clear_pan_cursor()
+                    if self._pan_mode:
+                        self._enter_pan_cursor()
                     return False
             elif t in (QEvent.Leave, QEvent.HoverLeave):
                 if self._pan_active:
-                    self._pan_active = False; self._pan_start_pos = None
-                    self._is_actually_panning = False; self._clear_pan_cursor()
+                    self._pan_active = False
+                    self._pan_start_pos = None
+                    self._is_actually_panning = False
+                    self._clear_pan_cursor()
                 return False
         return super().eventFilter(obj, e)
 
     def _set_pan_cursor(self, shape):
         c = QCursor(shape)
-        self.viewport().setCursor(c); self.setCursor(c)
-        if self._canvas: self._canvas.setCursor(c)
+        self.viewport().setCursor(c)
+        self.setCursor(c)
+        if self._canvas:
+            self._canvas.setCursor(c)
 
     def _clear_pan_cursor(self):
-        self.viewport().unsetCursor(); self.unsetCursor()
+        self.viewport().unsetCursor()
+        self.unsetCursor()
         if self._canvas:
-            if getattr(self._canvas, '_mode','') == "review":
+            if getattr(self._canvas, "_mode", "") == "review":
                 self._canvas.setCursor(QCursor(Qt.PointingHandCursor))
             else:
                 self._canvas.set_tool(self._canvas._tool)
 
-    def _enter_pan_cursor(self): self._set_pan_cursor(Qt.OpenHandCursor)
-    def _exit_pan_cursor(self):  self._clear_pan_cursor()
+    def _enter_pan_cursor(self):
+        self._set_pan_cursor(Qt.OpenHandCursor)
+
+    def _exit_pan_cursor(self):
+        self._clear_pan_cursor()
 
     def wheelEvent(self, e):
         if (e.modifiers() & Qt.ControlModifier) and self._canvas:
@@ -414,25 +480,34 @@ class _ZoomableScrollArea(QScrollArea):
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_H and not e.isAutoRepeat():
             self._pan_mode = not self._pan_mode
-            if self._pan_mode: self._enter_pan_cursor()
-            else:              self._exit_pan_cursor()
-            e.accept(); return
+            if self._pan_mode:
+                self._enter_pan_cursor()
+            else:
+                self._exit_pan_cursor()
+            e.accept()
+            return
         super().keyPressEvent(e)
 
-    def keyReleaseEvent(self, e): super().keyReleaseEvent(e)
+    def keyReleaseEvent(self, e):
+        super().keyReleaseEvent(e)
 
     def _should_pan(self, e):
-        if e.button() == Qt.MiddleButton: return True
-        if e.button() == Qt.LeftButton and self.pan_mode: return True
+        if e.button() == Qt.MiddleButton:
+            return True
+        if e.button() == Qt.LeftButton and self.pan_mode:
+            return True
         return False
 
     def mousePressEvent(self, e):
         if self._should_pan(e):
-            self._pan_active = True; self._pan_start_pos = e.globalPos()
+            self._pan_active = True
+            self._pan_start_pos = e.globalPos()
             self._pan_hval = self.horizontalScrollBar().value()
             self._pan_vval = self.verticalScrollBar().value()
             self._is_actually_panning = False
-            self._set_pan_cursor(Qt.OpenHandCursor); e.accept(); return
+            self._set_pan_cursor(Qt.OpenHandCursor)
+            e.accept()
+            return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -442,24 +517,32 @@ class _ZoomableScrollArea(QScrollArea):
                 if dv.manhattanLength() > self._drag_threshold:
                     self._is_actually_panning = True
                     self._set_pan_cursor(Qt.ClosedHandCursor)
-                else: return
+                else:
+                    return
             self.horizontalScrollBar().setValue(self._pan_hval - dv.x())
-            self.verticalScrollBar().setValue(self._pan_vval   - dv.y())
-            e.accept(); return
+            self.verticalScrollBar().setValue(self._pan_vval - dv.y())
+            e.accept()
+            return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if self._pan_active:
-            self._pan_active = False; self._pan_start_pos = None
-            self._is_actually_panning = False; self._clear_pan_cursor()
-            if self._pan_mode: self._enter_pan_cursor()
-            e.accept(); return
+            self._pan_active = False
+            self._pan_start_pos = None
+            self._is_actually_panning = False
+            self._clear_pan_cursor()
+            if self._pan_mode:
+                self._enter_pan_cursor()
+            e.accept()
+            return
         super().mouseReleaseEvent(e)
 
     def leaveEvent(self, e):
         if self._pan_active:
-            self._pan_active = False; self._pan_start_pos = None
-            self._is_actually_panning = False; self._clear_pan_cursor()
+            self._pan_active = False
+            self._pan_start_pos = None
+            self._is_actually_panning = False
+            self._clear_pan_cursor()
         super().leaveEvent(e)
 
 

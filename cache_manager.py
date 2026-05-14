@@ -44,26 +44,39 @@ import hashlib
 import tempfile
 import time
 import json
+import threading
 from collections import OrderedDict
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QSizePolicy, QToolButton, QMessageBox
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QFrame,
+    QSizePolicy,
+    QToolButton,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QPalette, QFont
 
 # ── Theme (matches your app) ─────────────────────────────────────────────────
-C_BG      = "#1E1E2E"
-C_SURFACE = "#2A2A3E"
-C_CARD    = "#313145"
-C_ACCENT  = "#7C6AF7"
-C_GREEN   = "#50FA7B"
-C_RED     = "#FF5555"
-C_YELLOW  = "#F1FA8C"
-C_TEXT    = "#CDD6F4"
-C_SUBTEXT = "#A6ADC8"
-C_BORDER  = "#45475A"
+# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
+from theme_manager import get_palette as _get_palette
+
+_DARK = _get_palette("dark")
+C_BG = _DARK["C_BG"]
+C_SURFACE = _DARK["C_SURFACE"]
+C_CARD = _DARK["C_CARD"]
+C_ACCENT = _DARK["C_ACCENT"]
+C_GREEN = _DARK["C_GREEN"]
+C_RED = _DARK["C_RED"]
+C_YELLOW = _DARK["C_YELLOW"]
+C_TEXT = _DARK["C_TEXT"]
+C_SUBTEXT = _DARK["C_SUBTEXT"]
+C_BORDER = _DARK["C_BORDER"]
 
 _SS = f"""
 QWidget          {{ background:{C_BG}; color:{C_TEXT}; font-family:'Segoe UI'; font-size:13px; }}
@@ -91,11 +104,13 @@ QScrollBar::handle:vertical {{ background:{C_BORDER}; border-radius:3px; }}
 DEFAULT_PDF_IDLE_MINUTES = 5
 DEFAULT_RAM_PAGE_LIMIT = 48
 
+
 class LRUPageCache:
     """
     In-RAM page cache with per-PDF inactivity expiry.
     If a PDF has not been touched for idle_minutes, all its cached pages are cleared.
     """
+
     def __init__(
         self,
         idle_minutes: float = DEFAULT_PDF_IDLE_MINUTES,
@@ -103,14 +118,30 @@ class LRUPageCache:
     ):
         self._cache = OrderedDict()
         self._hashes = {}
-        self._pdf_last_access  = {}
+        self._pdf_last_access = {}
         self._max_pages = None if max_pages is None else max(0, int(max_pages))
+        # ── Async disk write queue ────────────────────────────────────────────
+        # put() enqueues here; daemon thread drains it — never blocks callers.
+        self._disk_write_queue = []
+        self._disk_write_lock = threading.Lock()
+        self._disk_write_event = threading.Event()
+        self._disk_writer = threading.Thread(
+            target=self._disk_writer_loop, daemon=True, name="CacheDiskWriter"
+        )
+        self._disk_writer.start()
 
-    def _touch(self, path: str, now=None):
-        pass   # No longer needed
-
-    def expire_stale(self, now=None):
-        pass   # Auto-clean removed — disk cache handles persistence
+    def _disk_writer_loop(self):
+        """Daemon thread: drains async disk write queue."""
+        while True:
+            self._disk_write_event.wait()
+            self._disk_write_event.clear()
+            while True:
+                with self._disk_write_lock:
+                    if not self._disk_write_queue:
+                        break
+                    item = self._disk_write_queue.pop(0)
+                path, page_num, pixmap, variant = item
+                self._save_to_disk(path, page_num, pixmap, variant)
 
     # ── Disk helpers ──────────────────────────────────────────────────────────
 
@@ -133,8 +164,10 @@ class LRUPageCache:
         h = hashlib.md5(path.encode("utf-8")).hexdigest()
         # Use COMBINED_CACHE._dir at call time (not import time) so the
         # user-chosen location is always respected.
-        cache_dir = COMBINED_CACHE._dir if "COMBINED_CACHE" in globals() else os.path.join(
-            os.path.expanduser("~"), ".cache", "anki_occlusion"
+        cache_dir = (
+            COMBINED_CACHE._dir
+            if "COMBINED_CACHE" in globals()
+            else os.path.join(os.path.expanduser("~"), ".cache", "anki_occlusion")
         )
         return os.path.join(cache_dir, f"vcache_{h}")
 
@@ -176,7 +209,9 @@ class LRUPageCache:
         except (TypeError, ValueError):
             return None
 
-    def set_render_zoom(self, path: str, zoom: float, variant: str | None = None) -> None:
+    def set_render_zoom(
+        self, path: str, zoom: float, variant: str | None = None
+    ) -> None:
         path = _canonical_pdf_path(path)
         meta = self._load_render_meta(path)
         meta.setdefault("variants", {})
@@ -186,24 +221,34 @@ class LRUPageCache:
         }
         self._save_render_meta(path, meta)
 
-    def matches_render_zoom(self, path: str, zoom: float, variant: str | None = None, tolerance: float = 0.01) -> bool:
+    def matches_render_zoom(
+        self,
+        path: str,
+        zoom: float,
+        variant: str | None = None,
+        tolerance: float = 0.01,
+    ) -> bool:
         path = _canonical_pdf_path(path)
         current = self.get_render_zoom(path, variant=variant)
         if current is None:
             return False
         return abs(float(current) - float(zoom)) <= tolerance
 
-    def _disk_page_path_variant(self, path: str, page_num: int, variant: str | None) -> str:
+    def _disk_page_path_variant(
+        self, path: str, page_num: int, variant: str | None
+    ) -> str:
         page_dir = self._disk_cache_dir(path)
         suffix = self._variant_suffix(variant)
         return os.path.join(page_dir, f"page_{page_num:04d}{suffix}.png")
 
-    def _save_to_disk(self, path: str, page_num: int, pixmap, variant: str | None = None) -> None:
+    def _save_to_disk(
+        self, path: str, page_num: int, pixmap, variant: str | None = None
+    ) -> None:
         """Save a QPixmap as PNG to disk. Silent on failure."""
         try:
             fpath = self._disk_page_path_variant(path, page_num, variant)
             os.makedirs(os.path.dirname(fpath), exist_ok=True)
-            if not os.path.exists(fpath):   # already saved → skip
+            if not os.path.exists(fpath):  # already saved → skip
                 pixmap.save(fpath, "PNG")
         except Exception as e:
             print(f"[cache][_save_to_disk] ⚠ failed to save p.{page_num+1} → {e}")
@@ -215,18 +260,22 @@ class LRUPageCache:
             if not os.path.exists(fpath):
                 return None
             from PyQt5.QtGui import QPixmap
+
             px = QPixmap(fpath)
             return px if not px.isNull() else None
         except Exception:
             return None
 
-    def _load_image_from_disk(self, path: str, page_num: int, variant: str | None = None):
+    def _load_image_from_disk(
+        self, path: str, page_num: int, variant: str | None = None
+    ):
         """Try to load a QImage from disk. Safe for worker threads."""
         try:
             fpath = self._disk_page_path_variant(path, page_num, variant)
             if not os.path.exists(fpath):
                 return None
             from PyQt5.QtGui import QImage
+
             img = QImage(fpath)
             return img if not img.isNull() else None
         except Exception:
@@ -242,13 +291,11 @@ class LRUPageCache:
 
     def get(self, path: str, page_num: int, variant: str | None = None):
         path = _canonical_pdf_path(path)
-        self.expire_stale()
         key = (path, page_num, self._variant_name(variant))
 
         # 1. RAM hit — fastest
         if key in self._cache:
             self._cache.move_to_end(key)
-            self._touch(path)
             return self._cache[key]
 
         # 2. Disk hit — load PNG → put back in RAM
@@ -256,38 +303,43 @@ class LRUPageCache:
         if px is not None:
             self._cache[key] = px
             self._cache.move_to_end(key)
-            self._touch(path)
             return px
 
         return None
 
     def get_image(self, path: str, page_num: int, variant: str | None = None):
         path = _canonical_pdf_path(path)
-        self.expire_stale()
-        img = self._load_image_from_disk(path, page_num, variant=variant)
-        if img is not None:
-            self._touch(path)
-        return img
+        return self._load_image_from_disk(path, page_num, variant=variant)
 
-    def put(self, path: str, page_num: int, pixmap, variant: str | None = None, render_zoom: float | None = None):
+    def put(
+        self,
+        path: str,
+        page_num: int,
+        pixmap,
+        variant: str | None = None,
+        render_zoom: float | None = None,
+    ):
         path = _canonical_pdf_path(path)
-        self.expire_stale()
         key = (path, page_num, self._variant_name(variant))
         self._cache[key] = pixmap
         self._cache.move_to_end(key)
-        self._touch(path)
         self._enforce_ram_limit()
-        if render_zoom is not None:
+        if render_zoom is not None and not self.matches_render_zoom(
+            path, render_zoom, variant=variant
+        ):
             self.set_render_zoom(path, render_zoom, variant=variant)
-        # Save to disk asynchronously — silent, non-blocking
-        self._save_to_disk(path, page_num, pixmap, variant=variant)
+        # Enqueue disk write — handled by background daemon thread
+        with self._disk_write_lock:
+            self._disk_write_queue.append((path, page_num, pixmap, variant))
+        self._disk_write_event.set()
 
     def invalidate_pdf(self, path: str, variant: str | None = None):
         path = _canonical_pdf_path(path)
         # RAM
         variant_name = self._variant_name(variant) if variant is not None else None
         keys = [
-            k for k in self._cache
+            k
+            for k in self._cache
             if k[0] == path and (variant_name is None or k[2] == variant_name)
         ]
         for k in keys:
@@ -298,6 +350,7 @@ class LRUPageCache:
             if os.path.exists(v_dir):
                 if variant_name is None:
                     import shutil
+
                     shutil.rmtree(v_dir, ignore_errors=True)
                 else:
                     suffix = self._variant_suffix(variant_name)
@@ -322,32 +375,45 @@ class LRUPageCache:
     def invalidate_pages(self, path, page_nums, variant: str | None = None):
         path = _canonical_pdf_path(path)
         variant_name = self._variant_name(variant) if variant is not None else None
-        for pn in page_nums:
-            keys = [
-                key for key in list(self._cache.keys())
-                if key[0] == path and key[1] == pn and (variant_name is None or key[2] == variant_name)
-            ]
-            for key in keys:
-                self._cache.pop(key, None)
-            try:
-                v_dir = self._disk_cache_dir(path)
-                if not os.path.exists(v_dir):
-                    continue
-                if variant_name is None:
-                    prefixes = [f"page_{pn:04d}"]
-                    for name in os.listdir(v_dir):
-                        if name.startswith(prefixes[0]) and name.endswith(".png"):
-                            try:
-                                os.unlink(os.path.join(v_dir, name))
-                            except Exception:
-                                pass
-                else:
+        target_pages = set(int(pn) for pn in (page_nums or []))
+        if not target_pages:
+            return
+        # Single-pass RAM eviction — O(cache_size) instead of O(N * cache_size)
+        keys_to_del = [
+            k
+            for k in self._cache
+            if k[0] == path
+            and k[1] in target_pages
+            and (variant_name is None or k[2] == variant_name)
+        ]
+        for k in keys_to_del:
+            del self._cache[k]
+        # Disk eviction — one listdir per pdf (not per page)
+        try:
+            v_dir = self._disk_cache_dir(path)
+            if not os.path.exists(v_dir):
+                return
+            if variant_name is None:
+                prefixes = tuple(f"page_{pn:04d}" for pn in target_pages)
+                for name in os.listdir(v_dir):
+                    if name.endswith(".png") and any(
+                        name.startswith(p) for p in prefixes
+                    ):
+                        try:
+                            os.unlink(os.path.join(v_dir, name))
+                        except Exception:
+                            pass
+            else:
+                for pn in target_pages:
                     fpath = self._disk_page_path_variant(path, pn, variant_name)
                     if os.path.exists(fpath):
-                        os.unlink(fpath)
-            except Exception:
-                pass
-            
+                        try:
+                            os.unlink(fpath)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
     def clear(self):
         ram_count = len(self._cache)
         self._cache.clear()
@@ -358,6 +424,7 @@ class LRUPageCache:
             cache_dir = COMBINED_CACHE._dir if "COMBINED_CACHE" in globals() else ""
             if cache_dir and os.path.exists(cache_dir):
                 import shutil
+
                 for name in os.listdir(cache_dir):
                     if name.startswith("vcache_"):
                         folder = os.path.join(cache_dir, name)
@@ -366,12 +433,18 @@ class LRUPageCache:
                         shutil.rmtree(folder, ignore_errors=True)
         except Exception as e:
             print(f"[cache][clear] ⚠ disk error: {e}")
-        print(f"[cache][clear] 🗑 RAM cleared — {ram_count} pages | Disk cleared — {disk_deleted} PNG files deleted")
+        print(
+            f"[cache][clear] 🗑 RAM cleared — {ram_count} pages | Disk cleared — {disk_deleted} PNG files deleted"
+        )
+
     def clear_ram_only(self):
         """Sirf RAM clear karo — disk PNG files safe rehte hain."""
         ram_count = len(self._cache)
         self._cache.clear()
-        print(f"[cache][clear_ram_only] ✅ RAM cleared — {ram_count} pages removed, disk untouched")
+        print(
+            f"[cache][clear_ram_only] ✅ RAM cleared — {ram_count} pages removed, disk untouched"
+        )
+
     # ── Inspector helpers ─────────────────────────────────────────────────────
 
     def ram_bytes_for_pdf(self, path: str) -> int:
@@ -380,7 +453,7 @@ class LRUPageCache:
         total = 0
         for (p, _, _variant), px in self._cache.items():
             if p == path:
-                total += px.width() * px.height() * 4   # RGBA = 4 bytes/pixel
+                total += px.width() * px.height() * 4  # RGBA = 4 bytes/pixel
         return total
 
     def all_cached_pdfs(self) -> set:
@@ -391,16 +464,22 @@ class LRUPageCache:
 #  UNLIMITED DISK COMBINED CACHE  (replaces the 3-PDF / 2-min limited one)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class DiskCombinedCache:
     """
     UNLIMITED disk cache for combined PDF pixmaps.
     No LRU cap, no TTL — files persist until invalidated or Clear All.
     """
+
     def __init__(self, cache_dir: str = ""):
-        self._dir = cache_dir if cache_dir else os.path.join(
-            os.path.expanduser("~"), ".cache", "anki_occlusion"
+        self._dir = (
+            cache_dir
+            if cache_dir
+            else os.path.join(os.path.expanduser("~"), ".cache", "anki_occlusion")
         )
-        self._index = OrderedDict()   # pdf_path → cache_png_path  (LRU order for display only)
+        self._index = (
+            OrderedDict()
+        )  # pdf_path → cache_png_path  (LRU order for display only)
         os.makedirs(self._dir, exist_ok=True)
         self._rebuild_index()
 
@@ -416,7 +495,7 @@ class DiskCombinedCache:
                 if not fname.startswith("combined_") or fname.endswith(".meta"):
                     continue
                 fpath = os.path.join(self._dir, fname)
-                meta  = fpath + ".meta"
+                meta = fpath + ".meta"
                 if os.path.exists(meta):
                     # We can't reverse the hash to get pdf_path, so we store
                     # the hash-path as the key — good enough for size display.
@@ -429,7 +508,7 @@ class DiskCombinedCache:
     def get(self, pdf_path: str):
         pdf_path = _canonical_pdf_path(pdf_path)
         cache_file = self._cache_path(pdf_path)
-        meta_file  = cache_file + ".meta"
+        meta_file = cache_file + ".meta"
         if not os.path.exists(cache_file) or not os.path.exists(meta_file):
             return None
         try:
@@ -438,6 +517,7 @@ class DiskCombinedCache:
         except Exception:
             return None
         from PyQt5.QtGui import QPixmap
+
         px = QPixmap(cache_file)
         if px.isNull():
             return None
@@ -449,10 +529,11 @@ class DiskCombinedCache:
     def put(self, pdf_path: str, combined, total_pages: int):
         pdf_path = _canonical_pdf_path(pdf_path)
         from PyQt5.QtGui import QPixmap
+
         if combined.isNull():
             return
         cache_file = self._cache_path(pdf_path)
-        meta_file  = cache_file + ".meta"
+        meta_file = cache_file + ".meta"
         try:
             combined.save(cache_file, "PNG")
             with open(meta_file, "w", encoding="utf-8") as f:
@@ -494,19 +575,22 @@ class DiskCombinedCache:
     def disk_bytes_for_pdf(self, pdf_path: str) -> int:
         """File: cache_manager.py -> Class: DiskCombinedCache"""
         import hashlib
+
         pdf_path = _canonical_pdf_path(pdf_path)
         h = hashlib.md5(pdf_path.encode("utf-8")).hexdigest()
         # v20 virtual cache folder
         v_dir = os.path.join(self._dir, f"vcache_{h}")
-        
-        if not os.path.exists(v_dir): return 0
+
+        if not os.path.exists(v_dir):
+            return 0
         total = 0
         try:
             for f in os.listdir(v_dir):
                 total += os.path.getsize(os.path.join(v_dir, f))
-        except Exception: pass
+        except Exception:
+            pass
         return total
-        
+
     def all_cached_pdfs(self) -> list:
         """Returns list of pdf_paths that have a disk cache entry."""
         return [p for p in self._index if os.path.exists(self._cache_path(p))]
@@ -516,7 +600,9 @@ class DiskCombinedCache:
 #  MODULE-LEVEL SINGLETONS  (same names as before — drop-in replacement)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-PAGE_CACHE     = LRUPageCache()
+PAGE_CACHE = LRUPageCache()
+
+
 def _load_cache_dir() -> str:
     try:
         from storage_paths import current_cache_dir
@@ -525,6 +611,7 @@ def _load_cache_dir() -> str:
     except Exception:
         return ""
 
+
 COMBINED_CACHE = DiskCombinedCache(cache_dir=_load_cache_dir())
 
 
@@ -532,14 +619,16 @@ COMBINED_CACHE = DiskCombinedCache(cache_dir=_load_cache_dir())
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _fmt_bytes(n: int) -> str:
     if n < 1024:
         return f"{n} B"
-    if n < 1024 ** 2:
+    if n < 1024**2:
         return f"{n/1024:.1f} KB"
-    if n < 1024 ** 3:
+    if n < 1024**3:
         return f"{n/1024**2:.1f} MB"
     return f"{n/1024**3:.2f} GB"
+
 
 def _short_name(path: str) -> str:
     name = os.path.basename(path)
@@ -564,15 +653,18 @@ def _canonical_pdf_path(path: str) -> str:
 #  clear their _mask_cache_layer from outside.
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class _MaskRegistry:
     """
     Global registry of live OcclusionCanvas instances, keyed by pdf_path.
     Canvas calls register(pdf_path, self) on load_pixmap / set_boxes.
     """
+
     def __init__(self):
         import weakref
+
         self._weakref = weakref
-        self._map = {}   # pdf_path -> WeakSet[OcclusionCanvas]
+        self._map = {}  # pdf_path -> WeakSet[OcclusionCanvas]
 
     def _prune_empty(self):
         for path, canvases in list(self._map.items()):
@@ -654,18 +746,25 @@ MASK_REGISTRY = _MaskRegistry()
 #    PIXMAP_REGISTRY.unregister("label")
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class _PixmapRegistry:
     """
     Tracks arbitrary large QPixmap attributes on live objects.
     Each entry = (weak_obj_ref, attr_name, pdf_path)
     """
+
     def __init__(self):
         import weakref
+
         self._weakref = weakref
-        self._entries = {}   # label → (weakref, attr_name, pdf_path)
+        self._entries = {}  # label → (weakref, attr_name, pdf_path)
 
     def register(self, label: str, obj, attr: str, pdf_path: str = ""):
-        self._entries[label] = (self._weakref.ref(obj), attr, _canonical_pdf_path(pdf_path))
+        self._entries[label] = (
+            self._weakref.ref(obj),
+            attr,
+            _canonical_pdf_path(pdf_path),
+        )
 
     def unregister(self, label: str):
         self._entries.pop(label, None)
@@ -733,6 +832,7 @@ PIXMAP_REGISTRY = _PixmapRegistry()
 #  CACHE MANAGER PANEL  (the actual GUI widget)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class CacheManagerPanel(QWidget):
     """
     Floating side panel.  Usage:
@@ -776,6 +876,7 @@ class CacheManagerPanel(QWidget):
             print("[DEBUG][mission_archive] cache_manager_blocked_custom_cache_change")
             return
         from PyQt5.QtWidgets import QFileDialog
+
         new_dir = QFileDialog.getExistingDirectory(
             self, "Select Cache Folder", COMBINED_CACHE._dir
         )
@@ -784,10 +885,12 @@ class CacheManagerPanel(QWidget):
 
         # Save to settings
         from PyQt5.QtCore import QSettings
+
         QSettings("AnkiOcclusion", "App").setValue("cache_dir", new_dir)
 
         # Move existing cache files to new location
         import shutil
+
         old_dir = COMBINED_CACHE._dir
         try:
             if os.path.exists(old_dir):
@@ -801,7 +904,7 @@ class CacheManagerPanel(QWidget):
         COMBINED_CACHE._rebuild_index()
         self._update_location_label()
         self.refresh()
-        
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -811,7 +914,9 @@ class CacheManagerPanel(QWidget):
         hdr = QHBoxLayout()
         title = QLabel("💾 Cache Manager")
         title.setObjectName("title")
-        f = title.font(); f.setPointSize(13); title.setFont(f)
+        f = title.font()
+        f.setPointSize(13)
+        title.setFont(f)
         hdr.addWidget(title)
         hdr.addStretch()
 
@@ -846,7 +951,8 @@ class CacheManagerPanel(QWidget):
 
         self._update_location_label()
 
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet(f"background:{C_BORDER}; max-height:1px;")
         root.addWidget(sep)
 
@@ -880,7 +986,7 @@ class CacheManagerPanel(QWidget):
         known.update(PIXMAP_REGISTRY.all_registered_pdfs())
 
         # Clear old cards
-        while self._list_layout.count() > 1:   # keep the trailing stretch
+        while self._list_layout.count() > 1:  # keep the trailing stretch
             item = self._list_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
@@ -888,12 +994,12 @@ class CacheManagerPanel(QWidget):
         total_bytes = 0
         visible_count = 0
         for pdf_path in sorted(known):
-            disk_b   = COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
-            ram_b    = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
-            mask_b   = MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
+            disk_b = COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
+            ram_b = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
+            mask_b = MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
             hidden_b = PIXMAP_REGISTRY.bytes_for_pdf(pdf_path)
             hidden_detail = PIXMAP_REGISTRY.breakdown(pdf_path)
-            total    = disk_b + ram_b + mask_b + hidden_b
+            total = disk_b + ram_b + mask_b + hidden_b
 
             # Only show PDFs that are actually holding RAM right now.
             # disk_b is excluded from this check — disk cache persists
@@ -905,8 +1011,9 @@ class CacheManagerPanel(QWidget):
 
             total_bytes += total
             visible_count += 1
-            card = self._make_card(pdf_path, disk_b, ram_b, mask_b,
-                                   hidden_b, hidden_detail, total)
+            card = self._make_card(
+                pdf_path, disk_b, ram_b, mask_b, hidden_b, hidden_detail, total
+            )
             self._list_layout.insertWidget(self._list_layout.count() - 1, card)
 
         if not visible_count:
@@ -923,8 +1030,9 @@ class CacheManagerPanel(QWidget):
             f"Last refresh: {time.strftime('%H:%M:%S')}  •  Auto: every 5s"
         )
 
-    def _make_card(self, pdf_path, disk_b, ram_b, mask_b,
-                   hidden_b, hidden_detail, total_b) -> QFrame:
+    def _make_card(
+        self, pdf_path, disk_b, ram_b, mask_b, hidden_b, hidden_detail, total_b
+    ) -> QFrame:
         card = QFrame()
         card.setObjectName("card")
         vl = QVBoxLayout(card)
@@ -941,8 +1049,10 @@ class CacheManagerPanel(QWidget):
         def _row(icon, label, value, dim=False):
             hl = QHBoxLayout()
             hl.setSpacing(6)
-            ico = QLabel(icon); ico.setFixedWidth(18)
-            lbl = QLabel(label); lbl.setObjectName("sub")
+            ico = QLabel(icon)
+            ico.setFixedWidth(18)
+            lbl = QLabel(label)
+            lbl.setObjectName("sub")
             val = QLabel(value)
             val.setObjectName("size" if not dim else "sub")
             val.setAlignment(Qt.AlignRight)
@@ -951,18 +1061,18 @@ class CacheManagerPanel(QWidget):
             hl.addWidget(val)
             return hl
 
-        
         vl.addLayout(_row("💿", "Disk  (rendered pages)", _fmt_bytes(disk_b)))
-        vl.addLayout(_row("🧠", "RAM   (page pixmaps)",   _fmt_bytes(ram_b)))
-        vl.addLayout(_row("🎭", "GPU   (mask layer)",     _fmt_bytes(mask_b)))
+        vl.addLayout(_row("🧠", "RAM   (page pixmaps)", _fmt_bytes(ram_b)))
+        vl.addLayout(_row("🎭", "GPU   (mask layer)", _fmt_bytes(mask_b)))
 
         # Hidden pixmaps — show each one individually
         _HIDDEN_LABEL_MAP = [
-            ("canvas_px_",       "📄", "Canvas original px"),
-            ("canvas_spx_",      "🔍", "Canvas scaled px (zoom copy)"),
+            ("canvas_px_", "📄", "Canvas original px"),
+            ("canvas_spx_", "🔍", "Canvas scaled px (zoom copy)"),
             ("editor_combined_", "📑", "Editor combined px"),
-            ("review_current_",  "▶",  "Review current px"),
+            ("review_current_", "▶", "Review current px"),
         ]
+
         def _friendly(key):
             for prefix, icon, name in _HIDDEN_LABEL_MAP:
                 if key.startswith(prefix):
@@ -970,20 +1080,23 @@ class CacheManagerPanel(QWidget):
             return "📦", key
 
         if hidden_b > 0:
-            div2 = QFrame(); div2.setFrameShape(QFrame.HLine)
+            div2 = QFrame()
+            div2.setFrameShape(QFrame.HLine)
             div2.setStyleSheet(f"background:{C_BORDER}; max-height:1px;")
             vl.addWidget(div2)
             for lbl_key, b in hidden_detail.items():
                 icon, friendly = _friendly(lbl_key)
                 vl.addLayout(_row(icon, friendly, _fmt_bytes(b), dim=False))
         else:
-            div2 = QFrame(); div2.setFrameShape(QFrame.HLine)
+            div2 = QFrame()
+            div2.setFrameShape(QFrame.HLine)
             div2.setStyleSheet(f"background:{C_BORDER}; max-height:1px;")
             vl.addWidget(div2)
             vl.addLayout(_row("📦", "Hidden RAM pixmaps", "0 B", dim=True))
 
         # Divider before total
-        div = QFrame(); div.setFrameShape(QFrame.HLine)
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
         div.setStyleSheet(f"background:{C_BORDER}; max-height:1px;")
         vl.addWidget(div)
 

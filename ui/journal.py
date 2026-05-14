@@ -17,49 +17,64 @@ import tempfile
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QListWidget, QListWidgetItem, QSplitter, QFrame,
-    QFileDialog, QMessageBox, QSizePolicy, QCalendarWidget,
-    QScrollArea
+    QDialog,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QSplitter,
+    QFrame,
+    QFileDialog,
+    QMessageBox,
+    QSizePolicy,
+    QCalendarWidget,
+    QScrollArea,
 )
 from PyQt5.QtCore import Qt, QPointF, QRect, QSize, QDate, pyqtSignal
-from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QPolygonF, QIcon
-)
+from PyQt5.QtGui import QPainter, QPen, QColor, QPixmap, QFont, QPolygonF, QIcon
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtCore import QByteArray
 
 # ── Classic Theme ─────────────────────────────────────────────────────────────
-C_BG      = "#1E1E2E"
-C_SURFACE = "#2A2A3E"
-C_CARD    = "#313145"
-C_ACCENT  = "#7C6AF7"
-C_GREEN   = "#50FA7B"
-C_RED     = "#FF5555"
-C_TEXT    = "#CDD6F4"
-C_SUBTEXT = "#A6ADC8"
-C_BORDER  = "#45475A"
+# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
+from theme_manager import get_palette as _get_palette
+
+_DARK = _get_palette("dark")
+C_BG = _DARK["C_BG"]
+C_SURFACE = _DARK["C_SURFACE"]
+C_CARD = _DARK["C_CARD"]
+C_ACCENT = _DARK["C_ACCENT"]
+C_GREEN = _DARK["C_GREEN"]
+C_RED = _DARK["C_RED"]
+C_TEXT = _DARK["C_TEXT"]
+C_SUBTEXT = _DARK["C_SUBTEXT"]
+C_BORDER = _DARK["C_BORDER"]
 
 # ── Ninja / Dojo Theme ────────────────────────────────────────────────────────
-N_BG      = "#07070B"
+N_BG = "#07070B"
 N_SURFACE = "#0F0F17"
-N_CARD    = "#14141F"
-N_ACCENT  = "#72FF4F"      # neon green — primary highlight
-N_PURPLE  = "#A86CFF"      # secondary — ninja purple
-N_RED     = "#FF4444"
-N_TEXT    = "#E0E0FF"
+N_CARD = "#14141F"
+N_ACCENT = "#72FF4F"  # neon green — primary highlight
+N_PURPLE = "#A86CFF"  # secondary — ninja purple
+N_RED = "#FF4444"
+N_TEXT = "#E0E0FF"
 N_SUBTEXT = "#5F627D"
-N_BORDER  = "#1A1A26"
-N_CANVAS  = "#07070B"
+N_BORDER = "#1A1A26"
+N_CANVAS = "#07070B"
 
 # ── Theme resolver ────────────────────────────────────────────────────────────
+
 
 def _is_ninja() -> bool:
     """Return True when the app is running in Ninja/Dojo mode."""
     try:
         from PyQt5.QtWidgets import QApplication
+
         app = QApplication.instance()
-        return getattr(app, "_active_theme", "classic") in ["dojo", "tmnt"]
+        return getattr(app, "_active_theme", "classic") in ("dojo", "tmnt")
     except Exception:
         return False
 
@@ -68,23 +83,32 @@ def _t(classic_val, ninja_val):
     """Pick classic or ninja value based on current theme."""
     return ninja_val if _is_ninja() else classic_val
 
-INK_COLORS      = ["#CDD6F4", "#FF4444", "#FFD700", "#50FA7B", "#00FFFF", "#F7916A"]
+
+INK_COLORS = ["#CDD6F4", "#FF4444", "#FFD700", "#50FA7B", "#00FFFF", "#F7916A"]
 NINJA_INK_COLORS = ["#72FF4F", "#A86CFF", "#E0E0FF", "#FF4444", "#F1FA8C", "#F7916A"]
-INK_WIDTH    = 2.0
+INK_WIDTH = 2.0
 ERASER_WIDTH = 22.0
-PAGE_WIDTH   = 900     # logical canvas width
-PAGE_HEIGHT  = 1200    # initial height — grows as you scroll down
+PAGE_WIDTH = 900  # logical canvas width
+PAGE_HEIGHT = 1200  # initial height — grows as you scroll down
 
-MODE_PEN    = "pen"
+MODE_PEN = "pen"
 MODE_ERASER = "eraser"
-MODE_TEXT   = "text"
+MODE_TEXT = "text"
 
 
-from services.journal_manager import _load_journal, _save_journal, _strokes_to_json, _strokes_from_json, _texts_to_json, _texts_from_json
+from services.journal_manager import (
+    _load_journal,
+    _save_journal,
+    _strokes_to_json,
+    _strokes_from_json,
+    _texts_to_json,
+    _texts_from_json,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DATE PICKER POPUP
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class _DatePicker(QDialog):
     date_selected = pyqtSignal(str)
@@ -122,7 +146,12 @@ class _DatePicker(QDialog):
                 cal.setSelectedDate(qd)
         except Exception:
             pass
-        cal.clicked.connect(lambda qd: (self.date_selected.emit(qd.toString("yyyy-MM-dd")), self.accept()))
+        cal.clicked.connect(
+            lambda qd: (
+                self.date_selected.emit(qd.toString("yyyy-MM-dd")),
+                self.accept(),
+            )
+        )
         L.addWidget(cal)
 
 
@@ -130,18 +159,19 @@ class _DatePicker(QDialog):
 #  INK CANVAS  (scrollable)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class JournalCanvas(QWidget):
     """Freehand ink + eraser + keyboard-text canvas. Grows downward on scroll."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from theme_manager import get_palette
         from PyQt5.QtWidgets import QApplication
+
         app = QApplication.instance()
         theme = getattr(app, "_active_theme", "classic")
-        self._p = get_palette(theme)
-        
-        self._page_h       = PAGE_HEIGHT
+        self._p = _get_palette(theme)
+
+        self._page_h = PAGE_HEIGHT
         self.setFixedWidth(PAGE_WIDTH)
         self.setFixedHeight(self._page_h)
         bg = self._p.get("C_BG", N_CANVAS if _is_ninja() else C_BG)
@@ -149,28 +179,28 @@ class JournalCanvas(QWidget):
         self.setCursor(Qt.CrossCursor)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        self._strokes   = []
-        self._texts     = []
-        self._current   = []
+        self._strokes = []
+        self._texts = []
+        self._current = []
         self._color_idx = 0
-        self._drawing   = False
+        self._drawing = False
         self._show_lines = True
-        self._mode      = MODE_PEN
+        self._mode = MODE_PEN
 
         # Text state
-        self._text_pos    = None
-        self._text_buf    = ""
-        self._text_size   = 14
+        self._text_pos = None
+        self._text_buf = ""
+        self._text_size = 14
 
         # Eraser cursor — tracked in mouseMoveEvent, not from global cursor()
-        self._eraser_pos  = None
+        self._eraser_pos = None
         self.setMouseTracking(True)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_content(self, strokes, texts):
         self._strokes = strokes
-        self._texts   = texts
+        self._texts = texts
         self._current = []
         self._commit_text()
         # Expand canvas if saved content goes beyond current height
@@ -193,19 +223,19 @@ class JournalCanvas(QWidget):
         self._mode = mode
         self._commit_text()
         cursors = {
-            MODE_PEN:    Qt.CrossCursor,
+            MODE_PEN: Qt.CrossCursor,
             MODE_ERASER: Qt.BlankCursor,
-            MODE_TEXT:   Qt.IBeamCursor,
+            MODE_TEXT: Qt.IBeamCursor,
         }
         self.setCursor(cursors.get(mode, Qt.CrossCursor))
         self.update()
 
     def clear(self):
         self._strokes = []
-        self._texts   = []
+        self._texts = []
         self._current = []
         self._commit_text()
-        self._page_h  = PAGE_HEIGHT
+        self._page_h = PAGE_HEIGHT
         self.setFixedHeight(self._page_h)
         self.update()
 
@@ -252,13 +282,15 @@ class JournalCanvas(QWidget):
     def _commit_text(self):
         if self._text_buf.strip() and self._text_pos:
             colors = self._colors()
-            self._texts.append({
-                "x":     self._text_pos.x(),
-                "y":     self._text_pos.y(),
-                "text":  self._text_buf,
-                "color": colors[self._color_idx % len(colors)],
-                "size":  self._text_size,
-            })
+            self._texts.append(
+                {
+                    "x": self._text_pos.x(),
+                    "y": self._text_pos.y(),
+                    "text": self._text_buf,
+                    "color": colors[self._color_idx % len(colors)],
+                    "size": self._text_size,
+                }
+            )
         self._text_buf = ""
         self._text_pos = None
 
@@ -303,7 +335,7 @@ class JournalCanvas(QWidget):
             if len(stroke) < 2:
                 continue
             color = stroke[0]
-            pts   = stroke[1:]
+            pts = stroke[1:]
             p.setPen(QPen(color, INK_WIDTH, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             if len(pts) == 1:
                 p.drawPoint(pts[0])
@@ -313,7 +345,7 @@ class JournalCanvas(QWidget):
         # Current stroke
         if len(self._current) >= 2:
             color = self._current[0]
-            pts   = self._current[1:]
+            pts = self._current[1:]
             p.setPen(QPen(color, INK_WIDTH, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             p.drawPolyline(QPolygonF(pts))
 
@@ -346,7 +378,7 @@ class JournalCanvas(QWidget):
             p.setPen(QPen(QColor(cursor_col), 1, Qt.DashLine))
             p.setBrush(Qt.NoBrush)
             r = int(ERASER_WIDTH)
-            p.drawEllipse(int(ep.x()) - r//2, int(ep.y()) - r//2, r, r)
+            p.drawEllipse(int(ep.x()) - r // 2, int(ep.y()) - r // 2, r, r)
 
     # ── Mouse ─────────────────────────────────────────────────────────────────
 
@@ -375,7 +407,7 @@ class JournalCanvas(QWidget):
     def mouseMoveEvent(self, e):
         pos = QPointF(e.pos())
         if self._mode == MODE_ERASER:
-            self._eraser_pos = pos   # always track for cursor display
+            self._eraser_pos = pos  # always track for cursor display
             self.update()
             if self._drawing:
                 self._erase_at(pos)
@@ -387,12 +419,14 @@ class JournalCanvas(QWidget):
             if len(pts) >= 2:
                 p0, p1 = pts[-2], pts[-1]
                 pw = int(INK_WIDTH) + 4
-                self.update(QRect(
-                    int(min(p0.x(), p1.x())) - pw,
-                    int(min(p0.y(), p1.y())) - pw,
-                    int(abs(p1.x() - p0.x())) + pw*2,
-                    int(abs(p1.y() - p0.y())) + pw*2,
-                ))
+                self.update(
+                    QRect(
+                        int(min(p0.x(), p1.x())) - pw,
+                        int(min(p0.y(), p1.y())) - pw,
+                        int(abs(p1.x() - p0.x())) + pw * 2,
+                        int(abs(p1.y() - p0.y())) + pw * 2,
+                    )
+                )
             else:
                 self.update()
         e.accept()
@@ -422,8 +456,12 @@ class JournalCanvas(QWidget):
         if key in (Qt.Key_Return, Qt.Key_Enter):
             # Commit and move cursor down
             self._commit_text()
-            new_y = (self._text_pos.y() if self._text_pos else 100) + self._text_size + 8
-            self._text_pos = QPointF(self._text_pos.x() if self._text_pos else 60, new_y)
+            new_y = (
+                (self._text_pos.y() if self._text_pos else 100) + self._text_size + 8
+            )
+            self._text_pos = QPointF(
+                self._text_pos.x() if self._text_pos else 60, new_y
+            )
             self._text_buf = ""
             self._maybe_expand(new_y)
             self.update()
@@ -448,7 +486,7 @@ class JournalCanvas(QWidget):
         changed = False
         for stroke in self._strokes:
             hit = any(
-                (pt.x() - pos.x())**2 + (pt.y() - pos.y())**2 <= r2
+                (pt.x() - pos.x()) ** 2 + (pt.y() - pos.y()) ** 2 <= r2
                 for pt in stroke[1:]
             )
             if hit:
@@ -464,10 +502,13 @@ class JournalCanvas(QWidget):
 #  SVG ICON SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _make_icon(svg_body: str, size: int = 14) -> "QIcon":
-    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" '
-           f'viewBox="0 0 16 16" width="{size}" height="{size}">'
-           f'{svg_body}</svg>')
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 16 16" width="{size}" height="{size}">'
+        f"{svg_body}</svg>"
+    )
     px = QPixmap(size, size)
     px.fill(Qt.transparent)
     renderer = QSvgRenderer(QByteArray(svg.encode()))
@@ -485,14 +526,14 @@ _ICONS = {
         '<ellipse cx="8" cy="10.5" rx="1.8" ry="1"/>'
         '<rect x="7.5" y="11.5" width="1" height="2.5"/>'
         '<line x1="6" y1="13" x2="10" y2="13" stroke="#72FF4F" stroke-width="0.8"/>'
-        '</g>'
+        "</g>"
     ),
     "smoke": (
         '<g fill="none" stroke="#A86CFF" stroke-width="1.2" stroke-linecap="round">'
         '<path d="M5,14 Q4,10 6,8 Q4,6 6,4"/>'
         '<path d="M8,14 Q7,9 9,7 Q7,5 9,3"/>'
         '<path d="M11,14 Q10,10 12,8 Q10,6 12,4"/>'
-        '</g>'
+        "</g>"
     ),
     "scroll": (
         '<g fill="#A86CFF">'
@@ -501,18 +542,18 @@ _ICONS = {
         '<rect x="12" y="3" width="2" height="10" rx="1"/>'
         '<line x1="5" y1="7" x2="11" y2="7" stroke="#07070B" stroke-width="1"/>'
         '<line x1="5" y1="9" x2="11" y2="9" stroke="#07070B" stroke-width="1"/>'
-        '</g>'
+        "</g>"
     ),
     "shuriken": (
         '<g fill="#72FF4F">'
         '<polygon points="8,1 9,7 15,8 9,9 8,15 7,9 1,8 7,7"/>'
-        '</g>'
+        "</g>"
     ),
     "rewind": (
         '<g fill="none" stroke="#A86CFF" stroke-width="1.4" stroke-linecap="round">'
         '<path d="M10,4 Q5,4 5,8 Q5,12 10,12"/>'
         '<polyline points="7,2 5,4 7,6"/>'
-        '</g>'
+        "</g>"
     ),
     "skull": (
         '<g fill="#FF4444">'
@@ -522,7 +563,7 @@ _ICONS = {
         '<rect x="9" y="12" width="1.5" height="1.5"/>'
         '<circle cx="6.3" cy="6.5" r="1.2" fill="#07070B"/>'
         '<circle cx="9.7" cy="6.5" r="1.2" fill="#07070B"/>'
-        '</g>'
+        "</g>"
     ),
     "grid": (
         '<g stroke="#A86CFF" stroke-width="1" fill="none">'
@@ -531,27 +572,27 @@ _ICONS = {
         '<line x1="2" y1="11.3" x2="14" y2="11.3"/>'
         '<line x1="6.7" y1="2" x2="6.7" y2="14"/>'
         '<line x1="11.3" y1="2" x2="11.3" y2="14"/>'
-        '</g>'
+        "</g>"
     ),
     "export": (
         '<g fill="none" stroke="#72FF4F" stroke-width="1.3" stroke-linecap="round">'
         '<line x1="8" y1="2" x2="8" y2="11"/>'
         '<polyline points="5,8 8,11 11,8"/>'
         '<polyline points="3,13 3,14.5 13,14.5 13,13"/>'
-        '</g>'
+        "</g>"
     ),
     "now": (
         '<g fill="none" stroke="#72FF4F" stroke-width="1.2">'
         '<circle cx="8" cy="8" r="5.5"/>'
         '<line x1="8" y1="4" x2="8" y2="8.5" stroke-linecap="round"/>'
         '<line x1="8" y1="8.5" x2="11" y2="10" stroke-linecap="round"/>'
-        '</g>'
+        "</g>"
     ),
     "close": (
         '<g stroke="#5F627D" stroke-width="1.5" stroke-linecap="round">'
         '<line x1="4" y1="4" x2="12" y2="12"/>'
         '<line x1="12" y1="4" x2="4" y2="12"/>'
-        '</g>'
+        "</g>"
     ),
 }
 
@@ -559,6 +600,7 @@ _ICONS = {
 # ═══════════════════════════════════════════════════════════════════════════════
 #  JOURNAL DIALOG
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class JournalDialog(QDialog):
 
@@ -618,9 +660,9 @@ class JournalDialog(QDialog):
         N_TEXT = p.get("C_TEXT", "#E0E0FF")
         N_SUBTEXT = p.get("C_SUBTEXT", "#5F627D")
         N_BORDER = p.get("C_BORDER", "#1A1A26")
-        hf = p.get("header_font", "{hf}").split(',')[0].strip("'")
-        bf = p.get("body_font", "'Share Tech Mono'").split(',')[0].strip("'")
-        
+        hf = p.get("header_font", "{hf}").split(",")[0].strip("'")
+        bf = p.get("body_font", "'Share Tech Mono'").split(",")[0].strip("'")
+
         return f"""
             @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
             QDialog  {{ background:{N_BG}; color:{N_TEXT}; }}
@@ -699,9 +741,9 @@ class JournalDialog(QDialog):
         self.setMinimumSize(1060, 700)
         self._apply_theme_ss()
 
-        self._journal      = _load_journal()
+        self._journal = _load_journal()
         self._current_date = date.today().isoformat()
-        self._mode         = MODE_PEN
+        self._mode = MODE_PEN
 
         self._setup_ui()
         self._refresh_sidebar()
@@ -710,12 +752,14 @@ class JournalDialog(QDialog):
     def _apply_theme_ss(self):
         """Apply correct stylesheet for current theme."""
         self._ninja = _is_ninja()
-        from theme_manager import get_palette
         from PyQt5.QtWidgets import QApplication
+
         app = QApplication.instance()
         theme = getattr(app, "_active_theme", "classic")
-        self._p = get_palette(theme)
-        self.setStyleSheet(self._ninja_ss(self._p) if self._ninja else self._classic_ss(self._p))
+        self._p = _get_palette(theme)
+        self.setStyleSheet(
+            self._ninja_ss(self._p) if self._ninja else self._classic_ss(self._p)
+        )
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -736,8 +780,8 @@ class JournalDialog(QDialog):
         C_TEXT = p.get("C_TEXT", "#CDD6F4")
         C_SUBTEXT = p.get("C_SUBTEXT", "#A6ADC8")
         C_BORDER = p.get("C_BORDER", "#45475A")
-        hf = p.get("header_font", "'Segoe UI'").split(',')[0].strip("'")
-        bf = p.get("body_font", "'Segoe UI'").split(',')[0].strip("'")
+        hf = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
+        bf = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -747,7 +791,8 @@ class JournalDialog(QDialog):
         top.setFixedHeight(54)
         top.setStyleSheet(
             f"QFrame{{background:{C_SURFACE};border-radius:0px;"
-            f"border-bottom:1px solid {C_BORDER};}}")
+            f"border-bottom:1px solid {C_BORDER};}}"
+        )
         tl = QHBoxLayout(top)
         tl.setContentsMargins(12, 0, 12, 0)
         tl.setSpacing(6)
@@ -770,12 +815,15 @@ class JournalDialog(QDialog):
             f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
             f"border:1px solid {C_BORDER};border-radius:6px;"
             f"padding:4px 16px;font-size:13px;font-weight:bold;text-align:center;}}"
-            f"QPushButton:hover{{background:{C_ACCENT};color:white;border:none;}}")
+            f"QPushButton:hover{{background:{C_ACCENT};color:white;border:none;}}"
+        )
         self._btn_date.setToolTip("Click to pick a date")
         self._btn_date.clicked.connect(self._open_date_picker)
 
         self._lbl_focus = QLabel("")
-        self._lbl_focus.setStyleSheet(f"color:{C_SUBTEXT};font-size:13px;font-weight:bold;padding-left:12px;padding-right:12px;")
+        self._lbl_focus.setStyleSheet(
+            f"color:{C_SUBTEXT};font-size:13px;font-weight:bold;padding-left:12px;padding-right:12px;"
+        )
         self._lbl_focus.hide()
 
         btn_today = QPushButton("Today")
@@ -792,9 +840,9 @@ class JournalDialog(QDialog):
         tl.addWidget(self._vsep())
 
         # Tool mode buttons
-        self._btn_pen    = self._mode_btn("✏  Pen",    MODE_PEN)
+        self._btn_pen = self._mode_btn("✏  Pen", MODE_PEN)
         self._btn_eraser = self._mode_btn("⬜ Eraser", MODE_ERASER)
-        self._btn_text   = self._mode_btn("T  Text",   MODE_TEXT)
+        self._btn_text = self._mode_btn("T  Text", MODE_TEXT)
         tl.addWidget(self._btn_pen)
         tl.addWidget(self._btn_eraser)
         tl.addWidget(self._btn_text)
@@ -807,27 +855,33 @@ class JournalDialog(QDialog):
         self._dot.setFixedSize(22, 22)
         self._dot.setStyleSheet(
             f"background:{INK_COLORS[0]};border-radius:11px;"
-            f"border:2px solid {C_BORDER};")
+            f"border:2px solid {C_BORDER};"
+        )
         btn_color = QPushButton("Color")
         btn_color.setFixedHeight(36)
         btn_color.clicked.connect(self._cycle_color)
         tl.addWidget(self._dot)
         tl.addWidget(btn_color)
 
-        btn_undo = QPushButton("↩ Undo");  btn_undo.setFixedHeight(36)
+        btn_undo = QPushButton("↩ Undo")
+        btn_undo.setFixedHeight(36)
         btn_undo.clicked.connect(lambda: self._canvas.undo())
 
-        btn_clear = QPushButton("🗑 Clear"); btn_clear.setFixedHeight(36)
+        btn_clear = QPushButton("🗑 Clear")
+        btn_clear.setFixedHeight(36)
         btn_clear.setStyleSheet(
             f"QPushButton{{background:{C_RED};color:white;border:none;"
             f"border-radius:6px;padding:5px 12px;}}"
-            f"QPushButton:hover{{background:#CC2222;}}")
+            f"QPushButton:hover{{background:#CC2222;}}"
+        )
         btn_clear.clicked.connect(self._clear)
 
-        btn_lines = QPushButton("📏 Lines"); btn_lines.setFixedHeight(36)
+        btn_lines = QPushButton("📏 Lines")
+        btn_lines.setFixedHeight(36)
         btn_lines.clicked.connect(lambda: self._canvas.toggle_lines())
 
-        btn_export = QPushButton("💾 PNG"); btn_export.setFixedHeight(36)
+        btn_export = QPushButton("💾 PNG")
+        btn_export.setFixedHeight(36)
         btn_export.clicked.connect(self._export)
 
         tl.addWidget(btn_undo)
@@ -852,14 +906,16 @@ class JournalDialog(QDialog):
         sidebar.setFixedWidth(188)
         sidebar.setStyleSheet(
             f"QFrame{{background:{C_SURFACE};"
-            f"border-right:1px solid {C_BORDER};border-radius:0px;}}")
+            f"border-right:1px solid {C_BORDER};border-radius:0px;}}"
+        )
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(8, 12, 8, 8)
         sl.setSpacing(6)
         hdr = QLabel("📅  Entries")
         hdr.setStyleSheet(
             f"color:{C_SUBTEXT};font-size:11px;font-weight:bold;"
-            f"padding-bottom:4px;border-bottom:1px solid {C_BORDER};")
+            f"padding-bottom:4px;border-bottom:1px solid {C_BORDER};"
+        )
         sl.addWidget(hdr)
         self._sidebar = QListWidget()
         self._sidebar.itemClicked.connect(self._on_sidebar_click)
@@ -870,8 +926,7 @@ class JournalDialog(QDialog):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(False)
         self._scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self._scroll.setStyleSheet(
-            f"QScrollArea{{border:none;background:{C_BG};}}")
+        self._scroll.setStyleSheet(f"QScrollArea{{border:none;background:{C_BG};}}")
 
         self._canvas = JournalCanvas()
         self._scroll.setWidget(self._canvas)
@@ -886,7 +941,8 @@ class JournalDialog(QDialog):
         self._hint_lbl.setFixedHeight(22)
         self._hint_lbl.setStyleSheet(
             f"color:{C_SUBTEXT};font-size:11px;background:{C_SURFACE};"
-            f"border-top:1px solid {C_BORDER};padding:2px;")
+            f"border-top:1px solid {C_BORDER};padding:2px;"
+        )
         root.addWidget(self._hint_lbl)
 
         self._update_mode_ui()
@@ -905,8 +961,8 @@ class JournalDialog(QDialog):
         N_TEXT = p.get("C_TEXT", "#E0E0FF")
         N_SUBTEXT = p.get("C_SUBTEXT", "#5F627D")
         N_BORDER = p.get("C_BORDER", "#1A1A26")
-        hf = p.get("header_font", "'Orbitron'").split(',')[0].strip("'")
-        bf = p.get("body_font", "'Share Tech Mono'").split(',')[0].strip("'")
+        hf = p.get("header_font", "'Orbitron'").split(",")[0].strip("'")
+        bf = p.get("body_font", "'Share Tech Mono'").split(",")[0].strip("'")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -916,7 +972,8 @@ class JournalDialog(QDialog):
         top.setFixedHeight(52)
         top.setStyleSheet(
             f"QFrame{{background:{N_SURFACE};border-radius:0px;"
-            f"border-bottom:1px solid {N_BORDER};}}")
+            f"border-bottom:1px solid {N_BORDER};}}"
+        )
         tl = QHBoxLayout(top)
         tl.setContentsMargins(14, 0, 14, 0)
         tl.setSpacing(10)
@@ -928,7 +985,8 @@ class JournalDialog(QDialog):
         logo_box.setStyleSheet(
             f"color:{N_ACCENT};border:2px solid {N_ACCENT};"
             f"border-radius:5px;font-size:13px;font-weight:900;"
-            f"font-family:{hf}, 'Segoe UI';background:{N_BG};")
+            f"font-family:{hf}, 'Segoe UI';background:{N_BG};"
+        )
         tl.addWidget(logo_box)
 
         logo_txt = QWidget()
@@ -939,18 +997,21 @@ class JournalDialog(QDialog):
         lbl_title = QLabel("SCROLL — DAILY JOURNAL")
         lbl_title.setStyleSheet(
             f"color:{N_ACCENT};font-family:{hf}, 'Segoe UI';"
-            f"font-size:10px;font-weight:900;letter-spacing:2px;")
+            f"font-size:10px;font-weight:900;letter-spacing:2px;"
+        )
         lbl_sub = QLabel("MISSION LOG • SM-2")
         lbl_sub.setStyleSheet(
             f"color:{N_SUBTEXT};font-size:7px;letter-spacing:0.5px;"
-            f"font-family:{bf}, 'Consolas';")
+            f"font-family:{bf}, 'Consolas';"
+        )
         lt.addWidget(lbl_title)
         lt.addWidget(lbl_sub)
         tl.addWidget(logo_txt)
         tl.addSpacing(8)
 
         # Separator
-        sep = QFrame(); sep.setFrameShape(QFrame.VLine)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
         sep.setFixedSize(1, 28)
         sep.setStyleSheet(f"background:{N_BORDER};border:none;")
         tl.addWidget(sep)
@@ -967,7 +1028,8 @@ class JournalDialog(QDialog):
             f"padding:3px 14px;font-size:10px;font-weight:700;"
             f"font-family:{hf}, 'Segoe UI';letter-spacing:1px;}}"
             f"QPushButton:hover{{background:rgba(114,255,79,0.08);"
-            f"border-color:{N_ACCENT};color:{N_ACCENT};}}")
+            f"border-color:{N_ACCENT};color:{N_ACCENT};}}"
+        )
         self._btn_date.setToolTip("Click to pick a date")
         self._btn_date.clicked.connect(self._open_date_picker)
         self._btn_next = self._arrow_btn("›", self._go_next)
@@ -975,7 +1037,8 @@ class JournalDialog(QDialog):
         self._lbl_focus = QLabel("")
         self._lbl_focus.setStyleSheet(
             f"color:{N_PURPLE};font-size:10px;font-weight:700;"
-            f"font-family:{bf}, 'Consolas';padding:0 10px;")
+            f"font-family:{bf}, 'Consolas';padding:0 10px;"
+        )
         self._lbl_focus.hide()
 
         btn_today = QPushButton("NOW")
@@ -991,22 +1054,30 @@ class JournalDialog(QDialog):
         tl.addWidget(btn_today)
         tl.addSpacing(10)
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.VLine)
         sep2.setFixedSize(1, 28)
         sep2.setStyleSheet(f"background:{N_BORDER};border:none;")
         tl.addWidget(sep2)
         tl.addSpacing(6)
 
         # Tool mode buttons
-        self._btn_pen    = self._mode_btn("INK JUTSU", MODE_PEN,    _make_icon(_ICONS["kunai"]))
-        self._btn_eraser = self._mode_btn("VANISH",    MODE_ERASER, _make_icon(_ICONS["smoke"]))
-        self._btn_text   = self._mode_btn("CIPHER",    MODE_TEXT,   _make_icon(_ICONS["scroll"]))
+        self._btn_pen = self._mode_btn(
+            "INK JUTSU", MODE_PEN, _make_icon(_ICONS["kunai"])
+        )
+        self._btn_eraser = self._mode_btn(
+            "VANISH", MODE_ERASER, _make_icon(_ICONS["smoke"])
+        )
+        self._btn_text = self._mode_btn(
+            "CIPHER", MODE_TEXT, _make_icon(_ICONS["scroll"])
+        )
         tl.addWidget(self._btn_pen)
         tl.addWidget(self._btn_eraser)
         tl.addWidget(self._btn_text)
         tl.addSpacing(8)
 
-        sep3 = QFrame(); sep3.setFrameShape(QFrame.VLine)
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.VLine)
         sep3.setFixedSize(1, 28)
         sep3.setStyleSheet(f"background:{N_BORDER};border:none;")
         tl.addWidget(sep3)
@@ -1017,7 +1088,8 @@ class JournalDialog(QDialog):
         self._dot.setFixedSize(18, 18)
         self._dot.setStyleSheet(
             f"background:{NINJA_INK_COLORS[0]};border-radius:9px;"
-            f"border:1.5px solid {N_BORDER};")
+            f"border:1.5px solid {N_BORDER};"
+        )
         btn_color = QPushButton("PIGMENT")
         btn_color.setIcon(_make_icon(_ICONS["shuriken"]))
         btn_color.setFixedHeight(30)
@@ -1058,7 +1130,8 @@ class JournalDialog(QDialog):
         btn_close.setStyleSheet(
             f"QPushButton{{background:{N_CARD};color:{N_SUBTEXT};"
             f"border:1px solid {N_BORDER};border-radius:2px;}}"
-            f"QPushButton:hover{{border-color:{N_ACCENT};}}")
+            f"QPushButton:hover{{border-color:{N_ACCENT};}}"
+        )
         btn_close.clicked.connect(self._on_close)
         tl.addWidget(btn_close)
 
@@ -1074,7 +1147,8 @@ class JournalDialog(QDialog):
         sidebar.setFixedWidth(195)
         sidebar.setStyleSheet(
             f"QFrame{{background:{N_SURFACE};"
-            f"border-right:1px solid {N_BORDER};border-radius:0px;}}")
+            f"border-right:1px solid {N_BORDER};border-radius:0px;}}"
+        )
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(0)
@@ -1085,18 +1159,20 @@ class JournalDialog(QDialog):
         sbh.setStyleSheet(
             f"color:{N_ACCENT};font-family:{hf}, 'Segoe UI';"
             f"font-size:8px;font-weight:700;letter-spacing:2px;"
-            f"border-bottom:1px solid {N_BORDER};padding-left:11px;")
+            f"border-bottom:1px solid {N_BORDER};padding-left:11px;"
+        )
         sl.addWidget(sbh)
 
         # Quote label at the top of sidebar
         daily_quote = self._get_daily_ninja_quote()
-        q_lbl = QLabel(f'「{daily_quote}」')
+        q_lbl = QLabel(f"「{daily_quote}」")
         q_lbl.setWordWrap(True)
         q_lbl.setAlignment(Qt.AlignCenter)
         q_lbl.setStyleSheet(
             f"color:{N_SUBTEXT};font-family:{bf}, 'Consolas';"
             f"font-size:7px;padding:6px 8px;letter-spacing:0.5px;"
-            f"border-bottom:1px solid {N_BORDER};")
+            f"border-bottom:1px solid {N_BORDER};"
+        )
         sl.addWidget(q_lbl)
 
         # Entries list
@@ -1104,7 +1180,8 @@ class JournalDialog(QDialog):
         dlbl.setFixedHeight(22)
         dlbl.setStyleSheet(
             f"color:{N_SUBTEXT};font-family:{hf}, 'Segoe UI';"
-            f"font-size:7.5px;letter-spacing:1px;padding-left:11px;")
+            f"font-size:7.5px;letter-spacing:1px;padding-left:11px;"
+        )
         sl.addWidget(dlbl)
 
         self._sidebar = QListWidget()
@@ -1124,8 +1201,7 @@ class JournalDialog(QDialog):
         # Sidebar footer
         sbfoot = QWidget()
         sbfoot.setFixedHeight(38)
-        sbfoot.setStyleSheet(
-            f"background:{N_SURFACE};border-top:1px solid {N_BORDER};")
+        sbfoot.setStyleSheet(f"background:{N_SURFACE};border-top:1px solid {N_BORDER};")
         sfl = QHBoxLayout(sbfoot)
         sfl.setContentsMargins(6, 4, 6, 4)
         sfl.setSpacing(4)
@@ -1136,7 +1212,8 @@ class JournalDialog(QDialog):
             f"border:1px solid {N_ACCENT};border-radius:2px;"
             f"padding:4px 4px;font-family:{hf}, 'Segoe UI';"
             f"font-size:6.5px;font-weight:700;letter-spacing:0.5px;}}"
-            f"QPushButton:hover{{background:rgba(114,255,79,0.1);}}")
+            f"QPushButton:hover{{background:rgba(114,255,79,0.1);}}"
+        )
         btn_new.clicked.connect(self._go_today)
         sfl.addWidget(btn_new, stretch=1)
         sl.addWidget(sbfoot)
@@ -1147,8 +1224,7 @@ class JournalDialog(QDialog):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(False)
         self._scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self._scroll.setStyleSheet(
-            f"QScrollArea{{border:none;background:{N_BG};}}")
+        self._scroll.setStyleSheet(f"QScrollArea{{border:none;background:{N_BG};}}")
         self._canvas = JournalCanvas()
         self._canvas.setStyleSheet(f"background:{N_CANVAS};")
         self._scroll.setWidget(self._canvas)
@@ -1162,7 +1238,8 @@ class JournalDialog(QDialog):
         sbar.setFixedHeight(26)
         sbar.setStyleSheet(
             f"QFrame{{background:{N_SURFACE};border-top:1px solid {N_BORDER};"
-            f"border-radius:0px;}}")
+            f"border-radius:0px;}}"
+        )
         sb_layout = QHBoxLayout(sbar)
         sb_layout.setContentsMargins(10, 0, 10, 0)
         sb_layout.setSpacing(6)
@@ -1170,18 +1247,20 @@ class JournalDialog(QDialog):
         dot = QLabel("●")
         dot.setFixedWidth(12)
         dot.setStyleSheet(
-            f"color:{N_ACCENT};font-size:8px;"
-            f"qproperty-alignment:AlignCenter;")
+            f"color:{N_ACCENT};font-size:8px;" f"qproperty-alignment:AlignCenter;"
+        )
         self._hint_lbl = QLabel("")
         self._hint_lbl.setAlignment(Qt.AlignCenter)
         self._hint_lbl.setStyleSheet(
             f"color:{N_ACCENT};font-size:8px;letter-spacing:1px;"
-            f"font-family:{bf}, 'Consolas';")
+            f"font-family:{bf}, 'Consolas';"
+        )
 
         mode_hint = QLabel("I=INK  V=VANISH  C=CIPHER  P=PIGMENT")
         mode_hint.setStyleSheet(
             f"color:{N_SUBTEXT};font-size:7px;font-family:{bf}, 'Consolas';"
-            f"letter-spacing:0.5px;")
+            f"letter-spacing:0.5px;"
+        )
 
         sb_layout.addWidget(dot)
         sb_layout.addWidget(self._hint_lbl, stretch=1)
@@ -1212,6 +1291,7 @@ class JournalDialog(QDialog):
         ]
         from datetime import date as _date
         import datetime as _dt
+
         d = _date.today()
         day_of_year = d.timetuple().tm_yday
         return quotes[day_of_year % len(quotes)]
@@ -1225,7 +1305,8 @@ class JournalDialog(QDialog):
                 f"border:1px solid {N_BORDER};border-radius:2px;"
                 f"font-size:16px;font-weight:700;padding:0;}}"
                 f"QPushButton:hover{{color:{N_ACCENT};border-color:{N_ACCENT};"
-                f"background:rgba(114,255,79,0.08);}}")
+                f"background:rgba(114,255,79,0.08);}}"
+            )
         else:
             b.setFixedSize(36, 36)
             b.setFont(QFont("Segoe UI", 20, QFont.Bold))
@@ -1233,7 +1314,8 @@ class JournalDialog(QDialog):
                 f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
                 f"border:1px solid {C_BORDER};border-radius:6px;"
                 f"font-size:20px;font-weight:bold;padding:0;line-height:36px;}}"
-                f"QPushButton:hover{{background:{C_ACCENT};color:white;border:none;}}")
+                f"QPushButton:hover{{background:{C_ACCENT};color:white;border:none;}}"
+            )
         b.clicked.connect(slot)
         return b
 
@@ -1269,42 +1351,48 @@ class JournalDialog(QDialog):
             N_CARD = p.get("C_CARD", "#14141F")
             N_ACCENT = p.get("C_ACCENT", "#72FF4F")
             N_TEXT = p.get("C_TEXT", "#E0E0FF")
-            hf = p.get("header_font", "'Orbitron'").split(',')[0].strip("'")
+            hf = p.get("header_font", "'Orbitron'").split(",")[0].strip("'")
             active_ss = (
                 f"QPushButton{{background:{N_ACCENT};color:{N_BG};"
                 f"border:none;border-radius:2px;padding:4px 10px;"
                 f"font-size:11px;font-family:{hf}, 'Segoe UI';"
                 f"font-weight:900;letter-spacing:1px;}}"
-                f"QPushButton:hover{{background:white;color:{N_BG};}}")
+                f"QPushButton:hover{{background:white;color:{N_BG};}}"
+            )
             normal_ss = (
                 f"QPushButton{{background:{N_CARD};color:{N_ACCENT};"
                 f"border:1px solid {N_ACCENT};border-radius:2px;"
                 f"padding:4px 10px;font-size:11px;"
                 f"font-family:{hf}, 'Segoe UI';font-weight:700;letter-spacing:1px;}}"
-                f"QPushButton:hover{{background:rgba(114,255,79,0.1);}}")
+                f"QPushButton:hover{{background:rgba(114,255,79,0.1);}}"
+            )
             hints = {
-                MODE_PEN:    "🗡 INK JUTSU — INSCRIBE THE SCROLL",
+                MODE_PEN: "🗡 INK JUTSU — INSCRIBE THE SCROLL",
                 MODE_ERASER: "◌ VANISH — STRIKE FROM THE RECORD",
-                MODE_TEXT:   "巻 CIPHER — ENCODE YOUR THOUGHTS",
+                MODE_TEXT: "巻 CIPHER — ENCODE YOUR THOUGHTS",
             }
         else:
             active_ss = (
                 f"QPushButton{{background:{C_ACCENT};color:white;border:none;"
                 f"border-radius:6px;padding:5px 12px;font-size:12px;}}"
-                f"QPushButton:hover{{background:#6A58E0;}}")
+                f"QPushButton:hover{{background:#6A58E0;}}"
+            )
             normal_ss = (
                 f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
                 f"border:1px solid {C_BORDER};border-radius:6px;"
                 f"padding:5px 12px;font-size:12px;}}"
-                f"QPushButton:hover{{background:{C_SURFACE};color:white;}}")
+                f"QPushButton:hover{{background:{C_SURFACE};color:white;}}"
+            )
             hints = {
-                MODE_PEN:    "✏ Pen — draw freehand with mouse or stylus",
+                MODE_PEN: "✏ Pen — draw freehand with mouse or stylus",
                 MODE_ERASER: "⬜ Eraser — drag over strokes to erase them",
-                MODE_TEXT:   "T Text — click canvas to place cursor, then type  •  Enter = new line  •  Esc = done",
+                MODE_TEXT: "T Text — click canvas to place cursor, then type  •  Enter = new line  •  Esc = done",
             }
-        for btn, mode in [(self._btn_pen, MODE_PEN),
-                          (self._btn_eraser, MODE_ERASER),
-                          (self._btn_text, MODE_TEXT)]:
+        for btn, mode in [
+            (self._btn_pen, MODE_PEN),
+            (self._btn_eraser, MODE_ERASER),
+            (self._btn_text, MODE_TEXT),
+        ]:
             btn.setStyleSheet(active_ss if mode == self._mode else normal_ss)
         self._hint_lbl.setText(hints.get(self._mode, ""))
 
@@ -1344,7 +1432,7 @@ class JournalDialog(QDialog):
     def _load_date(self, date_str):
         self._current_date = date_str
         try:
-            d  = date.fromisoformat(date_str)
+            d = date.fromisoformat(date_str)
             if self._ninja:
                 dn = d.strftime("%A").upper()
                 df = d.strftime("%d %B %Y").upper()
@@ -1358,13 +1446,13 @@ class JournalDialog(QDialog):
         except Exception:
             self._btn_date.setText(date_str)
 
-        entry   = self._journal.get(date_str, {})
+        entry = self._journal.get(date_str, {})
         # Backward compat — old format was a plain list of strokes
         if isinstance(entry, list):
             entry = {"strokes": entry, "texts": []}
 
         focus_secs = entry.get("focus_seconds", 0) if isinstance(entry, dict) else 0
-        
+
         # Override with live timer state if viewing today
         if date_str == date.today().isoformat():
             state_file = os.path.join(os.path.expanduser("~"), "anki_timer_state.json")
@@ -1392,7 +1480,7 @@ class JournalDialog(QDialog):
             self._lbl_focus.hide()
 
         strokes = _strokes_from_json(entry.get("strokes", []))
-        texts   = _texts_from_json(entry.get("texts", []))
+        texts = _texts_from_json(entry.get("texts", []))
         self._canvas.set_content(strokes, texts)
         self._scroll.verticalScrollBar().setValue(0)
 
@@ -1405,15 +1493,15 @@ class JournalDialog(QDialog):
     def _save_current(self):
         self._canvas._commit_text()
         strokes = self._canvas.get_strokes()
-        texts   = self._canvas.get_texts()
-        
+        texts = self._canvas.get_texts()
+
         entry = self._journal.get(self._current_date, {})
         if isinstance(entry, list):
             entry = {"strokes": entry, "texts": []}
-            
+
         if strokes or texts:
             entry["strokes"] = _strokes_to_json(strokes)
-            entry["texts"]   = _texts_to_json(texts)
+            entry["texts"] = _texts_to_json(texts)
             self._journal[self._current_date] = entry
         else:
             entry.pop("strokes", None)
@@ -1432,13 +1520,13 @@ class JournalDialog(QDialog):
     def _refresh_sidebar(self):
         sel = self._current_date
         self._sidebar.clear()
-        dates     = sorted(self._journal.keys(), reverse=True)
+        dates = sorted(self._journal.keys(), reverse=True)
         today_str = date.today().isoformat()
         if today_str not in dates:
             dates = [today_str] + dates
         for d_str in dates:
             try:
-                d   = date.fromisoformat(d_str)
+                d = date.fromisoformat(d_str)
                 has = d_str in self._journal
                 if self._ninja:
                     if d == date.today():
@@ -1473,24 +1561,33 @@ class JournalDialog(QDialog):
         c = self._canvas.cycle_color()
         if self._ninja:
             self._dot.setStyleSheet(
-                f"background:{c};border-radius:9px;border:1.5px solid {N_BORDER};")
+                f"background:{c};border-radius:9px;border:1.5px solid {N_BORDER};"
+            )
         else:
             self._dot.setStyleSheet(
-                f"background:{c};border-radius:11px;border:2px solid {C_BORDER};")
+                f"background:{c};border-radius:11px;border:2px solid {C_BORDER};"
+            )
 
     def _clear(self):
-        if QMessageBox.question(
-            self, "Clear Page", "Clear everything on this page?",
-            QMessageBox.Yes | QMessageBox.No
-        ) == QMessageBox.Yes:
+        if (
+            QMessageBox.question(
+                self,
+                "Clear Page",
+                "Clear everything on this page?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            == QMessageBox.Yes
+        ):
             self._canvas.clear()
 
     def _export(self):
         self._canvas._commit_text()
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export as PNG",
+            self,
+            "Export as PNG",
             f"journal_{self._current_date}.png",
-            "PNG Images (*.png)")
+            "PNG Images (*.png)",
+        )
         if path:
             px = self._canvas.export_pixmap()
             if px.save(path, "PNG"):

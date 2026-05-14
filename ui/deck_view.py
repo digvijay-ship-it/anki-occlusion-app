@@ -44,19 +44,28 @@ v15 Bug Fixes:
   [FIX-3]  _start_review() — win.closeEvent double-save fixed
   [FIX-4]  is_due_today() called on un-initialised boxes in ReviewScreen
   [FIX-5]  Group dedup across cards
-  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas 
+  [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas
             to eliminate mouseMoveEvent lag completely.
 """
 
 from sm2_engine import (
-    sched_init, sm2_init, sched_update, sm2_update, 
-    is_due_now, is_due_today, sm2_is_due, sm2_days_left, 
-    _fmt_due_interval, sm2_simulate, sm2_badge
+    sched_init,
+    sm2_init,
+    sched_update,
+    sm2_update,
+    is_due_now,
+    is_due_today,
+    sm2_is_due,
+    sm2_days_left,
+    _fmt_due_interval,
+    sm2_simulate,
+    sm2_badge,
 )
 
 # Daily Journal — safe import
 try:
     from ui.journal import JournalDialog
+
     _JOURNAL_AVAILABLE = True
 except ImportError:
     _JOURNAL_AVAILABLE = False
@@ -64,45 +73,113 @@ except ImportError:
 # Session Timer — safe import
 try:
     from session_timer import SessionTimer
+
     _TIMER_AVAILABLE = True
 except ImportError:
     _TIMER_AVAILABLE = False
 
 from pdf_engine import (
-    PDF_SUPPORT, PAGE_CACHE, PdfLoaderThread, PdfSkeletonThread,
-    pdf_page_to_pixmap, load_pdf_skeleton, PdfOnDemandThread,
+    PDF_SUPPORT,
+    PAGE_CACHE,
+    PdfLoaderThread,
+    PdfSkeletonThread,
+    pdf_page_to_pixmap,
+    load_pdf_skeleton,
+    PdfOnDemandThread,
     build_skeleton_placeholders,
-    invalidate_pdf_skeleton        # STEP 2 + 3
+    invalidate_pdf_skeleton,  # STEP 2 + 3
 )
 
-from editor_ui import OcclusionCanvas,_ZoomableScrollArea
+from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
+from ui.deck_tree import CARD_DRAG_MIME
 
 import fitz
 
 from data_manager import (
-    load_data, save_data, find_deck_by_id, next_deck_id, new_box_id, deck_history,
-    DATA_FILE, store
+    load_data,
+    save_data,
+    find_deck_by_id,
+    next_deck_id,
+    new_box_id,
+    deck_history,
+    DATA_FILE,
+    store,
 )
 from perf_utils import card_has_due_today, get_pdf_page_count
-from storage_paths import find_deck_segments, has_mission_archive, relocate_pdf_for_deck, resolve_asset_path
+from storage_paths import (
+    find_deck_segments,
+    has_mission_archive,
+    relocate_pdf_for_deck,
+    resolve_asset_path,
+)
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
-    QFrame, QScrollArea, QInputDialog, QMessageBox,
-    QSplitter, QStatusBar, QProgressBar, QDialog, QFormLayout,
-    QLineEdit, QTextEdit, QSizePolicy, QTreeWidget,
-    QTreeWidgetItem, QAbstractItemView, QMenu, QStyledItemDelegate, QStyle,
-    QHeaderView
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QListWidget,
+    QListWidgetItem,
+    QFrame,
+    QScrollArea,
+    QInputDialog,
+    QMessageBox,
+    QSplitter,
+    QStatusBar,
+    QProgressBar,
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QTextEdit,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QAbstractItemView,
+    QMenu,
+    QStyledItemDelegate,
+    QStyle,
+    QHeaderView,
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, QRectF, QPointF, pyqtSignal, QLockFile, QTimer, QModelIndex, QFileSystemWatcher, QThread, QEvent, QMimeData, QByteArray, QUrl
+from PyQt5.QtCore import (
+    Qt,
+    QRect,
+    QPoint,
+    QSize,
+    QRectF,
+    QPointF,
+    pyqtSignal,
+    QLockFile,
+    QTimer,
+    QModelIndex,
+    QFileSystemWatcher,
+    QThread,
+    QEvent,
+    QMimeData,
+    QByteArray,
+    QUrl,
+)
 from PyQt5.QtGui import QGuiApplication as _QGA
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QFont, QCursor, QIcon, QBrush, QTransform, QPainterPath, QDrag, QDesktopServices
+    QPainter,
+    QPen,
+    QColor,
+    QPixmap,
+    QFont,
+    QCursor,
+    QIcon,
+    QBrush,
+    QTransform,
+    QPainterPath,
+    QDrag,
+    QDesktopServices,
 )
 
 import tempfile
@@ -115,18 +192,26 @@ LOCK_FILE = os.path.join(tempfile.gettempdir(), "anki_occlusion.lock")
 #  THEME
 # ═══════════════════════════════════════════════════════════════════════════════
 
-C_BG      = "#1E1E2E"
-C_SURFACE = "#2A2A3E"
-C_CARD    = "#313145"
-C_ACCENT  = "#7C6AF7"
-C_GREEN   = "#50FA7B"
-C_RED     = "#FF5555"
-C_YELLOW  = "#F1FA8C"
-C_TEXT    = "#CDD6F4"
-C_SUBTEXT = "#A6ADC8"
-C_BORDER  = "#45475A"
-C_MASK    = "#F7916A"
-C_GROUP   = "#BD93F9"
+# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
+from theme_manager import (
+    get_palette as _get_palette,
+    normalize_theme,
+    NINJA_THEME_ENABLED,
+)
+
+_DARK = _get_palette("dark")
+C_BG = _DARK["C_BG"]
+C_SURFACE = _DARK["C_SURFACE"]
+C_CARD = _DARK["C_CARD"]
+C_ACCENT = _DARK["C_ACCENT"]
+C_GREEN = _DARK["C_GREEN"]
+C_RED = _DARK["C_RED"]
+C_YELLOW = _DARK["C_YELLOW"]
+C_TEXT = _DARK["C_TEXT"]
+C_SUBTEXT = _DARK["C_SUBTEXT"]
+C_BORDER = _DARK["C_BORDER"]
+C_MASK = "#F7916A"
+C_GROUP = "#BD93F9"
 
 
 BASE_FONT_SIZE = 11
@@ -168,6 +253,7 @@ QMenu{{background:{C_SURFACE};color:{C_TEXT};border:1px solid {C_BORDER};border-
 QMenu::item:selected{{background:{C_ACCENT};}}
 """
 
+
 SS = _build_ss()
 
 
@@ -206,16 +292,25 @@ class DojoStatsCard(QFrame):
         l.addLayout(text_l)
         l.addStretch()
         self.update_font_scale(1.0)
-        
+
     def update_font_scale(self, scale: float):
         self.setFixedHeight(int(100 * scale))
-        self.icon_lbl.setStyleSheet(f"color: {self._color_hex}; font-size: {int(32 * scale)}px;")
-        self.val_lbl.setStyleSheet(f"color: {self._color_hex}; font-size: {int(38 * scale)}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: -2px;")
-        self.title_lbl.setStyleSheet(f"color: #A6ADC8; font-size: {max(8, int(10 * scale))}px; font-weight: 800; font-family: 'Orbitron'; letter-spacing: 1px;")
-        self.sub_lbl.setStyleSheet(f"color: #5F627D; font-size: {max(9, int(11 * scale))}px;")
+        self.icon_lbl.setStyleSheet(
+            f"color: {self._color_hex}; font-size: {int(32 * scale)}px;"
+        )
+        self.val_lbl.setStyleSheet(
+            f"color: {self._color_hex}; font-size: {int(38 * scale)}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: -2px;"
+        )
+        self.title_lbl.setStyleSheet(
+            f"color: #A6ADC8; font-size: {max(8, int(10 * scale))}px; font-weight: 800; font-family: 'Orbitron'; letter-spacing: 1px;"
+        )
+        self.sub_lbl.setStyleSheet(
+            f"color: #5F627D; font-size: {max(9, int(11 * scale))}px;"
+        )
 
     def set_value(self, val):
         self.val_lbl.setText(str(val))
+
 
 class DojoMissionBanner(QFrame):
     def __init__(self, parent=None):
@@ -232,59 +327,66 @@ class DojoMissionBanner(QFrame):
         """)
         l = QHBoxLayout(self)
         l.setContentsMargins(24, 20, 24, 20)
-        
+
         left_l = QVBoxLayout()
         left_l.setSpacing(6)
-        
+
         self.title_lbl = QLabel("⚔ TRAINING MISSION")
         self.desc_lbl = QLabel("Continue your training and defeat the due cards!")
         self.quote_lbl = QLabel("> Cowabunga! 🐢_")
-        
+
         left_l.addWidget(self.title_lbl)
         left_l.addWidget(self.desc_lbl)
         left_l.addWidget(self.quote_lbl)
         left_l.addStretch()
         l.addLayout(left_l)
         l.addStretch()
-        
+
         right_l = QVBoxLayout()
         right_l.setSpacing(8)
         right_l.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-        
+
         self.btn_train = QPushButton("▶ START TRAINING\nREVIEW DUE SCROLLS")
         self.btn_all = QPushButton("  TRAIN SELECTED SCROLL")
-        from theme_manager import NINJA_THEME_ENABLED
         if NINJA_THEME_ENABLED:
             from dojo_assets import DojoAssets
+
             self.btn_all.setIcon(QIcon(DojoAssets.get().get_ui_icon(2, 32)))
-        else:
-            print("[DEBUG][theme] dojo_banner_icon_skipped")
-        
+
         right_l.addWidget(self.btn_train)
         right_l.addWidget(self.btn_all)
         l.addLayout(right_l)
 
         from PyQt5.QtCore import QTimer
+
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._animate_glow)
         self._glow_step = 0
-        
+
         from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+
         self._shadow = QGraphicsDropShadowEffect(self)
         self._shadow.setOffset(0, 0)
         self.btn_train.setGraphicsEffect(self._shadow)
-        
+
         self.update_font_scale(1.0)
         self._glow_timer.start(50)
 
     def update_font_scale(self, scale: float):
         self._scale = scale
         self.setMinimumHeight(int(140 * scale))
-        self.title_lbl.setStyleSheet(f"color: #BD93F9; font-size: {max(9, int(12 * scale))}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
-        self.desc_lbl.setStyleSheet(f"color: #CDD6F4; font-size: {max(11, int(14 * scale))}px;")
-        self.quote_lbl.setStyleSheet(f"color: #50FA7B; font-size: {max(9, int(12 * scale))}px; font-weight: bold; font-family: monospace;")
-        
+        self.title_lbl.setStyleSheet(
+            f"color: #BD93F9; font-size: {max(9, int(12 * scale))}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;"
+        )
+        self.desc_lbl.setStyleSheet(
+            f"color: #CDD6F4; font-size: {max(11, int(14 * scale))}px;"
+        )
+        self.quote_lbl.setStyleSheet(
+            f"color: #50FA7B; font-size: {max(9, int(12 * scale))}px; font-weight: bold; font-family: monospace;"
+        )
+
         from PyQt5.QtCore import QSize
+
         self.btn_all.setIconSize(QSize(int(20 * scale), int(20 * scale)))
         self.btn_all.setStyleSheet(f"""
             QPushButton {{
@@ -308,15 +410,16 @@ class DojoMissionBanner(QFrame):
 
     def _animate_glow(self):
         import math
+
         self._glow_step += 1
         progress = (math.sin(self._glow_step * math.pi / 20.0) + 1.0) / 2.0
-        
+
         r = int(32 + (114 - 32) * progress)
         g = int(106 + (255 - 106) * progress)
         b = int(50 + (79 - 50) * progress)
-        
+
         color = f"#{r:02X}{g:02X}{b:02X}"
-        scale = getattr(self, '_scale', 1.0)
+        scale = getattr(self, "_scale", 1.0)
         self.btn_train.setStyleSheet(f"""
             QPushButton {{
                 background: {color};
@@ -335,8 +438,9 @@ class DojoMissionBanner(QFrame):
                 border: 1px solid #8BFF6B;
             }}
         """)
-        
+
         from PyQt5.QtGui import QColor
+
         blur_radius = 5 + 35 * progress
         shadow_alpha = int(80 + 175 * progress)
         self._shadow.setBlurRadius(blur_radius)
@@ -346,14 +450,17 @@ class DojoMissionBanner(QFrame):
 #  DECK VIEW
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class DeckView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.deck          = None
-        self._deck_id      = None
-        self._data         = {}
-        self._thumb_cache  = {}
-        self._undo_stack   = []
+        self.deck = None
+        self._deck_id = None
+        self._data = {}
+        self._thumb_cache = {}
+        from collections import deque as _deque
+
+        self._undo_stack = _deque(maxlen=50)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -370,19 +477,21 @@ class DeckView(QWidget):
         self.lbl_deck_icon = QLabel()
         self.lbl_deck_icon.hide()
         hdr.addWidget(self.lbl_deck_icon)
-        
+
         title_l = QVBoxLayout()
         title_l.setSpacing(4)
         title_l.setAlignment(Qt.AlignVCenter)
         self.lbl_deck = QLabel("← Select a deck")
         self.lbl_deck.setFont(QFont("Segoe UI", 15, QFont.Bold))
         self.lbl_deck_sub = QLabel("")
-        self.lbl_deck_sub.setStyleSheet("color: #5F627D; font-size: 11px; font-weight: bold; font-family: 'Orbitron'; letter-spacing: 1px;")
+        self.lbl_deck_sub.setStyleSheet(
+            "color: #5F627D; font-size: 11px; font-weight: bold; font-family: 'Orbitron'; letter-spacing: 1px;"
+        )
         self.lbl_deck_sub.hide()
         title_l.addWidget(self.lbl_deck)
         title_l.addWidget(self.lbl_deck_sub)
         hdr.addLayout(title_l)
-        
+
         hdr.addStretch()
         self.btn_add = QPushButton("＋ Add Card")
         self.btn_add.clicked.connect(self._add_card)
@@ -420,8 +529,12 @@ class DeckView(QWidget):
         sl = QHBoxLayout(self.dojo_stats_w)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(16)
-        self.stat_missions = DojoStatsCard("REMAINING MISSIONS", "CARDS DUE FOR REVIEW", "#FF5555")
-        self.stat_scrolls = DojoStatsCard("NEW TECHNIQUES", "TOTAL ACTIVE SCROLLS", "#BD93F9")
+        self.stat_missions = DojoStatsCard(
+            "REMAINING MISSIONS", "CARDS DUE FOR REVIEW", "#FF5555"
+        )
+        self.stat_scrolls = DojoStatsCard(
+            "NEW TECHNIQUES", "TOTAL ACTIVE SCROLLS", "#BD93F9"
+        )
         self.stat_battles = DojoStatsCard("BATTLES WON", "REVIEWS COMPLETED", "#50FA7B")
         sl.addWidget(self.stat_missions)
         sl.addWidget(self.stat_scrolls)
@@ -444,12 +557,11 @@ class DeckView(QWidget):
         self.card_list.startDrag = self._start_card_drag
         L.addWidget(self.card_list, stretch=1)
 
-
         bot = QHBoxLayout()
-        be  = QPushButton("✏ Edit")
+        be = QPushButton("✏ Edit")
         be.setObjectName("flat")
         be.clicked.connect(lambda: self._edit_card(self.card_list.currentItem()))
-        bd  = QPushButton("🗑 Delete")
+        bd = QPushButton("🗑 Delete")
         bd.setObjectName("danger")
         bd.clicked.connect(self._delete_card)
         bot.addWidget(be)
@@ -459,48 +571,68 @@ class DeckView(QWidget):
 
     def update_font_size(self, size: int):
         self._font_size_val = size
-        scale = size / 11.0 # 11 is BASE_FONT_SIZE
-        if hasattr(self, 'stat_missions'):
+        scale = size / 11.0  # 11 is BASE_FONT_SIZE
+        if hasattr(self, "stat_missions"):
             self.stat_missions.update_font_scale(scale)
             self.stat_scrolls.update_font_scale(scale)
             self.stat_battles.update_font_scale(scale)
             self.dojo_banner.update_font_scale(scale)
-            
+
         if self._theme == "dojo":
-            self.lbl_deck.setStyleSheet(f"color: #72FF4F; font-size: {int(24 * scale)}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
-            self.btn_add.setStyleSheet(f"QPushButton{{background:transparent;border:2px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:{max(10, int(12 * scale))}px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
+            self.lbl_deck.setStyleSheet(
+                f"color: #72FF4F; font-size: {int(24 * scale)}px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;"
+            )
+            self.btn_add.setStyleSheet(
+                f"QPushButton{{background:transparent;border:2px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:{max(10, int(12 * scale))}px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}"
+            )
             from dojo_assets import DojoAssets
-            self.lbl_deck_icon.setPixmap(DojoAssets.get().get_ui_icon(0, int(48 * scale)).scaled(int(48 * scale), int(48 * scale), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+            self.lbl_deck_icon.setPixmap(
+                DojoAssets.get()
+                .get_ui_icon(0, int(48 * scale))
+                .scaled(
+                    int(48 * scale),
+                    int(48 * scale),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
         self._refresh()
 
     def set_theme(self, theme):
-        from theme_manager import normalize_theme
         theme = normalize_theme(theme)
         self._theme = theme
         if theme == "dojo":
             from dojo_assets import DojoAssets
+
             self.lbl_deck_sub.show()
             self.lbl_deck_icon.show()
             self.dojo_container.show()
             self.dojo_stats_w.show()
             self.dojo_banner.show()
             self.lbl_stats.hide()
-            
+
             self.btn_due.hide()
             self.btn_all.hide()
-            
-            self.lbl_deck.setStyleSheet("color: #72FF4F; font-size: 24px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;")
+
+            self.lbl_deck.setStyleSheet(
+                "color: #72FF4F; font-size: 24px; font-weight: 900; font-family: 'Orbitron'; letter-spacing: 2px;"
+            )
             if not self.deck:
                 self.lbl_deck.setText("CHOOSE YOUR DOJO NINJA! 🤺")
-            
+
             deck_icon_px = DojoAssets.get().get_ui_icon(0, 48)
-            self.lbl_deck_icon.setPixmap(deck_icon_px.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.lbl_deck_icon.setPixmap(
+                deck_icon_px.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
 
             self.btn_add.setText(" FORGE SCROLL")
             self.btn_add.setIcon(QIcon(DojoAssets.get().get_ui_icon(0, 32)))
             self.btn_add.setIconSize(QSize(24, 24))
-            self.btn_add.setStyleSheet(f"QPushButton{{background:transparent;border:2px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:12px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}")
-            
+            self.btn_add.setStyleSheet(
+                f"QPushButton{{background:transparent;border:2px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:12px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}"
+            )
+
         else:
             self.lbl_deck_sub.hide()
             self.lbl_deck_icon.hide()
@@ -508,10 +640,10 @@ class DeckView(QWidget):
             self.dojo_stats_w.hide()
             self.dojo_banner.hide()
             self.lbl_stats.show()
-            
+
             self.btn_due.show()
             self.btn_all.show()
-            
+
             self.lbl_deck.setStyleSheet("")
             self.lbl_deck.setFont(QFont("Segoe UI", 15, QFont.Bold))
             if not self.deck:
@@ -520,17 +652,17 @@ class DeckView(QWidget):
             self.btn_add.setText("＋ Add Card")
             self.btn_add.setIcon(QIcon())
             self.btn_add.setStyleSheet("")
-            
+
             self.btn_all.setText("▶ Review")
             self.btn_all.setIcon(QIcon())
             self.btn_all.setStyleSheet("")
             self.btn_all.setObjectName("success")
-            
+
             self.btn_due.setText("🔴 Review Due")
             self.btn_due.setIcon(QIcon())
             self.btn_due.setStyleSheet("")
             self.btn_due.setObjectName("danger")
-            
+
         self._refresh()
 
     def _card_list_key_press(self, e):
@@ -557,8 +689,6 @@ class DeckView(QWidget):
         if not self._data:
             return
         self._undo_stack.append((copy.deepcopy(self._data), self._deck_id))
-        if len(self._undo_stack) > 50:
-            self._undo_stack.pop(0)
 
     def undo(self):
         if not self._undo_stack:
@@ -566,14 +696,16 @@ class DeckView(QWidget):
         data_snapshot, deck_id = self._undo_stack.pop()
         self._data = data_snapshot
         self._deck_id = deck_id
-        fresh = find_deck_by_id(deck_id, self._data.get("decks", [])) if deck_id else None
+        fresh = (
+            find_deck_by_id(deck_id, self._data.get("decks", [])) if deck_id else None
+        )
         self.deck = fresh
         if fresh:
             self.lbl_deck.setText(fresh.get("name", "?"))
             self._refresh()
         else:
             self.card_list.clear()
-            if getattr(self, '_theme', 'classic') == 'dojo':
+            if getattr(self, "_theme", "classic") == "dojo":
                 self.lbl_deck.setText("CHOOSE YOUR DOJO NINJA! 🤺")
             else:
                 self.lbl_deck.setText("← Select a deck")
@@ -593,15 +725,15 @@ class DeckView(QWidget):
 
     def load_deck(self, deck, data):
         self._data = data
-        new_id     = deck.get("_id")
-        same_deck = (new_id == self._deck_id)
+        new_id = deck.get("_id")
+        same_deck = new_id == self._deck_id
         selected_row = self.card_list.currentRow() if same_deck else -1
         # [PERF FIX] Thumb cache sirf tab clear karo jab deck badla ho
         if not same_deck:
             self._thumb_cache.clear()
             self._undo_stack.clear()
         self._deck_id = new_id
-        self.deck     = deck
+        self.deck = deck
         self.lbl_deck.setText(deck.get("name", "?"))
         self._refresh()
         if same_deck and 0 <= selected_row < self.card_list.count():
@@ -616,7 +748,7 @@ class DeckView(QWidget):
             return
         self.card_list.clear()
 
-        scale = getattr(self, '_font_size_val', 11) / 11.0
+        scale = getattr(self, "_font_size_val", 11) / 11.0
 
         def _get_all_cards(d):
             res = list(d.get("cards", []))
@@ -624,8 +756,8 @@ class DeckView(QWidget):
                 res.extend(_get_all_cards(child))
             return res
 
-        all_cards  = _get_all_cards(self.deck)
-        due_c  = 0
+        all_cards = _get_all_cards(self.deck)
+        due_c = 0
         untouched_c = 0
         mastered_c = 0
 
@@ -635,15 +767,17 @@ class DeckView(QWidget):
             if "sched_state" not in c:
                 sm2_init(c)
             boxes = c.get("boxes", [])
-            
+
             card_due = False
             card_untouched = True
             card_mastered = False
-            
+
             if not boxes:
                 card_due = is_due_today(c)
-                if c.get("reviews", 0) > 0: card_untouched = False
-                if sm2_days_left(c) > 30: card_mastered = True
+                if c.get("reviews", 0) > 0:
+                    card_untouched = False
+                if sm2_days_left(c) > 30:
+                    card_mastered = True
             else:
                 seen_gids = set()
                 all_mastered = True
@@ -654,14 +788,20 @@ class DeckView(QWidget):
                         if gid not in seen_gids:
                             seen_gids.add(gid)
                             has_boxes = True
-                            if is_due_today(b): card_due = True
-                            if b.get("reviews", 0) > 0: card_untouched = False
-                            if sm2_days_left(b) <= 30: all_mastered = False
+                            if is_due_today(b):
+                                card_due = True
+                            if b.get("reviews", 0) > 0:
+                                card_untouched = False
+                            if sm2_days_left(b) <= 30:
+                                all_mastered = False
                     else:
                         has_boxes = True
-                        if is_due_today(b): card_due = True
-                        if b.get("reviews", 0) > 0: card_untouched = False
-                        if sm2_days_left(b) <= 30: all_mastered = False
+                        if is_due_today(b):
+                            card_due = True
+                        if b.get("reviews", 0) > 0:
+                            card_untouched = False
+                        if sm2_days_left(b) <= 30:
+                            all_mastered = False
                 if has_boxes and all_mastered:
                     card_mastered = True
 
@@ -671,7 +811,9 @@ class DeckView(QWidget):
 
         direct_cards = self.deck.get("cards", [])
         for c in direct_cards:
-            badge = "🔴 Due" if self._card_has_due_today(c) else f"✅ {sm2_days_left(c)}d"
+            badge = (
+                "🔴 Due" if self._card_has_due_today(c) else f"✅ {sm2_days_left(c)}d"
+            )
 
             # ── Pages count ───────────────────────────────────────────────────
             pdf_path = resolve_asset_path(c.get("pdf_path", ""))
@@ -682,9 +824,9 @@ class DeckView(QWidget):
                 pages_str = ""
 
             # ── Mask count: grouped + individual ─────────────────────────────
-            seen_grp  = set()
+            seen_grp = set()
             n_grouped = 0
-            n_indiv   = 0
+            n_indiv = 0
             boxes = c.get("boxes", [])
             for b in boxes:
                 gid = b.get("group_id", "")
@@ -695,21 +837,25 @@ class DeckView(QWidget):
                 else:
                     n_indiv += 1
             mask_parts = []
-            if n_grouped: mask_parts.append(f"{n_grouped}grp")
-            if n_indiv:   mask_parts.append(f"{n_indiv}ind")
+            if n_grouped:
+                mask_parts.append(f"{n_grouped}grp")
+            if n_indiv:
+                mask_parts.append(f"{n_indiv}ind")
             mask_str = "🎭" + ("+".join(mask_parts) if mask_parts else "0")
 
-            item  = QListWidgetItem(
+            item = QListWidgetItem(
                 f"  {c.get('title','Untitled')}  "
                 f"| {pages_str}{mask_str}  "
                 f"| Rep:{c.get('sm2_repetitions',0)}  "
-                f"| EF:{c.get('sm2_ease',2.5):.2f}  | {badge}")
+                f"| EF:{c.get('sm2_ease',2.5):.2f}  | {badge}"
+            )
 
             img_path = resolve_asset_path(c.get("image_path", ""))
             if img_path and os.path.exists(img_path):
                 if img_path not in self._thumb_cache:
                     px = QPixmap(img_path).scaled(
-                        64, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        64, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
                     self._thumb_cache[img_path] = QIcon(px)
                 item.setIcon(self._thumb_cache[img_path])
 
@@ -717,18 +863,19 @@ class DeckView(QWidget):
 
         total_rev = sum(c.get("reviews", 0) for c in all_cards)
         self.lbl_stats.setText(
-            f"Cards:{len(all_cards)}  🔴Due:{due_c}  Reviews:{total_rev}")
-        
+            f"Cards:{len(all_cards)}  🔴Due:{due_c}  Reviews:{total_rev}"
+        )
+
         self.lbl_deck_sub.setText(f"SCROLLS: {len(all_cards)} ❖ DUE: {due_c}")
         self.stat_missions.set_value(due_c)
         self.stat_scrolls.set_value(untouched_c)
         self.stat_battles.set_value(total_rev)
 
-        if not direct_cards and getattr(self, '_theme', 'classic') == 'dojo':
+        if not direct_cards and getattr(self, "_theme", "classic") == "dojo":
             # Empty state for Dojo mode
             item = QListWidgetItem()
             item.setTextAlignment(Qt.AlignCenter)
-            item.setFont(QFont('Orbitron', int(14 * scale), QFont.Bold))
+            item.setFont(QFont("Orbitron", int(14 * scale), QFont.Bold))
             item.setForeground(QBrush(QColor("#45475A")))
             item.setText("\n\n★\n- SELECT A SCROLL TO BEGIN -\n")
             self.card_list.addItem(item)
@@ -741,25 +888,31 @@ class DeckView(QWidget):
         if dlg.exec_() != QDialog.Accepted:
             self._undo_stack.pop() if self._undo_stack else None
             return
-        card         = dlg.get_card()
+        card = dlg.get_card()
         subdeck_name = card.pop("_auto_subdeck", None)
 
         if subdeck_name:
-            if self.deck.get("name", "").strip().lower() == subdeck_name.strip().lower():
+            if (
+                self.deck.get("name", "").strip().lower()
+                == subdeck_name.strip().lower()
+            ):
                 target_deck = self.deck
             else:
                 target_deck = None
                 for child in self.deck.get("children", []):
-                    if child.get("name", "").strip().lower() == subdeck_name.strip().lower():
+                    if (
+                        child.get("name", "").strip().lower()
+                        == subdeck_name.strip().lower()
+                    ):
                         target_deck = child
                         break
                 if target_deck is None:
                     target_deck = {
-                        "_id":      next_deck_id(self._data),
-                        "name":     subdeck_name,
-                        "cards":    [],
+                        "_id": next_deck_id(self._data),
+                        "name": subdeck_name,
+                        "cards": [],
                         "children": [],
-                        "created":  datetime.now().isoformat(),
+                        "created": datetime.now().isoformat(),
                     }
                     self.deck.setdefault("children", []).append(target_deck)
             if has_mission_archive() and card.get("pdf_path"):
@@ -782,6 +935,7 @@ class DeckView(QWidget):
 
     def _find_home(self):
         from ui.home_screen import HomeScreen
+
         w = self.parent()
         while w is not None:
             if isinstance(w, HomeScreen):
@@ -792,20 +946,32 @@ class DeckView(QWidget):
     def _edit_card(self, item):
         if not item or not self.deck:
             return
-        idx   = self.card_list.row(item)
+        idx = self.card_list.row(item)
         cards = self.deck.get("cards", [])
         if not 0 <= idx < len(cards):
             return
         self._push_undo()
-        dlg = CardEditorDialog(self, card=dict(cards[idx]), data=self._data, deck=self.deck)
+        dlg = CardEditorDialog(
+            self, card=dict(cards[idx]), data=self._data, deck=self.deck
+        )
         if dlg.exec_() == QDialog.Accepted:
             c = dlg.get_card()
             c.pop("_auto_subdeck", None)
             # [FIX] Preserve SM-2 data — editor returns fresh box dicts without
             # SM-2 fields. Merge SM-2 state from old boxes into new ones by box_id.
-            old_boxes_by_id = {b.get("box_id", ""): b for b in cards[idx].get("boxes", [])}
-            SM2_KEYS = ("sched_state", "sched_step", "sm2_interval", "sm2_ease",
-                        "sm2_due", "sm2_last_quality", "sm2_repetitions", "reviews")
+            old_boxes_by_id = {
+                b.get("box_id", ""): b for b in cards[idx].get("boxes", [])
+            }
+            SM2_KEYS = (
+                "sched_state",
+                "sched_step",
+                "sm2_interval",
+                "sm2_ease",
+                "sm2_due",
+                "sm2_last_quality",
+                "sm2_repetitions",
+                "reviews",
+            )
             for new_box in c.get("boxes", []):
                 bid = new_box.get("box_id", "")
                 if bid and bid in old_boxes_by_id:
@@ -823,12 +989,16 @@ class DeckView(QWidget):
     def _delete_card(self):
         if not self.deck:
             return
-        idx   = self.card_list.currentRow()
+        idx = self.card_list.currentRow()
         cards = self.deck.get("cards", [])
         if not 0 <= idx < len(cards):
             return
-        if QMessageBox.question(self, "Delete", "Delete this card?",
-            QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+        if (
+            QMessageBox.question(
+                self, "Delete", "Delete this card?", QMessageBox.Yes | QMessageBox.No
+            )
+            == QMessageBox.Yes
+        ):
             self._push_undo()
             cards.pop(idx)
             self._refresh()
@@ -841,14 +1011,19 @@ class DeckView(QWidget):
         """Recursively collect due cards from deck+children, grouped by pdf_path.
         Returns a list of card-lists, one per unique PDF, in DFS order."""
         from collections import OrderedDict
+
         groups = OrderedDict()
+
         def _walk(d):
             for card in d.get("cards", []):
                 if self._card_has_due_today(card):
-                    key = card.get("pdf_path") or card.get("image_path") or "__no_path__"
+                    key = (
+                        card.get("pdf_path") or card.get("image_path") or "__no_path__"
+                    )
                     groups.setdefault(key, []).append(card)
             for child in d.get("children", []):
                 _walk(child)
+
         _walk(deck)
         return list(groups.values())
 
@@ -859,8 +1034,9 @@ class DeckView(QWidget):
             # Parent deck: group due cards by PDF and review sequentially
             groups = self._collect_due_by_pdf(self.deck)
             if not groups:
-                QMessageBox.information(self, "✅ All clear!",
-                    "No cards due today.\nCome back tomorrow! 🌙")
+                QMessageBox.information(
+                    self, "✅ All clear!", "No cards due today.\nCome back tomorrow! 🌙"
+                )
                 return
             home = self._find_home()
             if home:
@@ -868,8 +1044,9 @@ class DeckView(QWidget):
         else:
             due = [c for c in self.deck.get("cards", []) if self._card_has_due_today(c)]
             if not due:
-                QMessageBox.information(self, "✅ All clear!",
-                    "No cards due today.\nCome back tomorrow! 🌙")
+                QMessageBox.information(
+                    self, "✅ All clear!", "No cards due today.\nCome back tomorrow! 🌙"
+                )
                 return
             self._start_review(due)
 

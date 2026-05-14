@@ -11,6 +11,7 @@ JOURNAL_FILE = os.path.join(os.path.expanduser("~"), "anki_journal.json")
 #  DATA LAYER
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _load_journal() -> dict:
     if os.path.exists(JOURNAL_FILE):
         try:
@@ -42,11 +43,13 @@ def _strokes_to_json(strokes):
         if len(stroke) < 2:
             continue
         color = stroke[0]
-        pts   = stroke[1:]
-        result.append({
-            "color": color.name(),
-            "pts":   [[p.x(), p.y()] for p in pts],
-        })
+        pts = stroke[1:]
+        result.append(
+            {
+                "color": color.name(),
+                "pts": [[p.x(), p.y()] for p in pts],
+            }
+        )
     return result
 
 
@@ -54,20 +57,33 @@ def _strokes_from_json(data):
     result = []
     for s in data:
         color = QColor(s.get("color", "#CDD6F4"))
-        pts   = [QPointF(p[0], p[1]) for p in s.get("pts", [])]
+        pts = [QPointF(p[0], p[1]) for p in s.get("pts", [])]
         if pts:
             result.append([color] + pts)
     return result
 
 
 def _texts_to_json(texts):
-    return [{"x": t["x"], "y": t["y"], "text": t["text"],
-             "color": t["color"], "size": t.get("size", 14)} for t in texts]
+    return [
+        {
+            "x": t["x"],
+            "y": t["y"],
+            "text": t["text"],
+            "color": t["color"],
+            "size": t.get("size", 14),
+        }
+        for t in texts
+    ]
 
 
 def _texts_from_json(data):
-    return [{"x": d["x"], "y": d["y"], "text": d["text"],
-             "color": d.get("color", "#CDD6F4"), "size": d.get("size", 14)}
-            for d in data]
-
-
+    return [
+        {
+            "x": d["x"],
+            "y": d["y"],
+            "text": d["text"],
+            "color": d.get("color", "#CDD6F4"),
+            "size": d.get("size", 14),
+        }
+        for d in data
+    ]

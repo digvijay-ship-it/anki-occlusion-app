@@ -6,11 +6,24 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import Qt
 
 # Keep the role constants here if they are used in review_manager
-QUEUE_ROLE       = Qt.UserRole + 10
+QUEUE_ROLE = Qt.UserRole + 10
 QUEUE_INDEX_ROLE = Qt.UserRole + 11
 
 from data_manager import store
 
+# SM-2 fields snapshotted for undo/redo — defined once at module level
+_SM2_KEYS = (
+    "sched_state",
+    "sched_step",
+    "sm2_interval",
+    "sm2_ease",
+    "sm2_due",
+    "sm2_last_quality",
+    "sm2_repetitions",
+    "reviews",
+    "reviewed_at",
+    "last_quality",
+)
 
 
 class ReviewSessionManager:
@@ -21,17 +34,15 @@ class ReviewSessionManager:
         self._done = 0
         self._queued_ids = set()
         self._deleted_ids = set()
-        self._review_undo_stack = []
-        self._review_redo_stack = []
+        from collections import deque
+
+        self._review_undo_stack = deque(maxlen=50)
+        self._review_redo_stack = deque(maxlen=50)
 
     def _rate(self, quality):
         card, box_idx, sm2_obj = self._items[self._idx]
 
         # ── Save snapshot BEFORE rating so Ctrl+Z can restore it ─────────────
-        _SM2_KEYS = ("sched_state", "sched_step", "sm2_interval", "sm2_ease",
-                     "sm2_due", "sm2_last_quality", "sm2_repetitions", "reviews",
-                     "reviewed_at", "last_quality")
-
         def _sm2_snapshot(obj):
             return {k: obj.get(k) for k in _SM2_KEYS}
 
@@ -44,28 +55,31 @@ class ReviewSessionManager:
                     sibling_snapshots.append((box, _sm2_snapshot(box)))
 
         snapshot = {
-            "idx":               self._idx,
-            "done":              self._done,
-            "items_order":       list(self._items),   # shallow copy of order
-            "sm2_obj":           sm2_obj,
-            "sm2_state":         _sm2_snapshot(sm2_obj),
+            "idx": self._idx,
+            "done": self._done,
+            "items_order": list(self._items),  # shallow copy of order
+            "sm2_obj": sm2_obj,
+            "sm2_state": _sm2_snapshot(sm2_obj),
             "sibling_snapshots": sibling_snapshots,
-            "card_reviewed_at":  card.get("last_reviewed_at"),
+            "card_reviewed_at": card.get("last_reviewed_at"),
         }
         self._review_undo_stack.append(snapshot)
-        if len(self._review_undo_stack) > 50:
-            self._review_undo_stack.pop(0)
         # New rating clears redo stack
         self._review_redo_stack.clear()
 
         sched_update(sm2_obj, quality)
+        from perf_utils import invalidate_deck_stats
+
+        invalidate_deck_stats()
 
         # ── Persist review timestamp in metadata ──────────────────────────────
         # Stamped on every rating so "when was this last reviewed?" is always
         # answerable even if the app is force-closed before the next autosave.
         _now = datetime.now().isoformat(timespec="seconds")
-        sm2_obj["reviewed_at"]      = _now
-        sm2_obj["last_quality"]     = quality   # convenience alias (sm2_last_quality is SM-2 internal)
+        sm2_obj["reviewed_at"] = _now
+        sm2_obj["last_quality"] = (
+            quality  # convenience alias (sm2_last_quality is SM-2 internal)
+        )
 
         # [FIX] For grouped boxes, apply same SM-2 update to ALL boxes in the group
         # so they all get the same due date and state. Without this, only the first
@@ -76,12 +90,12 @@ class ReviewSessionManager:
                 if box.get("group_id") == gid and box is not sm2_obj:
                     sched_update(box, quality)
                     # Propagate timestamp to every sibling so metadata is consistent
-                    box["reviewed_at"]  = _now
+                    box["reviewed_at"] = _now
                     box["last_quality"] = quality
 
         if box_idx is None:
-            card["reviews"]      = sm2_obj.get("reviews", 0)
-            card["reviewed_at"]  = _now   # card-level convenience field for no-box cards
+            card["reviews"] = sm2_obj.get("reviews", 0)
+            card["reviewed_at"] = _now  # card-level convenience field for no-box cards
 
         # Always stamp the parent card with the latest review time
         card["last_reviewed_at"] = _now
@@ -106,7 +120,7 @@ class ReviewSessionManager:
             self._items.insert(insert_at, item)
         else:
             self._done += 1
-            self._idx  += 1
+            self._idx += 1
 
         # ── NEW: after every rating, bubble any expired learning cards to front ──
         self._promote_expired_learning(self._idx)
@@ -125,29 +139,28 @@ class ReviewSessionManager:
         snap = self._review_undo_stack.pop()
 
         # Save current state to redo stack before restoring
-        card, box_idx, sm2_obj = self._items[self._idx] if self._idx < len(self._items) \
+        card, box_idx, sm2_obj = (
+            self._items[self._idx]
+            if self._idx < len(self._items)
             else self._items[-1] if self._items else (None, None, None)
-
-        _SM2_KEYS = ("sched_state", "sched_step", "sm2_interval", "sm2_ease",
-                     "sm2_due", "sm2_last_quality", "sm2_repetitions", "reviews",
-                     "reviewed_at", "last_quality")
+        )
 
         if sm2_obj is not None:
             redo_snap = {
-                "idx":               self._idx,
-                "done":              self._done,
-                "items_order":       list(self._items),
-                "sm2_obj":           sm2_obj,
-                "sm2_state":         {k: sm2_obj.get(k) for k in _SM2_KEYS},
+                "idx": self._idx,
+                "done": self._done,
+                "items_order": list(self._items),
+                "sm2_obj": sm2_obj,
+                "sm2_state": {k: sm2_obj.get(k) for k in _SM2_KEYS},
                 "sibling_snapshots": [],
-                "card_reviewed_at":  card.get("last_reviewed_at") if card else None,
+                "card_reviewed_at": card.get("last_reviewed_at") if card else None,
             }
             self._review_redo_stack.append(redo_snap)
 
         # Restore items order (undo any reinsert from learning/relearn)
         self._items = list(snap["items_order"])
-        self._idx   = snap["idx"]
-        self._done  = snap["done"]
+        self._idx = snap["idx"]
+        self._done = snap["done"]
 
         # Restore SM-2 state of main box
         sm2_obj = snap["sm2_obj"]
@@ -190,23 +203,25 @@ class ReviewSessionManager:
         snap = self._review_redo_stack.pop()
 
         # Save current state back to undo stack
-        self._review_undo_stack.append({
-            "idx":               self._idx,
-            "done":              self._done,
-            "items_order":       list(self._items),
-            "sm2_obj":           snap["sm2_obj"],
-            "sm2_state":         {k: snap["sm2_obj"].get(k) for k in
-                                  ("sched_state","sched_step","sm2_interval","sm2_ease",
-                                   "sm2_due","sm2_last_quality","sm2_repetitions","reviews",
-                                   "reviewed_at","last_quality")},
-            "sibling_snapshots": [],
-            "card_reviewed_at":  self._items[self._idx][0].get("last_reviewed_at")
-                                  if self._idx < len(self._items) else None,
-        })
+        self._review_undo_stack.append(
+            {
+                "idx": self._idx,
+                "done": self._done,
+                "items_order": list(self._items),
+                "sm2_obj": snap["sm2_obj"],
+                "sm2_state": {k: snap["sm2_obj"].get(k) for k in _SM2_KEYS},
+                "sibling_snapshots": [],
+                "card_reviewed_at": (
+                    self._items[self._idx][0].get("last_reviewed_at")
+                    if self._idx < len(self._items)
+                    else None
+                ),
+            }
+        )
 
         self._items = list(snap["items_order"])
-        self._idx   = snap["idx"]
-        self._done  = snap["done"]
+        self._idx = snap["idx"]
+        self._done = snap["done"]
 
         sm2_obj = snap["sm2_obj"]
         for k, v in snap["sm2_state"].items():
@@ -230,10 +245,12 @@ class ReviewSessionManager:
 
     def _promote_expired_learning(self, insert_pos):
         from datetime import datetime as _dt
+
         now_str = _dt.now().isoformat(timespec="seconds")
 
         to_promote = [
-            j for j in range(insert_pos, len(self._items))
+            j
+            for j in range(insert_pos, len(self._items))
             if self._items[j][2].get("sched_state") in ("learning", "relearn")
             and self._items[j][2].get("sm2_due", "") <= now_str
         ]
@@ -246,6 +263,9 @@ class ReviewSessionManager:
     def _rebuild_queue(self, peek_idx=None):
         """Rebuild the right-side queue list — reflects current order + states."""
         self.rs._queue_list.clear()
+        if hasattr(self.rs, "_update_queue_label"):
+            active_count = sum(1 for _, _, sm2 in self._items if is_due_today(sm2))
+            self.rs._update_queue_label(active_count)
         if peek_idx is None:
             peek_idx = getattr(self, "_peek_idx", None)
         for i, (card, box_idx, sm2_obj) in enumerate(self._items):
@@ -279,7 +299,7 @@ class ReviewSessionManager:
                 # Find box number of first box in group
                 grp_num = next(
                     (j + 1 for j, b in enumerate(boxes) if b.get("group_id") == gid),
-                    "?"
+                    "?",
                 )
                 label = f"{page_str}#{grp_num} [grp]"
             elif box_idx is None:
@@ -303,26 +323,24 @@ class ReviewSessionManager:
         # Scroll to current card
         if 0 <= self._idx < self.rs._queue_list.count():
             self.rs._queue_list.scrollToItem(
-                self.rs._queue_list.item(self._idx),
-                QListWidget.PositionAtCenter
+                self.rs._queue_list.item(self._idx), QListWidget.PositionAtCenter
             )
 
     def _check_learning_due(self):
         """Every 1s check karein kya koi learning card due ho gaya."""
         self.rs._wait_bar.hide()
         pending = [
-            (i, sm2_obj) for i, (_, _, sm2_obj) in enumerate(self._items)
+            (i, sm2_obj)
+            for i, (_, _, sm2_obj) in enumerate(self._items)
             if sm2_obj.get("sched_state") in ("learning", "relearn")
         ]
         if not pending:
             self.rs.finished.emit()
             return
         from datetime import datetime as _dt
+
         now_str = _dt.now().isoformat(timespec="seconds")
-        due_now = [
-            (i, obj) for i, obj in pending
-            if obj.get("sm2_due", "") <= now_str
-        ]
+        due_now = [(i, obj) for i, obj in pending if obj.get("sm2_due", "") <= now_str]
         if due_now:
             earliest_idx = min(due_now, key=lambda x: x[1].get("sm2_due", ""))[0]
             self._idx = earliest_idx
@@ -330,5 +348,4 @@ class ReviewSessionManager:
             self.rs._show_overlay(self.rs._reveal_bar)
             self.rs._load_item()
         else:
-            self.rs._finish()   # re-evaluate wait time
-
+            self.rs._finish()  # re-evaluate wait time

@@ -22,6 +22,24 @@ def is_theme_enabled(mode="classic"):
 # ── Color Palettes ────────────────────────────────────────────────────────────
 
 PALETTES = {
+    # "dark" is the pre-theme fallback used in widgets that initialize before
+    # a theme is selected. It matches the original hardcoded C_* constants.
+    "dark": {
+        "C_BG":      "#1E1E2E",
+        "C_SURFACE": "#2A2A3E",
+        "C_CARD":    "#313145",
+        "C_ACCENT":  "#7C6AF7",
+        "C_PURPLE":  "#7C6AF7",
+        "C_ORANGE":  "#FFB86C",
+        "C_GREEN":   "#50FA7B",
+        "C_RED":     "#FF5555",
+        "C_TEXT":    "#CDD6F4",
+        "C_SUBTEXT": "#A6ADC8",
+        "C_BORDER":  "#45475A",
+        "C_YELLOW":  "#F1FA8C",
+        "header_font": "'Segoe UI', sans-serif",
+        "body_font":   "'Segoe UI', sans-serif",
+    },
     "dojo": {
         "C_BG": "#07070B",
         "C_SURFACE": "#0F0F17",

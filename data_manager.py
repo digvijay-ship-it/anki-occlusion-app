@@ -10,10 +10,11 @@ from datetime import datetime
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
-DATA_FILE          = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
-AUTO_SAVE_INTERVAL = 60   # seconds
-BACKUP_DIR_NAME    = "anki_occlusion_data.backups"
-MAX_SAVE_BACKUPS   = 50
+DATA_FILE = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
+AUTO_SAVE_INTERVAL = 60  # seconds
+BACKUP_DIR_NAME = "anki_occlusion_data.backups"
+MAX_SAVE_BACKUPS = 50
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DirtyStore
@@ -33,11 +34,11 @@ class DirtyStore:
     """
 
     def __init__(self):
-        self._data        = {"decks": []}
-        self._dirty       = False
-        self._lock        = threading.Lock()
+        self._data = {"decks": []}
+        self._dirty = False
+        self._lock = threading.Lock()
         self._auto_thread = None
-        self._stop_event  = threading.Event()
+        self._stop_event = threading.Event()
         self._save_thread = None
         self._save_thread_lock = threading.Lock()
         self._last_async_save_ts = 0.0
@@ -63,7 +64,7 @@ class DirtyStore:
     def set(self, data):
         """Replace entire data dict and mark dirty."""
         with self._lock:
-            self._data  = data
+            self._data = data
             self._dirty = True
 
     # ── Dirty flag ────────────────────────────────────────────────────────────
@@ -127,9 +128,7 @@ class DirtyStore:
             if self._save_thread and self._save_thread.is_alive():
                 return False
             self._save_thread = threading.Thread(
-                target=self.save_if_dirty,
-                daemon=True,
-                name="DirtyStore-SaveSoon"
+                target=self.save_if_dirty, daemon=True, name="DirtyStore-SaveSoon"
             )
             self._save_thread.start()
             return True
@@ -145,7 +144,7 @@ class DirtyStore:
             target=self._autosave_loop,
             args=(interval,),
             daemon=True,
-            name="DirtyStore-AutoSave"
+            name="DirtyStore-AutoSave",
         )
         self._auto_thread.start()
 
@@ -220,7 +219,9 @@ class DirtyStore:
     def _validate_saved_json(path):
         with open(path, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-        if not isinstance(loaded, dict) or not isinstance(loaded.get("decks", []), list):
+        if not isinstance(loaded, dict) or not isinstance(
+            loaded.get("decks", []), list
+        ):
             raise ValueError("Saved data must be a JSON object with a deck list.")
 
     @staticmethod
@@ -324,6 +325,7 @@ store = DirtyStore()
 def load_data():
     return store.load()
 
+
 def save_data(data=None):
     if data is not None:
         store.set(data)
@@ -342,17 +344,22 @@ def find_deck_by_id(deck_id, lst):
             return found
     return None
 
+
 def next_deck_id(data):
     max_id = [0]
+
     def _walk(lst):
         for d in lst:
             max_id[0] = max(max_id[0], d.get("_id", 0))
             _walk(d.get("children", []))
+
     _walk(data.get("decks", []))
     return max_id[0] + 1
 
+
 def new_box_id():
     return str(uuid.uuid4())
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DECK HISTORY  — Deck reorder / rename / delete / create ke liye Undo / Redo
@@ -362,13 +369,16 @@ def new_box_id():
 #      deck_history.redo(store)         # Ctrl+Shift+Z
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class _DeckHistory:
     MAX = 50
 
     def __init__(self):
-        self._undo_stack = []
-        self._redo_stack = []
-        self._lock       = threading.Lock()
+        from collections import deque
+
+        self._undo_stack = deque(maxlen=self.MAX)
+        self._redo_stack = deque(maxlen=self.MAX)
+        self._lock = threading.Lock()
 
     @staticmethod
     def _snapshot(data: dict) -> str:
@@ -382,11 +392,11 @@ class _DeckHistory:
         """Mutate se PEHLE call karo."""
         with self._lock:
             self._undo_stack.append(self._snapshot(data))
-            if len(self._undo_stack) > self.MAX:
-                self._undo_stack.pop(0)
             self._redo_stack.clear()
-            print(f"[DeckHistory][push] ✅ snapshot saved — "
-                  f"undo={len(self._undo_stack)}, redo=0")
+            print(
+                f"[DeckHistory][push] ✅ snapshot saved — "
+                f"undo={len(self._undo_stack)}, redo=0"
+            )
 
     def undo(self, store_ref) -> bool:
         with self._lock:
@@ -396,8 +406,10 @@ class _DeckHistory:
             self._redo_stack.append(self._snapshot(store_ref.get()))
             snap = self._restore(self._undo_stack.pop())
             store_ref.set(snap)
-            print(f"[DeckHistory][undo] ↩ restored — "
-                  f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}")
+            print(
+                f"[DeckHistory][undo] ↩ restored — "
+                f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}"
+            )
             return True
 
     def redo(self, store_ref) -> bool:
@@ -408,15 +420,19 @@ class _DeckHistory:
             self._undo_stack.append(self._snapshot(store_ref.get()))
             snap = self._restore(self._redo_stack.pop())
             store_ref.set(snap)
-            print(f"[DeckHistory][redo] ↪ re-applied — "
-                  f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}")
+            print(
+                f"[DeckHistory][redo] ↪ re-applied — "
+                f"undo={len(self._undo_stack)}, redo={len(self._redo_stack)}"
+            )
             return True
 
     @property
-    def can_undo(self): return bool(self._undo_stack)
+    def can_undo(self):
+        return bool(self._undo_stack)
 
     @property
-    def can_redo(self): return bool(self._redo_stack)
+    def can_redo(self):
+        return bool(self._redo_stack)
 
 
 deck_history = _DeckHistory()

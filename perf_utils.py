@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import date
 
 from sm2_engine import is_due_today, sm2_init
 
@@ -11,6 +12,19 @@ except ImportError:  # pragma: no cover - optional dependency
 
 _pdf_page_count_cache = {}
 _pdf_page_count_lock = threading.Lock()
+
+# ── Deck Stats Memoization ────────────────────────────────────────────────────
+_DECK_STATS_CACHE = {}
+_CACHE_DATE = None
+_STATS_LOCK = threading.Lock()
+
+
+def invalidate_deck_stats():
+    """Clear the memoized deck statistics. Call this when data changes."""
+    global _DECK_STATS_CACHE, _CACHE_DATE
+    with _STATS_LOCK:
+        _DECK_STATS_CACHE = {}
+        _CACHE_DATE = None
 
 
 def card_has_due_today(card):
@@ -53,42 +67,53 @@ def count_due_units_in_card(card):
 
 
 def build_deck_rollups(decks):
-    total_cards = {}
-    due_cards = {}
-    due_units = {}
+    global _DECK_STATS_CACHE, _CACHE_DATE
 
-    def _walk(deck):
-        deck_id = deck.get("_id")
-        card_count = len(deck.get("cards", []))
-        due_card_count = 0
-        due_unit_count = 0
+    today = date.today()
 
-        for card in deck.get("cards", []):
-            if card_has_due_today(card):
-                due_card_count += 1
-            due_unit_count += count_due_units_in_card(card)
+    # Single lock scope: check cache, compute if stale, store — no double-entry gap
+    with _STATS_LOCK:
+        if _CACHE_DATE == today and _DECK_STATS_CACHE:
+            return _DECK_STATS_CACHE
 
-        for child in deck.get("children", []):
-            child_cards, child_due_cards, child_due_units = _walk(child)
-            card_count += child_cards
-            due_card_count += child_due_cards
-            due_unit_count += child_due_units
+        total_cards = {}
+        due_cards = {}
+        due_units = {}
 
-        if deck_id is not None:
-            total_cards[deck_id] = card_count
-            due_cards[deck_id] = due_card_count
-            due_units[deck_id] = due_unit_count
+        def _walk(deck):
+            deck_id = deck.get("_id")
+            card_count = len(deck.get("cards", []))
+            due_card_count = 0
+            due_unit_count = 0
 
-        return card_count, due_card_count, due_unit_count
+            for card in deck.get("cards", []):
+                if card_has_due_today(card):
+                    due_card_count += 1
+                due_unit_count += count_due_units_in_card(card)
 
-    for deck in decks:
-        _walk(deck)
+            for child in deck.get("children", []):
+                child_cards, child_due_cards, child_due_units = _walk(child)
+                card_count += child_cards
+                due_card_count += child_due_cards
+                due_unit_count += child_due_units
 
-    return {
-        "total_cards": total_cards,
-        "due_cards": due_cards,
-        "due_units": due_units,
-    }
+            if deck_id is not None:
+                total_cards[deck_id] = card_count
+                due_cards[deck_id] = due_card_count
+                due_units[deck_id] = due_unit_count
+
+            return card_count, due_card_count, due_unit_count
+
+        for deck in decks:
+            _walk(deck)
+
+        _DECK_STATS_CACHE = {
+            "total_cards": total_cards,
+            "due_cards": due_cards,
+            "due_units": due_units,
+        }
+        _CACHE_DATE = today
+        return _DECK_STATS_CACHE
 
 
 def get_pdf_page_count(path):

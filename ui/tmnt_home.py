@@ -45,7 +45,17 @@ from PyQt5.QtWidgets import (
     QStyle,
     QFileDialog,
 )
-from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QRect, QPoint, QPropertyAnimation, QEasingCurve, QEvent
+from PyQt5.QtCore import (
+    Qt,
+    QTimer,
+    QSize,
+    pyqtSignal,
+    QRect,
+    QPoint,
+    QPropertyAnimation,
+    QEasingCurve,
+    QEvent,
+)
 from PyQt5.QtGui import (
     QPainter,
     QColor,
@@ -499,6 +509,10 @@ class TMNTMissionBanner(QFrame):
         g = int(168 + (190 - 168) * t)
         b = int(79 + (99 - 79) * t)
         col = f"#{r:02X}{g:02X}{b:02X}"
+        # Only rebuild stylesheet when color actually changes (skip identical frames)
+        if col == getattr(self, "_last_glow_col", None):
+            return
+        self._last_glow_col = col
         self.btn_train.setStyleSheet(
             _scale_ss(
                 f"""
@@ -980,14 +994,12 @@ class TMNTDeckEngine(DeckTree):
     def keyPressEvent(self, event):
         key = event.key()
         if key in (Qt.Key_Delete, Qt.Key_Backspace):
-            print("[DEBUG][tmnt_deck_tree] key_delete")
             self._delete_selected()
             event.accept()
             return
         if key == Qt.Key_F2:
             deck_id = self._get_selected_id()
             if deck_id is not None:
-                print(f"[DEBUG][tmnt_deck_tree] key_rename id={deck_id}")
                 self._rename_by_id(deck_id)
                 event.accept()
                 return
@@ -999,7 +1011,11 @@ class TMNTDeckEngine(DeckTree):
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
-        item.setData(0, Qt.UserRole + 3, getattr(self, "_total_cards", {}).get(deck.get("_id"), 0))
+        item.setData(
+            0,
+            Qt.UserRole + 3,
+            getattr(self, "_total_cards", {}).get(deck.get("_id"), 0),
+        )
         for child in deck.get("children", []):
             item.addChild(self._make_item(child))
         return item
@@ -1049,7 +1065,6 @@ class TMNTDeckEngine(DeckTree):
 
         if query:
             self._on_search(query)
-        print(f"[DEBUG][tmnt_deck_tree] refresh decks={len(self._data.get('decks', []))} search={bool(query)}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1219,7 +1234,9 @@ class TMNTSidebar(QFrame):
         from PyQt5.QtCore import QSize
 
         btn_open = QPushButton()
-        btn_open.setIcon(QIcon(app_resource_path("assets", "themes", "dojo", "sewer_icon.png")))
+        btn_open.setIcon(
+            QIcon(app_resource_path("assets", "themes", "dojo", "sewer_icon.png"))
+        )
         btn_h = _px(34, self._scale)  # same height as NEW DOJO / SUB
         btn_w = _px(34, self._scale)  # square — logo is circular anyway
         btn_Icon_height = _px(74, self._scale)  # square — logo is circular anyway
@@ -1267,7 +1284,6 @@ class TMNTSidebar(QFrame):
 
     def _on_search(self, text):
         self._engine._on_search(text)
-        print(f"[DEBUG][tmnt_deck_tree] search query='{text.strip()}'")
 
     def _new_top(self):
         self._engine._new_deck(None)
@@ -1280,17 +1296,14 @@ class TMNTSidebar(QFrame):
     def _focus_selected(self):
         item = self._engine.tree.currentItem()
         if item:
-            print(f"[DEBUG][tmnt_deck_tree] focus_selected id={item.data(0, Qt.UserRole)}")
             self._engine.tree.scrollToItem(item)
 
     def _focus_search(self):
-        print("[DEBUG][tmnt_deck_tree] focus_search")
         self.search_in.setFocus(Qt.ShortcutFocusReason)
         self.search_in.selectAll()
 
     def _delete_selected(self):
         selected_id = self._engine._get_selected_id()
-        print(f"[DEBUG][tmnt_deck_tree] footer_delete id={selected_id}")
         self._engine._delete_selected()
         self._sync_from_engine()
 
@@ -1457,33 +1470,6 @@ class _TMNTDeckList(QScrollArea):
             self._toggle_expanded(deck)
         self._render()
         self.deck_selected.emit(deck)
-
-
-def _count_due_in_deck(deck):
-    """Recursively count due items in a deck."""
-    count = 0
-    for card in deck.get("cards", []):
-        boxes = card.get("boxes", [])
-        if not boxes:
-            sm2_init(card)
-            if is_due_today(card):
-                count += 1
-        else:
-            seen = set()
-            for b in boxes:
-                sm2_init(b)
-                gid = b.get("group_id", "")
-                if gid:
-                    if gid not in seen:
-                        seen.add(gid)
-                        if is_due_today(b):
-                            count += 1
-                else:
-                    if is_due_today(b):
-                        count += 1
-    for child in deck.get("children", []):
-        count += _count_due_in_deck(child)
-    return count
 
 
 class _TMNTDeckItem(QFrame):
@@ -1667,9 +1653,9 @@ class TMNTMainContent(DeckView):
                 self._scale,
             )
         )
-        self.lbl_stats = QLabel() # hidden, needed by DeckView
+        self.lbl_stats = QLabel()  # hidden, needed by DeckView
         self.lbl_stats.hide()
-        
+
         title_txt.addWidget(self.lbl_deck)
         title_txt.addWidget(self.lbl_deck_sub)
 
@@ -1796,9 +1782,7 @@ class TMNTMainContent(DeckView):
                 self._scale,
             )
         )
-        self.card_list.itemDoubleClicked.connect(
-            lambda item: self._edit_card(item)
-        )
+        self.card_list.itemDoubleClicked.connect(lambda item: self._edit_card(item))
         self.card_list.itemSelectionChanged.connect(self._sync_action_state)
         self.card_list.keyPressEvent = self._card_list_key_press
         self.card_list.setDragEnabled(True)
@@ -1882,7 +1866,7 @@ class TMNTMainContent(DeckView):
     def _refresh(self):
         # Call the classic logic to populate the list and update the stats
         super()._refresh()
-        
+
         direct_cards = self.deck.get("cards", []) if self.deck else []
         if not direct_cards:
             self.card_list.hide()
@@ -1895,7 +1879,7 @@ class TMNTMainContent(DeckView):
         else:
             self.card_list.show()
             self._empty_lbl.hide()
-            
+
         self._sync_action_state()
 
     def _sync_action_state(self):
@@ -1930,6 +1914,7 @@ class TMNTMainContent(DeckView):
         self._empty_lbl.show()
         self.btn_due.setEnabled(False)
         self._sync_action_state()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 class TMNTBgmWidget(QFrame):
@@ -2098,12 +2083,16 @@ class TMNTTopBar(QFrame):
         self.brand_name.setStyleSheet(self._brand_name_ss())
 
         self.ghost_r = QLabel("ANKI OCCLUSION", self.brand_name)
-        self.ghost_r.setStyleSheet(self._brand_name_ss().replace(T_NEON, "rgba(255, 77, 77, 180)"))
+        self.ghost_r.setStyleSheet(
+            self._brand_name_ss().replace(T_NEON, "rgba(255, 77, 77, 180)")
+        )
         self.ghost_r.move(_px(-3, self._scale), _px(-1, self._scale))
         self.ghost_r.hide()
 
         self.ghost_c = QLabel("ANKI OCCLUSION", self.brand_name)
-        self.ghost_c.setStyleSheet(self._brand_name_ss().replace(T_NEON, "rgba(102, 252, 241, 180)"))
+        self.ghost_c.setStyleSheet(
+            self._brand_name_ss().replace(T_NEON, "rgba(102, 252, 241, 180)")
+        )
         self.ghost_c.move(_px(3, self._scale), _px(1, self._scale))
         self.ghost_c.hide()
 
@@ -2167,7 +2156,9 @@ class TMNTTopBar(QFrame):
         self._settings_btn.installEventFilter(self)
         self._settings_panel = self._build_settings_panel()
         self._settings_btn.clicked.connect(
-            lambda: self._toggle_panel(self._settings_panel, self._settings_btn, "right")
+            lambda: self._toggle_panel(
+                self._settings_panel, self._settings_btn, "right"
+            )
         )
         right_l.addWidget(self._settings_btn, 0, Qt.AlignVCenter)
 
@@ -2313,7 +2304,9 @@ class TMNTTopBar(QFrame):
         )
         return button
 
-    def _make_square_action(self, text, border_color, hover_color=None, hover_fill="transparent"):
+    def _make_square_action(
+        self, text, border_color, hover_color=None, hover_fill="transparent"
+    ):
         button = QPushButton(text)
         button.setCursor(Qt.PointingHandCursor)
         button.setFixedSize(_px(30, self._scale), _px(30, self._scale))
@@ -2367,7 +2360,9 @@ class TMNTTopBar(QFrame):
         panel_l = QVBoxLayout(panel)
         panel_l.setContentsMargins(0, _px(6, self._scale), 0, _px(6, self._scale))
         panel_l.setSpacing(0)
-        panel_l.addWidget(self._menu_button("❓  HELP", T_RED, self._emit_help, divider=True))
+        panel_l.addWidget(
+            self._menu_button("❓  HELP", T_RED, self._emit_help, divider=True)
+        )
         panel_l.addWidget(self._menu_button("ⓘ  ABOUT", T_SUBTEXT, self._emit_about))
         panel.adjustSize()
         return panel
@@ -2398,20 +2393,45 @@ class TMNTTopBar(QFrame):
         panel._fade.setDuration(130)
         panel._fade.setEasingCurve(QEasingCurve.OutCubic)
         panel_l = QVBoxLayout(panel)
-        panel_l.setContentsMargins(_px(12, self._scale), _px(12, self._scale), _px(12, self._scale), _px(12, self._scale))
+        panel_l.setContentsMargins(
+            _px(12, self._scale),
+            _px(12, self._scale),
+            _px(12, self._scale),
+            _px(12, self._scale),
+        )
         panel_l.setSpacing(_px(10, self._scale))
 
         scale_lbl = QLabel("VISUAL SCALE")
-        scale_lbl.setStyleSheet(_scale_ss(f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;", self._scale))
+        scale_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
         panel_l.addWidget(scale_lbl)
 
         scale_box = QFrame()
-        scale_box.setStyleSheet(_scale_ss(f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;", self._scale))
+        scale_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
         scale_l = QHBoxLayout(scale_box)
-        scale_l.setContentsMargins(_px(8, self._scale), _px(6, self._scale), _px(8, self._scale), _px(6, self._scale))
+        scale_l.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
         scale_l.setSpacing(_px(6, self._scale))
         size_lbl = QLabel("SIZE")
-        size_lbl.setStyleSheet(_scale_ss(f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;", self._scale))
+        size_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
         scale_l.addWidget(size_lbl)
         scale_l.addStretch()
         scale_l.addWidget(self._font_button("A−", -1))
@@ -2420,18 +2440,40 @@ class TMNTTopBar(QFrame):
         panel_l.addWidget(scale_box)
 
         archive_lbl = QLabel("MISSION ARCHIVE")
-        archive_lbl.setStyleSheet(_scale_ss(f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;", self._scale))
+        archive_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
         panel_l.addWidget(archive_lbl)
 
         archive_box = QFrame()
-        archive_box.setStyleSheet(_scale_ss(f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;", self._scale))
+        archive_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
         archive_l = QHBoxLayout(archive_box)
-        archive_l.setContentsMargins(_px(8, self._scale), _px(6, self._scale), _px(8, self._scale), _px(6, self._scale))
+        archive_l.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
         archive_l.setSpacing(_px(6, self._scale))
         archive_icon = QLabel("⌂")
-        archive_icon.setStyleSheet(_scale_ss(f"color: {T_SUBTEXT}; font-size: 10px;", self._scale))
+        archive_icon.setStyleSheet(
+            _scale_ss(f"color: {T_SUBTEXT}; font-size: 10px;", self._scale)
+        )
         self._archive_val = QLabel()
-        self._archive_val.setStyleSheet(_scale_ss(f"color: {T_PURPLE}; font-family: {T_MONO}; font-size: 9px;", self._scale))
+        self._archive_val.setStyleSheet(
+            _scale_ss(
+                f"color: {T_PURPLE}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
         self._archive_btn = QPushButton("SET")
         self._archive_btn.setCursor(Qt.PointingHandCursor)
         self._archive_btn.setStyleSheet(
@@ -2470,7 +2512,11 @@ class TMNTTopBar(QFrame):
     def _menu_button(self, text, accent_color, slot, divider=False):
         button = QPushButton(text)
         button.setCursor(Qt.PointingHandCursor)
-        line = f"border-bottom: 1px solid {T_BORDER};" if divider else "border-bottom: none;"
+        line = (
+            f"border-bottom: 1px solid {T_BORDER};"
+            if divider
+            else "border-bottom: none;"
+        )
         button.setStyleSheet(
             _scale_ss(
                 f"""
@@ -2541,16 +2587,22 @@ class TMNTTopBar(QFrame):
             self._archive_btn.setToolTip(tooltip)
 
     def _choose_mission_archive(self):
-        start_dir = get_mission_archive_root() or os.path.dirname(current_data_file()) or os.path.expanduser("~")
-        new_root = QFileDialog.getExistingDirectory(self, "Select Mission Archive Folder", start_dir)
+        start_dir = (
+            get_mission_archive_root()
+            or os.path.dirname(current_data_file())
+            or os.path.expanduser("~")
+        )
+        new_root = QFileDialog.getExistingDirectory(
+            self, "Select Mission Archive Folder", start_dir
+        )
         if not new_root:
             return
-        print(f"[DEBUG][mission_archive] ui_select root={new_root}")
         try:
             summary = migrate_to_mission_archive(new_root, data=store.get())
         except Exception as ex:
-            QMessageBox.warning(self, "Mission Archive", f"Could not switch Mission Archive:\n{ex}")
-            print(f"[DEBUG][mission_archive] ui_select_failed error={ex}")
+            QMessageBox.warning(
+                self, "Mission Archive", f"Could not switch Mission Archive:\n{ex}"
+            )
             return
         self._refresh_archive_display()
         self._hide_panel(self._settings_panel)
@@ -2599,7 +2651,9 @@ class TMNTTopBar(QFrame):
             panel = self._more_panel if panel_name == "more" else self._settings_panel
             anchor = self._more_btn if panel_name == "more" else self._settings_btn
             if panel and anchor and not panel.isVisible():
-                self._show_panel(panel, anchor, "left" if panel_name == "more" else "right")
+                self._show_panel(
+                    panel, anchor, "left" if panel_name == "more" else "right"
+                )
         elif event.type() == QEvent.Leave:
             self._pending_panel = panel_name
             self._panel_hide_timer.start(120)
@@ -2611,9 +2665,17 @@ class TMNTTopBar(QFrame):
             self._show_panel(panel, anchor, align)
 
     def _show_panel(self, panel, anchor, align):
-        if panel is self._more_panel and self._settings_panel and self._settings_panel.isVisible():
+        if (
+            panel is self._more_panel
+            and self._settings_panel
+            and self._settings_panel.isVisible()
+        ):
             self._hide_panel(self._settings_panel)
-        if panel is self._settings_panel and self._more_panel and self._more_panel.isVisible():
+        if (
+            panel is self._settings_panel
+            and self._more_panel
+            and self._more_panel.isVisible()
+        ):
             self._hide_panel(self._more_panel)
         panel.adjustSize()
         x = 0 if align == "left" else anchor.width() - panel.width()
@@ -2634,9 +2696,15 @@ class TMNTTopBar(QFrame):
     def _hide_unhovered_panel(self):
         widget = QApplication.widgetAt(QCursor.pos())
         while widget is not None:
-            if self._pending_panel == "more" and widget in (self._more_btn, self._more_panel):
+            if self._pending_panel == "more" and widget in (
+                self._more_btn,
+                self._more_panel,
+            ):
                 return
-            if self._pending_panel == "settings" and widget in (self._settings_btn, self._settings_panel):
+            if self._pending_panel == "settings" and widget in (
+                self._settings_btn,
+                self._settings_panel,
+            ):
                 return
             widget = widget.parentWidget()
         if self._pending_panel == "more":
@@ -2649,7 +2717,6 @@ class TMNTTopBar(QFrame):
         self.btn_help_clicked.emit()
 
     def _emit_save(self):
-        print("[DEBUG][mission_archive] header_save_clicked")
         self.btn_save_clicked.emit()
 
     def _emit_about(self):
@@ -2663,32 +2730,36 @@ class TMNTTopBar(QFrame):
     def _reset_brand_glitch(self):
         self.brand_name.setText("ANKI OCCLUSION")
         self.brand_name.setStyleSheet(self._brand_name_ss())
-        if hasattr(self, 'ghost_r'):
+        if hasattr(self, "ghost_r"):
             self.ghost_r.hide()
             self.ghost_c.hide()
 
     def _advance_brand_glitch(self):
         strengths = [7, 5, 8, 4, 6, 7]
         import random
-        
+
         if random.random() < 0.15:
             self.ghost_r.show()
             self.ghost_c.show()
-            self.brand_name.setStyleSheet(self._brand_name_ss().replace(T_NEON, "white"))
+            self.brand_name.setStyleSheet(
+                self._brand_name_ss().replace(T_NEON, "white")
+            )
             self._brand_name_glow.setBlurRadius(0)
-            
+
             chars = list("ANKI OCCLUSION")
             idx = random.randint(0, len(chars) - 1)
-            if chars[idx] != ' ':
+            if chars[idx] != " ":
                 chars[idx] = random.choice("!@#$%^&*()_+{}|:<>?~")
             scrambled = "".join(chars)
             self.brand_name.setText(scrambled)
             self.ghost_r.setText(scrambled)
             self.ghost_c.setText(scrambled)
-            
+
             QTimer.singleShot(150, self._reset_brand_glitch)
         else:
-            self._brand_name_glow.setBlurRadius(_px(strengths[self._brand_glitch_idx % len(strengths)], self._scale))
+            self._brand_name_glow.setBlurRadius(
+                _px(strengths[self._brand_glitch_idx % len(strengths)], self._scale)
+            )
 
         self._brand_glitch_idx += 1
 
@@ -2834,7 +2905,6 @@ class TMNTHomeLayout(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_K and event.modifiers() & Qt.ControlModifier:
-            print("[DEBUG][tmnt_deck_tree] home_focus_search")
             self.sidebar._focus_search()
             event.accept()
             return
@@ -2846,8 +2916,6 @@ class TMNTHomeLayout(QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
-
-
 
     # ── Deck ops ─────────────────────────────────────────────────────────────
     def _on_deck_selected(self, deck):
@@ -2868,6 +2936,9 @@ class TMNTHomeLayout(QWidget):
                 "created": datetime.now().isoformat(),
             }
             self._data.setdefault("decks", []).append(deck)
+            from perf_utils import invalidate_deck_stats
+
+            invalidate_deck_stats()
             store.mark_dirty()
             store.save_soon(min_interval=0.0)
             self.refresh()

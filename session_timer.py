@@ -22,26 +22,27 @@ import json
 import tempfile
 from datetime import date
 
-from PyQt5.QtCore    import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import QLabel, QApplication
 
 # ── File paths ────────────────────────────────────────────────────────────────
-_STATE_FILE   = os.path.join(os.path.expanduser("~"), "anki_timer_state.json")
+_STATE_FILE = os.path.join(os.path.expanduser("~"), "anki_timer_state.json")
 _JOURNAL_FILE = os.path.join(os.path.expanduser("~"), "anki_journal.json")
 
 # Tag used to find & update the line so we never duplicate it
-_JOURNAL_TAG  = "\u23f1 Focus today:"
+_JOURNAL_TAG = "\u23f1 Focus today:"
 
 # Position + style of the focus line on the journal canvas
-_TEXT_X     = 60
-_TEXT_Y     = 80
-_TEXT_SIZE  = 15
-_TEXT_COLOR = "#7C6AF7"   # accent purple — stands out clearly
+_TEXT_X = 60
+_TEXT_Y = 80
+_TEXT_SIZE = 15
+_TEXT_COLOR = "#7C6AF7"  # accent purple — stands out clearly
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PERSISTENCE
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _load_state() -> int:
     today = date.today().isoformat()
@@ -79,9 +80,10 @@ def _atomic_write(path: str, data: dict):
 #  JOURNAL
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _fmt_human(secs: int) -> str:
     h, rem = divmod(secs, 3600)
-    m, s   = divmod(rem, 60)
+    m, s = divmod(rem, 60)
     if h:
         return f"{h}h {m:02d}m"
     if m:
@@ -115,18 +117,26 @@ def _write_focus_to_journal_for_date(day: str, seconds: int):
 
     entry["focus_seconds"] = seconds
 
-    label    = f"{_JOURNAL_TAG} {_fmt_human(seconds)}"
-    text_obj = {"x": _TEXT_X, "y": _TEXT_Y, "text": label,
-                 "color": _TEXT_COLOR, "size": _TEXT_SIZE}
+    label = f"{_JOURNAL_TAG} {_fmt_human(seconds)}"
+    text_obj = {
+        "x": _TEXT_X,
+        "y": _TEXT_Y,
+        "text": label,
+        "color": _TEXT_COLOR,
+        "size": _TEXT_SIZE,
+    }
 
     texts = entry.get("texts", [])
     if not isinstance(texts, list):
         texts = []
 
     idx = next(
-        (i for i, t in enumerate(texts)
-         if isinstance(t, dict) and str(t.get("text", "")).startswith(_JOURNAL_TAG)),
-        None
+        (
+            i
+            for i, t in enumerate(texts)
+            if isinstance(t, dict) and str(t.get("text", "")).startswith(_JOURNAL_TAG)
+        ),
+        None,
     )
     if idx is not None:
         texts[idx] = text_obj
@@ -146,6 +156,7 @@ def _write_focus_to_journal(seconds: int):
 #  SESSION TIMER CLASS
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class SessionTimer:
     """
     Persistent per-day stopwatch.
@@ -163,7 +174,7 @@ class SessionTimer:
 
         self.label = QLabel(self._make_text(), parent)
         self.label.setToolTip("Time studied today  \u2022  resets at midnight")
-        
+
         self.label_session = QLabel(self._fmt(self._session_elapsed), parent)
         self.label_today = QLabel(self._fmt(self._elapsed), parent)
 
@@ -243,5 +254,5 @@ class SessionTimer:
     @staticmethod
     def _fmt(secs: int) -> str:
         h, rem = divmod(secs, 3600)
-        m, s   = divmod(rem, 60)
+        m, s = divmod(rem, 60)
         return f"{h}:{m:02d}:{s:02d}"

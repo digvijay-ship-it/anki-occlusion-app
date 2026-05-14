@@ -4,14 +4,15 @@ Ensures clean teardown, prevents ghost threads, and simplifies cancellation.
 """
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
-from typing import Dict, List, Optional, Any
-import time
+from typing import Dict, Optional
+
 
 class ThreadManager(QObject):
     """
     A registry for all active background threads.
     Tracks thread state and ensures they are cleanly terminated on close.
     """
+
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._threads: Dict[str, QThread] = {}
@@ -40,7 +41,6 @@ class ThreadManager(QObject):
                 thread.stop()
             thread.quit()
             if not thread.wait(wait_ms):
-                print(f"[ThreadManager] ⚠ Thread '{tag}' timed out during wait — terminating.")
                 thread.terminate()
                 thread.wait()
 
@@ -57,6 +57,7 @@ class ThreadManager(QObject):
         """Check if a specific thread is currently active."""
         thread = self._threads.get(tag)
         return thread is not None and thread.isRunning()
+
 
 # Global singleton for the application
 manager = ThreadManager()
