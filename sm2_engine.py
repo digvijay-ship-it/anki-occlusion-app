@@ -14,6 +14,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import copy
+import hashlib
 import random
 from datetime import datetime, date, timedelta
 
@@ -53,6 +54,39 @@ def _due_in_days(days):
 #  Prevents card pile-ups by adding a small random offset to review intervals.
 #  Anki-style: fuzz range grows with interval size.
 # ─────────────────────────────────────────────────────────────────────────────
+_FUZZ_ID_KEYS = (
+    "box_id",
+    "group_id",
+    "_id",
+    "id",
+    "card_id",
+    "uuid",
+    "created",
+)
+
+
+def _stable_seed(*parts) -> int:
+    text = "|".join(str(part) for part in parts)
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big")
+
+
+def _fuzz_identity(c):
+    for key in _FUZZ_ID_KEYS:
+        val = c.get(key)
+        if val not in (None, ""):
+            return f"{key}:{val}"
+    return None
+
+
+def _fuzz_seed(c, iv: int) -> int:
+    identity = _fuzz_identity(c)
+    reviews = c.get("reviews", 0)
+    if identity is None:
+        return reviews + iv
+    return _stable_seed(identity, reviews, iv)
+
+
 def _fuzz_interval(iv: int, seed_val: int = None) -> int:
     """Add a small random fuzz to intervals > 2 days to avoid pile-ups.
     Uses seed_val to guarantee the preview matches the actual interval applied."""
@@ -127,9 +161,9 @@ def sched_update(c, quality):
     ef = c["sm2_ease"]
     iv = c["sm2_interval"]
 
-    # Generate a deterministic seed based on card's review count
-    # This ensures preview simulation and actual click yield the exact same fuzz
-    seed_val = c.get("reviews", 0) + iv
+    # Use stable card identity in the seed so same-state cards can spread out,
+    # while preview simulation and actual clicks still produce the same fuzz.
+    seed_val = _fuzz_seed(c, iv)
 
     # Transition new → learning on first touch
     if state == "new":
@@ -330,6 +364,7 @@ _SM2_PREVIEW_KEYS = frozenset(
         "sm2_last_quality",
         "sm2_repetitions",
         "reviews",
+        *_FUZZ_ID_KEYS,
     }
 )
 

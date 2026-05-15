@@ -321,6 +321,7 @@ class MainWindow(QMainWindow):
         self.showMaximized()
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
+        self._recovery_prompt_shown = False
 
         sb = QStatusBar()
         pdf_status = (
@@ -338,6 +339,8 @@ class MainWindow(QMainWindow):
 
         if not self._data.get("_onboarding_done"):
             QTimer.singleShot(200, self._run_onboarding)
+        else:
+            QTimer.singleShot(350, self._show_recovery_prompt)
 
     def change_font_size(self, direction: int):
         if direction == 0:
@@ -387,6 +390,15 @@ class MainWindow(QMainWindow):
         dlg.exec_()
         self._data["_onboarding_done"] = True
         store.mark_dirty()  # 🔒 DirtyStore
+        QTimer.singleShot(100, self._show_recovery_prompt)
+
+    def _show_recovery_prompt(self):
+        if self._recovery_prompt_shown:
+            return
+        self._recovery_prompt_shown = True
+        home = self.centralWidget()
+        if home is not None and hasattr(home, "show_recovery_center"):
+            home.show_recovery_center(startup=True)
 
     def keyPressEvent(self, e):
         key = e.key()

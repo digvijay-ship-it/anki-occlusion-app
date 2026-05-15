@@ -136,6 +136,34 @@ class PreviewTests(unittest.TestCase):
         self.assertLessEqual(hard, good)
         self.assertGreater(easy, good)
 
+    def test_stable_card_identity_spreads_same_easy_interval(self):
+        intervals = {
+            int(sm2_engine._fmt_due_interval({"box_id": f"box-{idx}"})[5][:-1])
+            for idx in range(20)
+        }
+
+        self.assertSetEqual(intervals, {3, 4, 5})
+
+    def test_preview_uses_same_fuzz_as_actual_rating(self):
+        card = {
+            "box_id": "box-alpha",
+            "sched_state": "review",
+            "sched_step": 0,
+            "sm2_interval": 10,
+            "sm2_ease": 2.5,
+            "sm2_due": sm2_engine._now_iso(),
+            "sm2_repetitions": 5,
+            "sm2_last_quality": 4,
+            "reviews": 5,
+        }
+
+        first_preview = sm2_engine._fmt_due_interval(card)
+        second_preview = sm2_engine._fmt_due_interval(card)
+        actual = sm2_engine.sched_update(copy.deepcopy(card), 5)
+
+        self.assertEqual(first_preview, second_preview)
+        self.assertEqual(first_preview[5], f"{actual['sm2_interval']}d")
+
 
 if __name__ == "__main__":
     unittest.main()

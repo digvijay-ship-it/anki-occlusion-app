@@ -50,6 +50,7 @@ class PageScheduler(QObject):
         self._is_scrolling = False
         self._worker: Optional[PdfOnDemandThread] = None
         self._worker_kind = ""
+        self._worker_generation = 0
         self._injected_count = 0
         self._last_visible: tuple[int, int] = (0, 0)
         # ── inject queue as set for O(1) membership + deque for order ─────────
@@ -180,6 +181,7 @@ class PageScheduler(QObject):
         return self._worker is not None and self._worker.isRunning()
 
     def _stop_worker(self) -> None:
+        self._worker_generation += 1
         if self._worker is not None:
             if self._worker.isRunning():
                 self._worker.stop()
@@ -194,18 +196,28 @@ class PageScheduler(QObject):
     def _start_worker(self, page_nums: list[int], kind: str) -> None:
         if not page_nums or not self._path:
             return
+        self._stop_worker()
+        self._worker_generation += 1
+        generation = self._worker_generation
         for pn in page_nums:
             if pn in self.pages:
                 self.pages[pn].status = "loading"
-        self._stop_worker()
         self._worker = PdfOnDemandThread(self._path, page_nums, zoom=1.5, parent=self)
         self._worker_kind = kind
-        self._worker.page_ready.connect(self._on_worker_page_ready)
-        self._worker.batch_done.connect(self._on_worker_batch_done)
+        self._worker.page_ready.connect(
+            lambda page_num, qpx, gen=generation: self._on_worker_page_ready(
+                gen, page_num, qpx
+            )
+        )
+        self._worker.batch_done.connect(
+            lambda rendered, gen=generation: self._on_worker_batch_done(gen, rendered)
+        )
         self._worker.error.connect(lambda err: None)  # silent
         self._worker.start()
 
-    def _on_worker_page_ready(self, page_num: int, qpx) -> None:
+    def _on_worker_page_ready(self, generation: int, page_num: int, qpx) -> None:
+        if generation != self._worker_generation:
+            return
         if page_num not in self.pages:
             return
         if isinstance(qpx, QImage):
@@ -222,7 +234,9 @@ class PageScheduler(QObject):
             self._enqueue_if_not_present(page_num)
         self._check_completion()
 
-    def _on_worker_batch_done(self, rendered: list[int]) -> None:
+    def _on_worker_batch_done(self, generation: int, rendered: list[int]) -> None:
+        if generation != self._worker_generation:
+            return
         kind = self._worker_kind
         self._worker_kind = ""
         # Reset any pages stuck in "loading" — O(rendered) not O(total_pages)

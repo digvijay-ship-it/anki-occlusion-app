@@ -14,6 +14,12 @@ PDF_DIR_NAME = "pdfs"
 IMAGE_DIR_NAME = "images"
 CACHE_DIR_NAME = "cache"
 BACKUP_DIR_NAME = "backups"
+RECOVERY_DIR_NAME = "recovery"
+LEGACY_RECOVERY_DIR_NAME = "anki_occlusion_recovery"
+DRAFTS_DIR_NAME = "drafts"
+REVIEW_EVENTS_DIR_NAME = "review_events"
+PENDING_EVENTS_DIR_NAME = "pending"
+APPLIED_EVENTS_DIR_NAME = "applied"
 
 DATA_FILE_NAME = "anki_occlusion_data.json"
 TIMER_STATE_FILE_NAME = "anki_timer_state.json"
@@ -125,6 +131,35 @@ def current_data_file(root: str | None = None) -> str:
     return _home_file(DATA_FILE_NAME)
 
 
+def current_recovery_dir(root: str | None = None) -> str:
+    root = _current_archive_root(root)
+    if root:
+        return os.path.join(root, RECOVERY_DIR_NAME)
+    return os.path.join(
+        os.path.dirname(current_data_file(root)) or ".", LEGACY_RECOVERY_DIR_NAME
+    )
+
+
+def current_recovery_drafts_dir(root: str | None = None) -> str:
+    return os.path.join(current_recovery_dir(root), DRAFTS_DIR_NAME)
+
+
+def current_recovery_review_events_dir(root: str | None = None) -> str:
+    return os.path.join(current_recovery_dir(root), REVIEW_EVENTS_DIR_NAME)
+
+
+def current_recovery_pending_events_dir(root: str | None = None) -> str:
+    return os.path.join(
+        current_recovery_review_events_dir(root), PENDING_EVENTS_DIR_NAME
+    )
+
+
+def current_recovery_applied_events_dir(root: str | None = None) -> str:
+    return os.path.join(
+        current_recovery_review_events_dir(root), APPLIED_EVENTS_DIR_NAME
+    )
+
+
 def current_timer_state_file(root: str | None = None) -> str:
     root = _current_archive_root(root)
     if root:
@@ -163,6 +198,23 @@ def ensure_archive_dirs(root: str | None = None) -> dict:
         "images": archive_image_dir(root),
         "cache": archive_cache_dir(root),
         "backups": archive_backup_dir(root),
+        "recovery": current_recovery_dir(root),
+        "recovery_drafts": current_recovery_drafts_dir(root),
+        "recovery_events_pending": current_recovery_pending_events_dir(root),
+        "recovery_events_applied": current_recovery_applied_events_dir(root),
+    }
+    for path in paths.values():
+        os.makedirs(path, exist_ok=True)
+    return paths
+
+
+def ensure_recovery_dirs(root: str | None = None) -> dict:
+    paths = {
+        "recovery": current_recovery_dir(root),
+        "drafts": current_recovery_drafts_dir(root),
+        "review_events": current_recovery_review_events_dir(root),
+        "pending_events": current_recovery_pending_events_dir(root),
+        "applied_events": current_recovery_applied_events_dir(root),
     }
     for path in paths.values():
         os.makedirs(path, exist_ok=True)

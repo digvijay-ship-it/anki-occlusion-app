@@ -41,6 +41,7 @@ class DirtyStore:
         self._stop_event = threading.Event()
         self._save_thread = None
         self._save_thread_lock = threading.Lock()
+        self._save_timer = None
         self._write_lock = threading.Lock()
         self._save_seq = 0
         self._latest_save_request_seq = 0
@@ -132,24 +133,69 @@ class DirtyStore:
     def save_soon(self, min_interval: float = 3.0):
         """
         Schedule a background save without blocking the UI thread.
-        Rapid repeated calls are coalesced into a single write.
+        Rapid repeated calls are coalesced, but a trailing save is kept so the
+        newest dirty data is not stranded in RAM if another save is in flight.
         """
         now = time.monotonic()
         with self._lock:
             if not self._dirty:
                 return False
-            if (now - self._last_async_save_ts) < min_interval:
-                return False
-            self._last_async_save_ts = now
+            delay = max(0.0, float(min_interval) - (now - self._last_async_save_ts))
 
         with self._save_thread_lock:
             if self._save_thread and self._save_thread.is_alive():
-                return False
-            self._save_thread = threading.Thread(
-                target=self.save_if_dirty, daemon=True, name="DirtyStore-SaveSoon"
-            )
-            self._save_thread.start()
-            return True
+                self._schedule_save_timer_locked(delay)
+                print(
+                    f"[DEBUG][data_save] save_soon_trailing delay={delay:.2f}s"
+                )
+                return True
+            if delay > 0:
+                self._schedule_save_timer_locked(delay)
+                print(f"[DEBUG][data_save] save_soon_delayed delay={delay:.2f}s")
+                return True
+            self._last_async_save_ts = now
+            self._start_save_thread_locked()
+        print("[DEBUG][data_save] save_soon_started")
+        return True
+
+    def _start_save_thread_locked(self):
+        self._save_thread = threading.Thread(
+            target=self._save_soon_worker, daemon=True, name="DirtyStore-SaveSoon"
+        )
+        self._save_thread.start()
+
+    def _save_soon_worker(self):
+        try:
+            self.save_if_dirty()
+        finally:
+            with self._save_thread_lock:
+                self._save_thread = None
+                with self._lock:
+                    needs_trailing_save = self._dirty
+                if needs_trailing_save:
+                    self._last_async_save_ts = time.monotonic()
+                    self._start_save_thread_locked()
+                    print("[DEBUG][data_save] save_soon_followup_started")
+
+    def _schedule_save_timer_locked(self, delay: float):
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+        self._save_timer = threading.Timer(max(0.0, delay), self._save_timer_fired)
+        self._save_timer.daemon = True
+        self._save_timer.start()
+
+    def _save_timer_fired(self):
+        with self._save_thread_lock:
+            self._save_timer = None
+            with self._lock:
+                if not self._dirty:
+                    return
+            if self._save_thread and self._save_thread.is_alive():
+                self._schedule_save_timer_locked(0.25)
+                return
+            self._last_async_save_ts = time.monotonic()
+            self._start_save_thread_locked()
+        print("[DEBUG][data_save] save_soon_timer_started")
 
     # ── Auto-save background thread ───────────────────────────────────────────
 
@@ -169,6 +215,10 @@ class DirtyStore:
     def stop_autosave(self):
         """Stop background thread + final force save. Call on app shutdown."""
         self._stop_event.set()
+        with self._save_thread_lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+                self._save_timer = None
         self.save_force()
 
     def _autosave_loop(self, interval):
@@ -203,7 +253,7 @@ class DirtyStore:
                 )
 
             backup_path = DirtyStore._backup_existing_file(DATA_FILE, existing_data)
-            os.replace(tmp, DATA_FILE)
+            DirtyStore._replace_file_with_retry(tmp, DATA_FILE)
             backup_name = os.path.basename(backup_path) if backup_path else "none"
             print(
                 "[DEBUG][data_save] saved "
@@ -222,6 +272,17 @@ class DirtyStore:
         serialized_text = json.dumps(data, ensure_ascii=False, indent=2)
         new_summary = DirtyStore._data_summary(data)
         DirtyStore._write_serialized_to_disk(serialized_text, new_summary)
+
+    @staticmethod
+    def _replace_file_with_retry(src, dst, attempts=8, delay=0.05):
+        for attempt in range(attempts):
+            try:
+                os.replace(src, dst)
+                return
+            except PermissionError:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(delay * (attempt + 1))
 
     @staticmethod
     def _read_json_file(path):

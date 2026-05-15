@@ -137,6 +137,27 @@ class DirtyStoreTests(unittest.TestCase):
 
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
 
+    def test_atomic_replace_retries_transient_permission_error(self):
+        store = data_manager.DirtyStore()
+        payload = {"decks": [{"_id": 2, "name": "Chemistry"}]}
+        original_replace = data_manager.os.replace
+        calls = []
+
+        def flaky_replace(src, dst):
+            calls.append((src, dst))
+            if len(calls) == 1:
+                raise PermissionError("file is briefly locked")
+            return original_replace(src, dst)
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)), patch.object(
+            data_manager.os, "replace", side_effect=flaky_replace
+        ):
+            store._data = payload
+            store.save_force()
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
+
     def test_save_force_uses_snapshot_to_prevent_race_conditions(self):
         store = data_manager.DirtyStore()
         payload = {"decks": [{"_id": 2, "name": "Chemistry"}]}
@@ -192,6 +213,39 @@ class DirtyStoreTests(unittest.TestCase):
 
         self.assertEqual(old_done, [False])
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), new_payload)
+
+    def test_save_soon_flushes_mutation_made_during_active_save(self):
+        store = data_manager.DirtyStore()
+        old_payload = {"decks": [{"_id": 1, "name": "Old"}]}
+        new_payload = {"decks": [{"_id": 2, "name": "New"}]}
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            store._write_lock.acquire()
+            try:
+                store.set(old_payload)
+                self.assertTrue(store.save_soon(min_interval=0.0))
+
+                deadline = time.time() + 2
+                while store._latest_save_request_seq < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(store._latest_save_request_seq, 1)
+
+                store.set(new_payload)
+                self.assertTrue(store.save_soon(min_interval=0.0))
+            finally:
+                store._write_lock.release()
+
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if self.data_file.exists():
+                    saved = json.loads(self.data_file.read_text(encoding="utf-8"))
+                    if saved == new_payload:
+                        break
+                time.sleep(0.01)
+            else:
+                self.fail("save_soon did not flush the trailing dirty payload")
+
+        self.assertFalse(store.is_dirty())
 
 
 class WrapperAndHelperTests(unittest.TestCase):

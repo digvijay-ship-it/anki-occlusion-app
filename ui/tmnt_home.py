@@ -2018,6 +2018,7 @@ class TMNTTopBar(QFrame):
     btn_theme_clicked = pyqtSignal()
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
+    recovery_clicked = pyqtSignal()
     font_change = pyqtSignal(int)  # -1 / 0 / +1
     bgm_toggle = pyqtSignal()
 
@@ -2506,6 +2507,12 @@ class TMNTTopBar(QFrame):
         panel_l.addWidget(archive_box)
         self._refresh_archive_display()
 
+        panel_l.addWidget(
+            self._menu_button(
+                "RECOVERY CENTER", T_PURPLE, self.recovery_clicked.emit
+            )
+        )
+
         panel.adjustSize()
         return panel
 
@@ -2895,6 +2902,7 @@ class TMNTHomeLayout(QWidget):
         self.topbar.btn_theme_clicked.connect(self.btn_theme_clicked)
         self.topbar.btn_help_clicked.connect(self.btn_help_clicked)
         self.topbar.btn_about_clicked.connect(self.btn_about_clicked)
+        self.topbar.recovery_clicked.connect(self._show_recovery_center)
         self.topbar.font_change.connect(self.font_change)
         self.topbar.bgm_toggle.connect(self.bgm_toggle)
 
@@ -2909,7 +2917,8 @@ class TMNTHomeLayout(QWidget):
             event.accept()
             return
         if event.key() == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
-            store.save_soon(min_interval=0.0)
+            store.mark_dirty()
+            store.save_force()
             print("[TMNTHome][key] Ctrl+S — manual save triggered")
             # If we want a toast, we could potentially call it on self.main.canvas if it was open,
             # but usually TMNT uses a separate toast mechanism or we just print to console.
@@ -2984,6 +2993,11 @@ class TMNTHomeLayout(QWidget):
                 return w
             w = w.parent()
         return None
+
+    def _show_recovery_center(self):
+        home = self._find_home()
+        if home is not None and hasattr(home, "show_recovery_center"):
+            home.show_recovery_center(startup=False)
 
     # ── Public interface (called by HomeScreen) ───────────────────────────────
     def refresh(self):

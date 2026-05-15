@@ -10,6 +10,7 @@ QUEUE_ROLE = Qt.UserRole + 10
 QUEUE_INDEX_ROLE = Qt.UserRole + 11
 
 from data_manager import store
+from services import recovery_manager
 
 # SM-2 fields snapshotted for undo/redo — defined once at module level
 _SM2_KEYS = (
@@ -101,9 +102,17 @@ class ReviewSessionManager:
         card["last_reviewed_at"] = _now
 
         # Persist promptly, but keep the disk write off the UI thread so rapid
-        # rating keys do not stall the review flow.
+        # rating keys do not stall the review flow. Use an immediate checkpoint
+        # request so a forced app kill loses at most the currently-running write.
+        try:
+            event = recovery_manager.build_review_event(
+                getattr(self.rs, "_data", None), card, box_idx, quality, _now
+            )
+            recovery_manager.record_review_event(event)
+        except Exception as ex:
+            print(f"[Recovery] review checkpoint failed: {ex}")
         store.mark_dirty()
-        store.save_soon()
+        store.save_soon(min_interval=0.0)
 
         state = sm2_obj.get("sched_state", "review")
 
@@ -187,7 +196,7 @@ class ReviewSessionManager:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
 
         store.mark_dirty()
-        store.save_soon()
+        store.save_soon(min_interval=0.0)
 
         self.rs.canvas._show_toast(f"↩ Undo — back to card {self._idx + 1}")
         self.rs._load_item()
@@ -238,7 +247,7 @@ class ReviewSessionManager:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
 
         store.mark_dirty()
-        store.save_soon()
+        store.save_soon(min_interval=0.0)
 
         self.rs.canvas._show_toast(f"↪ Redo — card {self._idx + 1}")
         self.rs._load_item()

@@ -33,6 +33,7 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
 from sm2_engine import sm2_init
 from data_manager import new_box_id
+from services import recovery_manager
 from pdf_engine import (
     PDF_SUPPORT,
     PAGE_CACHE,
@@ -95,6 +96,13 @@ class CardEditorDialog(QDialog):
         self.setWindowTitle("Occlusion Card Editor")
         self.setMinimumSize(1100, 700)
         self.card = card or {}
+        self._recovery_initial_card = dict(card or {})
+        self._recovery_mode = "edit" if card else "add"
+        self._recovery_draft_id = recovery_manager.new_draft_id()
+        self._recovery_draft_cleared = False
+        self._recovery_accepted = False
+        self._recovery_autosave_ready = False
+        self._recovery_dirty = False
         self._initial_scroll = initial_scroll
         self._initial_page = initial_page
         self._pdf_pages = []
@@ -127,9 +135,14 @@ class CardEditorDialog(QDialog):
         self._fit_timer = QTimer(self)
         self._fit_timer.setSingleShot(True)
         self._fit_timer.timeout.connect(self._zoom_fit)
+        self._recovery_timer = QTimer(self)
+        self._recovery_timer.setSingleShot(True)
+        self._recovery_timer.setInterval(2000)
+        self._recovery_timer.timeout.connect(self._write_recovery_draft)
         self._setup_ui()
         if card:
             self._load_card(card)
+        self._setup_recovery_autosave()
 
     def exec_(self):
         print("[DEBUG][editor_mode] enter_fullscreen_default")
@@ -490,6 +503,136 @@ class CardEditorDialog(QDialog):
         btn_del.clicked.connect(lambda: self.canvas.delete_selected_boxes())
         btn_clear.clicked.connect(self.canvas.clear_all)
 
+    def _setup_recovery_autosave(self):
+        self._recovery_autosave_ready = True
+        self.canvas.boxes_changed.connect(
+            lambda _boxes: self._write_recovery_checkpoint("boxes")
+        )
+        self.inp_title.textChanged.connect(
+            lambda _text: self._schedule_recovery_draft("title")
+        )
+        self.inp_tags.textChanged.connect(
+            lambda _text: self._schedule_recovery_draft("tags")
+        )
+        self.inp_notes.textChanged.connect(
+            lambda: self._schedule_recovery_draft("notes")
+        )
+
+    def _schedule_recovery_draft(self, _reason="change"):
+        if self._recovery_draft_cleared or self._recovery_accepted:
+            return
+        if not self._recovery_autosave_ready:
+            return
+        self._recovery_dirty = True
+        self._recovery_timer.start()
+
+    def _has_recovery_content(self):
+        try:
+            boxes = self.canvas.get_boxes() if hasattr(self, "canvas") else []
+        except Exception:
+            boxes = []
+        if not boxes:
+            boxes = list(getattr(self, "_pending_boxes", []) or self.card.get("boxes", []) or [])
+        return bool(
+            self.card.get("pdf_path")
+            or self.card.get("image_path")
+            or boxes
+            or self.inp_title.text().strip()
+            or self.inp_tags.text().strip()
+            or self.inp_notes.toPlainText().strip()
+        )
+
+    def _current_recovery_card(self):
+        card = dict(self.card)
+        boxes = self.canvas.get_boxes() if hasattr(self, "canvas") else []
+        if not boxes:
+            boxes = list(getattr(self, "_pending_boxes", []) or card.get("boxes", []) or [])
+        card.update(
+            {
+                "title": self.inp_title.text().strip() or card.get("title", ""),
+                "tags": [
+                    t.strip() for t in self.inp_tags.text().split(",") if t.strip()
+                ],
+                "notes": self.inp_notes.toPlainText(),
+                "boxes": boxes,
+                "created": card.get("created", datetime.now().isoformat()),
+                "reviews": card.get("reviews", 0),
+            }
+        )
+        if self._auto_subdeck_name:
+            card["_auto_subdeck"] = self._auto_subdeck_name
+        if card.get("pdf_path"):
+            card["_pdf_box_render_zoom"] = float(
+                self._pdf_render_zoom or PDF_LEGACY_BOX_ZOOM
+            )
+        return card
+
+    def _write_recovery_draft(self):
+        if self._recovery_draft_cleared or self._recovery_accepted:
+            return None
+        if not self._has_recovery_content():
+            return None
+        deck = self._deck if isinstance(self._deck, dict) else {}
+        payload = {
+            "draft_id": self._recovery_draft_id,
+            "mode": self._recovery_mode,
+            "deck": {
+                "id": deck.get("_id"),
+                "name": deck.get("name", ""),
+                "path": recovery_manager.find_deck_path(self._data, deck),
+            },
+            "initial_card_locator": recovery_manager.find_card_locator(
+                self._data, self._recovery_initial_card, deck
+            )
+            if self._recovery_mode == "edit"
+            else {},
+            "card": self._current_recovery_card(),
+        }
+        saved = recovery_manager.save_editor_draft(payload)
+        self._recovery_dirty = True
+        print(
+            "[DEBUG][recovery] editor_draft_saved "
+            f"id={saved.get('draft_id')} boxes={len(saved.get('card', {}).get('boxes', []))}"
+        )
+        return saved
+
+    def _write_recovery_checkpoint(self, reason="checkpoint"):
+        saved = self._write_recovery_draft()
+        if saved:
+            print(f"[DEBUG][recovery] editor_draft_checkpoint reason={reason}")
+        return saved
+
+    def clear_recovery_draft(self):
+        self._recovery_draft_cleared = True
+        self._recovery_timer.stop()
+        recovery_manager.delete_editor_draft(self._recovery_draft_id)
+
+    def _confirm_recovery_close(self):
+        if self._recovery_accepted or self._recovery_draft_cleared:
+            return True
+        if not self._recovery_dirty:
+            return True
+        if not self._has_recovery_content():
+            return True
+        self._write_recovery_checkpoint("close")
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Unsaved Draft")
+        msg.setText("Keep this unsaved card draft for recovery?")
+        msg.setInformativeText(
+            "Keeping it lets the Recovery Center reopen this PDF/card after a crash or accidental close."
+        )
+        discard_btn = msg.addButton("Discard", QMessageBox.DestructiveRole)
+        keep_btn = msg.addButton("Keep Draft", QMessageBox.AcceptRole)
+        cancel_btn = msg.addButton("Cancel Close", QMessageBox.RejectRole)
+        msg.setDefaultButton(keep_btn)
+        msg.exec_()
+        clicked = msg.clickedButton()
+        if clicked is cancel_btn:
+            return False
+        if clicked is discard_btn:
+            self.clear_recovery_draft()
+        return True
+
     def _zoom_fit(self):
         vp = self._sc.viewport()
         if getattr(self.canvas, "_pages", None):
@@ -676,6 +819,7 @@ class CardEditorDialog(QDialog):
         self._update_pdf_nav_ui()
         if not self.inp_title.text():
             self.inp_title.setText(os.path.splitext(os.path.basename(path))[0])
+        self._write_recovery_checkpoint("image_loaded")
 
     def _paste_image(self):
         clipboard = QApplication.clipboard()
@@ -704,6 +848,7 @@ class CardEditorDialog(QDialog):
         self._update_pdf_nav_ui()
         if not self.inp_title.text():
             self.inp_title.setText("Pasted Image")
+        self._write_recovery_checkpoint("image_pasted")
 
     # ── PDF loading ───────────────────────────────────────────────────────────
 
@@ -734,6 +879,7 @@ class CardEditorDialog(QDialog):
         self.btn_relink.setVisible(True)
         self._show_pdf_loading(True)
         self._load_pdf_direct(abs_path)
+        self._write_recovery_checkpoint("pdf_loaded")
 
     def _stop_pdf_threads(self):
         """Stop any running PDF render thread."""
@@ -1397,6 +1543,7 @@ class CardEditorDialog(QDialog):
 
         self._show_pdf_loading(True)
         self._load_pdf_direct(resolved_new_path)
+        self._write_recovery_checkpoint("pdf_relinked")
 
     # ── save / close ──────────────────────────────────────────────────────────
 
@@ -1449,6 +1596,7 @@ class CardEditorDialog(QDialog):
         sm2_init(self.card)
         for box in self.card.get("boxes", []):
             sm2_init(box)
+        self._write_recovery_checkpoint("save_card")
         self.accept()
 
     def get_card(self):
@@ -1457,6 +1605,10 @@ class CardEditorDialog(QDialog):
     def closeEvent(self, e):
         from cache_manager import MASK_REGISTRY
 
+        if not self._confirm_recovery_close():
+            e.ignore()
+            return
+        self._recovery_timer.stop()
         MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         self._stop_pdf_threads()
@@ -1465,6 +1617,9 @@ class CardEditorDialog(QDialog):
     def reject(self):
         from cache_manager import MASK_REGISTRY
 
+        if not self._confirm_recovery_close():
+            return
+        self._recovery_timer.stop()
         MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         self._stop_pdf_threads()
@@ -1475,6 +1630,8 @@ class CardEditorDialog(QDialog):
         from perf_utils import invalidate_deck_stats
 
         invalidate_deck_stats()
+        self._recovery_accepted = True
+        self._recovery_timer.stop()
         MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         super().accept()

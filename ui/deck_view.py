@@ -931,7 +931,9 @@ class DeckView(QWidget):
         else:
             self._refresh()
         store.mark_dirty()  # 🔒 DirtyStore
-        store.save_soon(min_interval=0.0)
+        store.save_force()
+        dlg.clear_recovery_draft()
+        print("[DEBUG][data_save] card_add_checkpoint_saved")
 
     def _find_home(self):
         from ui.home_screen import HomeScreen
@@ -982,7 +984,9 @@ class DeckView(QWidget):
             cards[idx] = c
             self._refresh()
             store.mark_dirty()
-            store.save_soon(min_interval=0.0)
+            store.save_force()
+            dlg.clear_recovery_draft()
+            print("[DEBUG][data_save] card_edit_checkpoint_saved")
         else:
             self._undo_stack.pop() if self._undo_stack else None
 

@@ -102,6 +102,29 @@ class HomeScreenClassicUiTests(unittest.TestCase):
 
         save_now.assert_called_once_with()
 
+    def test_recovery_center_opens_when_startup_scan_finds_draft(self):
+        summary = {
+            "drafts": [
+                {
+                    "draft_id": "d1",
+                    "mode": "add",
+                    "card": {"title": "Recovered", "boxes": []},
+                    "deck": {"name": "Math"},
+                }
+            ],
+            "review_events": [],
+        }
+        dialog = MagicMock()
+        dialog.action = "close"
+
+        with patch("ui.home_screen.recovery_manager.scan_recovery", return_value=summary), \
+             patch("ui.home_screen.RecoveryDialog", return_value=dialog) as dialog_cls:
+            shown = self.home_screen.show_recovery_center(startup=True)
+
+        self.assertTrue(shown)
+        dialog_cls.assert_called_once()
+        dialog.exec_.assert_called_once_with()
+
     def test_about_dialog_shortcuts_include_pdf_copy_and_open_folder(self):
         dialog = AboutDialog(self.home_screen)
         self.addCleanup(dialog.close)

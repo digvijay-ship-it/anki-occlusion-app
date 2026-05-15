@@ -93,7 +93,9 @@ from pdf_engine import (
 from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
 from ui.deck_tree import CARD_DRAG_MIME
+from ui.recovery_dialog import RecoveryDialog
 from ui.review_screen import ReviewScreen
+from services import recovery_manager
 
 import fitz
 
@@ -1595,6 +1597,31 @@ class HomeScreen(QWidget):
         self._classic_archive_box = archive_box
         layout.addWidget(archive_box)
 
+        recovery_title = QLabel("RECOVERY")
+        recovery_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(recovery_title)
+
+        recovery_box = QFrame()
+        recovery_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        recovery_layout = QHBoxLayout(recovery_box)
+        recovery_layout.setContentsMargins(10, 8, 10, 8)
+        recovery_layout.setSpacing(8)
+        recovery_label = QLabel("Drafts and review checkpoints")
+        recovery_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        recovery_layout.addWidget(recovery_label, 1)
+        self._classic_recovery_btn = QPushButton("OPEN")
+        self._classic_recovery_btn.setCursor(Qt.PointingHandCursor)
+        self._classic_recovery_btn.setObjectName("font_btn")
+        self._classic_recovery_btn.clicked.connect(
+            lambda: self.show_recovery_center(startup=False)
+        )
+        recovery_layout.addWidget(self._classic_recovery_btn, 0, Qt.AlignRight)
+        layout.addWidget(recovery_box)
+
         self._refresh_classic_archive_display()
         panel.adjustSize()
         return panel
@@ -1781,7 +1808,8 @@ class HomeScreen(QWidget):
         shift = bool(mods & Qt.ShiftModifier)
 
         if ctrl and key == Qt.Key_S:
-            store.save_soon(min_interval=0.0)
+            store.mark_dirty()
+            store.save_force()
             if hasattr(self, "canvas"):
                 self.canvas._show_toast("💾 Manual Save")
             print("[HomeScreen][key] Ctrl+S — manual save triggered")
@@ -1954,6 +1982,127 @@ class HomeScreen(QWidget):
                     color: {C_TEXT};
                 }}
             """)
+
+    def show_recovery_center(self, startup=False):
+        summary = recovery_manager.scan_recovery(store.get())
+        has_drafts = bool(summary.get("drafts"))
+        has_events = bool(summary.get("review_events"))
+        if not has_drafts and not has_events:
+            if not startup:
+                QMessageBox.information(
+                    self, "Recovery", "No recoverable drafts or review checkpoints."
+                )
+            return False
+
+        while True:
+            dlg = RecoveryDialog(summary, self, startup=startup)
+            dlg.exec_()
+            action = getattr(dlg, "action", "close")
+            if action == "recover_reviews":
+                result = recovery_manager.apply_pending_review_events(store.get())
+                if result.get("applied", 0) > 0:
+                    store.mark_dirty()
+                    store.save_force()
+                    self.refresh()
+                QMessageBox.information(
+                    self,
+                    "Recovery",
+                    "Review recovery complete.\n"
+                    f"Applied: {result.get('applied', 0)}\n"
+                    f"Already safe: {result.get('already_applied', 0)}\n"
+                    f"Needs attention: {len(result.get('blocked', []))}",
+                )
+            elif action == "open_draft":
+                draft = getattr(dlg, "selected_draft", None)
+                if draft:
+                    self._open_recovery_draft(draft)
+                    return True
+            elif action == "delete_draft":
+                draft = getattr(dlg, "selected_draft", None)
+                if draft:
+                    recovery_manager.delete_editor_draft(draft.get("draft_id"))
+            else:
+                return True
+
+            summary = recovery_manager.scan_recovery(store.get())
+            if not summary.get("drafts") and not summary.get("review_events"):
+                return True
+
+    def _find_or_create_recovered_drafts_deck(self):
+        for deck in self._data.get("decks", []) or []:
+            if deck.get("name") == "Recovered Drafts":
+                return deck
+        deck = {
+            "_id": next_deck_id(self._data),
+            "name": "Recovered Drafts",
+            "cards": [],
+            "children": [],
+            "created": datetime.now().isoformat(),
+        }
+        self._data.setdefault("decks", []).append(deck)
+        return deck
+
+    def _deck_for_recovery_draft(self, draft):
+        deck_info = (draft or {}).get("deck", {}) or {}
+        deck = find_deck_by_id(deck_info.get("id"), self._data.get("decks", []))
+        return deck or self._find_or_create_recovered_drafts_deck()
+
+    def _target_deck_for_recovered_card(self, parent_deck, card):
+        subdeck_name = (card or {}).pop("_auto_subdeck", None)
+        if not subdeck_name:
+            return parent_deck
+        if parent_deck.get("name", "").strip().lower() == subdeck_name.strip().lower():
+            return parent_deck
+        for child in parent_deck.get("children", []) or []:
+            if child.get("name", "").strip().lower() == subdeck_name.strip().lower():
+                return child
+        child = {
+            "_id": next_deck_id(self._data),
+            "name": subdeck_name,
+            "cards": [],
+            "children": [],
+            "created": datetime.now().isoformat(),
+        }
+        parent_deck.setdefault("children", []).append(child)
+        return child
+
+    def _open_recovery_draft(self, draft):
+        card = recovery_manager.draft_to_card(draft)
+        parent_deck = self._deck_for_recovery_draft(draft)
+        mode = draft.get("mode", "add")
+        original_card = None
+        original_deck = None
+        original_idx = None
+        if mode == "edit":
+            original_card, original_deck, original_idx, status = (
+                recovery_manager.find_card_by_locator(
+                    self._data, draft.get("initial_card_locator", {})
+                )
+            )
+            if status == "ok":
+                parent_deck = original_deck
+
+        dlg = CardEditorDialog(self, card=card, data=self._data, deck=parent_deck)
+        self._active_editor = dlg
+        try:
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            recovered_card = dlg.get_card()
+            if original_card is not None and original_deck is not None:
+                original_deck.setdefault("cards", [])[original_idx] = recovered_card
+            else:
+                target_deck = self._target_deck_for_recovered_card(
+                    parent_deck, recovered_card
+                )
+                target_deck.setdefault("cards", []).append(recovered_card)
+            store.mark_dirty()
+            store.save_force()
+            dlg.clear_recovery_draft()
+            recovery_manager.delete_editor_draft(draft.get("draft_id"))
+            self.refresh()
+            QMessageBox.information(self, "Recovery", "Recovered draft saved.")
+        finally:
+            self._active_editor = None
 
     def refresh(self):
         if self._current_theme == "tmnt" and self._tmnt_layout:

@@ -708,6 +708,31 @@ class CardEditorDialogTests(unittest.TestCase):
         self.assertIn("L=copy PDF", hint_text)
         self.assertIn("Ctrl+L=open folder", hint_text)
 
+    def test_editor_recovery_draft_includes_current_boxes_and_metadata(self):
+        self.dialog.card["pdf_path"] = "pdfs/sample.pdf"
+        self.dialog.inp_title.setText("Recovered PDF")
+        self.dialog.canvas.set_boxes(
+            [{"rect": [1, 2, 30, 40], "label": "m1", "box_id": "box-1"}]
+        )
+
+        with patch("ui.editor_dialog.recovery_manager.save_editor_draft") as save_draft:
+            save_draft.side_effect = lambda payload: payload
+            self.dialog._write_recovery_draft()
+
+        payload = save_draft.call_args.args[0]
+        self.assertEqual(payload["mode"], "add")
+        self.assertEqual(payload["card"]["title"], "Recovered PDF")
+        self.assertEqual(payload["card"]["pdf_path"], "pdfs/sample.pdf")
+        self.assertEqual(payload["card"]["boxes"][0]["box_id"], "box-1")
+        self.dialog._recovery_draft_cleared = True
+
+    def test_editor_clear_recovery_draft_deletes_record(self):
+        with patch("ui.editor_dialog.recovery_manager.delete_editor_draft") as delete_draft:
+            self.dialog.clear_recovery_draft()
+
+        delete_draft.assert_called_once_with(self.dialog._recovery_draft_id)
+        self.assertTrue(self.dialog._recovery_draft_cleared)
+
     def test_open_annotation_beta_passes_image_space_anchor_y(self):
         self.dialog.card["pdf_path"] = self.pdf_path
         self.dialog.canvas._scale = 1.25
