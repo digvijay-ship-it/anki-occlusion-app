@@ -69,9 +69,10 @@ from PyQt5.QtGui import (
 )
 
 from sm2_engine import sm2_init, is_due_today, sm2_days_left
-from data_manager import find_deck_by_id, next_deck_id, store
+from data_manager import deck_history, find_deck_by_id, next_deck_id, store
 from pdf_engine import PDF_SUPPORT
 from perf_utils import build_deck_rollups
+from services import shortcut_manager
 from storage_paths import (
     app_resource_path,
     app_resource_url,
@@ -2018,6 +2019,7 @@ class TMNTTopBar(QFrame):
     btn_theme_clicked = pyqtSignal()
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
+    btn_shortcuts_clicked = pyqtSignal()
     recovery_clicked = pyqtSignal()
     font_change = pyqtSignal(int)  # -1 / 0 / +1
     bgm_toggle = pyqtSignal()
@@ -2361,6 +2363,9 @@ class TMNTTopBar(QFrame):
         panel_l = QVBoxLayout(panel)
         panel_l.setContentsMargins(0, _px(6, self._scale), 0, _px(6, self._scale))
         panel_l.setSpacing(0)
+        panel_l.addWidget(
+            self._menu_button("⌨  SHORTCUTS", T_GREEN, self._emit_shortcuts, divider=True)
+        )
         panel_l.addWidget(
             self._menu_button("❓  HELP", T_RED, self._emit_help, divider=True)
         )
@@ -2723,6 +2728,10 @@ class TMNTTopBar(QFrame):
         self._hide_panel(self._more_panel)
         self.btn_help_clicked.emit()
 
+    def _emit_shortcuts(self):
+        self._hide_panel(self._more_panel)
+        self.btn_shortcuts_clicked.emit()
+
     def _emit_save(self):
         self.btn_save_clicked.emit()
 
@@ -2848,6 +2857,7 @@ class TMNTHomeLayout(QWidget):
     btn_theme_clicked = pyqtSignal()
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
+    btn_shortcuts_clicked = pyqtSignal()
     font_change = pyqtSignal(int)
     bgm_toggle = pyqtSignal()
     deck_selected = pyqtSignal(object)
@@ -2902,6 +2912,7 @@ class TMNTHomeLayout(QWidget):
         self.topbar.btn_theme_clicked.connect(self.btn_theme_clicked)
         self.topbar.btn_help_clicked.connect(self.btn_help_clicked)
         self.topbar.btn_about_clicked.connect(self.btn_about_clicked)
+        self.topbar.btn_shortcuts_clicked.connect(self.btn_shortcuts_clicked)
         self.topbar.recovery_clicked.connect(self._show_recovery_center)
         self.topbar.font_change.connect(self.font_change)
         self.topbar.bgm_toggle.connect(self.bgm_toggle)
@@ -2916,7 +2927,7 @@ class TMNTHomeLayout(QWidget):
             self.sidebar._focus_search()
             event.accept()
             return
-        if event.key() == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
+        if shortcut_manager.event_matches(event, "home.save"):
             store.mark_dirty()
             store.save_force()
             print("[TMNTHome][key] Ctrl+S — manual save triggered")
@@ -2924,7 +2935,38 @@ class TMNTHomeLayout(QWidget):
             # but usually TMNT uses a separate toast mechanism or we just print to console.
             event.accept()
             return
+        if shortcut_manager.event_matches(event, "home.undo"):
+            self._apply_deck_history(redo=False)
+            event.accept()
+            return
+        legacy_redo = (
+            event.key() == Qt.Key_Z
+            and event.modifiers() & Qt.ControlModifier
+            and event.modifiers() & Qt.ShiftModifier
+        )
+        if shortcut_manager.event_matches(event, "home.redo") or legacy_redo:
+            self._apply_deck_history(redo=True)
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def _apply_deck_history(self, redo=False):
+        ok = deck_history.redo(store) if redo else deck_history.undo(store)
+        if not ok:
+            print(
+                f"[TMNTHome][key] {'redo' if redo else 'undo'} skipped — stack empty"
+            )
+            return False
+        self._data = store.get()
+        home = self._find_home()
+        if home is not None:
+            home._data = self._data
+        self.sidebar.set_data(self._data)
+        self.main._data = self._data
+        self.banga._data = self._data
+        self.refresh()
+        print(f"[TMNTHome][key] {'redo' if redo else 'undo'} applied")
+        return True
 
     # ── Deck ops ─────────────────────────────────────────────────────────────
     def _on_deck_selected(self, deck):

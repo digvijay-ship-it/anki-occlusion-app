@@ -238,7 +238,10 @@ class DirtyStoreTests(unittest.TestCase):
             deadline = time.time() + 2
             while time.time() < deadline:
                 if self.data_file.exists():
-                    saved = json.loads(self.data_file.read_text(encoding="utf-8"))
+                    try:
+                        saved = json.loads(self.data_file.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        saved = None
                     if saved == new_payload:
                         break
                 time.sleep(0.01)

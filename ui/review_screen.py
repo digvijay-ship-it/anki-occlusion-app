@@ -99,6 +99,7 @@ from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
 from ui.pdf_annotation_dialog import PdfAnnotationDialog
 from ui.pdf_viewer_controller import PdfViewerController
+from services import shortcut_manager
 
 import fitz
 
@@ -183,6 +184,7 @@ from PyQt5.QtGui import (
     QPainterPath,
     QDrag,
     QDesktopServices,
+    QKeySequence,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -378,7 +380,23 @@ class ReviewScreen(QWidget):
         ("2  😓 Hard", "hard", 3),
         ("3  ✅ Good", "success", 4),
         ("4  ⚡ Easy", "warning", 5),
+        ("5  ⭐ Perfect", "perfect", 6),
     ]
+    RATING_SHORTCUTS = {
+        Qt.Key_1: 1,
+        Qt.Key_2: 3,
+        Qt.Key_3: 4,
+        Qt.Key_4: 5,
+        Qt.Key_5: 6,
+    }
+    RATING_SHORTCUT_ACTIONS = (
+        ("review.rate_again", 1),
+        ("review.rate_hard", 3),
+        ("review.rate_good", 4),
+        ("review.rate_easy", 5),
+        ("review.rate_perfect", 6),
+    )
+    RATING_LABELS = ["Again", "Hard", "Good", "Easy", "Perfect"]
 
     @property
     def _items(self):
@@ -780,9 +798,8 @@ class ReviewScreen(QWidget):
 
         # 🚀 SM-2 SIMULATION UPDATE
         previews = _fmt_due_interval(sm2_obj)
-        LABELS = ["Again", "Hard", "Good", "Easy"]
         for (btn, q), (orig_lbl, _, _), color_lbl in zip(
-            self._prev_lbls, self.RATINGS, LABELS
+            self._prev_lbls, self.RATINGS, self.RATING_LABELS
         ):
             val = previews.get(q, "?")
             # orig_lbl e.g. "1  🔁 Again" → parts[0]="1", parts[1]="🔁"
@@ -873,7 +890,7 @@ class ReviewScreen(QWidget):
                 self.canvas.setFocus()
                 e.accept()
                 return
-        if key == Qt.Key_F11:
+        if shortcut_manager.event_matches(e, "review.fullscreen"):
             win = self.window()
             if win.isFullScreen():
                 win.showMaximized()
@@ -881,9 +898,9 @@ class ReviewScreen(QWidget):
             else:
                 win.showFullScreen()
                 self._set_fullscreen_ui(True)
-        elif key == Qt.Key_Escape:
+        elif shortcut_manager.event_matches(e, "review.cancel"):
             self.cancelled.emit()
-        elif key == Qt.Key_Space:
+        elif shortcut_manager.event_matches(e, "review.reveal"):
             if self._rating_frame.isVisible():
                 # Already revealed — hide karo (toggle back)
                 self._rating_frame.hide()
@@ -894,46 +911,43 @@ class ReviewScreen(QWidget):
                 self.canvas._redraw()
             else:
                 self._reveal_current()
-        elif key == Qt.Key_1 and self._rating_frame.isVisible():
-            self._rate(1)
-        elif key == Qt.Key_2 and self._rating_frame.isVisible():
-            self._rate(3)
-        elif key == Qt.Key_3 and self._rating_frame.isVisible():
-            self._rate(4)
-        elif key == Qt.Key_4 and self._rating_frame.isVisible():
-            self._rate(5)
-        elif mods & Qt.ControlModifier and key in (Qt.Key_Equal, Qt.Key_Plus):
+        elif self._rating_frame.isVisible() and self._rating_quality_for_event(e) is not None:
+            self._rate(self._rating_quality_for_event(e))
+        elif shortcut_manager.event_matches(e, "review.zoom_in"):
             self.canvas.zoom_in()
             self._user_zoom_scale = self.canvas._scale
-        elif mods & Qt.ControlModifier and key == Qt.Key_Minus:
+        elif shortcut_manager.event_matches(e, "review.zoom_out"):
             self.canvas.zoom_out()
             self._user_zoom_scale = self.canvas._scale
-        elif mods & Qt.ControlModifier and key == Qt.Key_0:
+        elif shortcut_manager.event_matches(e, "review.zoom_reset"):
             self._zoom_fit()
             self._user_zoom_scale = None  # reset to auto-fit
-        elif key == Qt.Key_C:
+        elif shortcut_manager.event_matches(e, "review.center"):
             self._trigger_center_fit()
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
-        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
+        elif shortcut_manager.event_matches(e, "review.undo"):
             self._review_undo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_Y:
+        elif shortcut_manager.event_matches(e, "review.redo"):
             self._review_redo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_E:
+        elif shortcut_manager.event_matches(e, "review.open_pdf"):
             self._open_current_pdf_in_reader()
-        elif mods & Qt.ControlModifier and key == Qt.Key_L:
+        elif shortcut_manager.event_matches(e, "review.open_folder"):
             self._reveal_current_pdf_in_folder()
-        elif key == Qt.Key_L and not mods and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.copy_pdf") and not e.isAutoRepeat():
             self._copy_current_pdf_file_to_clipboard()
-        elif key == Qt.Key_T and not mods and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.annotate") and not e.isAutoRepeat():
             self._open_annotation_beta()
-        elif key == Qt.Key_E and not mods:
+        elif shortcut_manager.event_matches(e, "review.edit_card"):
             self._edit_current_card()
-        elif key == Qt.Key_Left and not mods and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.prev_page") and not e.isAutoRepeat():
             self._go_prev_review_page()
-        elif key == Qt.Key_Right and not mods and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.next_page") and not e.isAutoRepeat():
             self._go_next_review_page()
-        elif (key == Qt.Key_Alt or key == Qt.Key_QuoteLeft) and not e.isAutoRepeat():
+        elif (
+            key == Qt.Key_Alt
+            or shortcut_manager.event_matches(e, "review.pen_toggle")
+        ) and not e.isAutoRepeat():
             self.canvas.ink_toggle()
             active = self.canvas._ink_active
             color = self.canvas._ink_colors[self.canvas._ink_color_idx]
@@ -955,13 +969,19 @@ class ReviewScreen(QWidget):
         ):
             self.canvas.ink_adjust_width(-0.4)
             self._capture_review_ink_width("width_minus")
-        elif key == Qt.Key_X and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.pen_color") and not e.isAutoRepeat():
             if self.canvas._ink_active:
                 self.canvas.ink_cycle_color()
-        elif key == Qt.Key_Delete and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.pen_clear") and not e.isAutoRepeat():
             self.canvas.ink_clear()
         else:
             super().keyPressEvent(e)
+
+    def _rating_quality_for_event(self, event):
+        for action_id, quality in self.RATING_SHORTCUT_ACTIONS:
+            if shortcut_manager.event_matches(event, action_id):
+                return quality
+        return None
 
     def _reveal_current(self):
         if not (0 <= self._idx < len(self._items)):
@@ -1283,12 +1303,16 @@ class ReviewScreen(QWidget):
             self._on_review_scroll_page_changed
         )
 
-        self._sc_prev_page = QShortcut(Qt.Key_Left, self)
+        self._sc_prev_page = QShortcut(
+            QKeySequence(shortcut_manager.shortcut_text("review.prev_page")), self
+        )
         self._sc_prev_page.setContext(Qt.WidgetWithChildrenShortcut)
         self._sc_prev_page.setAutoRepeat(False)
         self._sc_prev_page.activated.connect(self._go_prev_review_page)
 
-        self._sc_next_page = QShortcut(Qt.Key_Right, self)
+        self._sc_next_page = QShortcut(
+            QKeySequence(shortcut_manager.shortcut_text("review.next_page")), self
+        )
         self._sc_next_page.setContext(Qt.WidgetWithChildrenShortcut)
         self._sc_next_page.setAutoRepeat(False)
         self._sc_next_page.activated.connect(self._go_next_review_page)
@@ -1523,19 +1547,20 @@ class ReviewScreen(QWidget):
             "hard": ("#E08030", "#FFB060", "#B05010"),
             "success": ("#50FA7B", "#80FFB0", "#20C040"),
             "warning": ("#4DC4FF", "#88DDFF", "#1A88CC"),
+            "perfect": ("#BD93F9", "#D6B8FF", "#8F5CE6"),
         }
         RATING_COLORS_DOJO = {
             "danger": (p.get("C_RED", "#FF4444"), "#FF7777", "#CC1111"),
             "hard": (p.get("C_ORANGE", "#FF8C00"), "#FFB347", "#CC6600"),
             "success": (p.get("C_GREEN", "#72FF4F"), "#A0FF80", "#44CC20"),
             "warning": (p.get("C_PURPLE", "#A86CFF"), "#C899FF", "#7040CC"),
+            "perfect": (p.get("C_YELLOW", "#FFD700"), "#FFE866", "#CCAA00"),
         }
 
         self._rating_btns = []
         self._prev_lbls = []
-        LABELS = ["Again", "Hard", "Good", "Easy"]
         color_map = RATING_COLORS_DOJO if dojo else RATING_COLORS
-        for (orig_lbl, obj, q), color_lbl in zip(self.RATINGS, LABELS):
+        for (orig_lbl, obj, q), color_lbl in zip(self.RATINGS, self.RATING_LABELS):
             bg_r, fg_hover, _ = color_map.get(obj, ("#555", "#FFF", "#333"))
             btn = QPushButton(
                 f"{orig_lbl.split()[0]}  {orig_lbl.split()[1]}  ?  {color_lbl}"
@@ -3231,7 +3256,7 @@ class ReviewScreen(QWidget):
         border = D["border"] if dojo else C_BORDER
         font = D["font"] if dojo else "'Segoe UI'"
 
-        again = hard = good = easy = 0
+        again = hard = good = easy = perfect = 0
         for _, _, sm2_obj in self._items:
             q = sm2_obj.get("sm2_last_quality", -1)
             if q == 1:
@@ -3242,9 +3267,11 @@ class ReviewScreen(QWidget):
                 good += 1
             elif q == 5:
                 easy += 1
+            elif q == 6:
+                perfect += 1
 
-        total = again + hard + good + easy
-        retention = round((good + easy) / total * 100) if total else 0
+        total = again + hard + good + easy + perfect
+        retention = round((good + easy + perfect) / total * 100) if total else 0
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Mission Complete" if dojo else "Session Complete")
@@ -3288,6 +3315,7 @@ class ReviewScreen(QWidget):
             (hard, "#FF8C00" if dojo else "#E08030"),
             (good, D["green"] if dojo else C_GREEN),
             (easy, D["yellow"] if dojo else C_YELLOW),
+            (perfect, D["accent2"] if dojo else C_GROUP),
         ]
         for count, color in ret_colors:
             if count and total:
@@ -3353,6 +3381,13 @@ class ReviewScreen(QWidget):
                 "⚡  EASY" if dojo else "⚡  Easy",
                 easy,
                 D["yellow"] if dojo else C_YELLOW,
+            )
+        )
+        L.addWidget(
+            _stat_row(
+                "⭐  PERFECT" if dojo else "⭐  Perfect",
+                perfect,
+                D["accent2"] if dojo else C_GROUP,
             )
         )
 

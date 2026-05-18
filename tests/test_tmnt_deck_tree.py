@@ -4,10 +4,12 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
-from data_manager import find_deck_by_id
-from ui.tmnt_home import TMNTSidebar
+from data_manager import deck_history, find_deck_by_id, store
+from ui.tmnt_home import TMNTHomeLayout, TMNTSidebar, TMNTTopBar
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -76,6 +78,80 @@ class TMNTDeckTreeTests(unittest.TestCase):
             self.sidebar._delete_selected()
 
         self.assertIsNone(find_deck_by_id(3, self.data["decks"]))
+
+
+class TMNTTopBarTests(unittest.TestCase):
+    def test_more_menu_contains_shortcuts_action(self):
+        topbar = TMNTTopBar({"_font_size": 11})
+        self.addCleanup(topbar.close)
+
+        labels = [button.text() for button in topbar._more_panel.findChildren(QPushButton)]
+
+        self.assertTrue(any("SHORTCUTS" in label for label in labels))
+
+    def test_shortcuts_signal_is_forwarded_to_home_layout(self):
+        layout = TMNTHomeLayout({"decks": [], "_font_size": 11})
+        self.addCleanup(layout.close)
+        emitted = []
+        layout.btn_shortcuts_clicked.connect(lambda: emitted.append(True))
+
+        layout.topbar._emit_shortcuts()
+
+        self.assertEqual(emitted, [True])
+
+    def test_dojo_cave_ctrl_z_and_ctrl_y_apply_deck_history(self):
+        deck_history._undo_stack.clear()
+        deck_history._redo_stack.clear()
+        self.addCleanup(deck_history._undo_stack.clear)
+        self.addCleanup(deck_history._redo_stack.clear)
+
+        initial = {
+            "decks": [_deck(1, "Math")],
+            "_font_size": 11,
+        }
+        store.set(initial)
+        layout = TMNTHomeLayout(store.get())
+        self.addCleanup(layout.close)
+
+        deck_history.push(store.get())
+        store.get()["decks"].append(_deck(2, "Physics"))
+        store.mark_dirty()
+        layout.refresh()
+
+        undo_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Z, Qt.ControlModifier)
+        layout.keyPressEvent(undo_event)
+
+        self.assertIsNone(find_deck_by_id(2, store.get()["decks"]))
+        self.assertIsNone(find_deck_by_id(2, layout._data["decks"]))
+
+        redo_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Y, Qt.ControlModifier)
+        layout.keyPressEvent(redo_event)
+
+        self.assertIsNotNone(find_deck_by_id(2, store.get()["decks"]))
+        self.assertIsNotNone(find_deck_by_id(2, layout._data["decks"]))
+
+    def test_dojo_cave_ctrl_shift_z_still_redoes_deck_history(self):
+        deck_history._undo_stack.clear()
+        deck_history._redo_stack.clear()
+        self.addCleanup(deck_history._undo_stack.clear)
+        self.addCleanup(deck_history._redo_stack.clear)
+
+        initial = {"decks": [_deck(1, "Math")], "_font_size": 11}
+        store.set(initial)
+        layout = TMNTHomeLayout(store.get())
+        self.addCleanup(layout.close)
+
+        deck_history.push(store.get())
+        store.get()["decks"].append(_deck(2, "Physics"))
+        store.mark_dirty()
+        layout.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Z, Qt.ControlModifier))
+
+        redo_event = QKeyEvent(
+            QEvent.KeyPress, Qt.Key_Z, Qt.ControlModifier | Qt.ShiftModifier
+        )
+        layout.keyPressEvent(redo_event)
+
+        self.assertIsNotNone(find_deck_by_id(2, store.get()["decks"]))
 
 
 if __name__ == "__main__":

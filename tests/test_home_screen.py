@@ -84,6 +84,7 @@ class HomeScreenClassicUiTests(unittest.TestCase):
     def test_classic_topbar_has_save_and_settings_controls(self):
         self.assertEqual(self.home_screen._btn_save.text(), "💾 SAVE")
         self.assertEqual(self.home_screen._btn_settings.text(), "⚙ SETTINGS")
+        self.assertEqual(self.home_screen._btn_shortcuts.text(), "\u2328 SHORTCUTS")
         self.assertIsNotNone(self.home_screen._classic_settings_panel)
 
     def test_classic_settings_panel_toggles_and_shows_archive_controls(self):

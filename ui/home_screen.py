@@ -95,7 +95,9 @@ from ui.editor_dialog import CardEditorDialog
 from ui.deck_tree import CARD_DRAG_MIME
 from ui.recovery_dialog import RecoveryDialog
 from ui.review_screen import ReviewScreen
+from ui.shortcut_dialog import ShortcutSettingsDialog
 from services import recovery_manager
+from services import shortcut_manager
 
 import fitz
 
@@ -406,7 +408,7 @@ class AboutDialog(QDialog):
         _section(
             "Keyboard shortcuts",
             "F11 — fullscreen        Ctrl+Z / Y — undo / redo\n"
-            "Space — reveal answer   1/2/3/4 — rate Again/Hard/Good/Easy\n"
+            "Space — reveal answer   1/2/3/4/5 — rate Again/Hard/Good/Easy/Perfect\n"
             "V=Select  R=Rect  E=Ellipse  T=Label  Del=delete selected\n"
             "Ctrl+A — select all     Ctrl+Scroll — zoom\n"
             "Alt+Click — multi-select   Hold Alt — temp select tool\n"
@@ -446,7 +448,7 @@ class OnboardingDialog(QDialog):
         {
             "icon": "🧠",
             "title": "Step 3 — Review",
-            "body": "Click  🔴 Review Due  to start your session.\n\nTwo review modes (toggle in review header):\n  🟧 Hide All, Guess One — all masks hidden one by one\n  👁 Hide One, Guess One — only the target mask hidden\n\nPress Space to reveal, then rate yourself:\n  1 = Again   2 = Hard   3 = Good   4 = Easy\n\nThe scheduler decides when you'll see each card next.",
+            "body": "Click  🔴 Review Due  to start your session.\n\nTwo review modes (toggle in review header):\n  🟧 Hide All, Guess One — all masks hidden one by one\n  👁 Hide One, Guess One — only the target mask hidden\n\nPress Space to reveal, then rate yourself:\n  1 = Again   2 = Hard   3 = Good   4 = Easy   5 = Perfect\n\nThe scheduler decides when you'll see each card next.",
         },
     ]
 
@@ -1021,6 +1023,7 @@ class HomeScreen(QWidget):
         self._classic_archive_value = None
         self._classic_archive_box = None
         self._classic_archive_btn = None
+        self._btn_shortcuts = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -1066,6 +1069,7 @@ class HomeScreen(QWidget):
         btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
         self._btn_save = _topbtn("💾 SAVE", "Save now  Ctrl+S")
         self._btn_settings = _topbtn("⚙ SETTINGS", "Visual scale and Mission Archive")
+        self._btn_shortcuts = _topbtn("⌨ SHORTCUTS", "Set or modify keyboard shortcuts")
         btn_help = _topbtn("❓ HELP", "Show quick-start guide")
         btn_about = _topbtn("ℹ ABOUT", "About Anki Occlusion")
 
@@ -1073,6 +1077,7 @@ class HomeScreen(QWidget):
         btn_journal.clicked.connect(self._show_journal)
         self._btn_save.clicked.connect(self._on_classic_save_clicked)
         self._btn_settings.clicked.connect(self._toggle_classic_settings_panel)
+        self._btn_shortcuts.clicked.connect(self._show_shortcuts)
         btn_help.clicked.connect(self._show_help)
         btn_about.clicked.connect(self._show_about)
 
@@ -1104,6 +1109,7 @@ class HomeScreen(QWidget):
         tl.addWidget(btn_journal)
         tl.addWidget(self._btn_save)
         tl.addWidget(self._btn_settings)
+        tl.addWidget(self._btn_shortcuts)
         tl.addWidget(self._btn_theme)
         tl.addWidget(btn_help)
         tl.addWidget(btn_about)
@@ -1486,6 +1492,7 @@ class HomeScreen(QWidget):
         layout.btn_theme_clicked.connect(self._toggle_theme)
         layout.btn_help_clicked.connect(self._show_help)
         layout.btn_about_clicked.connect(self._show_about)
+        layout.btn_shortcuts_clicked.connect(self._show_shortcuts)
         layout.font_change.connect(self._emit_font)
         layout.bgm_toggle.connect(self._toggle_tmnt_bgm)
         layout.set_bgm_state(self.music_widget._playing)
@@ -1510,6 +1517,10 @@ class HomeScreen(QWidget):
 
     def _on_classic_save_clicked(self):
         self._save_current_data_now()
+
+    def _show_shortcuts(self):
+        dlg = ShortcutSettingsDialog(self)
+        dlg.exec_()
 
     def _build_classic_settings_panel(self):
         panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
@@ -1807,7 +1818,7 @@ class HomeScreen(QWidget):
         ctrl = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
 
-        if ctrl and key == Qt.Key_S:
+        if shortcut_manager.event_matches(e, "home.save"):
             store.mark_dirty()
             store.save_force()
             if hasattr(self, "canvas"):
@@ -1816,9 +1827,12 @@ class HomeScreen(QWidget):
             e.accept()
             return
 
-        if ctrl and key == Qt.Key_Z:
+        is_home_redo = shortcut_manager.event_matches(e, "home.redo") or (
+            ctrl and shift and key == Qt.Key_Z
+        )
+        if shortcut_manager.event_matches(e, "home.undo") or is_home_redo:
             if getattr(self, "_active_review", None) is None:
-                if shift:
+                if is_home_redo:
                     # Ctrl+Shift+Z → deck redo
                     ok = deck_history.redo(store)
                     if ok:
@@ -1849,13 +1863,13 @@ class HomeScreen(QWidget):
                         print("[HomeScreen][key] Ctrl+Z — fell through to mask undo")
                 e.accept()
                 return
-        elif key == Qt.Key_M:
+        elif shortcut_manager.event_matches(e, "home.music_toggle"):
             self.music_widget.toggle()
             if self._tmnt_layout:
                 self._tmnt_layout.set_bgm_state(self.music_widget._playing)
             e.accept()
             return
-        elif key == Qt.Key_N:
+        elif shortcut_manager.event_matches(e, "home.music_next"):
             self.music_widget.next_track()
             if self._tmnt_layout:
                 self._tmnt_layout.set_bgm_state(self.music_widget._playing)

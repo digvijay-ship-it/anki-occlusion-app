@@ -24,6 +24,8 @@ EASY_IV = 4  # days
 RELEARN_STEPS = [10]  # minutes
 MAX_INTERVAL = 365  # days — cap to avoid 10-year intervals
 EASY_BONUS = 1.3  # Standard Anki multiplier for Easy ratings
+PERFECT_BONUS = 1.6
+PERFECT_IV = 7
 
 
 def _now_iso():
@@ -116,13 +118,14 @@ def _fuzz_interval(iv: int, seed_val: int = None) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 #  EF UPDATES — Discrete Anki-style penalties per quality rating
 #  Replaces the continuous formula for review cards.
-#  Again (q=1): -0.20  Hard (q=3): -0.15  Good (q=4): 0.00  Easy (q=5): +0.15
+#  Again (q=1): -0.20  Hard (q=3): -0.15  Good (q=4): 0.00  Easy (q=5): +0.15  Perfect (q=6): +0.30
 # ─────────────────────────────────────────────────────────────────────────────
 EF_DELTA = {
     1: -0.20,  # Again
     3: -0.15,  # Hard
     4: 0.00,  # Good
     5: +0.15,  # Easy
+    6: +0.30,  # Perfect
 }
 
 
@@ -240,6 +243,27 @@ def sched_update(c, quality):
         else:
             iv = EASY_IV
             iv = _fuzz_interval(iv, seed_val)
+        due = _due_in_days(iv)
+
+    # ── PERFECT (quality >= 6) ────────────────────────────────────────────────
+    elif quality >= 6:
+        if state == "review":
+            ef = _update_ef(ef, 6)
+        new_state = "review"
+        new_step = 0
+        if state == "review":
+            easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef * EASY_BONUS)))
+            easy_iv_raw = max(easy_iv_raw, good_iv_raw + 1)
+            perfect_iv_raw = min(
+                MAX_INTERVAL, max(PERFECT_IV, round(iv * ef * PERFECT_BONUS))
+            )
+            perfect_iv_raw = max(perfect_iv_raw, easy_iv_raw + 1)
+
+            perfect_iv = _fuzz_interval(perfect_iv_raw, seed_val)
+            easy_iv_for_order = _fuzz_interval(easy_iv_raw, seed_val)
+            iv = max(perfect_iv, easy_iv_for_order + 1)
+        else:
+            iv = _fuzz_interval(PERFECT_IV, seed_val)
         due = _due_in_days(iv)
 
     # ── GOOD (quality == 4) ───────────────────────────────────────────────────
@@ -391,7 +415,7 @@ def _fmt_due_interval(c):
             days = s["sm2_interval"]
             return f"{days}d"
 
-    previews = {q: _preview(q) for q in [1, 3, 4, 5]}
+    previews = {q: _preview(q) for q in [1, 3, 4, 5, 6]}
     return previews
 
 
@@ -428,7 +452,7 @@ if __name__ == "__main__":
     card = {}
     sched_init(card)
 
-    for label, q in [("Again", 1), ("Hard", 3), ("Good", 4), ("Easy", 5)]:
+    for label, q in [("Again", 1), ("Hard", 3), ("Good", 4), ("Easy", 5), ("Perfect", 6)]:
         c = copy.deepcopy(card)
         sched_update(c, q)
         print(
@@ -446,7 +470,7 @@ if __name__ == "__main__":
         "sm2_last_quality": 4,
         "reviews": 5,
     }
-    for label, q in [("Again", 1), ("Hard", 3), ("Good", 4), ("Easy", 5)]:
+    for label, q in [("Again", 1), ("Hard", 3), ("Good", 4), ("Easy", 5), ("Perfect", 6)]:
         c = copy.deepcopy(review_card)
         sched_update(c, q)
         print(
@@ -457,4 +481,7 @@ if __name__ == "__main__":
     for _ in range(10):
         c = copy.deepcopy(review_card)
         previews = _fmt_due_interval(c)
-        print(f"  Hard:{previews[3]}  Good:{previews[4]}  Easy:{previews[5]}")
+        print(
+            f"  Hard:{previews[3]}  Good:{previews[4]}  "
+            f"Easy:{previews[5]}  Perfect:{previews[6]}"
+        )

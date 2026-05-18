@@ -79,6 +79,16 @@ class ReviewSchedulingTests(unittest.TestCase):
         self.assertGreaterEqual(updated["sm2_interval"], good["sm2_interval"])
 
     @patch("sm2_engine.random.randint", return_value=0)
+    def test_review_perfect_applies_bonus_and_stays_larger_than_easy(self, _mock_randint):
+        card = self._review_card(interval=10, ease=2.0)
+
+        updated = sm2_engine.sched_update(copy.deepcopy(card), 6)
+        easy = sm2_engine.sched_update(copy.deepcopy(card), 5)
+
+        self.assertEqual(updated["sm2_ease"], 2.3)
+        self.assertGreater(updated["sm2_interval"], easy["sm2_interval"])
+
+    @patch("sm2_engine.random.randint", return_value=0)
     def test_review_again_enters_relearn_and_penalizes_ef(self, _mock_randint):
         card = self._review_card(interval=10, ease=2.3)
 
@@ -115,7 +125,7 @@ class DueLogicTests(unittest.TestCase):
 
 
 class PreviewTests(unittest.TestCase):
-    @patch("sm2_engine.random.randint", side_effect=[2, -2, 0, -2, 2, 0])
+    @patch("sm2_engine.random.randint", side_effect=[2, -2, 0, -2, 2, 0, 2])
     def test_preview_ordering_enforces_hard_le_good_lt_easy(self, _mock_randint):
         card = {
             "sched_state": "review",
@@ -133,8 +143,10 @@ class PreviewTests(unittest.TestCase):
         hard = int(previews[3][:-1])
         good = int(previews[4][:-1])
         easy = int(previews[5][:-1])
+        perfect = int(previews[6][:-1])
         self.assertLessEqual(hard, good)
         self.assertGreater(easy, good)
+        self.assertGreater(perfect, easy)
 
     def test_stable_card_identity_spreads_same_easy_interval(self):
         intervals = {
@@ -159,10 +171,10 @@ class PreviewTests(unittest.TestCase):
 
         first_preview = sm2_engine._fmt_due_interval(card)
         second_preview = sm2_engine._fmt_due_interval(card)
-        actual = sm2_engine.sched_update(copy.deepcopy(card), 5)
+        actual = sm2_engine.sched_update(copy.deepcopy(card), 6)
 
         self.assertEqual(first_preview, second_preview)
-        self.assertEqual(first_preview[5], f"{actual['sm2_interval']}d")
+        self.assertEqual(first_preview[6], f"{actual['sm2_interval']}d")
 
 
 if __name__ == "__main__":
