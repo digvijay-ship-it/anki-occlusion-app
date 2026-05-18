@@ -1833,9 +1833,20 @@ class ReviewScreen(QWidget):
             initial_img_y=img_y,
         )
         self._active_editor = dlg
-        dlg.finished.connect(lambda *_: setattr(self, "_active_editor", None))
-        result = dlg.exec_()
+        dlg.finished.connect(
+            lambda result, d=dlg, c=card, b=before_ids: self._finish_edit_current_card(
+                d, c, b, result
+            )
+        )
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.showFullScreen()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
+    def _finish_edit_current_card(self, dlg, card, before_ids, result):
+        if getattr(self, "_active_editor", None) is dlg:
+            self._active_editor = None
         if result != QDialog.Accepted:
             self._user_zoom_scale = None
             self._reload_current_canvas()

@@ -789,6 +789,23 @@ class CardEditorDialogTests(unittest.TestCase):
         fake_print.assert_any_call("[DEBUG][editor_mode] enter_fullscreen_default")
         self.assertEqual(result, 321)
 
+    def test_recovery_draft_keeps_original_draft_identity(self):
+        dialog = CardEditorDialog(
+            card={"title": "Recovered Draft", "boxes": []},
+            recovery_draft={
+                "draft_id": "draft-123",
+                "mode": "add",
+                "card": {"title": "Recovered Draft"},
+            },
+        )
+        self.addCleanup(dialog.close)
+
+        self.assertTrue(dialog._opened_from_recovery)
+        self.assertEqual(dialog._recovery_draft_id, "draft-123")
+        self.assertEqual(dialog._recovery_mode, "add")
+        self.assertIn("Restoring recovered draft", dialog.windowTitle())
+        self.assertIn("Restoring recovered draft", dialog._hint_label.text())
+
     def test_load_pdf_direct_uses_skeleton_and_wires_ondemand(self):
         pages = [self._pixmap(50, 60), self._pixmap(50, 60), self._pixmap(50, 60)]
         skeleton = SimpleNamespace(placeholders=pages, page_dims=[], error=None)

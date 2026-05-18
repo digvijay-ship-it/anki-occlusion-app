@@ -84,7 +84,7 @@ class HomeScreenClassicUiTests(unittest.TestCase):
     def test_classic_topbar_has_save_and_settings_controls(self):
         self.assertEqual(self.home_screen._btn_save.text(), "💾 SAVE")
         self.assertEqual(self.home_screen._btn_settings.text(), "⚙ SETTINGS")
-        self.assertEqual(self.home_screen._btn_shortcuts.text(), "\u2328 SHORTCUTS")
+        self.assertEqual(self.home_screen._btn_shortcuts.text(), "⌨ SHORTCUTS")
         self.assertIsNotNone(self.home_screen._classic_settings_panel)
 
     def test_classic_settings_panel_toggles_and_shows_archive_controls(self):
@@ -125,6 +125,38 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         self.assertTrue(shown)
         dialog_cls.assert_called_once()
         dialog.exec_.assert_called_once_with()
+
+    def test_recovery_center_delete_all_drafts_deletes_every_selected_draft(self):
+        first_summary = {
+            "drafts": [
+                {"draft_id": "d1", "card": {"title": "One"}, "deck": {}},
+                {"draft_id": "d2", "card": {"title": "Two"}, "deck": {}},
+            ],
+            "review_events": [],
+        }
+        empty_summary = {"drafts": [], "review_events": []}
+        dialog = MagicMock()
+        dialog.action = "delete_all_drafts"
+        dialog.selected_drafts = first_summary["drafts"]
+
+        with patch(
+            "ui.home_screen.recovery_manager.scan_recovery",
+            side_effect=[first_summary, empty_summary],
+        ), patch(
+            "ui.home_screen.RecoveryDialog", return_value=dialog
+        ), patch(
+            "ui.home_screen.recovery_manager.delete_editor_draft",
+            return_value=True,
+        ) as delete_draft, patch(
+            "ui.home_screen.QMessageBox.information"
+        ) as info:
+            shown = self.home_screen.show_recovery_center(startup=False)
+
+        self.assertTrue(shown)
+        self.assertEqual(
+            [call.args[0] for call in delete_draft.call_args_list], ["d1", "d2"]
+        )
+        info.assert_called()
 
     def test_about_dialog_shortcuts_include_pdf_copy_and_open_folder(self):
         dialog = AboutDialog(self.home_screen)

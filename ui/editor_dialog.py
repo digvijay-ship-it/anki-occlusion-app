@@ -90,6 +90,7 @@ class CardEditorDialog(QDialog):
         initial_scroll=0,
         initial_page=None,
         initial_img_y=None,
+        recovery_draft=None,
     ):
         super().__init__(parent)
         self._initial_img_y = initial_img_y
@@ -97,8 +98,17 @@ class CardEditorDialog(QDialog):
         self.setMinimumSize(1100, 700)
         self.card = card or {}
         self._recovery_initial_card = dict(card or {})
-        self._recovery_mode = "edit" if card else "add"
-        self._recovery_draft_id = recovery_manager.new_draft_id()
+        self._opened_from_recovery = isinstance(recovery_draft, dict)
+        self._recovery_mode = (
+            recovery_draft.get("mode", "add")
+            if self._opened_from_recovery
+            else ("edit" if card else "add")
+        )
+        self._recovery_draft_id = (
+            recovery_draft.get("draft_id")
+            if self._opened_from_recovery and recovery_draft.get("draft_id")
+            else recovery_manager.new_draft_id()
+        )
         self._recovery_draft_cleared = False
         self._recovery_accepted = False
         self._recovery_autosave_ready = False
@@ -140,6 +150,8 @@ class CardEditorDialog(QDialog):
         self._recovery_timer.setInterval(2000)
         self._recovery_timer.timeout.connect(self._write_recovery_draft)
         self._setup_ui()
+        if self._opened_from_recovery:
+            self._apply_recovery_restore_notice(recovery_draft)
         if card:
             self._load_card(card)
         self._setup_recovery_autosave()
@@ -148,6 +160,21 @@ class CardEditorDialog(QDialog):
         print("[DEBUG][editor_mode] enter_fullscreen_default")
         self.showFullScreen()
         return super().exec_()
+
+    def _apply_recovery_restore_notice(self, draft):
+        source = ""
+        try:
+            card = (draft or {}).get("card", {}) or {}
+            source = os.path.basename(card.get("pdf_path") or card.get("image_path") or "")
+        except Exception:
+            source = ""
+        suffix = f" - {source}" if source else ""
+        self.setWindowTitle(f"Restoring recovered draft{suffix}")
+        if hasattr(self, "_hint_label"):
+            self._hint_label.setText(
+                "Restoring recovered draft. If the page is blank for a moment, "
+                "wait while the PDF loads."
+            )
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

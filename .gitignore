@@ -79,3 +79,11 @@ tests/_tmp_files/
 *.new
 *.bak
 *.orig
+
+# Web prototype
+web-prototype/node_modules/
+web-prototype/dist/
+web-prototype/coverage/
+web-prototype/*.log
+web-prototype/*.tsbuildinfo
+web-prototype/local_api/local_data/

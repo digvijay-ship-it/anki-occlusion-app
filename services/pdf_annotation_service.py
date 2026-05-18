@@ -590,7 +590,7 @@ class PdfAnnotationSession:
         for item in self.new_items.get(page_num, []):
             if item.get("deleted", False):
                 continue
-            if item.get("kind") == "image":
+            if item.get("kind") in self.SELECTABLE_VISUAL_KINDS:
                 continue
             if self._new_item_hit(item, point):
                 item["deleted"] = True
@@ -604,7 +604,7 @@ class PdfAnnotationSession:
                 )
 
         for item in self.existing_annots.get(page_num, []):
-            if item.get("kind") == "image":
+            if item.get("kind") in self.SELECTABLE_VISUAL_KINDS:
                 continue
             xref = item["xref"]
             if xref in self.pending_deleted_xrefs:

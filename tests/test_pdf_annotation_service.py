@@ -167,6 +167,29 @@ class PdfAnnotationServiceTests(unittest.TestCase):
         self.assertTrue(session.delete_image_item(0, "image:test"))
         self.assertTrue(session.new_items[0][0]["deleted"])
 
+    def test_eraser_ignores_existing_selectable_stamp_visual(self):
+        session = PdfAnnotationSession.__new__(PdfAnnotationSession)
+        session.new_items = {}
+        session.existing_annots = {
+            0: [
+                {
+                    "id": "existing:42",
+                    "kind": "stamp",
+                    "xref": 42,
+                    "rect": (10.0, 20.0, 110.0, 80.0),
+                }
+            ]
+        }
+        session.pending_deleted_xrefs = set()
+        session.dirty_pages = set()
+        session._undo_stack = []
+        session._redo_stack = []
+        session._debug = lambda *args, **kwargs: None
+
+        self.assertFalse(session.erase_at_point(0, QPointF(20.0, 30.0)))
+        self.assertEqual(session.pending_deleted_xrefs, set())
+        self.assertEqual(session.dirty_pages, set())
+
     def test_delete_existing_stamp_with_delete_flow(self):
         session = PdfAnnotationSession.__new__(PdfAnnotationSession)
         session.new_items = {}

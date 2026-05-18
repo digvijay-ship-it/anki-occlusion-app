@@ -2035,6 +2035,16 @@ class HomeScreen(QWidget):
                 draft = getattr(dlg, "selected_draft", None)
                 if draft:
                     recovery_manager.delete_editor_draft(draft.get("draft_id"))
+            elif action == "delete_all_drafts":
+                deleted = 0
+                for draft in getattr(dlg, "selected_drafts", []) or []:
+                    if recovery_manager.delete_editor_draft(draft.get("draft_id")):
+                        deleted += 1
+                QMessageBox.information(
+                    self,
+                    "Recovery",
+                    f"Deleted {deleted} recovery draft(s). Your saved decks were not changed.",
+                )
             else:
                 return True
 
@@ -2096,7 +2106,13 @@ class HomeScreen(QWidget):
             if status == "ok":
                 parent_deck = original_deck
 
-        dlg = CardEditorDialog(self, card=card, data=self._data, deck=parent_deck)
+        dlg = CardEditorDialog(
+            self,
+            card=card,
+            data=self._data,
+            deck=parent_deck,
+            recovery_draft=draft,
+        )
         self._active_editor = dlg
         try:
             if dlg.exec_() != QDialog.Accepted:

@@ -554,5 +554,33 @@ class ReviewScreenZoomTests(unittest.TestCase):
 
         screen._reload_current_canvas.assert_not_called()
 
+    def test_edit_current_card_opens_editor_without_nested_exec(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        card = {"title": "Review card", "boxes": [{"box_id": "b1", "group_id": ""}]}
+        box = card["boxes"][0]
+        screen.mgr = MagicMock()
+        screen.mgr._queued_ids = set()
+        screen._idx = 0
+        screen._items = [(card, 0, box)]
+        screen._data = {"decks": []}
+        screen.canvas = MagicMock()
+        screen.canvas._scale = 1.25
+        bar = MagicMock()
+        bar.value.return_value = 250
+        screen._canvas_scroll = MagicMock()
+        screen._canvas_scroll.verticalScrollBar.return_value = bar
+        fake_dialog = MagicMock()
+        fake_dialog.finished.connect = MagicMock()
+
+        with patch("ui.review_screen.CardEditorDialog", return_value=fake_dialog) as editor_cls:
+            screen._edit_current_card()
+
+        editor_cls.assert_called_once()
+        self.assertEqual(editor_cls.call_args.kwargs["initial_img_y"], 200.0)
+        fake_dialog.exec_.assert_not_called()
+        fake_dialog.setWindowModality.assert_called_once_with(Qt.ApplicationModal)
+        fake_dialog.showFullScreen.assert_called_once_with()
+        fake_dialog.show.assert_called_once_with()
+
 if __name__ == "__main__":
     unittest.main()
