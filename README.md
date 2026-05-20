@@ -120,25 +120,6 @@ assets/
         └── panel_overlay.png
 ```
 
-### 🌐 Web Prototype (`web/`)
-The web port is a Vite React + FastAPI review console over the same local JSON
-data used by the desktop app. It currently supports dashboard stats, recursive
-deck selection, due review queues, and SM-2 rating through the API.
-
-```text
-web/
-├── backend/                   FastAPI app that reuses Python scheduler/storage logic
-│   └── anki_web/
-│       ├── main.py            API routes and CORS setup
-│       ├── schemas.py         Pydantic request/response models
-│       └── store.py           JSON data access and SM-2 rating bridge
-└── frontend/                  Vite React review dashboard
-    └── src/
-        ├── App.jsx            Deck dashboard and review console
-        ├── api.js             Frontend API client
-        └── styles.css         Dense operational web UI styling
-```
-
 ### 🧪 Tests (`tests/`)
 Automated test suites to ensure the application remains stable as new features are added.
 
@@ -147,7 +128,6 @@ tests/
 ├── ⏱️ test_session_timer.py   Verifies that focus time is tracked accurately
 ├── 🧠 test_sm2_engine.py      Ensures the SM-2 algorithm calculates intervals correctly
 ├── 📄 test_pdf_engine.py      Checks that PDFs are parsed and rendered properly
-├── 🌐 test_web_api.py         Verifies the FastAPI-backed web store and review API
 └── 🏗️ test_packaging.py       Verifies the application builds correctly
 ```
 
@@ -179,20 +159,6 @@ python "C:\path with spaces\anki_occlusion_v19.py"
 ```bash
 python -m unittest discover -s tests -v
 ```
-
-**Run the web prototype:**
-
-```powershell
-cd web\backend
-python -m pip install -r requirements.txt
-python -m uvicorn run:app --reload --host 127.0.0.1 --port 8000
-
-cd ..\frontend
-npm install
-npm run dev
-```
-
-Then open `http://127.0.0.1:5173`.
 
 ---
 
@@ -295,7 +261,7 @@ Auto-saves every 60 seconds when data has changed. A final save is always perfor
 
 | Version | Highlights |
 |---------|-----------|
-| current | Fast PDF skeleton loading from page metadata; priority/visible-page review loading; default review pen; floating timer; async OCR; thread-safe PDF workers; Vite React + FastAPI web review console |
+| current | Fast PDF skeleton loading from page metadata; priority/visible-page review loading; default review pen; floating timer; async OCR; thread-safe PDF workers |
 | v19 | SM-2 Hard/EF/fuzzing fixes; DirtyStore autosave; session bugs fixed (Again card, X-button save loss); queue panel; learning countdown; session summary; Space+drag & H pan (tablet/stylus support); async PDF in review; performance fixes |
 | v18 | Hardware mask cache (GPU-backed offscreen layer, ~3× FPS); LRU page cache (RAM from ~2GB → ~300MB for large PDFs) |
 | v17 | Progressive chunk loading (start working instantly), ultra-fast RAM caching |
