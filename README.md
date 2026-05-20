@@ -1,279 +1,404 @@
-# Anki Occlusion 🃏
+# Anki Occlusion - Offline Desktop App
 
-**Anki Occlusion** is a desktop flashcard app built with Python and PyQt5 that brings Anki's Image Occlusion feature to your own PDFs and images — with a full SM-2 spaced repetition scheduler built in.
+Anki Occlusion is an offline-first desktop study app built with Python and
+PyQt5. It turns local PDFs and images into image-occlusion flashcards, schedules
+reviews with an SM-2 style algorithm, and keeps your study data on your machine.
 
-Draw rectangles over the parts of your notes you want to hide. Each rectangle becomes a flashcard. Study them with the same Again / Hard / Good / Easy flow as real Anki — no typing required.
+This root README documents the desktop app in this repository.
 
----
+## Current App State
 
-## ✨ Features
+- Desktop entry point is `anki_occlusion_v19.py`.
+- Local JSON data store with autosave, atomic writes, safety checks, and backups.
+- Nested decks, deck/card management, undo/redo for deck changes, and recovery
+  flows for interrupted work.
+- PDF and image occlusion editor with rectangle, ellipse, text labels, grouping,
+  multi-select, move, resize, rotate, pan, zoom, and per-page masks.
+- Review mode with Anki-style reveal/rate flow: Again, Hard, Good, Easy, and
+  Perfect.
+- SM-2 scheduling supports new, learning, review, and relearn states with
+  intraday learning steps, interval fuzzing, ease-factor updates, and an
+  interval cap.
+- Large PDF review mode is optimized for long documents. The app builds the
+  review layout from page metadata first, then renders only the current and
+  visible pages on demand.
+- PDF page cache uses a 48-page RAM limit plus persistent disk cache. Cached
+  pages can be injected immediately during review.
+- PDF rendering workers create `QImage` in background threads. `QPixmap`
+  conversion is kept on the GUI thread for Qt thread safety.
+- Review pen is active by default when review starts.
+- Review queue drawer can be hidden. When hidden, a large floating study timer
+  stays on top of the PDF.
+- Left/right arrow page navigation keeps already-rendered pages in the canvas
+  instead of reloading them unnecessarily.
+- Live PDF sync watches external PDF edits and refreshes changed documents.
+- In-app PDF annotation scroll supports pen, highlight, erase, pasted images,
+  undo/redo, save, and page navigation.
+- Session timer tracks focus time during review and writes daily totals into
+  the journal.
+- Math Trainer OCR runs asynchronously so prediction work does not freeze the UI.
+- Shortcut settings dialog lets core shortcuts be customized.
+- Cache panel and diagnostics help inspect and clear cached PDF data.
+- Dojo/classic themes, font scaling, music controls, fullscreen mode, and
+  single-instance protection are included.
 
-### Core
-- **PDF & Image Occlusion** — Load any PDF or image, drag masks over what you want to hide, and each mask becomes its own flashcard question automatically.
-- **SM-2 Spaced Repetition** — Full Anki-style scheduler with intraday learning steps and graduated review intervals. Cards move through `new → learning → review → relearn` states exactly like real Anki.
-- **Anki-Style Review Flow** — Cards show with all masks hidden. Press `Space` to reveal, then rate yourself: **Again / Hard / Good / Easy**. Rating buttons only appear after you reveal — just like Anki.
-- **Hide One, Guess One** — Toggle between "Hide All, Guess One" and "Hide One, Guess One" modes during review sessions.
-- **Nested Decks** — Create decks and sub-decks to organise your subjects (e.g. `Biology › Chapter 3 › Cell Division`). Right-click for deck options.
-- **Grouped Masks** — Link multiple masks together so they are reviewed as a single card.
-- **Auto-Save** *(v19)* — DirtyStore background thread auto-saves every 60 seconds. Data is never lost even if the app crashes mid-session.
+## Install
 
-### SM-2 Scheduler *(v19 fixes)*
-- **Hard button fixed** — Now correctly shows 5m (midpoint) instead of 1m in the learning phase.
-- **Discrete EF penalties** — Again −0.20, Hard −0.15, Good 0.00, Easy +0.15 (Anki-accurate).
-- **Interval fuzzing** — Small random offset added to review intervals to prevent card pile-ups.
-- **365-day cap** — Intervals never grow beyond one year.
+Use Python 3.8+.
 
-### PDF Features
-- **Live PDF Sync** *(v13)* — The editor watches the file for changes. Annotate in any external app (Foxit, Adobe, Drawboard, Xodo), save there, and the editor auto-reloads within 800ms — masks stay in place.
-- **Open in PDF Reader** *(v13)* — One-click button opens the current PDF in your system default reader.
-- **Progressive Background Loading** *(v16 & v17)* — Large PDFs load in a background thread in chunks. The UI never freezes, and you can start working immediately while the rest loads silently.
-- **Lazy PDF Review Loading** — Review mode builds a fast skeleton from PDF page metadata, then renders only priority, visible, or cached pages.
-- **LRU Page Cache** *(v18+)* — Individual pages are cached with a 48-page RAM window plus persistent disk cache. Switching between Edit and Review mode is instant on cache hits.
-- **Thread-Safe PDF Rendering** — Worker threads render `QImage` objects and convert to `QPixmap` only on the GUI thread.
+Install core desktop dependencies:
 
-### Editor
-- **Toolbar** — Vertical toolbar to switch between Select (V), Rectangle (R), Ellipse (E), and Text (T) tools.
-- **Ellipse & Text Tools** — Draw oval/circular masks and label them inline.
-- **Pan Navigation** *(v19)* — Hold `Space` + drag to pan (Photoshop-style). Press `H` to lock/unlock pan mode. Works with mouse, trackpad, and **XP Pen / drawing tablet stylus**.
-- **Pinch-to-Zoom** — Ctrl+Scroll or trackpad pinch zooms the canvas in both editor and review.
-- **Undo / Redo** — Full undo stack (Ctrl+Z / Ctrl+Y).
-- **Select, Move, Resize & Rotate** — Click to select, drag to move, 8 handles to resize, top circular handle to rotate.
-- **Zero-Lag Drawing** — Native hardware painting eliminates mouse lag when drawing or moving masks.
-- **Dynamic Font Size** — A− / A / A+ buttons scale the entire app font. Saved and restored on next launch.
-
-### Review
-- **Review Queue Panel** *(v19)* — Right-side panel shows the full session queue with live status: current (green), done (dim), pending, and relearn (orange) states.
-- **Learning Card Countdown** *(v19)* — When all pending cards are done but learning cards still have time left, the session shows a live countdown ("⏳ 1 card in learning — next due in 0m 45s") instead of ending early. The card appears automatically when due.
-- **Session Summary** *(v19)* — After each session a stats dialog shows a colored retention bar (Again / Hard / Good / Easy segments), per-rating counts, retention %, and total reviewed.
-- **Default Review Pen** — Review mode opens with the pen active by default for quick annotation while studying.
-- **Floating Study Timer** — When the queue drawer is hidden, a large floating timer stays pinned above the PDF and remains visible during page jumps.
-
-### Other
-- **First-Launch Wizard** — A short onboarding tour on first use explains the workflow.
-- **App Icon** — Programmatically generated; no external image file needed.
-- **Crash-Safe Storage** — Atomic write (temp file + rename) guarantees data is never corrupted even on a crash mid-save.
-- **Single-Instance Lock** — Only one window can open at a time.
-- **Async OCR** — Math Trainer OCR runs in a Qt worker thread so the UI stays responsive while TensorFlow predicts.
-
----
-
-## 📂 Project Structure
-
-Following the recent refactoring, the application is highly modularised:
-
-### 🏛️ Core Architecture
-These are the foundational files that run the application, manage data, and handle the core spaced repetition logic.
-
-```text
-Anki Occlusion/
-├── 🚀 anki_occlusion_v19.py   Main entry point that launches the application
-├── 📦 models.py               Defines core data structures (Decks, Cards, Occlusions)
-├── 💾 data_manager.py         Handles loading, saving, and managing the local database
-├── 🧠 sm2_engine.py           Implements the SuperMemo-2 (SM-2) spaced repetition algorithm
-├── 📄 pdf_engine.py           Parses and renders PDF pages into images for occlusion
-├── ⚡ cache_manager.py        Caches rendered PDFs and images for lightning-fast loading
-├── ⏱️ session_timer.py        Tracks active focus and study time during review sessions
-├── 🎨 theme_manager.py        Manages application themes, colors, and styling modes
-├── ⚙️ thread_manager.py       Orchestrates background workers (keeps the UI responsive)
-└── 🏗️ AnkiOcclusion.spec      Build specification for compiling the executable
+```powershell
+python -m pip install PyQt5 pymupdf
 ```
 
-### 🖥️ User Interface (`ui/`)
-This folder contains the presentation layer and all the interactive Qt widgets you see on the screen.
+Optional Math Trainer OCR dependencies:
 
-```text
-ui/
-├── 🏠 home_screen.py          The main dashboard (integrates navigation & sidebars)
-├── 🗂️ deck_tree.py            Sidebar widget displaying your hierarchy of decks
-├── 📊 deck_view.py            Central view showing stats and options for the selected deck
-├── ✏️ editor_dialog.py        The studio where you create cards and draw occlusion masks
-├── 🎓 review_screen.py        The study interface (flipping cards, grading your memory)
-├── 📓 journal.py              Displays daily study logs, streaks, and focus times
-├── 🧮 math_trainer.py         Standalone module for practicing tables, squares, and cubes
-│
-└── 🖌️ canvas/                 Specialized module for the image occlusion drawing area
-    ├── 🧩 core.py             Base definitions and core structures for the canvas
-    ├── 🕹️ interaction.py      Handles mouse/keyboard events (drawing, panning, zooming)
-    ├── 🖼️ renderer.py         Paints the background image and draws masks on top
-    └── 🧠 state.py            Manages canvas state, selected shapes, and undo/redo history
+```powershell
+python -m pip install numpy opencv-python pillow tensorflow
 ```
 
-### ⚙️ Background Services (`services/`)
-These modules run behind the scenes to orchestrate complex logic away from the UI.
+The app can still be used for normal deck, PDF, image, and review work without
+the optional OCR stack.
 
-```text
-services/
-├── 🔄 review_manager.py       Orchestrates review sessions (fetching due cards, processing answers)
-├── 📈 journal_manager.py      Handles data storage for the daily journal and focus stats
-└── 👁️ pdf_watcher.py          Monitors imported PDF files for external modifications
-```
+## Run
 
-### 🖼️ Assets (`assets/`)
-Static resources like images, icons, and theme files.
+From the repository root:
 
-```text
-assets/
-└── 🎨 themes/
-    └── 🥷 dojo/               Backgrounds and UI elements for the specialized "Ninja" theme
-        ├── Cyber_ninja_turtle...
-        ├── Fantasy_ninja_UI...
-        └── panel_overlay.png
-```
-
-### 🧪 Tests (`tests/`)
-Automated test suites to ensure the application remains stable as new features are added.
-
-```text
-tests/
-├── ⏱️ test_session_timer.py   Verifies that focus time is tracked accurately
-├── 🧠 test_sm2_engine.py      Ensures the SM-2 algorithm calculates intervals correctly
-├── 📄 test_pdf_engine.py      Checks that PDFs are parsed and rendered properly
-└── 🏗️ test_packaging.py       Verifies the application builds correctly
-```
-
----
-
-## 🚀 Installation
-
-**Requirements:** Python 3.8+
-
-```bash
-pip install PyQt5 pymupdf
-```
-
-> `pymupdf` is needed for PDF support. If you only use images, you can skip it.
-
-**Run:**
-
-```bash
+```powershell
 python anki_occlusion_v19.py
 ```
 
-On Windows PowerShell with spaces in the path:
+If you are launching from another directory, pass the full path:
+
 ```powershell
-python "C:\path with spaces\anki_occlusion_v19.py"
+python "C:\path\to\Anki gs3236208\anki_occlusion_v19.py"
 ```
 
-**Run tests:**
+## Desktop Workflow
 
-```bash
-python -m unittest discover -s tests -v
+1. Create a deck or subdeck from the home screen.
+2. Add a card.
+3. Load a PDF or image.
+4. Draw masks over the answers.
+5. Save the card.
+6. Start review.
+7. Press `Space` to reveal the answer.
+8. Rate the answer with `1` to `5`.
+
+## PDF Review Model
+
+The current PDF review path is designed for large files.
+
+- The app scans page dimensions from PDF metadata instead of rendering pages
+  just to build the initial layout.
+- The current review page gets priority even when it is beyond the first
+  48 cached pages.
+- Already-rendered canvas pages are reused when moving back and forth.
+- Visible cached pages are injected immediately.
+- Missing visible pages are rendered lazily in background workers.
+- Cache profile checks the PDF file and zoom level so stale render data can be
+  skipped or refreshed.
+
+For a large PDF, the terminal should show a fast skeleton phase with:
+
+```text
+[DEBUG][skeleton] ... mode=rect_only
 ```
 
----
+Useful review loading diagnostics:
 
-## 📖 How to Use
+```text
+[DEBUG][review_cache_profile]
+[DEBUG][review_queue_pages]
+[DEBUG][review_load]
+[DEBUG][review_viewport]
+[DEBUG][review_decision]
+[DEBUG][review_lazy]
+[DEBUG][review_inject]
+[DEBUG][review_visible_cache]
+```
 
-### 1 — Create a Deck
-Click **＋ Deck** in the left sidebar. To nest it, select a parent deck first and click **＋ Sub**.
+These debug statements are intentional during the current PDF/review performance
+work so slow loads, cache misses, and page hydration decisions can be observed
+from the terminal.
 
-### 2 — Add a Card
-Select a deck → click **＋ Add Card** → load a PDF or image → drag rectangles over the content you want to hide → click **💾 Save Card**.
+## Review Mode
 
-**Tip for PDFs:** Click **📂 Open in PDF Reader** to annotate in Foxit / Adobe / Drawboard, save there, and the editor auto-reloads within a second. Then draw your masks on top.
+Main review behavior:
 
-### 3 — Review
-Click **🔴 Review Due** to study cards that are due today.
-- Press `Space` to reveal the answer
-- Press `1` Again · `2` Hard · `3` Good · `4` Easy to rate
+- `Space` reveals the answer.
+- Rating buttons update the card schedule and advance the queue.
+- Queue drawer shows due/new/learning/review state.
+- Hiding the queue drawer shows the floating timer.
+- Default review tool is the pen.
+- Timer overlay is kept above the PDF during scroll and arrow-key navigation.
+- PDF pages can be changed with left/right arrows.
+- Current PDF can be opened in the system reader from review mode.
+- Annotation scroll can be opened from review mode at the current page position.
 
-The queue panel on the right shows all cards in the session with live status. The scheduler decides when you'll see each card next — minutes for new cards, days or weeks for well-known ones.
-
----
-
-## ⌨️ Keyboard Shortcuts
-
-### Review Mode
+Review shortcuts:
 
 | Shortcut | Action |
-|----------|--------|
+| --- | --- |
 | `Space` | Reveal answer |
-| `1` | Again |
-| `2` | Hard |
-| `3` | Good |
-| `4` | Easy |
-| `C` | Center view on active mask |
+| `1` | Rate Again |
+| `2` | Rate Hard |
+| `3` | Rate Good |
+| `4` | Rate Easy |
+| `5` | Rate Perfect |
+| `Left` | Previous PDF page |
+| `Right` | Next PDF page |
+| `C` | Center current mask |
 | `E` | Edit current card |
-| `Ctrl` + `Scroll` | Zoom in / out |
-| `Ctrl` + `+` / `-` / `0` | Zoom in / out / fit |
-| `Space` + drag | Pan canvas |
-| `H` | Toggle pan mode lock |
+| `T` | Open annotation scroll |
+| `Ctrl+E` | Open current PDF |
+| `Ctrl+L` | Open PDF folder |
+| `L` | Copy current PDF path |
+| `Ctrl+Z` | Undo rating |
+| `Ctrl+Y` | Redo rating |
+| `Ctrl++` | Zoom in |
+| `Ctrl+-` | Zoom out |
+| `Ctrl+0` | Fit/reset zoom |
+| `` ` `` | Toggle review pen |
+| `X` | Cycle review pen color |
+| `+` / `-` | Adjust review pen size |
+| `Del` | Clear review pen marks |
 | `F11` | Toggle fullscreen |
+| `Esc` | Leave review |
 
-### Editor Mode
+## Editor Mode
+
+Editor behavior:
+
+- Load image files or PDFs.
+- Draw masks on one page or across multiple PDF pages.
+- Group and ungroup masks.
+- Use undo/redo while editing.
+- Open the source PDF in the system reader.
+- Open the in-app annotation scroll.
+- Save/recover interrupted card edits.
+- Keep PDF masks adapted to page/image space.
+
+Editor shortcuts:
 
 | Shortcut | Action |
-|----------|--------|
+| --- | --- |
 | `V` | Select tool |
-| `R` | Rectangle tool |
-| `E` | Ellipse tool |
-| `T` | Text / Label tool |
-| `Ctrl` + `Z` | Undo |
-| `Ctrl` + `Y` | Redo |
-| `Ctrl` + `A` | Select visible masks |
-| `Ctrl` + `Shift` + `A` | Select all masks |
+| `R` | Rectangle mask |
+| `E` | Ellipse mask |
+| `T` | Text/label tool |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` | Redo |
+| `Ctrl+A` | Select visible masks |
+| `Ctrl+Shift+A` | Select all masks |
 | `G` | Group selected masks |
-| `Shift` + `G` | Ungroup selected masks |
-| `Del` | Delete selected mask(s) |
-| `Ctrl` + `Scroll` | Zoom canvas |
-| `Space` + drag | Pan canvas |
-| `H` | Toggle pan mode lock |
+| `Shift+G` | Ungroup selected masks |
+| `Del` | Delete selected masks |
+| `Ctrl+Scroll` | Zoom canvas |
+| `Space+drag` | Pan canvas |
+| `H` | Toggle pan lock |
+| `Left` | Previous PDF page |
+| `Right` | Next PDF page |
 
-### Home Screen
+## Annotation Scroll
+
+The annotation scroll is an in-app PDF annotation tool used for quick notes on
+top of the PDF.
 
 | Shortcut | Action |
-|----------|--------|
-| `Ctrl` + `+` | Increase font size |
-| `Ctrl` + `-` | Decrease font size |
-| `Ctrl` + `0` | Reset font size |
+| --- | --- |
+| `Ctrl+S` | Save PDF annotations |
+| `Ctrl+V` | Paste clipboard image |
+| `Delete` | Delete selected pasted image |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` | Redo |
+| `Left` | Previous page |
+| `Right` | Next page |
+| `1` or `P` | Pen |
+| `2` | Highlight |
+| `3` or `E` | Erase |
+| `S` | Image tool |
+| `+` / `-` | Adjust pen width |
+| `0` | Reset pen style |
+| `C` | Reset fit |
+
+## Home Screen
+
+Home behavior:
+
+- Browse decks and subdecks.
+- Search and manage cards.
+- Start due reviews.
+- View due/new/learning/review counts.
+- Open journal and Math Trainer.
+- Open shortcut settings and cache tools.
+- Switch theme/font settings.
+
+Home shortcuts:
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+S` | Save now |
+| `Ctrl+Z` | Undo deck/card change |
+| `Ctrl+Y` | Redo deck/card change |
+| `Ctrl++` | Increase app font size |
+| `Ctrl+-` | Decrease app font size |
+| `Ctrl+0` | Reset app font size |
+| `M` | Toggle music |
+| `N` | Next music track |
 | `F11` | Toggle fullscreen |
 
----
+## Data And Cache
 
-## 🔴 Live PDF Sync — Workflow
-
-1. Open the Card Editor and load a PDF
-2. Click **📂 Open in PDF Reader** — your PDF opens in Foxit / Adobe / Drawboard / Xodo
-3. Draw highlights, underlines, circles, text — whatever you like
-4. **Save** in your PDF reader (`Ctrl+S`)
-5. The editor shows **🟡 change detected…** then reloads within a second
-6. Your annotated PDF is now displayed — draw occlusion masks on top
-
-Works with any app that saves to the same file path, including Foxit, Adobe Acrobat, Drawboard, Xodo, PDF-XChange Editor, and Inkscape.
-
----
-
-## 📂 Data Location
-
-All decks, cards, and scheduling data are stored in a single JSON file:
+Main data file:
 
 | Platform | Path |
-|----------|------|
+| --- | --- |
 | Windows | `C:\Users\<YourUser>\anki_occlusion_data.json` |
 | macOS | `~/anki_occlusion_data.json` |
 | Linux | `~/anki_occlusion_data.json` |
 
-Auto-saves every 60 seconds when data has changed. A final save is always performed on app close.
+Persistence behavior:
 
----
+- Saves are atomic through temp-file replacement.
+- DirtyStore coalesces repeated changes and autosaves in the background.
+- Save guards prevent accidental empty-data overwrites.
+- Backups are created around risky writes.
+- Recovery events can be replayed after interrupted review actions.
 
-## 📦 Version History
+PDF cache behavior:
 
-| Version | Highlights |
-|---------|-----------|
-| current | Fast PDF skeleton loading from page metadata; priority/visible-page review loading; default review pen; floating timer; async OCR; thread-safe PDF workers |
-| v19 | SM-2 Hard/EF/fuzzing fixes; DirtyStore autosave; session bugs fixed (Again card, X-button save loss); queue panel; learning countdown; session summary; Space+drag & H pan (tablet/stylus support); async PDF in review; performance fixes |
-| v18 | Hardware mask cache (GPU-backed offscreen layer, ~3× FPS); LRU page cache (RAM from ~2GB → ~300MB for large PDFs) |
-| v17 | Progressive chunk loading (start working instantly), ultra-fast RAM caching |
-| v16 | PDF background loading in QThread (fixes "Not Responding" freezes) |
-| v15 | Native hardware painting (zero-lag drawing), SM-2 queue/duplicate bug fixes |
-| v14 | Hide One Guess One mode, Ellipse & Text tools, object move/resize/rotate |
-| v13 | Live PDF Sync, Open in PDF Reader, debounce reload, clean watcher teardown |
-| v12 | Anki-style reveal flow, pinch zoom, center-on-mask, dynamic font size, onboarding wizard, app icon, About dialog |
-| v11 | Anki-style SM-2 scheduler (learning steps, relearn), improved review UX |
-| v10 | Mask colors fixed, group/ungroup from deck view, shift+click multi-select |
-| v9  | Initial public release |
+- RAM cache defaults to 48 rendered pages.
+- Disk cache persists rendered pages between sessions.
+- Pending worker images are tracked without forcing GUI pixmap creation.
+- Cache inspection can count RAM, pending, and disk pages without loading them.
+- Cache metadata tracks render zoom and PDF identity.
 
----
+## Project Structure
 
-*Consistency beats cramming! 🔥*
+```text
+anki_occlusion_v19.py        Desktop app entry point
+AnkiOcclusion.spec           PyInstaller desktop packaging spec
+build_installer.ps1          Windows installer build script
+
+data_manager.py              JSON storage, autosave, backups, undo history
+sm2_engine.py                SM-2 scheduling and rating previews
+pdf_engine.py                PDF skeleton scan, rendering, worker threads
+cache_manager.py             RAM/disk page cache and cache diagnostics
+session_timer.py             Review focus timer and journal integration
+storage_paths.py             User data/cache/recovery path helpers
+page_scheduler.py            Lazy page scheduling helpers
+perf_utils.py                Performance helper utilities
+theme_manager.py             Theme/font/style management
+thread_manager.py            Thread lifecycle helper
+models.py                    Shared card/deck data helpers
+
+services/
+  review_manager.py          Review queue/session state
+  shortcut_manager.py        Shortcut registry and persistence
+  ocr_engine.py              Async OCR bridge
+  tf_worker.py               TensorFlow OCR worker
+  local_ocr_server.py        Local OCR server helper
+  pdf_watcher.py             External PDF change watcher
+  pdf_annotation_service.py  PDF annotation read/write service
+  recovery_manager.py        Recovery event and draft handling
+  journal_manager.py         Journal persistence helpers
+
+ui/
+  home_screen.py             Main dashboard
+  deck_tree.py               Deck tree/sidebar
+  deck_view.py               Deck detail view
+  editor_dialog.py           Card editor and occlusion editor
+  review_screen.py           Review mode
+  journal.py                 Journal/focus view
+  math_trainer.py            Math practice module
+  pdf_annotation_dialog.py   In-app PDF annotation scroll
+  shortcut_dialog.py         Shortcut settings dialog
+  recovery_dialog.py         Recovery UI
+  pdf_viewer_controller.py   PDF viewport/navigation helper
+  canvas/                    Canvas state, rendering, and interaction modules
+
+assets/                      Fonts, icons, music, themes, OCR model assets
+installer/                   Windows installer helper scripts
+tests/                       Unit tests for storage, scheduling, PDF, cache,
+                             review flow, UI helpers, OCR, recovery, and timer
+```
+
+## Test
+
+Run the full test suite:
+
+```powershell
+python -m unittest discover -s tests
+```
+
+Useful focused checks:
+
+```powershell
+python -m unittest tests.test_pdf_engine tests.test_cache_manager tests.test_review_screen
+python -m unittest tests.test_review_manager tests.test_sm2_engine tests.test_session_timer
+python -m unittest tests.test_ocr_engine tests.test_pdf_annotation_service tests.test_recovery_manager
+```
+
+## Package
+
+Build the desktop app with PyInstaller:
+
+```powershell
+pyinstaller --noconfirm AnkiOcclusion.spec
+```
+
+Build the Windows installer helper flow:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build_installer.ps1
+```
+
+The packaging tests assert that the spec points at `anki_occlusion_v19.py`,
+collects desktop assets, and includes required Qt multimedia support.
+
+## Troubleshooting
+
+Slow PDF startup:
+
+- Check the terminal for `[DEBUG][skeleton] ... mode=rect_only`.
+- Check `[DEBUG][review_cache_profile]` for cache count, PDF page count, and
+  zoom profile.
+- If `reset_cache=True`, the app is refreshing stale render data.
+- If `need=` in `[DEBUG][review_decision]` lists pages, those visible pages are
+  not yet cached and are being rendered lazily.
+
+Timer hidden or flickering:
+
+- The floating timer only appears when the review queue drawer is hidden.
+- It is raised after scroll and arrow-key page navigation so it stays above the
+  PDF viewport.
+
+OCR not working:
+
+- Normal review does not need OCR dependencies.
+- Math Trainer OCR needs the optional OCR dependency stack and model assets.
+
+PDF annotations not appearing:
+
+- Save the PDF in the external reader.
+- Return to the app and let the PDF watcher refresh the changed document.
+- If needed, reopen the card or current PDF from review mode.
+
+## Current Desktop Highlights
+
+- Large PDFs open into review mode much faster because skeleton layout no longer
+  renders pages.
+- Review mode prioritizes the current page even if it is far beyond the first
+  cache window.
+- Moving between nearby pages reuses canvas-real pages instead of re-rendering
+  static content.
+- Floating timer is larger and stays visible above the PDF when the queue drawer
+  is hidden.
+- PDF workers use thread-safe image objects and avoid background-thread pixmap
+  creation.
+- OCR prediction work is off the GUI thread.
+- Tests cover the PDF loader, cache counters, review lazy-loading decisions,
+  floating timer behavior, default review pen, async OCR, SM-2 scheduling, and
+  recovery flows.
