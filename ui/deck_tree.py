@@ -62,39 +62,6 @@ from sm2_engine import (
     sm2_badge,
 )
 
-# Daily Journal — safe import
-try:
-    from ui.journal import JournalDialog
-
-    _JOURNAL_AVAILABLE = True
-except ImportError:
-    _JOURNAL_AVAILABLE = False
-
-# Session Timer — safe import
-try:
-    from session_timer import SessionTimer
-
-    _TIMER_AVAILABLE = True
-except ImportError:
-    _TIMER_AVAILABLE = False
-
-from pdf_engine import (
-    PDF_SUPPORT,
-    PAGE_CACHE,
-    PdfLoaderThread,
-    PdfSkeletonThread,
-    pdf_page_to_pixmap,
-    load_pdf_skeleton,
-    PdfOnDemandThread,
-    build_skeleton_placeholders,
-    invalidate_pdf_skeleton,  # STEP 2 + 3
-)
-
-from editor_ui import OcclusionCanvas, _ZoomableScrollArea
-from ui.editor_dialog import CardEditorDialog
-
-import fitz
-
 from data_manager import (
     load_data,
     save_data,

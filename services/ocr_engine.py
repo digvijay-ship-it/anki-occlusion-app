@@ -5,6 +5,8 @@ import io
 import threading
 import time
 
+from PyQt5.QtCore import QThread, pyqtSignal
+
 _worker_process = None
 _worker_lock = threading.Lock()
 _worker_ready = False
@@ -94,3 +96,24 @@ def ocr_number(pil_img) -> str:
         except Exception as e:
             print(f"[ocr_engine] Subprocess communication error: {e}")
             return ""
+
+
+class OcrNumberThread(QThread):
+    result = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, pil_img, parent=None):
+        super().__init__(parent)
+        self._pil_img = pil_img
+
+    def run(self):
+        print("[DEBUG][ocr_async] start")
+        try:
+            predicted = ocr_number(self._pil_img)
+        except Exception as exc:
+            print(f"[DEBUG][ocr_async] failed error={exc}")
+            self.failed.emit(str(exc))
+            self.result.emit("")
+            return
+        print(f"[DEBUG][ocr_async] done result={predicted!r}")
+        self.result.emit(predicted or "")

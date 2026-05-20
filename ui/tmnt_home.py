@@ -19,6 +19,7 @@ Layout (matches HTML):
   └────────────────────────────────────────────────────────────────┘
 """
 
+import importlib.util
 import os, math, re
 from datetime import datetime
 
@@ -70,7 +71,6 @@ from PyQt5.QtGui import (
 
 from sm2_engine import sm2_init, is_due_today, sm2_days_left
 from data_manager import deck_history, find_deck_by_id, next_deck_id, store
-from pdf_engine import PDF_SUPPORT
 from perf_utils import build_deck_rollups
 from services import shortcut_manager
 from storage_paths import (
@@ -85,6 +85,10 @@ from storage_paths import (
 from ui.deck_tree import DeckTree, _DeckTreeWidget
 from ui.deck_view import DeckView
 
+
+def _pdf_support_available():
+    return importlib.util.find_spec("fitz") is not None
+
 # ── TMNT Palette ─────────────────────────────────────────────────────────────
 T_BG = "#0b0c10"
 T_PANEL = "#1f2833"
@@ -97,7 +101,8 @@ T_RED = "#ff4d4d"
 T_PURPLE = "#b088f9"
 T_BORDER = "#333b4d"
 T_MONO = "'Roboto Mono', 'Courier New', monospace"
-T_PIXEL = "'Press Start 2P', monospace"
+T_HEADER = "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif"
+T_PIXEL = T_HEADER
 TMNT_BASE_SIZE = 11
 TMNT_SIDEBAR_W = int(228 * 1.2)
 TMNT_RIGHTBAR_W = int(218 * 1.2)
@@ -112,7 +117,7 @@ MENTOR_QUOTES = [
 ]
 
 
-# ── Helper: pixel-font label ─────────────────────────────────────────────────
+# ── Helper: header-font label ────────────────────────────────────────────────
 def _px_lbl(text, color=T_NEON, size=10, weight="900"):
     l = QLabel(text)
     l.setStyleSheet(
@@ -670,8 +675,9 @@ class TMNTBangaLab(QFrame):
         body.addWidget(_sep_line())
         body.addWidget(_stat_row("SCHEDULER", "ACTIVE", T_GREEN, dot=True))
         body.addWidget(_sep_line())
-        pdf_val = "PyMuPDF" if PDF_SUPPORT else "MISSING"
-        pdf_col = T_PURPLE if PDF_SUPPORT else T_RED
+        pdf_ok = _pdf_support_available()
+        pdf_val = "PyMuPDF" if pdf_ok else "MISSING"
+        pdf_col = T_PURPLE if pdf_ok else T_RED
         body.addWidget(_stat_row("PDF ENGINE", pdf_val, pdf_col))
         body.addWidget(_sep_line())
         body.addWidget(_stat_row("OCCLUSION", "ACTIVE", T_GREEN, dot=True))
@@ -2830,13 +2836,14 @@ class TMNTFooter(QFrame):
         sep = QLabel("|")
         sep.setStyleSheet(_scale_ss(f"color: {T_BORDER}; font-size: 8px;", self._scale))
         L.addWidget(sep)
+        pdf_ok = _pdf_support_available()
         pdf_text = (
             "PyMuPDF loaded — PDF support active"
-            if PDF_SUPPORT
+            if pdf_ok
             else "⚠ pip install pymupdf for PDF support"
         )
-        pdf_col = T_GREEN if PDF_SUPPORT else T_RED
-        L.addWidget(_status("✅" if PDF_SUPPORT else "⚠", pdf_text, pdf_col))
+        pdf_col = T_GREEN if pdf_ok else T_RED
+        L.addWidget(_status("✅" if pdf_ok else "⚠", pdf_text, pdf_col))
         L.addStretch()
 
 

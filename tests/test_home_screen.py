@@ -4,7 +4,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-from PyQt5.QtWidgets import QApplication, QLabel
+from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget
 
 # Ensure QApplication exists before importing HomeScreen
 _APP = QApplication.instance() or QApplication([])
@@ -46,6 +47,25 @@ class HomeScreenJournalTests(unittest.TestCase):
 
 
 class HomeScreenMusicWidgetTests(unittest.TestCase):
+    def test_music_audio_initializes_only_when_playback_is_requested(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "theme.mp3"), "wb") as fh:
+                fh.write(b"audio")
+
+            with patch.object(MusicWidget, "MUSIC_DIR", tmpdir), patch.object(
+                MusicWidget, "_init_audio"
+            ) as init_audio:
+                widget = MusicWidget()
+                self.addCleanup(widget.close)
+
+                init_audio.assert_not_called()
+                self.assertFalse(widget._audio_initialized)
+
+                widget.toggle()
+
+                init_audio.assert_called_once_with()
+                self.assertTrue(widget._audio_initialized)
+
     def test_music_scan_excludes_math_trainer_sound_effects(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             for name in (
@@ -166,6 +186,56 @@ class HomeScreenClassicUiTests(unittest.TestCase):
 
         self.assertIn("L — copy current PDF file", label_text)
         self.assertIn("Ctrl+L — open current PDF folder", label_text)
+
+
+class _FakeTMNTHomeLayout(QWidget):
+    btn_save_clicked = pyqtSignal()
+    btn_math_clicked = pyqtSignal()
+    btn_journal_clicked = pyqtSignal()
+    btn_theme_clicked = pyqtSignal()
+    btn_help_clicked = pyqtSignal()
+    btn_about_clicked = pyqtSignal()
+    btn_shortcuts_clicked = pyqtSignal()
+    font_change = pyqtSignal(int)
+    bgm_toggle = pyqtSignal()
+
+    def __init__(self, data, parent=None):
+        super().__init__(parent)
+        self._data = data
+        self.refresh_count = 0
+        self.bgm_state = None
+
+    def set_bgm_state(self, state):
+        self.bgm_state = state
+
+    def refresh(self):
+        self.refresh_count += 1
+
+    def get_selected_deck(self):
+        return None
+
+
+class HomeScreenStartupLazyTests(unittest.TestCase):
+    def test_tmnt_startup_does_not_build_classic_body(self):
+        with patch("ui.home_screen._load_tmnt_home_layout", return_value=_FakeTMNTHomeLayout), \
+             patch("ui.home_screen._load_classic_home_classes") as load_classic:
+            home = HomeScreen({"decks": [], "_theme": "tmnt"})
+            self.addCleanup(home.close)
+
+        load_classic.assert_not_called()
+        self.assertIsNone(home._splitter_widget)
+        self.assertIsNotNone(home._tmnt_layout)
+        self.assertIs(home._body_stack.currentWidget(), home._tmnt_layout)
+
+    def test_classic_startup_does_not_build_tmnt_body(self):
+        with patch("ui.home_screen._load_tmnt_home_layout") as load_tmnt:
+            home = HomeScreen({"decks": [], "_theme": "classic"})
+            self.addCleanup(home.close)
+
+        load_tmnt.assert_not_called()
+        self.assertIsNotNone(home._splitter_widget)
+        self.assertIsNone(home._tmnt_layout)
+        self.assertIs(home._body_stack.currentWidget(), home._splitter_widget)
 
 if __name__ == "__main__":
     unittest.main()

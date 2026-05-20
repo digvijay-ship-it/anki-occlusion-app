@@ -790,7 +790,7 @@ class PdfAnnotationDialog(QDialog):
         return list(missing)
 
     def _setup_ui(self):
-        self.setWindowTitle("PDF Annotation Editor (Beta)")
+        self.setWindowTitle("Anotate Scroll")
         self.setMinimumSize(1200, 800)
         self.setStyleSheet(
             "QDialog{background:#1E1E2E;color:#CDD6F4;}"

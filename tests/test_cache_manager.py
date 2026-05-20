@@ -8,7 +8,7 @@ import uuid
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication
 
 import cache_manager
@@ -134,6 +134,35 @@ class LRUPageCacheTests(unittest.TestCase):
             self.assertIsNotNone(img)
             self.assertFalse(img.isNull())
             self.assertEqual((img.width(), img.height()), (10, 14))
+
+    def test_cached_page_indices_count_ram_pending_and_disk_without_loading(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache(max_pages=1, async_disk_writes=True)
+            px0 = QPixmap(10, 10)
+            px1 = QPixmap(11, 11)
+            px0.fill()
+            px1.fill()
+
+            cache.put("doc.pdf", 0, px0, render_zoom=1.0)
+            cache.put("doc.pdf", 1, px1, render_zoom=1.0)
+
+            indices = cache.cached_page_indices("doc.pdf", total_pages=3)
+
+            self.assertEqual(indices, [0, 1])
+            self.assertEqual(cache.cached_page_count("doc.pdf", total_pages=3), 2)
+
+    def test_put_image_saves_worker_safe_cache_entry(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache(async_disk_writes=False)
+            img = QImage(12, 16, QImage.Format_RGB32)
+            img.fill(0x112233)
+
+            cache.put_image("doc.pdf", 0, img, render_zoom=2.0)
+
+            loaded = cache.get_image("doc.pdf", 0)
+            self.assertIsNotNone(loaded)
+            self.assertEqual((loaded.width(), loaded.height()), (12, 16))
+            self.assertTrue(cache.matches_render_zoom("doc.pdf", 2.0))
 
     def test_async_invalidation_prevents_queued_disk_write_from_reappearing(self):
         with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):

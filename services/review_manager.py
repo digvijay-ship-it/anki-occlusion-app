@@ -35,6 +35,9 @@ class ReviewSessionManager:
         self._done = 0
         self._queued_ids = set()
         self._deleted_ids = set()
+        self._queue_needs_full_rebuild = True
+        self._queue_last_idx = None
+        self._queue_last_peek_idx = None
         from collections import deque
 
         self._review_undo_stack = deque(maxlen=50)
@@ -127,6 +130,7 @@ class ReviewSessionManager:
                     insert_at = j
                     break
             self._items.insert(insert_at, item)
+            self._queue_needs_full_rebuild = True
         else:
             self._done += 1
             self._idx += 1
@@ -168,6 +172,7 @@ class ReviewSessionManager:
 
         # Restore items order (undo any reinsert from learning/relearn)
         self._items = list(snap["items_order"])
+        self._queue_needs_full_rebuild = True
         self._idx = snap["idx"]
         self._done = snap["done"]
 
@@ -229,6 +234,7 @@ class ReviewSessionManager:
         )
 
         self._items = list(snap["items_order"])
+        self._queue_needs_full_rebuild = True
         self._idx = snap["idx"]
         self._done = snap["done"]
 
@@ -268,6 +274,64 @@ class ReviewSessionManager:
             real_j = j - offset
             item = self._items.pop(real_j)
             self._items.insert(insert_pos + offset, item)
+        if to_promote:
+            self._queue_needs_full_rebuild = True
+
+    def _queue_state_for_index(self, index, peek_idx=None):
+        if peek_idx is not None and index == peek_idx:
+            return "peek"
+        if index < self._idx:
+            return "done"
+        if index == self._idx:
+            return "current"
+        sched = self._items[index][2].get("sched_state", "new")
+        return "relearn" if sched in ("learning", "relearn") else "pending"
+
+    def _sync_queue_state(self, peek_idx=None):
+        """
+        Fast path for normal card advances.
+
+        The labels and row order are unchanged, so update only rows whose visual
+        state can change instead of rebuilding every QListWidgetItem.
+        """
+        queue = getattr(self.rs, "_queue_list", None)
+        if (
+            queue is None
+            or self._queue_needs_full_rebuild
+            or queue.count() != len(self._items)
+        ):
+            self._rebuild_queue(peek_idx)
+            return
+
+        if peek_idx is None:
+            peek_idx = getattr(self.rs, "__dict__", {}).get("_peek_idx")
+
+        if hasattr(self.rs, "_update_queue_label"):
+            active_count = sum(1 for _, _, sm2 in self._items if is_due_today(sm2))
+            self.rs._update_queue_label(active_count)
+
+        rows = {
+            self._idx,
+            self._queue_last_idx,
+            peek_idx,
+            self._queue_last_peek_idx,
+        }
+        if self._queue_last_idx is not None:
+            start = min(int(self._queue_last_idx), int(self._idx))
+            end = max(int(self._queue_last_idx), int(self._idx))
+            rows.update(range(start, end + 1))
+        for row in rows:
+            if row is None or not (0 <= int(row) < queue.count()):
+                continue
+            item = queue.item(int(row))
+            if item is not None:
+                item.setData(QUEUE_ROLE, self._queue_state_for_index(int(row), peek_idx))
+
+        if 0 <= self._idx < queue.count():
+            queue.scrollToItem(queue.item(self._idx), QListWidget.PositionAtCenter)
+
+        self._queue_last_idx = self._idx
+        self._queue_last_peek_idx = peek_idx
 
     def _rebuild_queue(self, peek_idx=None):
         """Rebuild the right-side queue list — reflects current order + states."""
@@ -334,6 +398,9 @@ class ReviewSessionManager:
             self.rs._queue_list.scrollToItem(
                 self.rs._queue_list.item(self._idx), QListWidget.PositionAtCenter
             )
+        self._queue_needs_full_rebuild = False
+        self._queue_last_idx = self._idx
+        self._queue_last_peek_idx = peek_idx
 
     def _check_learning_due(self):
         """Every 1s check karein kya koi learning card due ho gaya."""

@@ -4,10 +4,8 @@ from datetime import date
 
 from sm2_engine import is_due_today, sm2_init
 
-try:
-    import fitz
-except ImportError:  # pragma: no cover - optional dependency
-    fitz = None
+fitz = None
+_FITZ_IMPORT_ATTEMPTED = False
 
 
 _pdf_page_count_cache = {}
@@ -163,11 +161,21 @@ def build_deck_rollups(decks):
             "due_units": due_units,
         }
         _CACHE_DATE = today
-        _CACHE_FINGERPRINT = _deck_stats_fingerprint(decks)
+        _CACHE_FINGERPRINT = fingerprint
         return _DECK_STATS_CACHE
 
 
 def get_pdf_page_count(path):
+    global fitz, _FITZ_IMPORT_ATTEMPTED
+    if not _FITZ_IMPORT_ATTEMPTED:
+        _FITZ_IMPORT_ATTEMPTED = True
+        try:
+            import fitz as _fitz
+
+            fitz = _fitz
+        except ImportError:  # pragma: no cover - optional dependency
+            fitz = None
+
     if not path or fitz is None or not os.path.exists(path):
         return 0
 

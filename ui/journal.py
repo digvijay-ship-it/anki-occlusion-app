@@ -14,6 +14,7 @@
 import os
 import json
 import tempfile
+import re
 from datetime import datetime, date, timedelta
 
 from PyQt5.QtWidgets import (
@@ -29,6 +30,8 @@ from PyQt5.QtWidgets import (
     QFrame,
     QFileDialog,
     QMessageBox,
+    QAction,
+    QMenu,
     QSizePolicy,
     QCalendarWidget,
     QScrollArea,
@@ -90,6 +93,25 @@ INK_WIDTH = 2.0
 ERASER_WIDTH = 22.0
 PAGE_WIDTH = 900  # logical canvas width
 PAGE_HEIGHT = 1200  # initial height — grows as you scroll down
+JOURNAL_FONT_SCALE = 1.4
+JOURNAL_WINDOW_SCALE = 1.25
+JOURNAL_BASE_WINDOW_SIZE = (1060, 700)
+JOURNAL_WINDOW_SIZE = (
+    int(round(JOURNAL_BASE_WINDOW_SIZE[0] * JOURNAL_WINDOW_SCALE)),
+    int(round(JOURNAL_BASE_WINDOW_SIZE[1] * JOURNAL_WINDOW_SCALE)),
+)
+_FONT_SIZE_RE = re.compile(r"(font-size\s*:\s*)(\d+(?:\.\d+)?)(px|pt)")
+
+
+def _journal_font_size(value):
+    return max(1, int(round(float(value) * JOURNAL_FONT_SCALE)))
+
+
+def _scale_font_css(style: str) -> str:
+    return _FONT_SIZE_RE.sub(
+        lambda m: f"{m.group(1)}{_journal_font_size(m.group(2))}{m.group(3)}",
+        style or "",
+    )
 
 MODE_PEN = "pen"
 MODE_ERASER = "eraser"
@@ -115,7 +137,7 @@ class _DatePicker(QDialog):
 
     def __init__(self, current_date_str, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
-        self.setStyleSheet(f"""
+        self.setStyleSheet(_scale_font_css(f"""
             QDialog {{ background:{C_SURFACE}; border:2px solid {C_BORDER};
                        border-radius:10px; }}
             QCalendarWidget QWidget {{ background:{C_SURFACE}; color:{C_TEXT}; }}
@@ -134,7 +156,7 @@ class _DatePicker(QDialog):
                 background:{C_SURFACE}; padding:4px;
             }}
             QCalendarWidget QAbstractItemView:disabled {{ color:{C_SUBTEXT}; }}
-        """)
+        """))
         L = QVBoxLayout(self)
         L.setContentsMargins(8, 8, 8, 8)
         cal = QCalendarWidget()
@@ -351,14 +373,14 @@ class JournalCanvas(QWidget):
 
         # Text items
         for t in self._texts:
-            font = QFont("Segoe UI", t.get("size", 14))
+            font = QFont("Segoe UI", _journal_font_size(t.get("size", 14)))
             p.setFont(font)
             p.setPen(QColor(t.get("color", "#CDD6F4")))
             p.drawText(QPointF(t["x"], t["y"]), t["text"])
 
         # Active text being typed
         if self._mode == MODE_TEXT and self._text_pos:
-            font = QFont("Segoe UI", self._text_size)
+            font = QFont("Segoe UI", _journal_font_size(self._text_size))
             p.setFont(font)
             p.setPen(QColor(INK_COLORS[self._color_idx]))
             display = self._text_buf + "|"
@@ -738,7 +760,8 @@ class JournalDialog(QDialog):
         self._ninja = _is_ninja()
         title = "⛩ SHINOBI LOGBOOK" if self._ninja else "📓 Daily Journal"
         self.setWindowTitle(title)
-        self.setMinimumSize(1060, 700)
+        self.setMinimumSize(*JOURNAL_WINDOW_SIZE)
+        self.resize(*JOURNAL_WINDOW_SIZE)
         self._apply_theme_ss()
 
         self._journal = _load_journal()
@@ -746,6 +769,7 @@ class JournalDialog(QDialog):
         self._mode = MODE_PEN
 
         self._setup_ui()
+        self._scale_journal_ui()
         self._refresh_sidebar()
         self._load_date(self._current_date)
 
@@ -768,6 +792,39 @@ class JournalDialog(QDialog):
             self._setup_ui_ninja()
         else:
             self._setup_ui_classic()
+
+    def _scale_journal_ui(self):
+        widgets = [self] + self.findChildren(QWidget)
+        for widget in widgets:
+            style = widget.styleSheet()
+            if style and not widget.property("_journal_font_scaled"):
+                widget.setStyleSheet(_scale_font_css(style))
+                widget.setProperty("_journal_font_scaled", True)
+
+        fixed_height_widgets = [
+            widget
+            for widget in widgets
+            if widget.minimumHeight() == widget.maximumHeight()
+            and 0 < widget.minimumHeight() < 400
+        ]
+        for widget in fixed_height_widgets:
+            if widget.property("_journal_height_scaled"):
+                continue
+            widget.setFixedHeight(_journal_font_size(widget.minimumHeight()))
+            widget.setProperty("_journal_height_scaled", True)
+
+        fixed_width_widgets = [
+            widget
+            for widget in widgets
+            if widget.minimumWidth() == widget.maximumWidth()
+            and 1 < widget.minimumWidth() < 400
+        ]
+        for widget in fixed_width_widgets:
+            if widget.property("_journal_width_scaled"):
+                continue
+            widget.setFixedWidth(_journal_font_size(widget.minimumWidth()))
+            widget.setProperty("_journal_width_scaled", True)
+        self._journal_ui_scaled = True
 
     # ── Classic layout ────────────────────────────────────────────────────────
 
@@ -810,7 +867,7 @@ class JournalDialog(QDialog):
         # Clickable date label
         self._btn_date = QPushButton()
         self._btn_date.setFixedHeight(36)
-        self._btn_date.setMinimumWidth(240)
+        self._btn_date.setMinimumWidth(_journal_font_size(240))
         self._btn_date.setStyleSheet(
             f"QPushButton{{background:{C_CARD};color:{C_TEXT};"
             f"border:1px solid {C_BORDER};border-radius:6px;"
@@ -969,14 +1026,24 @@ class JournalDialog(QDialog):
 
         # ── Topbar ────────────────────────────────────────────────────────────
         top = QFrame()
-        top.setFixedHeight(52)
+        self._ninja_topbar = top
+        top.setObjectName("ninja_journal_topbar")
+        top.setFixedHeight(84)
         top.setStyleSheet(
             f"QFrame{{background:{N_SURFACE};border-radius:0px;"
             f"border-bottom:1px solid {N_BORDER};}}"
         )
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(14, 0, 14, 0)
-        tl.setSpacing(10)
+        top_l = QVBoxLayout(top)
+        top_l.setContentsMargins(10, 6, 10, 6)
+        top_l.setSpacing(4)
+        tl = QHBoxLayout()
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(6)
+        tool_l = QHBoxLayout()
+        tool_l.setContentsMargins(0, 0, 0, 0)
+        tool_l.setSpacing(6)
+        top_l.addLayout(tl)
+        top_l.addLayout(tool_l)
 
         # Logo section
         logo_box = QLabel("猿")
@@ -991,6 +1058,7 @@ class JournalDialog(QDialog):
 
         logo_txt = QWidget()
         logo_txt.setStyleSheet("background:transparent;")
+        logo_txt.setMaximumWidth(_journal_font_size(240))
         lt = QVBoxLayout(logo_txt)
         lt.setContentsMargins(0, 0, 0, 0)
         lt.setSpacing(1)
@@ -1007,7 +1075,7 @@ class JournalDialog(QDialog):
         lt.addWidget(lbl_title)
         lt.addWidget(lbl_sub)
         tl.addWidget(logo_txt)
-        tl.addSpacing(8)
+        tl.addSpacing(4)
 
         # Separator
         sep = QFrame()
@@ -1015,17 +1083,18 @@ class JournalDialog(QDialog):
         sep.setFixedSize(1, 28)
         sep.setStyleSheet(f"background:{N_BORDER};border:none;")
         tl.addWidget(sep)
-        tl.addSpacing(8)
+        tl.addSpacing(4)
 
         # Date navigation
         self._btn_prev = self._arrow_btn("‹", self._go_prev)
         self._btn_date = QPushButton()
         self._btn_date.setFixedHeight(30)
-        self._btn_date.setMinimumWidth(220)
+        self._btn_date.setMinimumWidth(_journal_font_size(230))
+        self._btn_date.setMaximumWidth(_journal_font_size(290))
         self._btn_date.setStyleSheet(
             f"QPushButton{{background:{N_CARD};color:{N_TEXT};"
             f"border:1px solid {N_BORDER};border-radius:2px;"
-            f"padding:3px 14px;font-size:10px;font-weight:700;"
+            f"padding:3px 8px;font-size:10px;font-weight:700;"
             f"font-family:{hf}, 'Segoe UI';letter-spacing:1px;}}"
             f"QPushButton:hover{{background:rgba(114,255,79,0.08);"
             f"border-color:{N_ACCENT};color:{N_ACCENT};}}"
@@ -1050,16 +1119,10 @@ class JournalDialog(QDialog):
         tl.addWidget(self._btn_date)
         tl.addWidget(self._lbl_focus)
         tl.addWidget(self._btn_next)
-        tl.addSpacing(6)
+        tl.addSpacing(2)
         tl.addWidget(btn_today)
-        tl.addSpacing(10)
-
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.VLine)
-        sep2.setFixedSize(1, 28)
-        sep2.setStyleSheet(f"background:{N_BORDER};border:none;")
-        tl.addWidget(sep2)
-        tl.addSpacing(6)
+        tl.addSpacing(4)
+        tl.addStretch()
 
         # Tool mode buttons
         self._btn_pen = self._mode_btn(
@@ -1071,17 +1134,17 @@ class JournalDialog(QDialog):
         self._btn_text = self._mode_btn(
             "CIPHER", MODE_TEXT, _make_icon(_ICONS["scroll"])
         )
-        tl.addWidget(self._btn_pen)
-        tl.addWidget(self._btn_eraser)
-        tl.addWidget(self._btn_text)
-        tl.addSpacing(8)
+        tool_l.addWidget(self._btn_pen)
+        tool_l.addWidget(self._btn_eraser)
+        tool_l.addWidget(self._btn_text)
+        tool_l.addSpacing(4)
 
         sep3 = QFrame()
         sep3.setFrameShape(QFrame.VLine)
         sep3.setFixedSize(1, 28)
         sep3.setStyleSheet(f"background:{N_BORDER};border:none;")
-        tl.addWidget(sep3)
-        tl.addSpacing(6)
+        tool_l.addWidget(sep3)
+        tool_l.addSpacing(4)
 
         # Color dot + tools
         self._dot = QLabel()
@@ -1095,34 +1158,48 @@ class JournalDialog(QDialog):
         btn_color.setFixedHeight(30)
         btn_color.clicked.connect(self._cycle_color)
 
-        btn_undo = QPushButton("REWIND")
-        btn_undo.setIcon(_make_icon(_ICONS["rewind"]))
-        btn_undo.setFixedHeight(30)
-        btn_undo.clicked.connect(lambda: self._canvas.undo())
-
         btn_clear = QPushButton("PURGE")
         btn_clear.setIcon(_make_icon(_ICONS["skull"]))
         btn_clear.setFixedHeight(30)
         btn_clear.setObjectName("ninja_danger")
         btn_clear.clicked.connect(self._clear)
 
-        btn_lines = QPushButton("GRID")
-        btn_lines.setIcon(_make_icon(_ICONS["grid"]))
-        btn_lines.setFixedHeight(30)
-        btn_lines.clicked.connect(lambda: self._canvas.toggle_lines())
+        self._overflow_menu = QMenu(self)
+        self._overflow_menu.setObjectName("ninja_journal_overflow")
+        self._overflow_menu.setStyleSheet(
+            f"QMenu{{background:{N_CARD};color:{N_TEXT};"
+            f"border:1px solid {N_ACCENT};border-radius:3px;"
+            f"font-family:{hf}, 'Segoe UI';font-size:10px;}}"
+            f"QMenu::item{{padding:7px 24px 7px 12px;}}"
+            f"QMenu::item:selected{{background:rgba(114,255,79,0.12);"
+            f"color:{N_ACCENT};}}"
+        )
 
-        btn_export = QPushButton("EXPORT SCROLL")
-        btn_export.setIcon(_make_icon(_ICONS["export"]))
-        btn_export.setFixedHeight(30)
-        btn_export.clicked.connect(self._export)
+        def _overflow_action(text, icon_name, slot):
+            action = QAction(_make_icon(_ICONS[icon_name]), text, self)
+            action.triggered.connect(slot)
+            self._overflow_menu.addAction(action)
+            return action
 
-        tl.addWidget(self._dot)
-        tl.addWidget(btn_color)
-        tl.addWidget(btn_undo)
-        tl.addWidget(btn_clear)
-        tl.addWidget(btn_lines)
-        tl.addWidget(btn_export)
-        tl.addStretch()
+        self._act_undo = _overflow_action(
+            "REWIND", "rewind", lambda: self._canvas.undo()
+        )
+        self._act_lines = _overflow_action(
+            "GRID", "grid", lambda: self._canvas.toggle_lines()
+        )
+        self._act_export = _overflow_action("EXPORT SCROLL", "export", self._export)
+
+        self._btn_more_tools = QPushButton("MORE")
+        self._btn_more_tools.setIcon(_make_icon(_ICONS["scroll"]))
+        self._btn_more_tools.setFixedHeight(30)
+        self._btn_more_tools.setMenu(self._overflow_menu)
+        self._btn_more_tools.setToolTip("More journal actions")
+
+        tool_l.addWidget(self._dot)
+        tool_l.addWidget(btn_color)
+        tool_l.addWidget(btn_clear)
+        tool_l.addWidget(self._btn_more_tools)
+        tool_l.addStretch()
 
         btn_close = QPushButton()
         btn_close.setIcon(_make_icon(_ICONS["close"]))
@@ -1393,7 +1470,10 @@ class JournalDialog(QDialog):
             (self._btn_eraser, MODE_ERASER),
             (self._btn_text, MODE_TEXT),
         ]:
-            btn.setStyleSheet(active_ss if mode == self._mode else normal_ss)
+            style = active_ss if mode == self._mode else normal_ss
+            if getattr(self, "_journal_ui_scaled", False):
+                style = _scale_font_css(style)
+            btn.setStyleSheet(style)
         self._hint_lbl.setText(hints.get(self._mode, ""))
 
     # ── Date navigation ───────────────────────────────────────────────────────

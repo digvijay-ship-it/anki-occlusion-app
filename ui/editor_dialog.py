@@ -299,7 +299,7 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext.setVisible(False)
 
         self.btn_annotate_beta = _tbtn(
-            "🖊 In-App Annotate (Beta)", "Open in-app PDF annotation editor  Ctrl+T"
+            "🖊 Anotate Scroll", "Open in-app scroll annotation editor  Ctrl+T"
         )
         self.btn_annotate_beta.clicked.connect(self._open_annotation_beta)
         self.btn_annotate_beta.setVisible(False)
@@ -1258,6 +1258,22 @@ class CardEditorDialog(QDialog):
         scroll_pos = self._sc.verticalScrollBar().value()
         return self.canvas.get_current_page(scroll_pos)
 
+    def _coerce_loader_pages_to_pixmaps(self, path: str, pages: list):
+        from PyQt5.QtGui import QImage, QPixmap
+
+        out = []
+        for page_num, page_obj in enumerate(pages or []):
+            if isinstance(page_obj, QPixmap):
+                px = page_obj
+            elif isinstance(page_obj, QImage):
+                px = QPixmap.fromImage(page_obj)
+            else:
+                px = page_obj
+            if px is not None and hasattr(px, "isNull") and not px.isNull():
+                PAGE_CACHE.put(path, page_num, px, render_zoom=self._pdf_render_zoom)
+            out.append(px)
+        return out
+
     def _on_pdf_done(self, pages: list, err):
         """Called by PdfLoaderThread when all pages are rendered."""
         self._show_pdf_loading(False)
@@ -1265,6 +1281,7 @@ class CardEditorDialog(QDialog):
         if not pages:
             QMessageBox.warning(self, "PDF Error", err or "Could not render PDF.")
             return
+        pages = self._coerce_loader_pages_to_pixmaps(path, pages)
         self._finish_pdf_load(path, pages, real_pages=set(range(len(pages))))
         self.lbl_sync.setText(f"✅ Rendered {len(pages)} pages")
         self.lbl_sync.setStyleSheet(

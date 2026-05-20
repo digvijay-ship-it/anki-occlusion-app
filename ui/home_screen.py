@@ -62,44 +62,8 @@ from sm2_engine import (
     sm2_badge,
 )
 
-# Daily Journal — safe import
-try:
-    from ui.journal import JournalDialog
-
-    _JOURNAL_AVAILABLE = True
-except ImportError:
-    _JOURNAL_AVAILABLE = False
-
-# Session Timer — safe import
-try:
-    from session_timer import SessionTimer
-
-    _TIMER_AVAILABLE = True
-except ImportError:
-    _TIMER_AVAILABLE = False
-
-from pdf_engine import (
-    PDF_SUPPORT,
-    PAGE_CACHE,
-    PdfLoaderThread,
-    PdfSkeletonThread,
-    pdf_page_to_pixmap,
-    load_pdf_skeleton,
-    PdfOnDemandThread,
-    build_skeleton_placeholders,
-    invalidate_pdf_skeleton,  # STEP 2 + 3
-)
-
-from editor_ui import OcclusionCanvas, _ZoomableScrollArea
-from ui.editor_dialog import CardEditorDialog
-from ui.deck_tree import CARD_DRAG_MIME
-from ui.recovery_dialog import RecoveryDialog
-from ui.review_screen import ReviewScreen
-from ui.shortcut_dialog import ShortcutSettingsDialog
 from services import recovery_manager
 from services import shortcut_manager
-
-import fitz
 
 from data_manager import (
     load_data,
@@ -279,32 +243,132 @@ QMenu::item:selected{{background:{C_ACCENT};}}
 SS = _build_ss()
 
 
-from .deck_tree import DeckTree, CacheWidget
-from .deck_view import DeckView
+DeckTree = None
+CacheWidget = None
+DeckView = None
+TMNTHomeLayout = None
+JournalDialog = None
+MathTrainerPage = None
+ReviewScreen = None
+CardEditorDialog = None
+RecoveryDialog = None
+ShortcutSettingsDialog = None
+_TMNT_HOME_AVAILABLE = None
+_JOURNAL_AVAILABLE = None
+_MATH_AVAILABLE = None
 
-# TMNT Home Layout — safe import
-try:
-    from .tmnt_home import TMNTHomeLayout
 
-    _TMNT_HOME_AVAILABLE = True
-except Exception as _tmnt_err:
-    import traceback as _tb
+def _load_classic_home_classes():
+    global DeckTree, CacheWidget, DeckView
+    if DeckTree is None or CacheWidget is None:
+        from .deck_tree import CacheWidget as _CacheWidget
+        from .deck_tree import DeckTree as _DeckTree
 
-    print(f"[TMNT IMPORT ERROR] {type(_tmnt_err).__name__}: {_tmnt_err}")
-    _tb.print_exc()
-    _TMNT_HOME_AVAILABLE = False
+        DeckTree = _DeckTree
+        CacheWidget = _CacheWidget
+    if DeckView is None:
+        from .deck_view import DeckView as _DeckView
 
-# Math Trainer — safe import
-try:
-    from .math_trainer import MathTrainerPage
+        DeckView = _DeckView
+    return DeckTree, CacheWidget, DeckView
 
-    _MATH_AVAILABLE = True
-except Exception as _math_err:
-    import traceback as _tb
 
-    print(f"[MATH TRAINER IMPORT ERROR] {type(_math_err).__name__}: {_math_err}")
-    _tb.print_exc()
-    _MATH_AVAILABLE = False
+def _load_tmnt_home_layout():
+    global TMNTHomeLayout, _TMNT_HOME_AVAILABLE
+    if _TMNT_HOME_AVAILABLE is False:
+        return None
+    if TMNTHomeLayout is not None:
+        _TMNT_HOME_AVAILABLE = True
+        return TMNTHomeLayout
+    try:
+        from .tmnt_home import TMNTHomeLayout as _TMNTHomeLayout
+
+        TMNTHomeLayout = _TMNTHomeLayout
+        _TMNT_HOME_AVAILABLE = True
+    except Exception as _tmnt_err:
+        import traceback as _tb
+
+        print(f"[TMNT IMPORT ERROR] {type(_tmnt_err).__name__}: {_tmnt_err}")
+        _tb.print_exc()
+        _TMNT_HOME_AVAILABLE = False
+        return None
+    return TMNTHomeLayout
+
+
+def _load_journal_dialog():
+    global JournalDialog, _JOURNAL_AVAILABLE
+    if _JOURNAL_AVAILABLE is False:
+        return None
+    if JournalDialog is not None:
+        _JOURNAL_AVAILABLE = True
+        return JournalDialog
+    try:
+        from .journal import JournalDialog as _JournalDialog
+
+        JournalDialog = _JournalDialog
+        _JOURNAL_AVAILABLE = True
+    except ImportError:
+        _JOURNAL_AVAILABLE = False
+        return None
+    return JournalDialog
+
+
+def _load_math_trainer_page():
+    global MathTrainerPage, _MATH_AVAILABLE
+    if _MATH_AVAILABLE is False:
+        return None
+    if MathTrainerPage is not None:
+        _MATH_AVAILABLE = True
+        return MathTrainerPage
+    try:
+        from .math_trainer import MathTrainerPage as _MathTrainerPage
+
+        MathTrainerPage = _MathTrainerPage
+        _MATH_AVAILABLE = True
+    except Exception as _math_err:
+        import traceback as _tb
+
+        print(f"[MATH TRAINER IMPORT ERROR] {type(_math_err).__name__}: {_math_err}")
+        _tb.print_exc()
+        _MATH_AVAILABLE = False
+        return None
+    return MathTrainerPage
+
+
+def _load_review_screen():
+    global ReviewScreen
+    if ReviewScreen is None:
+        from .review_screen import ReviewScreen as _ReviewScreen
+
+        ReviewScreen = _ReviewScreen
+    return ReviewScreen
+
+
+def _load_card_editor_dialog():
+    global CardEditorDialog
+    if CardEditorDialog is None:
+        from .editor_dialog import CardEditorDialog as _CardEditorDialog
+
+        CardEditorDialog = _CardEditorDialog
+    return CardEditorDialog
+
+
+def _load_recovery_dialog():
+    global RecoveryDialog
+    if RecoveryDialog is None:
+        from .recovery_dialog import RecoveryDialog as _RecoveryDialog
+
+        RecoveryDialog = _RecoveryDialog
+    return RecoveryDialog
+
+
+def _load_shortcut_settings_dialog():
+    global ShortcutSettingsDialog
+    if ShortcutSettingsDialog is None:
+        from .shortcut_dialog import ShortcutSettingsDialog as _ShortcutSettingsDialog
+
+        ShortcutSettingsDialog = _ShortcutSettingsDialog
+    return ShortcutSettingsDialog
 
 
 #  HOME SCREEN
@@ -598,9 +662,11 @@ class _PreloadThread(QThread):
         self._stop_flag = True
 
     def run(self):
+        from pdf_engine import PDF_SUPPORT, PAGE_CACHE, pdf_page_to_image
+
         if not PDF_SUPPORT:
             return
-        from pdf_engine import PAGE_CACHE, pdf_page_to_pixmap
+        import fitz
 
         try:
             doc = fitz.open(self._path)
@@ -615,12 +681,14 @@ class _PreloadThread(QThread):
                     return
 
                 # Check if page is already in cache
-                cached = PAGE_CACHE.get(self._path, i)
+                cached = PAGE_CACHE.get_image(self._path, i)
                 if not cached:
-                    # If not, render and put in PAGE_CACHE
-                    qpx = pdf_page_to_pixmap(doc.load_page(i), mat)
-                    if not qpx.isNull():
-                        PAGE_CACHE.put(self._path, i, qpx)
+                    # If not, render as QImage; QPixmap is GUI-thread only.
+                    img = pdf_page_to_image(doc.load_page(i), mat)
+                    if not img.isNull():
+                        if hasattr(PAGE_CACHE, "put_image"):
+                            PAGE_CACHE.put_image(self._path, i, img, render_zoom=1.5)
+                        print(f"[DEBUG][pdf_preload] cached p.{i + 1}/{total}")
 
             doc.close()
         except Exception:
@@ -758,10 +826,11 @@ class MusicWidget(QFrame):
         self._tracks = []
         self._idx = 0
         self._pygame_ok = False
+        self._audio_initialized = False
+        self._pygame = None
         self._player = None
         self._playlist = None
 
-        self._init_audio()
         self._scan_tracks()
 
         # ── Layout ──────────────────────────────────────────────────────
@@ -799,6 +868,13 @@ class MusicWidget(QFrame):
         self._refresh_style(dojo=False)
 
     # ── Audio init ─────────────────────────────────────────────────────
+    def _ensure_audio(self):
+        if self._audio_initialized:
+            return
+        self._audio_initialized = True
+        self._init_audio()
+        self._sync_playlist()
+
     def _init_audio(self):
         try:
             import pygame
@@ -830,11 +906,14 @@ class MusicWidget(QFrame):
             and os.path.splitext(name)[1].lower() in self.BGM_EXTENSIONS
         ]
         random.shuffle(self._tracks)
+        self._sync_playlist()
 
+    def _sync_playlist(self):
         if self._playlist:
             from PyQt5.QtCore import QUrl
             from PyQt5.QtMultimedia import QMediaContent, QMediaPlaylist
 
+            self._playlist.clear()
             for track in self._tracks:
                 self._playlist.addMedia(QMediaContent(QUrl.fromLocalFile(track)))
             self._playlist.setPlaybackMode(QMediaPlaylist.Loop)
@@ -844,6 +923,7 @@ class MusicWidget(QFrame):
         """M key handler."""
         if not self._tracks:
             return
+        self._ensure_audio()
         if not self._pygame_ok and not self._player:
             return
 
@@ -870,6 +950,7 @@ class MusicWidget(QFrame):
         """N key handler."""
         if not self._tracks:
             return
+        self._ensure_audio()
         if not self._pygame_ok and not self._player:
             return
 
@@ -1024,6 +1105,11 @@ class HomeScreen(QWidget):
         self._classic_archive_box = None
         self._classic_archive_btn = None
         self._btn_shortcuts = None
+        self.deck_tree = None
+        self.deck_view = None
+        self._cache_widget = None
+        self._splitter_widget = None
+        self._tmnt_layout = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -1132,41 +1218,15 @@ class HomeScreen(QWidget):
         self._classic_settings_panel = self._build_classic_settings_panel()
         L.addWidget(self.top_frame)
 
-        # ── BODY STACK: index 0 = splitter (classic/dojo), index 1 = TMNT ──
+        # ── BODY STACK: active theme is built immediately; inactive theme is lazy.
         self._body_stack = QStackedWidget()
-
-        # Splitter widget (classic + dojo)
-        self._splitter_widget = QWidget()
-        _sw_l = QVBoxLayout(self._splitter_widget)
-        _sw_l.setContentsMargins(0, 0, 0, 0)
-        _sw_l.setSpacing(0)
-        split = QSplitter(Qt.Horizontal)
-        self.deck_tree = DeckTree(self._data, theme=self._current_theme)
-        self.deck_tree.setMinimumWidth(260)
-        self.deck_tree.setMaximumWidth(420)
-        self.deck_tree.deck_selected.connect(self._on_deck_selected)
-        split.addWidget(self.deck_tree)
-        self.deck_view = DeckView()
-        self.deck_view.set_theme(self._current_theme)
-        split.addWidget(self.deck_view)
-        self._cache_widget = CacheWidget()
-        split.addWidget(self._cache_widget)
-        split.setSizes([340, 760, 220])
-        _sw_l.addWidget(split, stretch=1)
-        self._body_stack.addWidget(self._splitter_widget)  # index 0
-
-        # TMNT layout
-        self._tmnt_layout = None
-        if _TMNT_HOME_AVAILABLE:
-            self._tmnt_layout = self._create_tmnt_layout()
-            self._body_stack.addWidget(self._tmnt_layout)  # index 1
 
         L.addWidget(self._body_stack, stretch=1)
 
         # Activate correct body for saved theme
-        if self._current_theme == "tmnt" and self._tmnt_layout:
+        if self._current_theme == "tmnt" and self._ensure_tmnt_layout():
             self.top_frame.hide()
-            self._body_stack.setCurrentIndex(1)
+            self._body_stack.setCurrentWidget(self._tmnt_layout)
             QTimer.singleShot(
                 100,
                 lambda: (
@@ -1175,7 +1235,45 @@ class HomeScreen(QWidget):
                     else None
                 ),
             )
+        else:
+            self._ensure_classic_layout()
+            self.top_frame.show()
+            self._body_stack.setCurrentWidget(self._splitter_widget)
         self._install_home_ram_shortcut()
+
+    def _ensure_classic_layout(self):
+        if self._splitter_widget is not None:
+            return self._splitter_widget
+
+        DeckTreeCls, CacheWidgetCls, DeckViewCls = _load_classic_home_classes()
+        self._splitter_widget = QWidget()
+        _sw_l = QVBoxLayout(self._splitter_widget)
+        _sw_l.setContentsMargins(0, 0, 0, 0)
+        _sw_l.setSpacing(0)
+        split = QSplitter(Qt.Horizontal)
+        self.deck_tree = DeckTreeCls(self._data, theme=self._current_theme)
+        self.deck_tree.setMinimumWidth(260)
+        self.deck_tree.setMaximumWidth(420)
+        self.deck_tree.deck_selected.connect(self._on_deck_selected)
+        split.addWidget(self.deck_tree)
+        self.deck_view = DeckViewCls()
+        self.deck_view.set_theme(self._current_theme)
+        split.addWidget(self.deck_view)
+        self._cache_widget = CacheWidgetCls()
+        split.addWidget(self._cache_widget)
+        split.setSizes([340, 760, 220])
+        _sw_l.addWidget(split, stretch=1)
+        self._body_stack.addWidget(self._splitter_widget)
+        return self._splitter_widget
+
+    def _ensure_tmnt_layout(self):
+        if self._tmnt_layout is not None:
+            return self._tmnt_layout
+        if _load_tmnt_home_layout() is None:
+            return None
+        self._tmnt_layout = self._create_tmnt_layout()
+        self._body_stack.addWidget(self._tmnt_layout)
+        return self._tmnt_layout
 
     def _install_home_ram_shortcut(self):
         from PyQt5.QtGui import QKeySequence
@@ -1259,7 +1357,7 @@ class HomeScreen(QWidget):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
 
-        rev = ReviewScreen(cards, data=data, parent=self)
+        rev = _load_review_screen()(cards, data=data, parent=self)
         self._active_review = rev
 
         def _on_finished():
@@ -1281,7 +1379,7 @@ class HomeScreen(QWidget):
         rev.finished.connect(_on_finished)
         rev.cancelled.connect(_on_cancelled)
 
-        if self._current_theme == "tmnt" and self._tmnt_layout:
+        if self._current_theme == "tmnt" and self._ensure_tmnt_layout():
             # TMNT: push review into body stack slot 2
             self._pre_review_tmnt = True
             self.top_frame.hide()
@@ -1289,6 +1387,7 @@ class HomeScreen(QWidget):
             self._body_stack.setCurrentWidget(rev)
         else:
             self._pre_review_tmnt = False
+            self._ensure_classic_layout()
             split = self._get_splitter()
             if split is None:
                 return
@@ -1361,6 +1460,8 @@ class HomeScreen(QWidget):
 
     def _get_splitter(self):
         """Return the main QSplitter child."""
+        if self._splitter_widget is None:
+            return None
         for child in self._splitter_widget.children():
             if isinstance(child, QSplitter):
                 return child
@@ -1384,6 +1485,8 @@ class HomeScreen(QWidget):
                 self._preload_thread.quit()
                 self._preload_thread.wait(300)
             self._preload_thread = None
+
+        from pdf_engine import PDF_SUPPORT, PAGE_CACHE
 
         if not PDF_SUPPORT:
             return
@@ -1415,8 +1518,9 @@ class HomeScreen(QWidget):
         return None
 
     def _show_journal(self):
-        if _JOURNAL_AVAILABLE:
-            JournalDialog(self).exec_()
+        dialog_cls = _load_journal_dialog()
+        if dialog_cls is not None:
+            dialog_cls(self).exec_()
         else:
             from PyQt5.QtWidgets import QMessageBox
 
@@ -1429,7 +1533,8 @@ class HomeScreen(QWidget):
     def _show_math_trainer(self):
         if getattr(self, "_math_trainer", None) is not None:
             return
-        if not _MATH_AVAILABLE:
+        page_cls = _load_math_trainer_page()
+        if page_cls is None:
             from PyQt5.QtWidgets import QMessageBox
 
             QMessageBox.warning(
@@ -1438,7 +1543,7 @@ class HomeScreen(QWidget):
                 "math_trainer.py not found!\n\nPlace math_trainer.py inside the ui/ folder.",
             )
             return
-        mt = MathTrainerPage(parent=self)
+        mt = page_cls(parent=self)
         mt.closed.connect(self._hide_math_trainer)
         self._math_trainer = mt
         if self._current_theme == "tmnt" and self._tmnt_layout:
@@ -1448,6 +1553,7 @@ class HomeScreen(QWidget):
             self._body_stack.setCurrentWidget(mt)
         else:
             self._pre_math_tmnt = False
+            self._ensure_classic_layout()
             split = self._get_splitter()
             if split is None:
                 return
@@ -1465,7 +1571,7 @@ class HomeScreen(QWidget):
             self._body_stack.removeWidget(mt)
             mt.setParent(None)
             mt.deleteLater()
-            self._body_stack.setCurrentIndex(1)
+            self._body_stack.setCurrentWidget(self._tmnt_layout)
             self.top_frame.hide()
             self._tmnt_layout.refresh()
         else:
@@ -1485,7 +1591,10 @@ class HomeScreen(QWidget):
         OnboardingDialog(self).exec_()
 
     def _create_tmnt_layout(self):
-        layout = TMNTHomeLayout(self._data, parent=self)
+        layout_cls = _load_tmnt_home_layout()
+        if layout_cls is None:
+            return None
+        layout = layout_cls(self._data, parent=self)
         layout.btn_save_clicked.connect(self._save_current_data_now)
         layout.btn_math_clicked.connect(self._show_math_trainer)
         layout.btn_journal_clicked.connect(self._show_journal)
@@ -1519,7 +1628,7 @@ class HomeScreen(QWidget):
         self._save_current_data_now()
 
     def _show_shortcuts(self):
-        dlg = ShortcutSettingsDialog(self)
+        dlg = _load_shortcut_settings_dialog()(self)
         dlg.exec_()
 
     def _build_classic_settings_panel(self):
@@ -1714,7 +1823,9 @@ class HomeScreen(QWidget):
         )
 
     def rebuild_tmnt_layout(self, force=False):
-        if not _TMNT_HOME_AVAILABLE or self._tmnt_layout is None:
+        if self._tmnt_layout is None and force:
+            self._ensure_tmnt_layout()
+        if self._tmnt_layout is None:
             return
         current = self._body_stack.currentWidget()
         was_visible = current is self._tmnt_layout
@@ -1766,7 +1877,7 @@ class HomeScreen(QWidget):
         win = self.window()
         current_size = self._data.get("_font_size", BASE_FONT_SIZE)
 
-        if self._current_theme == "tmnt" and self._tmnt_layout:
+        if self._current_theme == "tmnt" and self._ensure_tmnt_layout():
             # ── Swap to TMNT full layout ──────────────────────────────────────
             if (
                 self._classic_settings_panel is not None
@@ -1779,7 +1890,7 @@ class HomeScreen(QWidget):
                 win_sb.hide()
             self._tmnt_layout.refresh()
             self._tmnt_layout.set_bgm_state(self.music_widget._playing)
-            self._body_stack.setCurrentIndex(1)
+            self._body_stack.setCurrentWidget(self._tmnt_layout)
             if app:
                 app._active_theme = "tmnt"
                 app.setFont(QFont("Roboto Mono", current_size))
@@ -1789,15 +1900,19 @@ class HomeScreen(QWidget):
                     win.setStyleSheet(ss)
         else:
             # ── Swap back to splitter (classic; Ninja/Dojo is disabled) ─────
+            self._ensure_classic_layout()
             self.top_frame.show()
             win_sb = self.window().statusBar() if self.window() else None
             if win_sb:
                 win_sb.show()
-            self._body_stack.setCurrentIndex(0)
-            self.deck_tree.set_theme(self._current_theme)
-            self.deck_view.set_theme(self._current_theme)
+            self._body_stack.setCurrentWidget(self._splitter_widget)
+            if self.deck_tree is not None:
+                self.deck_tree.set_theme(self._current_theme)
+            if self.deck_view is not None:
+                self.deck_view.set_theme(self._current_theme)
             self.music_widget.set_theme(self._current_theme)
-            self._cache_widget.set_theme(self._current_theme)
+            if self._cache_widget is not None:
+                self._cache_widget.set_theme(self._current_theme)
             self._apply_topbar_style()
             self._refresh_classic_archive_display()
             if app:
@@ -1835,7 +1950,7 @@ class HomeScreen(QWidget):
                 if is_home_redo:
                     # Ctrl+Shift+Z → deck redo
                     ok = deck_history.redo(store)
-                    if ok:
+                    if ok and self.deck_tree is not None:
                         self.deck_tree.refresh()
                         (
                             self.canvas._show_toast("↪ Deck redo")
@@ -1859,7 +1974,8 @@ class HomeScreen(QWidget):
                             print("[HomeScreen][key] ⚠ deck_tree attribute nahi mila")
                         print("[HomeScreen][key] Ctrl+Z — deck undo done")
                     else:
-                        self.deck_view.undo()
+                        if self.deck_view is not None:
+                            self.deck_view.undo()
                         print("[HomeScreen][key] Ctrl+Z — fell through to mask undo")
                 e.accept()
                 return
@@ -2009,7 +2125,7 @@ class HomeScreen(QWidget):
             return False
 
         while True:
-            dlg = RecoveryDialog(summary, self, startup=startup)
+            dlg = _load_recovery_dialog()(summary, self, startup=startup)
             dlg.exec_()
             action = getattr(dlg, "action", "close")
             if action == "recover_reviews":
@@ -2106,7 +2222,7 @@ class HomeScreen(QWidget):
             if status == "ok":
                 parent_deck = original_deck
 
-        dlg = CardEditorDialog(
+        dlg = _load_card_editor_dialog()(
             self,
             card=card,
             data=self._data,
@@ -2135,9 +2251,10 @@ class HomeScreen(QWidget):
             self._active_editor = None
 
     def refresh(self):
-        if self._current_theme == "tmnt" and self._tmnt_layout:
+        if self._current_theme == "tmnt" and self._ensure_tmnt_layout():
             self._tmnt_layout.refresh()
         else:
+            self._ensure_classic_layout()
             self.deck_tree.refresh()
             sel = self.deck_tree.get_selected_deck()
             if sel:

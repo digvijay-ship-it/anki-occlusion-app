@@ -9,7 +9,8 @@ from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from data_manager import deck_history, find_deck_by_id, store
-from ui.tmnt_home import TMNTHomeLayout, TMNTSidebar, TMNTTopBar
+from theme_manager import get_palette
+from ui.tmnt_home import T_PIXEL, TMNTHomeLayout, TMNTSidebar, TMNTTopBar
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -81,6 +82,10 @@ class TMNTDeckTreeTests(unittest.TestCase):
 
 
 class TMNTTopBarTests(unittest.TestCase):
+    def test_tmnt_headers_use_math_dojo_header_font(self):
+        self.assertEqual(T_PIXEL, get_palette("tmnt")["header_font"])
+        self.assertIn("Orbitron", T_PIXEL)
+
     def test_more_menu_contains_shortcuts_action(self):
         topbar = TMNTTopBar({"_font_size": 11})
         self.addCleanup(topbar.close)

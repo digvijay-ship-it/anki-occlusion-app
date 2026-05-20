@@ -355,6 +355,99 @@ class LRUPageCache:
                 return pending.copy()
         return self._load_image_from_disk(path, page_num, variant=variant)
 
+    def put_image(
+        self,
+        path: str,
+        page_num: int,
+        image,
+        variant: str | None = None,
+        render_zoom: float | None = None,
+    ):
+        """Save a QImage from a worker thread without creating a QPixmap."""
+        path = _canonical_pdf_path(path)
+        key = self._page_key(path, page_num, variant)
+        if image is None or image.isNull():
+            return
+        image_copy = image.copy()
+        if render_zoom is not None and not self.matches_render_zoom(
+            path, render_zoom, variant=variant
+        ):
+            self.set_render_zoom(path, render_zoom, variant=variant)
+        token = object()
+        if self._async_disk_writes:
+            with self._disk_write_lock:
+                self._write_tokens[key] = token
+                self._pending_images[key] = image_copy
+                self._disk_write_queue.append(
+                    (path, page_num, image_copy, variant, token)
+                )
+            self._disk_write_event.set()
+        else:
+            with self._disk_write_lock:
+                self._write_tokens[key] = token
+                self._save_to_disk(path, page_num, image_copy, variant)
+                self._write_tokens.pop(key, None)
+
+    def cached_page_indices(
+        self,
+        path: str,
+        total_pages: int | None = None,
+        variant: str | None = None,
+    ) -> list[int]:
+        """Return RAM/pending/disk cached page numbers without loading pixmaps."""
+        path = _canonical_pdf_path(path)
+        variant_name = self._variant_name(variant)
+        limit = None
+        try:
+            limit = None if total_pages is None else max(0, int(total_pages))
+        except (TypeError, ValueError):
+            limit = None
+        cached = set()
+
+        def _accept(page_num: int) -> bool:
+            return page_num >= 0 and (limit is None or page_num < limit)
+
+        with self._state_lock:
+            for key_path, page_num, key_variant in self._cache.keys():
+                if key_path == path and key_variant == variant_name and _accept(page_num):
+                    cached.add(int(page_num))
+            for key_path, page_num, key_variant in self._pending_images.keys():
+                if key_path == path and key_variant == variant_name and _accept(page_num):
+                    cached.add(int(page_num))
+
+        try:
+            folder = self._disk_cache_dir(path)
+            if os.path.isdir(folder):
+                suffix = self._variant_suffix(variant)
+                for name in os.listdir(folder):
+                    if not name.startswith("page_") or not name.endswith(".png"):
+                        continue
+                    stem = name[:-4]
+                    page_part = stem[5:]
+                    if suffix:
+                        if not page_part.endswith(suffix):
+                            continue
+                        page_part = page_part[: -len(suffix)]
+                    elif "__" in page_part:
+                        continue
+                    try:
+                        page_num = int(page_part)
+                    except ValueError:
+                        continue
+                    if _accept(page_num):
+                        cached.add(page_num)
+        except Exception as exc:
+            print(f"[DEBUG][page_cache] cached_page_indices failed: {exc}")
+        return sorted(cached)
+
+    def cached_page_count(
+        self,
+        path: str,
+        total_pages: int | None = None,
+        variant: str | None = None,
+    ) -> int:
+        return len(self.cached_page_indices(path, total_pages, variant=variant))
+
     def put(
         self,
         path: str,

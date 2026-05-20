@@ -41,7 +41,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from storage_paths import app_resource_path
-from services.ocr_engine import ocr_number
+from services.ocr_engine import OcrNumberThread
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), "math_trainer_config.json")
 
@@ -563,14 +563,9 @@ class MathTrainerPage(QWidget):
     def _toggle_pen(self):
         if hasattr(self, "_scratchpad"):
             if self._scratchpad._strokes or len(self._scratchpad._current) > 0:
-                self._sb_status.setText("PREDICTING...")
                 img = self._scratchpad.get_pil_image()
-                from services.ocr_engine import ocr_number
-
-                predicted = ocr_number(img)
-                if predicted:
-                    self._ans_in.setText(predicted)
-                self._scratchpad.clear()
+                if self._run_ocr_async(img, source="toggle_pen"):
+                    self._scratchpad.clear()
             self._ans_in.setFocus()
 
     # ── Page 0 ────────────────────────────────────────────────────────────────
@@ -1023,18 +1018,46 @@ class MathTrainerPage(QWidget):
         return p
 
     def _handle_drawn_image(self, img):
-        print("[MathTrainer] Received image, running OCR...")
-        self._sb_status.setText("PREDICTING...")
+        print("[MathTrainer] Received image, queueing OCR...")
         import inspect
 
         print(
-            f"[MathTrainer] ocr_number loaded from: {inspect.getsourcefile(ocr_number)}"
+            f"[MathTrainer] OcrNumberThread loaded from: {inspect.getsourcefile(OcrNumberThread)}"
         )
-        predicted = ocr_number(img)
+        if self._run_ocr_async(img, source="scratchpad_idle"):
+            self._scratchpad.clear()
+
+    def _run_ocr_async(self, img, source: str = "unknown") -> bool:
+        if getattr(self, "_ocr_thread", None) and self._ocr_thread.isRunning():
+            print(f"[DEBUG][ocr_async] skip source={source} reason=busy")
+            self._sb_status.setText("OCR BUSY")
+            return False
+        print(f"[DEBUG][ocr_async] queue source={source}")
+        self._sb_status.setText("PREDICTING...")
+        thread = OcrNumberThread(img, parent=self)
+        self._ocr_thread = thread
+        thread.result.connect(self._on_ocr_result)
+        thread.failed.connect(self._on_ocr_failed)
+        thread.finished.connect(lambda t=thread: self._on_ocr_finished(t))
+        thread.start()
+        return True
+
+    def _on_ocr_result(self, predicted: str):
         print(f"[MathTrainer] OCR predicted: '{predicted}'")
         if predicted:
             self._ans_in.setText(predicted)
-        self._scratchpad.clear()
+            self._sb_status.setText("READY")
+        else:
+            self._sb_status.setText("NO OCR")
+
+    def _on_ocr_failed(self, error: str):
+        print(f"[DEBUG][ocr_async] ui_failed error={error}")
+        self._sb_status.setText("OCR ERROR")
+
+    def _on_ocr_finished(self, thread):
+        if getattr(self, "_ocr_thread", None) is thread:
+            self._ocr_thread = None
+        thread.deleteLater()
 
     # ── Page 3 (Report) ───────────────────────────────────────────────────────
     def _build_p3(self):

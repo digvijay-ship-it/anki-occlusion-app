@@ -85,7 +85,7 @@ PALETTES = {
         "C_SUBTEXT": "#7A86A8",
         "C_BORDER": "#333B4D",
         "C_YELLOW": "#F4D35E",
-        "header_font": "'Press Start 2P', monospace",
+        "header_font": "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif",
         "body_font": "'Roboto Mono', 'Courier New', monospace",
     },
 }

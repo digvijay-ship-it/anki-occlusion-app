@@ -6,6 +6,9 @@ from unittest.mock import MagicMock, patch
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QKeyEvent, QPixmap
+from PyQt5.QtWidgets import QApplication
+
+_APP = QApplication.instance() or QApplication([])
 
 from anki_occlusion_v19 import ReviewScreen
 from ui.review_screen import ReviewScreen as UiReviewScreen
@@ -176,6 +179,101 @@ class ReviewScreenZoomTests(unittest.TestCase):
 
         self.assertEqual(dialog_cls.call_args.kwargs["initial_page"], 2)
         self.assertAlmostEqual(dialog_cls.call_args.kwargs["initial_anchor_y"], 200.0)
+        self.assertIsNone(dialog_cls.call_args.kwargs["parent"])
+        dialog_instance.exec_.assert_not_called()
+        dialog_instance.setParent.assert_called_once_with(None, Qt.Window)
+        dialog_instance.setWindowModality.assert_called_once_with(Qt.NonModal)
+        flags = dialog_instance.setWindowFlags.call_args.args[0]
+        self.assertTrue(flags & Qt.Window)
+        self.assertTrue(flags & Qt.WindowMinimizeButtonHint)
+        self.assertTrue(flags & Qt.WindowMaximizeButtonHint)
+        self.assertTrue(flags & Qt.WindowCloseButtonHint)
+        dialog_instance.showMaximized.assert_called_once_with()
+
+    def test_annotation_ctrl_tab_focus_helpers_switch_between_windows(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        dialog = MagicMock()
+        dialog.isVisible.return_value = True
+        dialog.isMinimized.return_value = False
+        screen._active_annotation_dialog = dialog
+
+        screen._focus_active_annotation_window()
+
+        dialog.raise_.assert_called_once_with()
+        dialog.activateWindow.assert_called_once_with()
+
+        review_window = MagicMock()
+        review_window.isMinimized.return_value = False
+        screen.window = MagicMock(return_value=review_window)
+
+        screen._focus_review_window()
+
+        review_window.raise_.assert_called_once_with()
+        review_window.activateWindow.assert_called_once_with()
+
+    def test_review_annotation_window_refreshes_when_closed(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen.mgr = MagicMock()
+        screen.mgr._idx = 0
+        screen._items = [({"pdf_path": "deck.pdf"}, 0, {})]
+        screen.canvas = MagicMock()
+        screen.canvas._scale = 1.0
+        screen.canvas.get_current_page.return_value = 0
+        bar = MagicMock()
+        bar.value.return_value = 10
+        screen._canvas_scroll = MagicMock()
+        screen._canvas_scroll.verticalScrollBar.return_value = bar
+        screen._pause_review_lazy_activity_for_annotation = MagicMock()
+        screen._resume_review_lazy_activity_after_annotation = MagicMock()
+        screen._apply_annotation_beta_refresh = MagicMock()
+        connected = []
+
+        with patch("ui.review_screen.resolve_asset_path", return_value=r"C:\tmp\deck.pdf"), \
+             patch("ui.review_screen.os.path.exists", return_value=True), \
+             patch("ui.review_screen.PdfAnnotationDialog") as dialog_cls:
+            dialog_instance = MagicMock()
+            dialog_instance._saved_pages = [0, 2]
+            dialog_instance.return_page = 2
+            dialog_instance.finished.connect.side_effect = lambda callback: connected.append(callback)
+            dialog_cls.return_value = dialog_instance
+
+            screen._open_annotation_beta()
+            connected[0](0)
+
+        screen._resume_review_lazy_activity_after_annotation.assert_called_once_with(
+            r"C:\tmp\deck.pdf"
+        )
+        screen._apply_annotation_beta_refresh.assert_called_once_with(
+            r"C:\tmp\deck.pdf", [0, 2], 2
+        )
+        self.assertIsNone(screen._active_annotation_dialog)
+
+    def test_open_annotation_beta_raises_existing_annotation_window(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen.mgr = MagicMock()
+        screen.mgr._idx = 0
+        screen._items = [({"pdf_path": "deck.pdf"}, 0, {})]
+        screen.canvas = MagicMock()
+        screen.canvas._scale = 1.0
+        screen.canvas.get_current_page.return_value = 0
+        bar = MagicMock()
+        bar.value.return_value = 10
+        screen._canvas_scroll = MagicMock()
+        screen._canvas_scroll.verticalScrollBar.return_value = bar
+        screen._pause_review_lazy_activity_for_annotation = MagicMock()
+        active_dialog = MagicMock()
+        active_dialog.isVisible.return_value = True
+        screen._active_annotation_dialog = active_dialog
+
+        with patch("ui.review_screen.resolve_asset_path", return_value=r"C:\tmp\deck.pdf"), \
+             patch("ui.review_screen.os.path.exists", return_value=True), \
+             patch("ui.review_screen.PdfAnnotationDialog") as dialog_cls:
+            screen._open_annotation_beta()
+
+        dialog_cls.assert_not_called()
+        active_dialog.raise_.assert_called_once_with()
+        active_dialog.activateWindow.assert_called_once_with()
+        screen._pause_review_lazy_activity_for_annotation.assert_not_called()
 
     def test_queue_jump_does_not_print_debug_report(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
@@ -446,8 +544,53 @@ class ReviewScreenZoomTests(unittest.TestCase):
         with patch("builtins.print") as fake_print:
             result = screen._get_priority_pages(same_pdf_b, 1, 18, "deck.pdf")
 
-        self.assertEqual(result, [2, 5, 6, 7, 8])
-        fake_print.assert_any_call("[DEBUG][review_queue_pages] priority p.3, p.6, p.7, p.8, p.9")
+        self.assertEqual(result, [7, 2, 5, 6, 8])
+        fake_print.assert_any_call(
+            "[DEBUG][review_queue_pages] current=p.8 priority=p.8, p.3, p.6, p.7, p.9 limit=16"
+        )
+
+    def test_review_priority_pages_put_current_page_above_ram_limit_first(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen.mgr = MagicMock()
+        card = {
+            "pdf_path": "deck.pdf",
+            "boxes": [{"page_num": 100}, {"page_num": 2}],
+        }
+        other_card = {
+            "pdf_path": "deck.pdf",
+            "boxes": [{"page_num": pn} for pn in range(40)],
+        }
+        screen.mgr._items = [
+            (other_card, idx, {}) for idx in range(40)
+        ] + [(card, 0, {})]
+
+        with patch("builtins.print"):
+            result = screen._get_priority_pages(card, 0, 150, "deck.pdf")
+
+        self.assertEqual(result[0], 100)
+        self.assertLessEqual(len(result), screen.PRIORITY_PAGE_LIMIT)
+        self.assertIn(0, result)
+
+    def test_review_priority_pages_infer_missing_page_num_from_adapted_boxes(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen.mgr = MagicMock()
+        card = {
+            "pdf_path": "deck.pdf",
+            "boxes": [{"rect": [10, 200000, 80, 40]}],
+        }
+        screen.mgr._items = [(card, 0, {})]
+        screen._pdf_render_zoom = 2.0
+        screen._adapt_review_boxes = MagicMock(
+            return_value=[{"rect": [10, 200000, 80, 40], "page_num": 100}]
+        )
+
+        with patch("builtins.print") as fake_print:
+            result = screen._get_priority_pages(card, 0, 150, "deck.pdf")
+
+        self.assertEqual(result[0], 100)
+        fake_print.assert_any_call(
+            "[DEBUG][review_queue_pages] inferred_current=p.101 raw=none"
+        )
 
     def test_review_priority_batch_done_does_not_start_background_fill(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
@@ -455,12 +598,56 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen._start_background_fill = MagicMock()
         screen._background_fill_state = ("deck.pdf", [1, 2], 18)
         screen._ondemand_kind = "priority"
+        screen._pending_visible_request = None
+        screen._review_render_inflight_pages = set()
 
         screen._on_priority_batch_done("deck.pdf", [2, 5, 6], 18)
 
         screen._start_background_fill.assert_not_called()
         self.assertIsNone(screen._background_fill_state)
         self.assertIsNone(screen._ondemand_kind)
+
+    def test_review_priority_batch_done_starts_pending_visible_request(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._ondemand_path = "deck.pdf"
+        screen._pending_visible_request = ("deck.pdf", [100])
+        screen._background_fill_state = None
+        screen._ondemand_kind = "priority"
+        screen._review_render_inflight_pages = set()
+        screen._start_visible_page_request = MagicMock()
+        screen.canvas = MagicMock()
+        placeholder = MagicMock()
+        placeholder.isNull.return_value = False
+        screen.canvas._pages = [placeholder for _ in range(150)]
+
+        with patch("ui.review_screen.PAGE_CACHE.get", return_value=None), \
+             patch("builtins.print"):
+            screen._on_priority_batch_done("deck.pdf", [0, 1], 150)
+
+        screen._start_visible_page_request.assert_called_once_with("deck.pdf", [100])
+
+    def test_visible_pages_changed_skips_canvas_real_page_when_cache_evicted(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._ondemand_path = "deck.pdf"
+        screen._ondemand_total = 150
+        screen._note_user_activity = MagicMock()
+        screen._start_visible_page_request = MagicMock()
+        screen._ondemand_thread = None
+        screen._visible_debug_seen_pages = set()
+        screen._review_canvas_real_pages = {100}
+        screen._review_render_inflight_pages = set()
+        screen._bg_pending_inserts = {}
+        screen._pending_visible_request = None
+        screen.canvas = MagicMock()
+        placeholder = MagicMock()
+        placeholder.isNull.return_value = False
+        screen.canvas._pages = [placeholder for _ in range(150)]
+
+        with patch("ui.review_screen.PAGE_CACHE.get", return_value=None), \
+             patch("builtins.print"):
+            screen._on_visible_pages_changed(100, 100)
+
+        screen._start_visible_page_request.assert_not_called()
 
     def test_review_cache_debug_helper_prints_source_cache(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)

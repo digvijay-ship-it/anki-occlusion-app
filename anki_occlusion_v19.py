@@ -62,39 +62,6 @@ from sm2_engine import (
     sm2_badge,
 )
 
-# Daily Journal — safe import
-try:
-    from ui.journal import JournalDialog
-
-    _JOURNAL_AVAILABLE = True
-except ImportError:
-    _JOURNAL_AVAILABLE = False
-
-# Session Timer — safe import
-try:
-    from session_timer import SessionTimer
-
-    _TIMER_AVAILABLE = True
-except ImportError:
-    _TIMER_AVAILABLE = False
-
-from pdf_engine import (
-    PDF_SUPPORT,
-    PAGE_CACHE,
-    PdfLoaderThread,
-    PdfSkeletonThread,
-    pdf_page_to_pixmap,
-    load_pdf_skeleton,
-    PdfOnDemandThread,
-    build_skeleton_placeholders,
-    invalidate_pdf_skeleton,  # STEP 2 + 3
-)
-
-from editor_ui import OcclusionCanvas, _ZoomableScrollArea
-from ui.editor_dialog import CardEditorDialog
-
-import fitz
-
 from data_manager import (
     load_data,
     save_data,
@@ -107,6 +74,7 @@ from data_manager import (
 )
 from storage_paths import app_base_dir, app_resource_path, initialize_mission_archive
 
+import importlib.util
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
 
@@ -275,9 +243,23 @@ SS = _build_ss()
 
 
 from ui.home_screen import HomeScreen, make_app_icon, OnboardingDialog
-from ui.review_screen import ReviewScreen
-from ui.deck_tree import DeckTree
-from ui.deck_view import DeckView
+
+
+def __getattr__(name):
+    if name == "ReviewScreen":
+        from ui.review_screen import ReviewScreen as _ReviewScreen
+
+        globals()[name] = _ReviewScreen
+        return _ReviewScreen
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _pdf_backend_status():
+    return (
+        "PDF backend: PyMuPDF"
+        if importlib.util.find_spec("fitz") is not None
+        else "⚠ pip install pymupdf  for PDF support"
+    )
 
 #  MAIN WINDOW
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -324,18 +306,13 @@ class MainWindow(QMainWindow):
         self._recovery_prompt_shown = False
 
         sb = QStatusBar()
-        pdf_status = (
-            "PDF backend: PyMuPDF"
-            if PDF_SUPPORT
-            else "⚠ pip install pymupdf  for PDF support"
-        )
-        sb.showMessage(f"✅ SM-2 Active  |  {pdf_status}")
+        sb.showMessage(f"✅ SM-2 Active  |  {_pdf_backend_status()}")
         self.setStatusBar(sb)
 
         if theme == "tmnt" and hasattr(home, "_tmnt_layout") and home._tmnt_layout:
             if hasattr(home._tmnt_layout, "main"):
                 home._tmnt_layout.main._font_size_val = self._font_size
-            home._tmnt_layout.refresh()
+            QTimer.singleShot(200, home._tmnt_layout.refresh)
 
         if not self._data.get("_onboarding_done"):
             QTimer.singleShot(200, self._run_onboarding)
@@ -419,6 +396,7 @@ class MainWindow(QMainWindow):
             from cache_manager import PAGE_CACHE, MASK_REGISTRY
 
             try:
+                import fitz
                 from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE
 
                 _SKELETON_CACHE.clear()

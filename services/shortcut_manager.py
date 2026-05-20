@@ -40,7 +40,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.open_pdf", "Review", "Open current PDF", "Ctrl+E"),
     ShortcutAction("review.open_folder", "Review", "Open PDF folder", "Ctrl+L"),
     ShortcutAction("review.copy_pdf", "Review", "Copy PDF path", "L"),
-    ShortcutAction("review.annotate", "Review", "Annotate PDF", "T"),
+    ShortcutAction("review.annotate", "Review", "Anotate Scroll", "T"),
     ShortcutAction("review.edit_card", "Review", "Edit card", "E"),
     ShortcutAction("review.prev_page", "Review", "Previous page", "Left"),
     ShortcutAction("review.next_page", "Review", "Next page", "Right"),

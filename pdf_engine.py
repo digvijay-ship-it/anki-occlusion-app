@@ -21,7 +21,7 @@
 #
 #  Public API:
 #    PdfSkeletonLoader — NEW: returns (placeholders, page_dims) instantly
-#    PdfLoaderThread   — emits pages_ready(list[QPixmap], int, int) + done/error
+#    PdfLoaderThread   — emits pages_ready(list[QImage], int, int) + done/error
 #    pdf_page_to_pixmap(page, mat) → QPixmap
 #    PAGE_CACHE        — imported from cache_manager
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -314,6 +314,14 @@ def _clone_skeleton_result(result: PdfSkeletonResult) -> PdfSkeletonResult:
     )
 
 
+def _page_rect_pixel_dims(page, zoom: float) -> tuple[int, int]:
+    rect = page.rect
+    return (
+        max(1, int(math.ceil(float(rect.width) * float(zoom)))),
+        max(1, int(math.ceil(float(rect.height) * float(zoom)))),
+    )
+
+
 def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
     """
     Worker-safe skeleton scan. Computes page sizes only, without creating QPixmaps.
@@ -338,26 +346,17 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
         total = len(doc)
         page_dims = []
 
-
-        _mat0 = fitz.Matrix(zoom, zoom)
-        _pix0 = doc[0].get_pixmap(matrix=_mat0, alpha=False)
-        _ref_w = _pix0.width
-        _ref_h = _pix0.height
-
         for i in range(total):
-            if i == 0:
-                w_px, h_px = _ref_w, _ref_h
-            else:
-                _r = doc[i].rect
-                if abs(_r.width - doc[0].rect.width) < 0.5 and abs(_r.height - doc[0].rect.height) < 0.5:
-                    w_px, h_px = _ref_w, _ref_h
-                else:
-                    _pix_i = doc[i].get_pixmap(matrix=_mat0, alpha=False)
-                    w_px, h_px = _pix_i.width, _pix_i.height
+            w_px, h_px = _page_rect_pixel_dims(doc[i], zoom)
             page_dims.append((max(1, w_px), max(1, h_px)))
 
         doc.close()
 
+        t_ms = (time.perf_counter() - t_start) * 1000
+        print(
+            "[DEBUG][skeleton] "
+            f"dims_ready pages={total} mode=rect_only t={t_ms:.1f}ms"
+        )
         return PdfSkeletonResult([], page_dims, total, None)
     except Exception as ex:
         print(f"[DEBUG][skeleton] ❌ Exception: {ex}")
@@ -420,32 +419,8 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         placeholders = []
         page_dims    = []
 
-        # ── Render page 0 once to get EXACT fitz pixel dimensions ────────────
-        # int(rect * zoom) truncates differently than fitz's internal rounding,
-        # causing a 1px mismatch on every inject_page → layout recompute → jitter.
-        # Rendering page 0 gives us the canonical size fitz will use for all pages.
-        _mat0  = fitz.Matrix(zoom, zoom)
-        _pix0  = doc[0].get_pixmap(matrix=_mat0, alpha=False)
-        _ref_w = _pix0.width
-        _ref_h = _pix0.height
-        # ─────────────────────────────────────────────────────────────────────
-
         for i in range(total):
-            rect  = doc[i].rect                       # fitz.Rect — no rendering
-            # Use ref dims for page 0 (already rendered above).
-            # For other pages with the same mediabox (99% of PDFs) reuse ref dims.
-            # For pages with different size, fall back to a quick render.
-            if i == 0:
-                w_px, h_px = _ref_w, _ref_h
-            else:
-                _r = doc[i].rect
-                if abs(_r.width - doc[0].rect.width) < 0.5 and abs(_r.height - doc[0].rect.height) < 0.5:
-                    # Same mediabox — fitz will produce identical pixel dims
-                    w_px, h_px = _ref_w, _ref_h
-                else:
-                    # Different page size — render to get exact dims (rare)
-                    _pix_i = doc[i].get_pixmap(matrix=_mat0, alpha=False)
-                    w_px, h_px = _pix_i.width, _pix_i.height
+            w_px, h_px = _page_rect_pixel_dims(doc[i], zoom)
             w_px = max(1, w_px)
             h_px = max(1, h_px)
             page_dims.append((w_px, h_px))
@@ -459,6 +434,10 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         doc.close()
 
         t_ms = (time.perf_counter() - t_start) * 1000
+        print(
+            "[DEBUG][skeleton] "
+            f"placeholders_ready pages={total} mode=rect_only t={t_ms:.1f}ms"
+        )
 
         # ─────────────────────────────────────────────────────────────────────
 
@@ -750,10 +729,10 @@ def get_changed_pages(path: str):
     
 class PdfLoaderThread(QThread):
     # Emitted every CHUNK_SIZE pages:  (pages_so_far, loaded_count, total_count)
-    pages_ready = pyqtSignal(object, int, int)   # object = list[QPixmap]
+    pages_ready = pyqtSignal(object, int, int)   # object = list[QImage]
 
     # Emitted once at the end:  (all_pages, error_str_or_None)
-    done  = pyqtSignal(object, object)           # object = list[QPixmap]
+    done  = pyqtSignal(object, object)           # object = list[QImage]
     error = pyqtSignal(str)
 
     def __init__(self, path: str, zoom: float = PDF_RENDER_ZOOM,
@@ -785,8 +764,16 @@ class PdfLoaderThread(QThread):
 
             total = len(doc)
             mat   = fitz.Matrix(self._zoom, self._zoom)
-            pages : list[QPixmap] = []
+            pages : list[QImage] = []
             last_emitted = 0
+            cache_hits = 0
+            rendered_pages = 0
+
+            print(
+                "[DEBUG][pdf_loader] "
+                f"start file={os.path.basename(self._path)} pages={total} "
+                f"zoom={self._zoom} cache={self._use_cache}"
+            )
 
             for page_num in range(total):
                 if self._stop_flag:
@@ -794,27 +781,34 @@ class PdfLoaderThread(QThread):
                     return
 
                 # Cache hit?
-                cached = PAGE_CACHE.get(self._path, page_num, variant=self._cache_variant) if self._use_cache else None
+                cached = PAGE_CACHE.get_image(self._path, page_num, variant=self._cache_variant) if self._use_cache else None
                 if cached and not cached.isNull():
                     pages.append(cached)
+                    cache_hits += 1
                 else:
                     try:
-                        qpx = pdf_page_to_pixmap(doc.load_page(page_num), mat, show_annots=self._show_annots)
-                        if not qpx.isNull():
-                            if self._store_cache:
-                                PAGE_CACHE.put(
+                        img = pdf_page_to_image(doc.load_page(page_num), mat, show_annots=self._show_annots)
+                        if not img.isNull():
+                            if self._store_cache and hasattr(PAGE_CACHE, "put_image"):
+                                PAGE_CACHE.put_image(
                                     self._path,
                                     page_num,
-                                    qpx,
+                                    img,
                                     variant=self._cache_variant,
                                     render_zoom=self._zoom,
                                 )
-                            pages.append(qpx)
+                            pages.append(img)
+                            rendered_pages += 1
                     except Exception:
                         continue  # skip bad page, keep going
 
                 loaded = len(pages)
                 if loaded - last_emitted >= self._chunk_size:
+                    print(
+                        "[DEBUG][pdf_loader] "
+                        f"chunk loaded={loaded}/{total} "
+                        f"cache_hits={cache_hits} rendered={rendered_pages}"
+                    )
                     self.pages_ready.emit(list(pages), loaded, total)
                     last_emitted = loaded
 
@@ -824,6 +818,11 @@ class PdfLoaderThread(QThread):
                 return
 
             # Final emit (catches leftover pages not in last chunk)
+            print(
+                "[DEBUG][pdf_loader] "
+                f"done loaded={len(pages)}/{total} "
+                f"cache_hits={cache_hits} rendered={rendered_pages}"
+            )
             self.done.emit(list(pages), None)
 
         except Exception as ex:

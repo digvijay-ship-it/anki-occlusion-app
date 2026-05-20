@@ -62,39 +62,7 @@ from sm2_engine import (
     sm2_badge,
 )
 
-# Daily Journal — safe import
-try:
-    from ui.journal import JournalDialog
-
-    _JOURNAL_AVAILABLE = True
-except ImportError:
-    _JOURNAL_AVAILABLE = False
-
-# Session Timer — safe import
-try:
-    from session_timer import SessionTimer
-
-    _TIMER_AVAILABLE = True
-except ImportError:
-    _TIMER_AVAILABLE = False
-
-from pdf_engine import (
-    PDF_SUPPORT,
-    PAGE_CACHE,
-    PdfLoaderThread,
-    PdfSkeletonThread,
-    pdf_page_to_pixmap,
-    load_pdf_skeleton,
-    PdfOnDemandThread,
-    build_skeleton_placeholders,
-    invalidate_pdf_skeleton,  # STEP 2 + 3
-)
-
-from editor_ui import OcclusionCanvas, _ZoomableScrollArea
-from ui.editor_dialog import CardEditorDialog
 from ui.deck_tree import CARD_DRAG_MIME
-
-import fitz
 
 from data_manager import (
     load_data,
@@ -114,8 +82,25 @@ from storage_paths import (
     resolve_asset_path,
 )
 
+import importlib.util
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
+
+CardEditorDialog = None
+
+
+def _pdf_support_available():
+    return importlib.util.find_spec("fitz") is not None
+
+
+def _load_card_editor_dialog():
+    global CardEditorDialog
+    if CardEditorDialog is None:
+        from ui.editor_dialog import CardEditorDialog as _CardEditorDialog
+
+        CardEditorDialog = _CardEditorDialog
+    return CardEditorDialog
+
 
 from PyQt5.QtWidgets import (
     QApplication,
@@ -817,7 +802,7 @@ class DeckView(QWidget):
 
             # ── Pages count ───────────────────────────────────────────────────
             pdf_path = resolve_asset_path(c.get("pdf_path", ""))
-            if pdf_path and os.path.exists(pdf_path) and PDF_SUPPORT:
+            if pdf_path and os.path.exists(pdf_path) and _pdf_support_available():
                 n_pages = get_pdf_page_count(pdf_path)
                 pages_str = f"📄{n_pages}p  "
             else:
@@ -884,7 +869,7 @@ class DeckView(QWidget):
         if not self.deck:
             return
         self._push_undo()
-        dlg = CardEditorDialog(self, data=self._data, deck=self.deck)
+        dlg = _load_card_editor_dialog()(self, data=self._data, deck=self.deck)
         if dlg.exec_() != QDialog.Accepted:
             self._undo_stack.pop() if self._undo_stack else None
             return
@@ -953,7 +938,7 @@ class DeckView(QWidget):
         if not 0 <= idx < len(cards):
             return
         self._push_undo()
-        dlg = CardEditorDialog(
+        dlg = _load_card_editor_dialog()(
             self, card=dict(cards[idx]), data=self._data, deck=self.deck
         )
         if dlg.exec_() == QDialog.Accepted:

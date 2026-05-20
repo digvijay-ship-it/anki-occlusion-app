@@ -87,3 +87,7 @@ web-prototype/coverage/
 web-prototype/*.log
 web-prototype/*.tsbuildinfo
 web-prototype/local_api/local_data/
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/*.log
+web/backend/*.log

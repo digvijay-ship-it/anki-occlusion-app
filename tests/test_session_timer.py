@@ -166,6 +166,16 @@ class SessionTimerTests(unittest.TestCase):
 
         self.assertEqual(timer._idle_seconds, 42)
 
+    @patch('session_timer._load_state', return_value=0)
+    def test_labels_are_unparented_until_embedded(self, mock_load):
+        parent = QWidget()
+        self.addCleanup(parent.close)
+        timer = SessionTimer(parent)
+
+        self.assertIsNone(timer.label.parent())
+        self.assertIsNone(timer.label_session.parent())
+        self.assertIsNone(timer.label_today.parent())
+
     @patch('session_timer._STATE_FILE', new_callable=lambda: None)
     @patch('session_timer._JOURNAL_FILE', new_callable=lambda: None)
     @patch('session_timer.QApplication.activeWindow', return_value=True)

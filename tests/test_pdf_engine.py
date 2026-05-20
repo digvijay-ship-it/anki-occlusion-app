@@ -9,6 +9,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtGui import QImage
 
 import cache_manager
 import pdf_engine
@@ -215,12 +216,12 @@ class PdfEngineTests(unittest.TestCase):
 
         with patch.object(pdf_engine, "PAGE_CACHE", cache_manager.LRUPageCache()):
             thread = pdf_engine.PdfLoaderThread(str(self.pdf_path), zoom=1.0, chunk_size=1)
-            thread.pages_ready.connect(lambda pages, loaded, total: chunks.append((len(pages), loaded, total)))
-            thread.done.connect(lambda pages, err: done.append((len(pages), err)))
+            thread.pages_ready.connect(lambda pages, loaded, total: chunks.append((len(pages), loaded, total, all(isinstance(page, QImage) for page in pages))))
+            thread.done.connect(lambda pages, err: done.append((len(pages), err, all(isinstance(page, QImage) for page in pages))))
             thread.run()
 
-        self.assertEqual(chunks, [(1, 1, 2), (2, 2, 2)])
-        self.assertEqual(done, [(2, None)])
+        self.assertEqual(chunks, [(1, 1, 2, True), (2, 2, 2, True)])
+        self.assertEqual(done, [(2, None, True)])
 
 
 if __name__ == "__main__":

@@ -209,13 +209,13 @@ class SessionTimer:
         self._activity_filter = _ActivityEventFilter(self)
         self._activity_filter_installed = False
 
-        self.label = QLabel(self._make_text(), parent)
+        self.label = QLabel(self._make_text())
         self.label.setToolTip(
             "Time studied today  \u2022  pauses after 1 minute without app activity"
         )
 
-        self.label_session = QLabel(self._fmt(self._session_elapsed), parent)
-        self.label_today = QLabel(self._fmt(self._elapsed), parent)
+        self.label_session = QLabel(self._fmt(self._session_elapsed))
+        self.label_today = QLabel(self._fmt(self._elapsed))
 
         self._tick_timer = QTimer(parent)
         self._tick_timer.setInterval(1000)
