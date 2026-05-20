@@ -42,7 +42,7 @@ Future upgrades that make sense after the review UI stabilizes:
 Install backend dependencies if needed:
 
 ```powershell
-python -m pip install fastapi "uvicorn[standard]"
+python -m pip install -r requirements.txt
 ```
 
 Start the API:

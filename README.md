@@ -27,7 +27,9 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 - **Live PDF Sync** *(v13)* — The editor watches the file for changes. Annotate in any external app (Foxit, Adobe, Drawboard, Xodo), save there, and the editor auto-reloads within 800ms — masks stay in place.
 - **Open in PDF Reader** *(v13)* — One-click button opens the current PDF in your system default reader.
 - **Progressive Background Loading** *(v16 & v17)* — Large PDFs load in a background thread in chunks. The UI never freezes, and you can start working immediately while the rest loads silently.
-- **LRU Page Cache** *(v18)* — Individual pages are cached (max 15 in RAM). Switching between Edit and Review mode is instant with zero disk I/O on cache hits.
+- **Lazy PDF Review Loading** — Review mode builds a fast skeleton from PDF page metadata, then renders only priority, visible, or cached pages.
+- **LRU Page Cache** *(v18+)* — Individual pages are cached with a 48-page RAM window plus persistent disk cache. Switching between Edit and Review mode is instant on cache hits.
+- **Thread-Safe PDF Rendering** — Worker threads render `QImage` objects and convert to `QPixmap` only on the GUI thread.
 
 ### Editor
 - **Toolbar** — Vertical toolbar to switch between Select (V), Rectangle (R), Ellipse (E), and Text (T) tools.
@@ -43,12 +45,15 @@ Draw rectangles over the parts of your notes you want to hide. Each rectangle be
 - **Review Queue Panel** *(v19)* — Right-side panel shows the full session queue with live status: current (green), done (dim), pending, and relearn (orange) states.
 - **Learning Card Countdown** *(v19)* — When all pending cards are done but learning cards still have time left, the session shows a live countdown ("⏳ 1 card in learning — next due in 0m 45s") instead of ending early. The card appears automatically when due.
 - **Session Summary** *(v19)* — After each session a stats dialog shows a colored retention bar (Again / Hard / Good / Easy segments), per-rating counts, retention %, and total reviewed.
+- **Default Review Pen** — Review mode opens with the pen active by default for quick annotation while studying.
+- **Floating Study Timer** — When the queue drawer is hidden, a large floating timer stays pinned above the PDF and remains visible during page jumps.
 
 ### Other
 - **First-Launch Wizard** — A short onboarding tour on first use explains the workflow.
 - **App Icon** — Programmatically generated; no external image file needed.
 - **Crash-Safe Storage** — Atomic write (temp file + rename) guarantees data is never corrupted even on a crash mid-save.
 - **Single-Instance Lock** — Only one window can open at a time.
+- **Async OCR** — Math Trainer OCR runs in a Qt worker thread so the UI stays responsive while TensorFlow predicts.
 
 ---
 
@@ -161,12 +166,12 @@ pip install PyQt5 pymupdf
 **Run:**
 
 ```bash
-python anki_occlusion_v18.pyw
+python anki_occlusion_v19.py
 ```
 
 On Windows PowerShell with spaces in the path:
 ```powershell
-python "C:\path with spaces\anki_occlusion_v18.pyw"
+python "C:\path with spaces\anki_occlusion_v19.py"
 ```
 
 **Run tests:**
@@ -179,7 +184,7 @@ python -m unittest discover -s tests -v
 
 ```powershell
 cd web\backend
-python -m pip install fastapi "uvicorn[standard]"
+python -m pip install -r requirements.txt
 python -m uvicorn run:app --reload --host 127.0.0.1 --port 8000
 
 cd ..\frontend
@@ -290,6 +295,7 @@ Auto-saves every 60 seconds when data has changed. A final save is always perfor
 
 | Version | Highlights |
 |---------|-----------|
+| current | Fast PDF skeleton loading from page metadata; priority/visible-page review loading; default review pen; floating timer; async OCR; thread-safe PDF workers; Vite React + FastAPI web review console |
 | v19 | SM-2 Hard/EF/fuzzing fixes; DirtyStore autosave; session bugs fixed (Again card, X-button save loss); queue panel; learning countdown; session summary; Space+drag & H pan (tablet/stylus support); async PDF in review; performance fixes |
 | v18 | Hardware mask cache (GPU-backed offscreen layer, ~3× FPS); LRU page cache (RAM from ~2GB → ~300MB for large PDFs) |
 | v17 | Progressive chunk loading (start working instantly), ultra-fast RAM caching |
