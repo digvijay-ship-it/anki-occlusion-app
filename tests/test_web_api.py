@@ -104,6 +104,15 @@ class AnkiWebStoreTests(unittest.TestCase):
         self.assertEqual(items[1]["card_id"], "card-2")
         self.assertIsNone(items[1]["box_id"])
 
+    def test_review_items_can_be_filtered_to_one_deck(self):
+        store = self.make_store(self.sample_data())
+
+        items = store.review_items(deck_id=2)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["deck_name"], "Algebra")
+        self.assertEqual(items[0]["card_id"], "card-2")
+
     def test_rate_updates_target_box_and_saves_data(self):
         store = self.make_store(self.sample_data())
 
@@ -118,6 +127,14 @@ class AnkiWebStoreTests(unittest.TestCase):
         self.assertGreaterEqual(box["reviews"], 1)
         self.assertIn(box["sched_state"], {"learning", "review"})
 
+    def test_rate_returns_not_updated_for_missing_target(self):
+        store = self.make_store(self.sample_data())
+
+        result = store.rate(RateRequest(card_id="missing", deck_id=1, quality=4))
+
+        self.assertFalse(result["updated"])
+        self.assertEqual(result["target"], {})
+
     def test_create_app_registers_web_api_routes(self):
         app = create_app()
         paths = {route.path for route in app.routes}
@@ -130,4 +147,3 @@ class AnkiWebStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
