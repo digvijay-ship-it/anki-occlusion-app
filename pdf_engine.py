@@ -92,21 +92,59 @@ def ensure_pdf_cache_profile(path: str, render_zoom: float, cache_variant: str |
     return True
 
 
-def get_cached_pdf_page_set(path: str, total_pages: int | None = None, cache_variant: str | None = None) -> dict:
+def get_cached_pdf_page_set(
+    path: str,
+    total_pages: int | None = None,
+    cache_variant: str | None = None,
+    hydrate_pages=False,
+) -> dict:
     """
     Shared cache-first PDF page lookup for editor/review/annotation.
+
+    By default this only discovers cached page indices. Pass hydrate_pages=True
+    or an iterable of page numbers when the caller needs actual QPixmaps.
     """
-    total = int(total_pages or 0)
+    try:
+        total = max(0, int(total_pages or 0))
+    except (TypeError, ValueError):
+        total = 0
+
+    if hasattr(PAGE_CACHE, "cached_page_indices"):
+        cached_page_indices = PAGE_CACHE.cached_page_indices(
+            path, total, variant=cache_variant
+        )
+    else:
+        cached_page_indices = []
+        for page_num in range(total):
+            px = PAGE_CACHE.get(path, page_num, variant=cache_variant)
+            if px is not None and not px.isNull():
+                cached_page_indices.append(page_num)
+
+    cached_index_set = {int(page_num) for page_num in cached_page_indices}
     cached_pages_by_index = {}
-    for page_num in range(max(0, total)):
+
+    if hydrate_pages is True:
+        hydrate_targets = cached_index_set
+    elif hydrate_pages:
+        hydrate_targets = {
+            int(page_num)
+            for page_num in hydrate_pages
+            if int(page_num) in cached_index_set
+        }
+    else:
+        hydrate_targets = set()
+
+    for page_num in sorted(hydrate_targets):
         px = PAGE_CACHE.get(path, page_num, variant=cache_variant)
         if px is not None and not px.isNull():
             cached_pages_by_index[page_num] = px
+
     return {
         "total_pages": total,
+        "cached_page_indices": sorted(cached_index_set),
         "cached_pages_by_index": cached_pages_by_index,
-        "cache_hit_count": len(cached_pages_by_index),
-        "cache_miss_count": max(0, total - len(cached_pages_by_index)),
+        "cache_hit_count": len(cached_index_set),
+        "cache_miss_count": max(0, total - len(cached_index_set)),
     }
 
 

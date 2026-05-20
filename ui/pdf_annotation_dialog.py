@@ -1037,7 +1037,12 @@ class PdfAnnotationDialog(QDialog):
         self._debug("pen_color_pick", color=self._annotation_pen_color)
 
     def _load_pages(self):
-        cache_state = get_cached_pdf_page_set(self.pdf_path, self.session.page_count)
+        startup_pages = self._target_page_window(self.initial_page)
+        cache_state = get_cached_pdf_page_set(
+            self.pdf_path,
+            self.session.page_count,
+            hydrate_pages=startup_pages,
+        )
         total = cache_state["total_pages"]
         cached_pages = cache_state["cached_pages_by_index"]
         self._debug(

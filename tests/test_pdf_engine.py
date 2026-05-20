@@ -4,7 +4,7 @@ import io
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -186,12 +186,30 @@ class PdfEngineTests(unittest.TestCase):
         cache.put(str(self.pdf_path), 0, px, render_zoom=1.0)
 
         with patch.object(pdf_engine, "PAGE_CACHE", cache):
-            state = pdf_engine.get_cached_pdf_page_set(str(self.pdf_path), total_pages=2)
+            state = pdf_engine.get_cached_pdf_page_set(
+                str(self.pdf_path), total_pages=2, hydrate_pages=True
+            )
 
         self.assertEqual(state["total_pages"], 2)
         self.assertEqual(state["cache_hit_count"], 1)
         self.assertEqual(state["cache_miss_count"], 1)
+        self.assertEqual(state["cached_page_indices"], [0])
         self.assertIn(0, state["cached_pages_by_index"])
+
+    def test_get_cached_pdf_page_set_counts_without_hydrating_pages(self):
+        cache = MagicMock()
+        cache.cached_page_indices.return_value = [0, 2]
+
+        with patch.object(pdf_engine, "PAGE_CACHE", cache):
+            state = pdf_engine.get_cached_pdf_page_set("doc.pdf", total_pages=4)
+
+        cache.cached_page_indices.assert_called_once_with("doc.pdf", 4, variant=None)
+        cache.get.assert_not_called()
+        self.assertEqual(state["total_pages"], 4)
+        self.assertEqual(state["cached_page_indices"], [0, 2])
+        self.assertEqual(state["cached_pages_by_index"], {})
+        self.assertEqual(state["cache_hit_count"], 2)
+        self.assertEqual(state["cache_miss_count"], 2)
 
     def test_on_demand_thread_emits_rendered_pages_and_skips_out_of_range(self):
         emitted_pages = []

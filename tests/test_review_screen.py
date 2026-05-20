@@ -251,6 +251,41 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
         self.assertEqual(screen._floating_timer_session.text(), "0:01:02")
         self.assertEqual(screen._floating_timer_today.text(), "0:03:04")
 
+    def test_floating_timer_hides_when_queue_is_open(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._queue_locked = True
+        screen._queue_drawer_open = True
+        screen._floating_timer_visible = False
+        screen._canvas_stage = QWidget()
+        screen._canvas_stage.resize(640, 480)
+        screen._floating_timer_frame = QWidget(screen._canvas_stage)
+        screen._floating_timer_frame.hide()
+        screen._floating_timer_session = QLabel()
+        screen._floating_timer_today = QLabel()
+        screen._floating_timer_queue = QLabel()
+        screen._stimer = MagicMock()
+        screen._stimer.label_session.text.return_value = "0:00:17"
+        screen._stimer.label_today.text.return_value = "0:22:00"
+        screen._queue_list = QListWidget()
+        for label in ("p.5 - #57", "p.5 - #58", "p.5 - #61"):
+            screen._queue_list.addItem(label)
+
+        screen._update_floating_timer_visibility()
+
+        self.assertTrue(screen._floating_timer_frame.isHidden())
+
+    def test_queue_label_updates_timer_queue_counts(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._queue_label = QLabel()
+        screen._floating_timer_queue = QLabel()
+        screen._queue_timer_count = QLabel()
+
+        screen._update_queue_label(3)
+
+        self.assertIn("(3)", screen._queue_label.text())
+        self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (3)")
+        self.assertEqual(screen._queue_timer_count.text(), "TO REVIEW: 3")
+
     def test_floating_timer_uses_large_readable_font(self):
         self.assertEqual(ReviewScreen.FLOATING_TIMER_SESSION_FONT_PX, 36)
         self.assertEqual(ReviewScreen.FLOATING_TIMER_TODAY_FONT_PX, 30)

@@ -522,6 +522,29 @@ class ReviewScreen(QWidget):
         dojo = _is_dojo()
         base = "▸  QUEUE" if dojo else "📋  Queue"
         self._queue_label.setText(f"{base} ({total})")
+        self._sync_floating_queue_count(total)
+        self._sync_queue_timer_count(total)
+
+    def _active_queue_count(self):
+        try:
+            return sum(1 for _, _, sm2 in self._items if is_due_today(sm2))
+        except Exception:
+            queue = self.__dict__.get("_queue_list")
+            return int(queue.count()) if queue is not None else 0
+
+    def _sync_floating_queue_count(self, total=None):
+        queue_label = self.__dict__.get("_floating_timer_queue")
+        if queue_label is None:
+            return
+        count = self._active_queue_count() if total is None else int(total)
+        queue_label.setText(f"QUEUE ({max(0, count)})")
+
+    def _sync_queue_timer_count(self, total=None):
+        queue_label = self.__dict__.get("_queue_timer_count")
+        if queue_label is None:
+            return
+        count = self._active_queue_count() if total is None else int(total)
+        queue_label.setText(f"TO REVIEW: {max(0, count)}")
 
     def __init__(self, cards, data=None, parent=None):
         super().__init__(parent)
@@ -957,6 +980,8 @@ class ReviewScreen(QWidget):
             session_label.setText(self._stimer.label_session.text())
         if today_label is not None:
             today_label.setText(self._stimer.label_today.text())
+        self._sync_floating_queue_count()
+        self._sync_queue_timer_count()
         self._reposition_floating_timer()
 
     def _keep_floating_timer_on_top(self):
@@ -1652,6 +1677,7 @@ class ReviewScreen(QWidget):
         self._floating_timer_frame = None
         self._floating_timer_session = None
         self._floating_timer_today = None
+        self._floating_timer_queue = None
         if self._stimer:
             floating_timer = QFrame(self._canvas_stage)
             floating_timer.setToolTip("Study timer")
@@ -1671,6 +1697,9 @@ class ReviewScreen(QWidget):
             ft_l.setSpacing(0)
             self._floating_timer_session = QLabel(self._stimer.label_session.text())
             self._floating_timer_today = QLabel(self._stimer.label_today.text())
+            self._floating_timer_queue = QLabel(
+                f"QUEUE ({self._active_queue_count()})"
+            )
             if dojo:
                 self._floating_timer_session.setStyleSheet(
                     f"color:{accent};background:transparent;border:none;"
@@ -1681,6 +1710,10 @@ class ReviewScreen(QWidget):
                     f"color:{accent2};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_TODAY_FONT_PX}px;"
                     f"font-weight:bold;font-family:{font};"
+                )
+                self._floating_timer_queue.setStyleSheet(
+                    f"color:{subtext};background:transparent;border:none;"
+                    f"font-size:10px;font-weight:bold;font-family:{font};"
                 )
             else:
                 self._floating_timer_session.setStyleSheet(
@@ -1695,8 +1728,14 @@ class ReviewScreen(QWidget):
                     "font-weight:bold;"
                     "font-family:'Segoe UI Mono','Courier New',monospace;"
                 )
+                self._floating_timer_queue.setStyleSheet(
+                    f"color:{subtext};background:transparent;border:none;"
+                    "font-size:11px;font-weight:bold;"
+                    "font-family:'Segoe UI Mono','Courier New',monospace;"
+                )
             ft_l.addWidget(self._floating_timer_session)
             ft_l.addWidget(self._floating_timer_today)
+            ft_l.addWidget(self._floating_timer_queue)
             floating_timer.hide()
             self._floating_timer_frame = floating_timer
             self._floating_timer_sync_timer = QTimer(self)
@@ -1717,6 +1756,7 @@ class ReviewScreen(QWidget):
         qp_l.setContentsMargins(6, 8, 6, 8)
         qp_l.setSpacing(4)
 
+        self._queue_timer_count = None
         if self._stimer:
             timer_frame = QFrame()
             if dojo:
@@ -1733,8 +1773,11 @@ class ReviewScreen(QWidget):
             tf_l.setContentsMargins(8, 6, 8, 6)
             tf_l.setSpacing(2)
 
-            tf_top = QLabel("⏱  CURRENT SESSION" if dojo else "⏱  Current session")
-            tf_bot = QLabel("📅  TODAY'S FOCUS" if dojo else "📅  Today's focus")
+            tf_top = QLabel("CURRENT SESSION" if dojo else "Current session")
+            tf_bot = QLabel("TODAY'S FOCUS" if dojo else "Today's focus")
+            self._queue_timer_count = QLabel(
+                f"TO REVIEW: {self._active_queue_count()}"
+            )
             if dojo:
                 tf_top.setStyleSheet(
                     f"color:{subtext};font-size:7px;font-weight:bold;"
@@ -1746,7 +1789,10 @@ class ReviewScreen(QWidget):
                     f"background:transparent;border:none;"
                     f"font-family:{font};letter-spacing:1.5px;margin-top:6px;"
                 )
-
+                self._queue_timer_count.setStyleSheet(
+                    f"color:{subtext};font-size:8px;font-weight:bold;"
+                    f"background:transparent;border:none;font-family:{font};"
+                )
                 self._stimer.label_session.setStyleSheet(
                     f"background:transparent;color:{accent};"
                     f"font-size:18px;font-weight:bold;"
@@ -1766,7 +1812,10 @@ class ReviewScreen(QWidget):
                     f"color:{subtext};font-size:10px;"
                     f"font-weight:bold;background:transparent;border:none;margin-top:6px;"
                 )
-
+                self._queue_timer_count.setStyleSheet(
+                    f"color:{subtext};font-size:10px;"
+                    f"font-weight:bold;background:transparent;border:none;"
+                )
                 self._stimer.label_session.setStyleSheet(
                     f"background:transparent;color:#CDD6F4;"
                     f"font-size:18px;font-weight:bold;"
@@ -1784,6 +1833,7 @@ class ReviewScreen(QWidget):
             tf_l.addWidget(self._stimer.label_session)
             tf_l.addWidget(tf_bot)
             tf_l.addWidget(self._stimer.label_today)
+            tf_l.addWidget(self._queue_timer_count)
             qp_l.addWidget(timer_frame)
             qp_l.addSpacing(6)
 
