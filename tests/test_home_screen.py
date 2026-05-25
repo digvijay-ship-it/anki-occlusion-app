@@ -5,14 +5,16 @@ from unittest.mock import MagicMock, patch
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget
+from PyQt5.QtWidgets import QApplication, QLabel, QListWidgetItem, QDialog, QWidget
 
 # Ensure QApplication exists before importing HomeScreen
 _APP = QApplication.instance() or QApplication([])
 
 from anki_occlusion_v19 import HomeScreen
 import anki_occlusion_v19
-from ui.home_screen import AboutDialog, MusicWidget
+from ui.home_screen import AboutDialog, MusicWidget, REVIEW_SAVE_MIN_INTERVAL
+from ui.deck_view import DeckView
+from ui.deck_tree import CACHE_AUTO_REFRESH_MS, CacheWidget, DeckTree
 
 class HomeScreenJournalTests(unittest.TestCase):
     def setUp(self):
@@ -93,6 +95,121 @@ class HomeScreenMusicWidgetTests(unittest.TestCase):
         )
 
 
+class DeckViewRefreshTests(unittest.TestCase):
+    def test_hidden_dojo_banner_does_not_run_glow_timer_by_default(self):
+        view = DeckView()
+        self.addCleanup(view.close)
+
+        self.assertFalse(view.dojo_banner._glow_timer.isActive())
+
+    def test_edit_card_refreshes_home_tree_rollups(self):
+        deck = {
+            "_id": 2,
+            "name": "Permutation",
+            "cards": [
+                {
+                    "title": "Q1",
+                    "boxes": [
+                        {
+                            "box_id": "b1",
+                            "sched_state": "review",
+                            "sm2_due": "2026-05-23T00:00:00",
+                        }
+                    ],
+                }
+            ],
+            "children": [],
+        }
+        data = {"decks": [{"_id": 1, "name": "Math", "cards": [], "children": [deck]}]}
+        view = DeckView()
+        self.addCleanup(view.close)
+        view.deck = deck
+        view._data = data
+        view.card_list.addItem(QListWidgetItem("Q1"))
+        edited_card = {
+            "title": "Q1 edited",
+            "boxes": [
+                {"box_id": "b1"},
+                {"box_id": "b2", "sched_state": "new"},
+            ],
+        }
+        dialog = MagicMock()
+        dialog.exec_.return_value = QDialog.Accepted
+        dialog.get_card.return_value = edited_card
+        home = MagicMock()
+
+        with patch("ui.deck_view._load_card_editor_dialog", return_value=MagicMock(return_value=dialog)), \
+             patch.object(view, "_find_home", return_value=home), \
+             patch.object(view, "_refresh") as local_refresh, \
+             patch("ui.deck_view.store.mark_dirty") as mark_dirty, \
+             patch("ui.deck_view.store.save_force") as save_force, \
+             patch("perf_utils.invalidate_deck_stats") as invalidate:
+            view._edit_card(view.card_list.item(0))
+
+        invalidate.assert_called_once_with()
+        home.refresh.assert_called_once_with()
+        local_refresh.assert_not_called()
+        mark_dirty.assert_called_once_with()
+        save_force.assert_called_once_with()
+        dialog.clear_recovery_draft.assert_called_once_with()
+        self.assertEqual(deck["cards"][0]["title"], "Q1 edited")
+        self.assertEqual(deck["cards"][0]["boxes"][0]["sched_state"], "review")
+
+
+class HomeScreenIdleTimerTests(unittest.TestCase):
+    def test_deck_tree_blink_timer_is_idle_by_default(self):
+        with patch.dict(os.environ, {"ANKI_HOME_ANIMATIONS": ""}, clear=False):
+            tree = DeckTree({"decks": []})
+            self.addCleanup(tree.close)
+
+            tree.show()
+            _APP.processEvents()
+
+        self.assertFalse(tree._blink_timer.isActive())
+
+    def test_deck_tree_blink_timer_only_runs_when_home_animations_are_enabled(self):
+        with patch.dict(os.environ, {"ANKI_HOME_ANIMATIONS": "1"}, clear=False):
+            tree = DeckTree({"decks": []})
+            self.addCleanup(tree.close)
+
+            self.assertFalse(tree._blink_timer.isActive())
+
+            tree.show()
+            _APP.processEvents()
+            self.assertTrue(tree._blink_timer.isActive())
+
+            tree.hide()
+            _APP.processEvents()
+            self.assertFalse(tree._blink_timer.isActive())
+
+    def test_cache_widget_polls_only_visible_theme_at_slow_interval(self):
+        widget = CacheWidget()
+        self.addCleanup(widget.close)
+
+        self.assertEqual(widget.classic_widget._auto_timer.interval(), CACHE_AUTO_REFRESH_MS)
+        self.assertEqual(widget.dojo_widget._auto_timer.interval(), CACHE_AUTO_REFRESH_MS)
+        self.assertFalse(widget.classic_widget._auto_timer.isActive())
+        self.assertFalse(widget.dojo_widget._auto_timer.isActive())
+
+        widget.show()
+        _APP.processEvents()
+
+        self.assertTrue(widget.classic_widget._auto_timer.isActive())
+        self.assertFalse(widget.dojo_widget._auto_timer.isActive())
+
+        widget.set_theme("tmnt")
+        _APP.processEvents()
+
+        self.assertTrue(widget.classic_widget._auto_timer.isActive())
+        self.assertFalse(widget.dojo_widget._auto_timer.isActive())
+
+        widget.hide()
+        _APP.processEvents()
+
+        self.assertFalse(widget.classic_widget._auto_timer.isActive())
+        self.assertFalse(widget.dojo_widget._auto_timer.isActive())
+
+
 class HomeScreenClassicUiTests(unittest.TestCase):
     def setUp(self):
         self.print_patch = patch("builtins.print")
@@ -145,6 +262,114 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         self.assertTrue(shown)
         dialog_cls.assert_called_once()
         dialog.exec_.assert_called_once_with()
+
+    def test_startup_review_only_recovery_auto_applies_without_dialog(self):
+        summary = {
+            "drafts": [],
+            "review_events": [
+                {"event_id": "r1", "status": "recoverable"},
+                {"event_id": "r2", "status": "recoverable"},
+            ],
+        }
+        empty_summary = {"drafts": [], "review_events": []}
+        result = {"applied": 2, "already_applied": 0, "blocked": []}
+
+        with patch(
+            "ui.home_screen.recovery_manager.scan_recovery",
+            side_effect=[summary, empty_summary],
+        ), patch(
+            "ui.home_screen.recovery_manager.apply_pending_review_events",
+            return_value=result,
+        ) as apply_events, patch(
+            "ui.home_screen.store.mark_dirty"
+        ) as mark_dirty, patch(
+            "ui.home_screen.store.save_force"
+        ) as save_force, patch.object(
+            self.home_screen, "refresh"
+        ) as refresh, patch(
+            "ui.home_screen.store.save_soon"
+        ) as save_soon, patch(
+            "ui.home_screen.RecoveryDialog"
+        ) as dialog_cls:
+            shown = self.home_screen.show_recovery_center(startup=True)
+
+        self.assertTrue(shown)
+        apply_events.assert_called_once()
+        mark_dirty.assert_called_once_with()
+        save_force.assert_called_once_with()
+        save_soon.assert_not_called()
+        refresh.assert_not_called()
+        dialog_cls.assert_not_called()
+
+    def test_startup_review_recovery_with_blocked_event_still_opens_dialog(self):
+        summary = {
+            "drafts": [],
+            "review_events": [{"event_id": "r1", "status": "missing_card"}],
+        }
+        dialog = MagicMock()
+        dialog.action = "close"
+
+        with patch("ui.home_screen.recovery_manager.scan_recovery", return_value=summary), \
+             patch("ui.home_screen.recovery_manager.apply_pending_review_events") as apply_events, \
+             patch("ui.home_screen.RecoveryDialog", return_value=dialog) as dialog_cls:
+            shown = self.home_screen.show_recovery_center(startup=True)
+
+        self.assertTrue(shown)
+        apply_events.assert_not_called()
+        dialog_cls.assert_called_once()
+        dialog.exec_.assert_called_once_with()
+
+    def test_review_cancel_without_changes_does_not_force_save(self):
+        class FakeReview(QWidget):
+            finished = pyqtSignal()
+            cancelled = pyqtSignal()
+
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+                self.canvas = MagicMock()
+
+        with patch("ui.home_screen._load_review_screen", return_value=FakeReview), \
+             patch("ui.home_screen.store.is_dirty", return_value=False) as is_dirty, \
+             patch("ui.home_screen.store.save_force") as save_force, \
+             patch("ui.home_screen.store.save_soon") as save_soon, \
+             patch.object(
+                 self.home_screen,
+                 "window",
+                 return_value=MagicMock(statusBar=MagicMock(return_value=MagicMock())),
+             ):
+            self.home_screen.show_review([{"title": "Card"}], self.home_screen._data)
+            self.home_screen._active_review.cancelled.emit()
+
+        is_dirty.assert_called_once_with()
+        save_force.assert_not_called()
+        save_soon.assert_not_called()
+
+    def test_review_cancel_with_dirty_store_delays_heavy_save(self):
+        class FakeReview(QWidget):
+            finished = pyqtSignal()
+            cancelled = pyqtSignal()
+
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+                self.canvas = MagicMock()
+
+        with patch("ui.home_screen._load_review_screen", return_value=FakeReview), \
+             patch("ui.home_screen.store.is_dirty", return_value=True), \
+             patch("ui.home_screen.store.save_force") as save_force, \
+             patch("ui.home_screen.store.save_soon") as save_soon, \
+             patch.object(
+                 self.home_screen,
+                 "window",
+                 return_value=MagicMock(statusBar=MagicMock(return_value=MagicMock())),
+             ):
+            self.home_screen.show_review([{"title": "Card"}], self.home_screen._data)
+            self.home_screen._active_review.cancelled.emit()
+
+        save_force.assert_not_called()
+        save_soon.assert_called_once_with(
+            min_interval=REVIEW_SAVE_MIN_INTERVAL,
+            delay_from_now=True,
+        )
 
     def test_recovery_center_delete_all_drafts_deletes_every_selected_draft(self):
         first_summary = {

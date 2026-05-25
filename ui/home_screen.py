@@ -64,6 +64,7 @@ from sm2_engine import (
 
 from services import recovery_manager
 from services import shortcut_manager
+from services.review_manager import REVIEW_SAVE_MIN_INTERVAL
 
 from data_manager import (
     load_data,
@@ -1231,7 +1232,7 @@ class HomeScreen(QWidget):
                 100,
                 lambda: (
                     self.window().statusBar().hide()
-                    if self.window() and self.window().statusBar()
+                    if self.window() and hasattr(self.window(), "statusBar")
                     else None
                 ),
             )
@@ -1360,11 +1361,17 @@ class HomeScreen(QWidget):
         rev = _load_review_screen()(cards, data=data, parent=self)
         self._active_review = rev
 
+        def _schedule_review_save():
+            if store.is_dirty():
+                store.save_soon(
+                    min_interval=REVIEW_SAVE_MIN_INTERVAL,
+                    delay_from_now=True,
+                )
+
         def _on_finished():
             if not _save_done[0]:
                 _save_done[0] = True
-                store.mark_dirty()
-                store.save_force()
+                _schedule_review_save()
             self.hide_review()
             if _on_batch_done:
                 _on_batch_done()
@@ -1372,8 +1379,7 @@ class HomeScreen(QWidget):
         def _on_cancelled():
             if not _save_done[0]:
                 _save_done[0] = True
-                store.mark_dirty()
-                store.save_force()
+                _schedule_review_save()
             self.hide_review()
 
         rev.finished.connect(_on_finished)
@@ -2114,9 +2120,31 @@ class HomeScreen(QWidget):
             """)
 
     def show_recovery_center(self, startup=False):
-        summary = recovery_manager.scan_recovery(store.get())
+        summary = recovery_manager.scan_recovery(store.get(), startup=startup)
         has_drafts = bool(summary.get("drafts"))
         has_events = bool(summary.get("review_events"))
+        if startup and has_events and not has_drafts:
+            events = summary.get("review_events", []) or []
+            if events and all(event.get("status") == "recoverable" for event in events):
+                print(
+                    "[DEBUG][recovery] startup_auto_review_recover_start "
+                    f"events={len(events)}"
+                )
+                result = recovery_manager.apply_pending_review_events(store.get())
+                if result.get("applied", 0) > 0:
+                    store.mark_dirty()
+                    store.save_force()
+                print(
+                    "[DEBUG][recovery] startup_auto_review_recover "
+                    f"applied={result.get('applied', 0)} "
+                    f"already={result.get('already_applied', 0)} "
+                    f"blocked={len(result.get('blocked', []))}"
+                )
+                summary = recovery_manager.scan_recovery(store.get(), startup=startup)
+                has_drafts = bool(summary.get("drafts"))
+                has_events = bool(summary.get("review_events"))
+                if not has_drafts and not has_events:
+                    return True
         if not has_drafts and not has_events:
             if not startup:
                 QMessageBox.information(
@@ -2164,7 +2192,7 @@ class HomeScreen(QWidget):
             else:
                 return True
 
-            summary = recovery_manager.scan_recovery(store.get())
+            summary = recovery_manager.scan_recovery(store.get(), startup=startup)
             if not summary.get("drafts") and not summary.get("review_events"):
                 return True
 

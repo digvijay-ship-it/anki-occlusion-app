@@ -3,7 +3,7 @@ import unittest
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -109,6 +109,30 @@ class RecoveryDialogCopyTests(unittest.TestCase):
             [draft["draft_id"] for draft in dialog.selected_drafts],
             ["new", "old"],
         )
+
+    def test_review_progress_only_dialog_explains_empty_draft_list(self):
+        dialog = RecoveryDialog(
+            {
+                "drafts": [],
+                "review_events": [
+                    {"event_id": "r1", "status": "recoverable"},
+                    {"event_id": "r2", "status": "recoverable"},
+                ],
+            }
+        )
+        self.addCleanup(dialog.close)
+
+        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        self.assertIn("We found unsaved review progress", labels)
+        self.assertIn("No card drafts are waiting", labels)
+        self.assertIn("Review progress ready to restore: 2", labels)
+        self.assertEqual(dialog.draft_list.count(), 1)
+        self.assertIn("Review progress checkpoint", dialog.draft_list.item(0).text())
+        self.assertTrue(dialog.btn_recover_reviews.isEnabled())
+        self.assertEqual(dialog.btn_recover_reviews.objectName(), "primaryRecoveryButton")
+        self.assertEqual(dialog.btn_close.text(), "Close (Keep Progress)")
+        self.assertFalse(dialog.btn_restore_latest.isEnabled())
+        self.assertFalse(dialog.btn_open_draft.isEnabled())
 
 
 if __name__ == "__main__":

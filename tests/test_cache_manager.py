@@ -43,10 +43,34 @@ class LRUPageCacheTests(unittest.TestCase):
     def _cleanup_tmpdir(self):
         for path in sorted(self.tmpdir.rglob("*"), reverse=True):
             if path.is_file():
-                path.unlink(missing_ok=True)
+                self._unlink_with_retry(path)
             elif path.is_dir():
+                self._rmdir_with_retry(path)
+        self._rmdir_with_retry(self.tmpdir)
+
+    def _unlink_with_retry(self, path):
+        for attempt in range(20):
+            try:
+                path.unlink(missing_ok=True)
+                return
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                gc.collect()
+                _APP.processEvents()
+                time.sleep(0.05)
+
+    def _rmdir_with_retry(self, path):
+        for attempt in range(20):
+            try:
                 path.rmdir()
-        self.tmpdir.rmdir()
+                return
+            except (PermissionError, OSError):
+                if attempt == 19:
+                    raise
+                gc.collect()
+                _APP.processEvents()
+                time.sleep(0.05)
 
     def test_put_get_and_invalidate_pdf(self):
         cache = cache_manager.LRUPageCache()

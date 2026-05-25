@@ -16,6 +16,7 @@ import uuid
 import time
 import math
 import copy
+import os
 
 from cache_manager import MASK_REGISTRY, PIXMAP_REGISTRY
 
@@ -104,8 +105,23 @@ class CanvasStateMixin:
     def load_pages(self, pages: list):
         """File: editor_ui.py -> Class: OcclusionCanvas -> Function: load_pages"""
         self._px = None
-        self._pages = [p for p in pages if p and not p.isNull()]
-        self._spx_cache.clear()
+        cache_before = len(self._spx_cache)
+        old_dims = [(p.width(), p.height()) for p in self._pages if p and not p.isNull()]
+        new_pages = [p for p in pages if p and not p.isNull()]
+        new_dims = [(p.width(), p.height()) for p in new_pages]
+        current_pdf = getattr(self, "_current_pdf_path", "") or ""
+        cache_pdf = getattr(self, "_spx_cache_pdf_path", "") or ""
+        preserve_scaled = bool(
+            cache_before
+            and cache_pdf
+            and current_pdf
+            and cache_pdf == current_pdf
+            and old_dims == new_dims
+        )
+        self._pages = new_pages
+        if not preserve_scaled:
+            self._spx_cache.clear()
+        self._spx_cache_pdf_path = current_pdf
         self._compute_layout()
         self._invalidate_mask_cache()
         self._resize_canvas()
@@ -193,6 +209,7 @@ class CanvasStateMixin:
         sh = max(int(page_px.height() * self._scale), 1)
         cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, Qt.FastTransformation)
         self._spx_cache[idx] = (self._scale, cached_spx)
+        self._spx_cache_pdf_path = getattr(self, "_current_pdf_path", "") or ""
         return cached_spx
 
     def inject_page(self, page_num: int, qpx):
@@ -207,16 +224,9 @@ class CanvasStateMixin:
         """
         # ── Bounds check ──────────────────────────────────────────────────────
         if page_num < 0 or page_num >= len(self._pages):
-            print(
-                f"[DEBUG][inject_page] ❌ page_num={page_num} out of range "
-                f"(canvas has {len(self._pages)} pages) — ignored"
-            )
             return
 
         if qpx is None or qpx.isNull():
-            print(
-                f"[DEBUG][inject_page] ❌ p.{page_num+1} — null QPixmap received — ignored"
-            )
             return
 
         old_px = self._pages[page_num]
@@ -233,9 +243,19 @@ class CanvasStateMixin:
         # ── Inject ────────────────────────────────────────────────────────────
         self._pages[page_num] = qpx
 
-        # Invalidate scaled cache for this page only
-        self._spx_cache.pop(page_num, None)
-
+        # Refresh or invalidate scaled cache for this page only.
+        cached_scale, _cached_spx = self._spx_cache.get(page_num, (None, None))
+        had_scaled_cache = cached_scale is not None
+        if had_scaled_cache and dims_match and cached_scale == self._scale:
+            sw = max(int(new_w * self._scale), 1)
+            sh = max(int(new_h * self._scale), 1)
+            self._spx_cache[page_num] = (
+                self._scale,
+                qpx.scaled(sw, sh, Qt.KeepAspectRatio, Qt.FastTransformation),
+            )
+            self._spx_cache_pdf_path = getattr(self, "_current_pdf_path", "") or ""
+        else:
+            self._spx_cache.pop(page_num, None)
         if not dims_match:
             self._compute_layout()
             self._resize_canvas()
@@ -256,9 +276,13 @@ class CanvasStateMixin:
 
     def _invalidate_mask_cache(self):
         self._mask_cache_dirty = True
+        if getattr(self, "_mask_cache_rebuild_pending", False):
+            return
+        self._mask_cache_rebuild_pending = True
         QTimer.singleShot(0, self._rebuild_mask_cache_if_dirty)
 
     def _rebuild_mask_cache_if_dirty(self):
+        self._mask_cache_rebuild_pending = False
         if self._mask_cache_dirty:
             self._rebuild_mask_cache()
             self.update()

@@ -10,6 +10,7 @@ from storage_paths import (
     current_recovery_applied_events_dir,
     current_recovery_drafts_dir,
     current_recovery_pending_events_dir,
+    current_data_file,
     ensure_recovery_dirs,
 )
 
@@ -194,6 +195,83 @@ def draft_to_card(draft):
     card.setdefault("notes", "")
     card.setdefault("boxes", [])
     return card
+
+
+def _stable_json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _card_recovery_snapshot(card):
+    if not isinstance(card, dict):
+        return {}
+    box_snapshot = []
+    for box in card.get("boxes", []) or []:
+        if isinstance(box, dict):
+            box_snapshot.append(
+                {
+                    key: copy.deepcopy(value)
+                    for key, value in box.items()
+                    if key not in REVIEW_FIELD_KEYS
+                }
+            )
+    snapshot = {
+        "title": copy.deepcopy(card.get("title", "Recovered Draft")),
+        "tags": copy.deepcopy(card.get("tags", [])),
+        "notes": copy.deepcopy(card.get("notes", "")),
+        "boxes": box_snapshot,
+    }
+    optional_keys = (
+        "image_path",
+        "pdf_path",
+        "created",
+        "_pdf_box_render_zoom",
+    )
+    for key in optional_keys:
+        if key in card:
+            snapshot[key] = copy.deepcopy(card.get(key))
+    return snapshot
+
+
+def _card_recovery_fingerprint(card):
+    return _stable_json(_card_recovery_snapshot(card))
+
+
+def editor_draft_status(data, draft):
+    """
+    Return whether an editor recovery draft still contains unsaved work.
+
+    The app should not interrupt startup for drafts already reflected in the
+    loaded deck data. Ambiguous or missing matches stay recoverable so the user
+    can decide from Recovery Center.
+    """
+    draft = draft or {}
+    mode = draft.get("mode", "add")
+    draft_card = draft_to_card(draft)
+    draft_fp = _card_recovery_fingerprint(draft_card)
+
+    if mode == "edit":
+        current_card, _deck, _idx, status = find_card_by_locator(
+            data, draft.get("initial_card_locator", {})
+        )
+        if status != "ok":
+            return status
+        if _card_recovery_fingerprint(current_card) == draft_fp:
+            return "already_saved"
+        return "recoverable"
+
+    for _deck, _deck_path, _idx, current_card in _iter_cards(data):
+        if _card_recovery_fingerprint(current_card) == draft_fp:
+            return "already_saved"
+    return "recoverable"
+
+
+def editor_draft_older_than_loaded_data(draft):
+    draft_dt = _record_time(draft.get("_path", ""), draft or {})
+    try:
+        data_dt = datetime.fromtimestamp(os.path.getmtime(current_data_file()))
+    except Exception:
+        return False
+    return draft_dt < data_dt
 
 
 def _iter_decks(data, trail=None):
@@ -407,6 +485,41 @@ def record_review_event(event):
     return payload
 
 
+def discard_review_event(event):
+    """Remove a pending review event that has been superseded in-memory."""
+    if not event:
+        return False
+    ensure_recovery_dirs()
+    event_id = (event or {}).get("event_id")
+    candidates = []
+    if event.get("_path"):
+        candidates.append(event.get("_path"))
+    try:
+        candidates.append(review_event_path(event))
+    except Exception:
+        pass
+
+    deleted = False
+    seen = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if os.path.exists(path):
+            os.unlink(path)
+            deleted = True
+
+    if event_id:
+        for path in _json_files(current_recovery_pending_events_dir()):
+            try:
+                if _read_json(path).get("event_id") == event_id:
+                    os.unlink(path)
+                    deleted = True
+            except Exception:
+                continue
+    return deleted
+
+
 def load_pending_review_events():
     ensure_recovery_dirs()
     events = []
@@ -452,12 +565,81 @@ def _fields_match(obj, fields):
     return all(obj.get(key) == value for key, value in (fields or {}).items())
 
 
+def _review_fields_already_present(obj, fields):
+    for key, value in (fields or {}).items():
+        if (obj or {}).get(key) == value:
+            continue
+        if key == "reviewed_at" and not (obj or {}).get("reviewed_at"):
+            continue
+        if (
+            key == "last_quality"
+            and not (obj or {}).get("last_quality")
+            and (obj or {}).get("sm2_last_quality") == value
+        ):
+            continue
+        return False
+    return True
+
+
+def _latest_review_dt(obj):
+    times = [
+        _parse_dt((obj or {}).get("reviewed_at")),
+        _parse_dt((obj or {}).get("last_reviewed_at")),
+    ]
+    times = [value for value in times if value is not None]
+    return max(times) if times else None
+
+
+def _update_review_dt(event, fields):
+    times = [
+        _parse_dt((event or {}).get("timestamp")),
+        _parse_dt((fields or {}).get("reviewed_at")),
+        _parse_dt((fields or {}).get("last_reviewed_at")),
+    ]
+    times = [value for value in times if value is not None]
+    return max(times) if times else None
+
+
+def _number_at_least(obj, fields, key):
+    if key not in (fields or {}):
+        return True
+    try:
+        current = float((obj or {}).get(key, 0))
+        expected = float((fields or {}).get(key, 0))
+    except (TypeError, ValueError):
+        return (obj or {}).get(key) == (fields or {}).get(key)
+    return current >= expected
+
+
+def _review_update_superseded(obj, fields, event):
+    current_dt = _latest_review_dt(obj)
+    update_dt = _update_review_dt(event, fields)
+    if current_dt is not None and update_dt is not None and current_dt >= update_dt:
+        return _number_at_least(obj, fields, "reviews") and _number_at_least(
+            obj, fields, "sm2_repetitions"
+        )
+    if not _number_at_least(obj, fields, "reviews") or not _number_at_least(
+        obj, fields, "sm2_repetitions"
+    ):
+        return False
+    current_reviews = (obj or {}).get("reviews")
+    expected_reviews = (fields or {}).get("reviews")
+    current_reps = (obj or {}).get("sm2_repetitions")
+    expected_reps = (fields or {}).get("sm2_repetitions")
+    try:
+        return float(current_reviews) > float(expected_reviews) or float(
+            current_reps
+        ) > float(expected_reps)
+    except (TypeError, ValueError):
+        return False
+
+
 def review_event_status(data, event):
     card, _deck, _idx, status = find_card_by_locator(data, event.get("card_locator"))
     if status != "ok":
         return status
 
-    all_match = True
+    all_safe = True
     for update in event.get("updates", []) or []:
         target = update.get("target")
         fields = update.get("fields", {}) or {}
@@ -469,9 +651,13 @@ def review_event_status(data, event):
                 return box_status
         else:
             continue
-        if not _fields_match(obj, fields):
-            all_match = False
-    return "already_applied" if all_match else "recoverable"
+        if (
+            not _fields_match(obj, fields)
+            and not _review_fields_already_present(obj, fields)
+            and not _review_update_superseded(obj, fields, event)
+        ):
+            all_safe = False
+    return "already_applied" if all_safe else "recoverable"
 
 
 def apply_review_event(data, event):
@@ -514,9 +700,24 @@ def _mark_event_applied(event):
         os.unlink(source)
 
 
-def scan_recovery(data):
-    prune_old_records()
-    drafts = load_editor_drafts()
+def scan_recovery(data, startup=False):
+    if not startup:
+        prune_old_records()
+    drafts = []
+    moved_saved_drafts = 0
+    skipped_stale_drafts = 0
+    for draft in load_editor_drafts():
+        if startup and editor_draft_older_than_loaded_data(draft):
+            skipped_stale_drafts += 1
+            continue
+        status = editor_draft_status(data, draft)
+        if status == "already_saved":
+            if delete_editor_draft(draft.get("draft_id")):
+                moved_saved_drafts += 1
+            continue
+        item = copy.deepcopy(draft)
+        item["status"] = status
+        drafts.append(item)
     pending_events = []
     moved_applied = 0
     for event in load_pending_review_events():
@@ -532,6 +733,8 @@ def scan_recovery(data):
         "drafts": drafts,
         "review_events": pending_events,
         "moved_applied": moved_applied,
+        "moved_saved_drafts": moved_saved_drafts,
+        "skipped_stale_drafts": skipped_stale_drafts,
     }
 
 

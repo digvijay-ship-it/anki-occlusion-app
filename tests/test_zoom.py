@@ -60,7 +60,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen._canvas_scroll = MagicMock()
         screen._canvas_scroll.viewport.return_value = viewport
 
-        with patch("builtins.print") as fake_print:
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("builtins.print") as fake_print:
             screen._zoom_fit()
 
         self.assertAlmostEqual(screen.canvas._scale, 2.5)
@@ -185,10 +186,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         dialog_instance.setWindowModality.assert_called_once_with(Qt.NonModal)
         flags = dialog_instance.setWindowFlags.call_args.args[0]
         self.assertTrue(flags & Qt.Window)
-        self.assertTrue(flags & Qt.WindowMinimizeButtonHint)
-        self.assertTrue(flags & Qt.WindowMaximizeButtonHint)
-        self.assertTrue(flags & Qt.WindowCloseButtonHint)
-        dialog_instance.showMaximized.assert_called_once_with()
+        self.assertTrue(flags & Qt.FramelessWindowHint)
+        dialog_instance.showFullScreen.assert_called_once_with()
 
     def test_annotation_ctrl_tab_focus_helpers_switch_between_windows(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
@@ -254,10 +253,10 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen.mgr._idx = 0
         screen._items = [({"pdf_path": "deck.pdf"}, 0, {})]
         screen.canvas = MagicMock()
-        screen.canvas._scale = 1.0
-        screen.canvas.get_current_page.return_value = 0
+        screen.canvas._scale = 1.25
+        screen.canvas.get_current_page.return_value = 3
         bar = MagicMock()
-        bar.value.return_value = 10
+        bar.value.return_value = 500
         screen._canvas_scroll = MagicMock()
         screen._canvas_scroll.verticalScrollBar.return_value = bar
         screen._pause_review_lazy_activity_for_annotation = MagicMock()
@@ -271,6 +270,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
             screen._open_annotation_beta()
 
         dialog_cls.assert_not_called()
+        active_dialog.retarget_from_review.assert_called_once_with(3, 400.0)
+        active_dialog.showFullScreen.assert_called_once_with()
         active_dialog.raise_.assert_called_once_with()
         active_dialog.activateWindow.assert_called_once_with()
         screen._pause_review_lazy_activity_for_annotation.assert_not_called()
@@ -350,7 +351,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         pixmap.width.return_value = 200
         pixmap.height.return_value = 300
 
-        with patch("builtins.print") as fake_print:
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("builtins.print") as fake_print:
             screen._on_page_ready(1, pixmap)
 
         screen.canvas.inject_page.assert_called_once_with(1, pixmap)
@@ -373,7 +375,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen._update_review_page_nav_ui = MagicMock()
         pixmap = MagicMock()
 
-        with patch("builtins.print") as fake_print:
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("builtins.print") as fake_print:
             screen._on_page_ready(1, pixmap)
 
         self.assertIs(screen._bg_pending_inserts[1], pixmap)
@@ -420,7 +423,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         fake_thread.page_ready = MagicMock()
         fake_thread.batch_done = MagicMock()
 
-        with patch("ui.review_screen.PdfOnDemandThread", return_value=fake_thread), \
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("ui.review_screen.PdfOnDemandThread", return_value=fake_thread), \
              patch("builtins.print") as fake_print:
             screen._start_visible_page_request("deck.pdf", [3, 1, 3])
 
@@ -432,6 +436,7 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen = UiReviewScreen.__new__(UiReviewScreen)
         screen._ondemand_path = "deck.pdf"
         screen._ondemand_total = 18
+        screen._review_defer_visible_until_centered = False
         screen._note_user_activity = MagicMock()
         screen._start_visible_page_request = MagicMock()
         screen._ondemand_thread = None
@@ -443,7 +448,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         placeholder.isNull.return_value = False
         screen.canvas._pages = [placeholder for _ in range(18)]
 
-        with patch("ui.review_screen.PAGE_CACHE.get", return_value=None), \
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("ui.review_screen.PAGE_CACHE.get", return_value=None), \
              patch("builtins.print") as fake_print:
             screen._on_visible_pages_changed(1, 3)
             screen._start_visible_page_request.reset_mock()
@@ -475,6 +481,7 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen = UiReviewScreen.__new__(UiReviewScreen)
         screen._ondemand_path = "deck.pdf"
         screen._ondemand_total = 18
+        screen._review_defer_visible_until_centered = False
         screen._note_user_activity = MagicMock()
         screen._start_visible_page_request = MagicMock()
         screen._update_review_page_nav_ui = MagicMock()
@@ -495,7 +502,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         def fake_cache_get(path, page_num):
             return cached if page_num == 2 else None
 
-        with patch("ui.review_screen.PAGE_CACHE.get", side_effect=fake_cache_get), \
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("ui.review_screen.PAGE_CACHE.get", side_effect=fake_cache_get), \
              patch("builtins.print") as fake_print:
             screen._on_visible_pages_changed(2, 2)
 
@@ -541,7 +549,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
             (other_pdf, 0, {}),
         ]
 
-        with patch("builtins.print") as fake_print:
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("builtins.print") as fake_print:
             result = screen._get_priority_pages(same_pdf_b, 1, 18, "deck.pdf")
 
         self.assertEqual(result, [7, 2, 5, 6, 8])
@@ -584,7 +593,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
             return_value=[{"rect": [10, 200000, 80, 40], "page_num": 100}]
         )
 
-        with patch("builtins.print") as fake_print:
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("builtins.print") as fake_print:
             result = screen._get_priority_pages(card, 0, 150, "deck.pdf")
 
         self.assertEqual(result[0], 100)
@@ -626,10 +636,30 @@ class ReviewScreenZoomTests(unittest.TestCase):
 
         screen._start_visible_page_request.assert_called_once_with("deck.pdf", [100])
 
+    def test_stale_priority_batch_done_does_not_clear_current_visible_request(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        old_thread = object()
+        current_thread = object()
+        screen._ondemand_thread = current_thread
+        screen._ondemand_path = "deck.pdf"
+        screen._ondemand_kind = "visible"
+        screen._pending_visible_request = None
+        screen._background_fill_state = None
+        screen._review_render_inflight_pages = {3, 100}
+        screen._ondemand_request_pages_by_thread = {id(old_thread): {3}}
+
+        with patch("builtins.print"):
+            screen._on_priority_batch_done("deck.pdf", [3], 150, old_thread)
+
+        self.assertEqual(screen._ondemand_kind, "visible")
+        self.assertIs(screen._ondemand_thread, current_thread)
+        self.assertEqual(screen._review_render_inflight_pages, {100})
+
     def test_visible_pages_changed_skips_canvas_real_page_when_cache_evicted(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
         screen._ondemand_path = "deck.pdf"
         screen._ondemand_total = 150
+        screen._review_defer_visible_until_centered = False
         screen._note_user_activity = MagicMock()
         screen._start_visible_page_request = MagicMock()
         screen._ondemand_thread = None
@@ -649,13 +679,58 @@ class ReviewScreenZoomTests(unittest.TestCase):
 
         screen._start_visible_page_request.assert_not_called()
 
+    def test_review_pages_needing_render_silences_decision_log_by_default(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._review_canvas_real_pages = set()
+        screen._bg_pending_inserts = {}
+        screen._review_render_inflight_pages = set()
+        screen._pending_visible_request = None
+
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": ""}, clear=False), \
+             patch("ui.review_screen.PAGE_CACHE.get", return_value=None), \
+             patch("builtins.print") as fake_print:
+            needed = screen._review_pages_needing_render("deck.pdf", [0])
+
+        self.assertEqual(needed, [0])
+        fake_print.assert_not_called()
+
+    def test_review_pages_needing_render_verbose_flag_prints_decision_log(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._review_canvas_real_pages = set()
+        screen._bg_pending_inserts = {}
+        screen._review_render_inflight_pages = set()
+        screen._pending_visible_request = None
+
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("ui.review_screen.PAGE_CACHE.get", return_value=None), \
+             patch("builtins.print") as fake_print:
+            needed = screen._review_pages_needing_render("deck.pdf", [0])
+
+        self.assertEqual(needed, [0])
+        self.assertIn("[DEBUG][review_decision]", fake_print.call_args.args[0])
+
+    def test_visible_pages_changed_defers_until_initial_centering_finishes(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._ondemand_path = "deck.pdf"
+        screen._ondemand_total = 150
+        screen._review_defer_visible_until_centered = True
+        screen._note_user_activity = MagicMock()
+        screen._start_visible_page_request = MagicMock()
+
+        with patch("builtins.print") as fake_print:
+            screen._on_visible_pages_changed(0, 0)
+
+        screen._start_visible_page_request.assert_not_called()
+        fake_print.assert_not_called()
+
     def test_review_cache_debug_helper_prints_source_cache(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
         pixmap = MagicMock()
         pixmap.width.return_value = 160
         pixmap.height.return_value = 240
 
-        with patch("builtins.print") as fake_print:
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("builtins.print") as fake_print:
             screen._debug_review_lazy_page_loaded(
                 source="cache",
                 page_num=0,
@@ -670,7 +745,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
     def test_review_bulk_cache_debug_helper_prints_each_page(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
 
-        with patch("builtins.print") as fake_print:
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("builtins.print") as fake_print:
             screen._debug_review_lazy_pages_loaded(source="cache", page_nums=[0, 2])
 
         printed = [call.args[0] for call in fake_print.call_args_list]
@@ -684,7 +760,8 @@ class ReviewScreenZoomTests(unittest.TestCase):
         pixmap = MagicMock()
         pixmap.isNull.return_value = False
 
-        with patch("ui.review_screen.PAGE_CACHE.get", return_value=pixmap), \
+        with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
+             patch("ui.review_screen.PAGE_CACHE.get", return_value=pixmap), \
              patch("builtins.print") as fake_print:
             screen._apply_annotation_beta_refresh("deck.pdf", [1, 3], None)
 
@@ -700,6 +777,10 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen._ui_idle_timer = MagicMock()
         screen._bg_pending_inserts = {}
         screen._stop_ondemand_thread = MagicMock()
+        screen._reveal_bar = MagicMock()
+        screen._rating_frame = MagicMock()
+        screen._reveal_bar.isVisible.return_value = False
+        screen._rating_frame.isVisible.return_value = False
 
         screen._pause_review_lazy_activity_for_annotation()
         screen._resume_review_lazy_activity_after_annotation("deck.pdf")
@@ -707,6 +788,25 @@ class ReviewScreenZoomTests(unittest.TestCase):
         screen._pdf_watcher.stop_watch.assert_called_once()
         screen._pdf_watcher.watch_pdf.assert_called_once_with("deck.pdf")
         self.assertFalse(screen._review_lazy_trace_suspended)
+
+    def test_review_annotation_pause_hides_and_restores_review_overlay(self):
+        screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._pdf_watcher = None
+        screen._ui_idle_timer = MagicMock()
+        screen._bg_pending_inserts = {}
+        screen._stop_ondemand_thread = MagicMock()
+        screen._reveal_bar = MagicMock()
+        screen._rating_frame = MagicMock()
+        screen._reveal_bar.isVisible.return_value = True
+        screen._rating_frame.isVisible.return_value = False
+        screen._show_overlay = MagicMock()
+
+        screen._pause_review_lazy_activity_for_annotation()
+        screen._resume_review_lazy_activity_after_annotation()
+
+        screen._reveal_bar.hide.assert_called_once_with()
+        screen._rating_frame.hide.assert_called_once_with()
+        screen._show_overlay.assert_called_once_with(screen._reveal_bar)
 
     def test_review_background_ready_pages_auto_insert_without_prefetch_acceptance(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)

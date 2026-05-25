@@ -123,6 +123,7 @@ class OcclusionCanvas(
         # ── mask GPU cache ────────────────────────────────────────────────────
         self._mask_cache_layer = None  # QPixmap
         self._mask_cache_dirty = True
+        self._mask_cache_rebuild_pending = False
 
         # ── ink layer ─────────────────────────────────────────────────────────
         self._ink_active = False

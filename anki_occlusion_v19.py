@@ -48,6 +48,10 @@ v15 Bug Fixes:
             to eliminate mouseMoveEvent lag completely.
 """
 
+from debug_output import install_debug_output_filter
+
+install_debug_output_filter()
+
 from sm2_engine import (
     sched_init,
     sm2_init,

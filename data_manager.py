@@ -14,6 +14,10 @@ DATA_FILE = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
 AUTO_SAVE_INTERVAL = 60  # seconds
 BACKUP_DIR_NAME = "anki_occlusion_data.backups"
 MAX_SAVE_BACKUPS = 50
+SAVE_BACKUP_MIN_INTERVAL = 300.0
+SAVE_BACKUP_INTERVAL_ENV = "ANKI_SAVE_BACKUP_MIN_INTERVAL"
+_LAST_SAVE_BACKUP_TS_BY_FILE = {}
+_SAVE_BACKUP_THROTTLE_LOGGED = set()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -130,17 +134,23 @@ class DirtyStore:
             self._write_serialized_to_disk(snapshot_text, snapshot_summary)
             return True
 
-    def save_soon(self, min_interval: float = 3.0):
+    def save_soon(self, min_interval: float = 3.0, delay_from_now: bool = False):
         """
         Schedule a background save without blocking the UI thread.
         Rapid repeated calls are coalesced, but a trailing save is kept so the
         newest dirty data is not stranded in RAM if another save is in flight.
+        Set delay_from_now for flows that already have their own immediate
+        checkpoint and should keep disk writes away from the current UI action.
         """
         now = time.monotonic()
         with self._lock:
             if not self._dirty:
                 return False
-            delay = max(0.0, float(min_interval) - (now - self._last_async_save_ts))
+            min_interval = float(min_interval)
+            if delay_from_now:
+                delay = max(0.0, min_interval)
+            else:
+                delay = max(0.0, min_interval - (now - self._last_async_save_ts))
 
         with self._save_thread_lock:
             if self._save_thread and self._save_thread.is_alive():
@@ -320,6 +330,22 @@ class DirtyStore:
     def _backup_existing_file(data_file, existing_data=None):
         if not os.path.exists(data_file):
             return None
+        key = DirtyStore._backup_throttle_key(data_file)
+        now = time.monotonic()
+        min_interval = DirtyStore._save_backup_min_interval()
+        last_backup_ts = _LAST_SAVE_BACKUP_TS_BY_FILE.get(key)
+        if (
+            min_interval > 0
+            and last_backup_ts is not None
+            and now - last_backup_ts < min_interval
+        ):
+            if key not in _SAVE_BACKUP_THROTTLE_LOGGED:
+                print(
+                    "[DEBUG][data_backup] throttled_recent "
+                    f"min_interval={min_interval:.0f}s"
+                )
+                _SAVE_BACKUP_THROTTLE_LOGGED.add(key)
+            return None
         backup_dir = DirtyStore._backup_dir_for(data_file)
         os.makedirs(backup_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -338,8 +364,24 @@ class DirtyStore:
             f"{os.path.basename(backup_path)} decks={summary['decks']} "
             f"cards={summary['cards']} boxes={summary['boxes']}"
         )
+        _LAST_SAVE_BACKUP_TS_BY_FILE[key] = now
+        _SAVE_BACKUP_THROTTLE_LOGGED.discard(key)
         DirtyStore._prune_backups(backup_dir)
         return backup_path
+
+    @staticmethod
+    def _backup_throttle_key(data_file):
+        return os.path.normcase(os.path.abspath(os.path.normpath(data_file or "")))
+
+    @staticmethod
+    def _save_backup_min_interval():
+        raw = os.environ.get(SAVE_BACKUP_INTERVAL_ENV, "").strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                pass
+        return max(0.0, float(SAVE_BACKUP_MIN_INTERVAL))
 
     @staticmethod
     def _prune_backups(backup_dir):

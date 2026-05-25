@@ -16,6 +16,8 @@ class DirtyStoreTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_root)
         self.addCleanup(self.tmpdir.cleanup)
         self.data_file = Path(self.tmpdir.name) / "anki_occlusion_data.json"
+        data_manager._LAST_SAVE_BACKUP_TS_BY_FILE.clear()
+        data_manager._SAVE_BACKUP_THROTTLE_LOGGED.clear()
 
     def test_load_missing_file_returns_default_data(self):
         store = data_manager.DirtyStore()
@@ -73,6 +75,25 @@ class DirtyStoreTests(unittest.TestCase):
         backups = list(backup_dir.glob("anki_occlusion_data.*.json"))
         self.assertTrue(saved)
         self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), payload)
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(json.loads(backups[0].read_text(encoding="utf-8")), existing)
+
+    def test_save_backups_are_throttled_for_rapid_review_saves(self):
+        existing = {"decks": [{"_id": 1, "name": "Old"}]}
+        first_payload = {"decks": [{"_id": 2, "name": "First"}]}
+        second_payload = {"decks": [{"_id": 3, "name": "Second"}]}
+        self.data_file.write_text(json.dumps(existing), encoding="utf-8")
+        store = data_manager.DirtyStore()
+
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
+            store.set(first_payload)
+            self.assertTrue(store.save_if_dirty())
+            store.set(second_payload)
+            self.assertTrue(store.save_if_dirty())
+
+        backup_dir = self.data_file.parent / data_manager.BACKUP_DIR_NAME
+        backups = list(backup_dir.glob("anki_occlusion_data.*.json"))
+        self.assertEqual(json.loads(self.data_file.read_text(encoding="utf-8")), second_payload)
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads(backups[0].read_text(encoding="utf-8")), existing)
 
@@ -250,6 +271,19 @@ class DirtyStoreTests(unittest.TestCase):
 
         self.assertFalse(store.is_dirty())
 
+    def test_save_soon_can_delay_background_save_from_now(self):
+        store = data_manager.DirtyStore()
+        store.set({"decks": [{"_id": 1, "name": "Review"}]})
+        store._last_async_save_ts = time.monotonic() - 120.0
+
+        with patch.object(store, "_schedule_save_timer_locked") as schedule_timer, \
+             patch.object(store, "_start_save_thread_locked") as start_thread:
+            self.assertTrue(store.save_soon(min_interval=8.0, delay_from_now=True))
+
+        schedule_timer.assert_called_once_with(8.0)
+        start_thread.assert_not_called()
+        self.assertTrue(store.is_dirty())
+
 
 class WrapperAndHelperTests(unittest.TestCase):
     def setUp(self):
@@ -258,6 +292,8 @@ class WrapperAndHelperTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_root)
         self.addCleanup(self.tmpdir.cleanup)
         self.data_file = Path(self.tmpdir.name) / "anki_occlusion_data.json"
+        data_manager._LAST_SAVE_BACKUP_TS_BY_FILE.clear()
+        data_manager._SAVE_BACKUP_THROTTLE_LOGGED.clear()
 
     def test_load_data_and_save_data_wrappers_use_singleton_store(self):
         replacement_store = data_manager.DirtyStore()

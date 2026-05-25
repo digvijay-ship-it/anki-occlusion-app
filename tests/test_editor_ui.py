@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
+from PyQt5.QtCore import QEvent, QPointF, QRect, QRectF, Qt
 from PyQt5.QtGui import QColor, QKeyEvent, QMouseEvent, QPixmap
 from PyQt5.QtWidgets import QApplication
 
@@ -71,7 +71,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         registered = {str(path).lower() for path in MASK_REGISTRY.all_registered_pdfs()}
         self.assertTrue(any(path.endswith("deck.pdf") for path in registered))
 
-    def test_inject_page_replaces_page_and_clears_scaled_cache_for_that_page(self):
+    def test_inject_page_replaces_page_and_refreshes_same_size_scaled_cache(self):
         self.canvas.load_pages([self._pixmap(50, 40)])
         self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
 
@@ -79,8 +79,108 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.canvas.inject_page(0, replacement)
 
         self.assertIs(self.canvas._pages[0], replacement)
+        self.assertIn(0, self.canvas._spx_cache)
+
+    def test_inject_page_clears_scaled_cache_when_dimensions_change(self):
+        self.canvas.load_pages([self._pixmap(50, 40)])
+        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+
+        self.canvas.inject_page(0, self._pixmap(60, 40))
+
         self.assertNotIn(0, self.canvas._spx_cache)
-        self.assertEqual(self.canvas._page_tops, [0])
+
+    def test_load_pages_clears_scaled_cache_when_dimensions_change(self):
+        self.canvas.set_mode("review")
+        self.canvas._current_pdf_path = "deck.pdf"
+        self.canvas.load_pages([self._pixmap(50, 40)])
+        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+
+        self.canvas.load_pages([self._pixmap(60, 50)])
+
+        self.assertEqual(self.canvas._spx_cache, {})
+
+    def test_load_pages_preserves_scaled_cache_for_same_pdf_and_dimensions(self):
+        self.canvas.set_mode("review")
+        self.canvas._current_pdf_path = "deck.pdf"
+        self.canvas.load_pages([self._pixmap(50, 40)])
+        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+        self.canvas._spx_cache_pdf_path = "deck.pdf"
+
+        self.canvas.load_pages([self._pixmap(50, 40)])
+
+        self.assertIn(0, self.canvas._spx_cache)
+
+    def test_inject_page_refreshes_scaled_cache_entry(self):
+        self.canvas.set_mode("review")
+        self.canvas._current_pdf_path = "deck.pdf"
+        self.canvas.load_pages([self._pixmap(50, 40)])
+        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+
+        self.canvas.inject_page(0, self._pixmap(50, 40))
+
+        self.assertIn(0, self.canvas._spx_cache)
+
+    def test_get_scaled_page_populates_scaled_cache_on_miss(self):
+        self.canvas.set_mode("review")
+        self.canvas.load_pages([self._pixmap(50, 40)])
+
+        scaled = self.canvas._get_scaled_page(0)
+
+        self.assertFalse(scaled.isNull())
+        self.assertIn(0, self.canvas._spx_cache)
+
+    def test_mask_cache_source_rect_clips_to_dirty_region(self):
+        pixmap = self._pixmap(100, 80)
+        clipped = self.canvas._mask_cache_source_rect(QRect(90, 70, 50, 50), pixmap)
+
+        self.assertEqual(
+            (clipped.x(), clipped.y(), clipped.width(), clipped.height()),
+            (90, 70, 10, 10),
+        )
+
+    def test_mask_cache_invalidation_coalesces_pending_rebuilds(self):
+        with patch("ui.canvas.state.QTimer.singleShot") as single_shot:
+            self.canvas._invalidate_mask_cache()
+            self.canvas._invalidate_mask_cache()
+            self.canvas._invalidate_mask_cache()
+
+        single_shot.assert_called_once()
+        self.assertTrue(self.canvas._mask_cache_rebuild_pending)
+
+        self.canvas._rebuild_mask_cache_if_dirty()
+
+        self.assertFalse(self.canvas._mask_cache_rebuild_pending)
+        self.assertFalse(self.canvas._mask_cache_dirty)
+
+        with patch("ui.canvas.state.QTimer.singleShot") as single_shot:
+            self.canvas._invalidate_mask_cache()
+
+        single_shot.assert_called_once()
+
+    def test_canvas_paint_profile_includes_phase_timings(self):
+        self.canvas.set_mode("review")
+        phases = {
+            "scale_miss": 1,
+            "page_scale_ms": 2.0,
+            "page_draw_ms": 3.0,
+            "mask_ms": 4.0,
+            "mask_clip": "10x10@0,0",
+            "boxes_ms": 5.0,
+            "boxes_drawn": 2,
+            "overlay_ms": 6.0,
+            "ink_ms": 7.0,
+        }
+
+        with patch.dict(os.environ, {"ANKI_CANVAS_PAINT_PROFILE": "1"}, clear=False), patch(
+            "builtins.print"
+        ) as printed:
+            self.canvas._log_canvas_paint_profile(13.0, QRect(0, 0, 100, 100), 1, phases)
+
+        output = "\n".join(call.args[0] for call in printed.call_args_list)
+        self.assertIn("[PROFILE][canvas_paint]", output)
+        self.assertIn("page_draw=3.0ms", output)
+        self.assertIn("mask=4.0ms", output)
+        self.assertIn("ink=7.0ms", output)
 
     def test_get_boxes_assigns_page_numbers_for_pdf_layout(self):
         self.canvas.load_pages([self._pixmap(100, 100), self._pixmap(100, 100)])
@@ -229,14 +329,14 @@ class OcclusionCanvasTests(unittest.TestCase):
             QPointF(5, 5),
             Qt.LeftButton,
             Qt.LeftButton,
-            Qt.NoModifier,
+            Qt.ControlModifier,
         )
         release = QMouseEvent(
             QEvent.MouseButtonRelease,
             QPointF(5, 5),
             Qt.LeftButton,
             Qt.LeftButton,
-            Qt.NoModifier,
+            Qt.ControlModifier,
         )
 
         self.canvas.mousePressEvent(press)
@@ -307,7 +407,7 @@ class OcclusionCanvasTests(unittest.TestCase):
                 return self._pos
 
             def modifiers(self):
-                return Qt.NoModifier
+                return Qt.ControlModifier
 
             def source(self):
                 return Qt.MouseEventSynthesizedBySystem
@@ -615,6 +715,7 @@ class ZoomableScrollAreaTests(unittest.TestCase):
         canvas = OcclusionCanvas()
         canvas._mode = "review"
         canvas._ink_active = True
+        canvas._smooth_timer = SimpleNamespace(start=MagicMock())
 
         class _DummyAngle:
             def y(self):
@@ -642,6 +743,7 @@ class ZoomableScrollAreaTests(unittest.TestCase):
 
         self.assertFalse(event.accepted)
         self.assertTrue(event.ignored)
+        canvas._smooth_timer.start.assert_not_called()
 
 
 class CardEditorDialogTests(unittest.TestCase):
@@ -725,6 +827,43 @@ class CardEditorDialogTests(unittest.TestCase):
         self.assertEqual(payload["card"]["pdf_path"], "pdfs/sample.pdf")
         self.assertEqual(payload["card"]["boxes"][0]["box_id"], "box-1")
         self.dialog._recovery_draft_cleared = True
+
+    def test_editor_recovery_draft_skips_unchanged_duplicate_write(self):
+        self.dialog.card["pdf_path"] = "pdfs/sample.pdf"
+        self.dialog.inp_title.setText("Recovered PDF")
+        self.dialog.canvas.set_boxes(
+            [{"rect": [1, 2, 30, 40], "label": "m1", "box_id": "box-1"}]
+        )
+
+        with patch("ui.editor_dialog.recovery_manager.save_editor_draft") as save_draft, patch(
+            "builtins.print"
+        ) as printed:
+            save_draft.side_effect = lambda payload: payload
+            first = self.dialog._write_recovery_draft()
+            second = self.dialog._write_recovery_draft()
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        save_draft.assert_called_once()
+        output = "\n".join(call.args[0] for call in printed.call_args_list)
+        self.assertIn("[DEBUG][recovery] editor_draft_skipped reason=unchanged", output)
+        self.dialog._recovery_draft_cleared = True
+
+    def test_editor_recovery_created_timestamp_is_stable_for_new_card(self):
+        self.dialog.card["pdf_path"] = "pdfs/sample.pdf"
+
+        first = self.dialog._current_recovery_card()["created"]
+        second = self.dialog._current_recovery_card()["created"]
+
+        self.assertEqual(first, second)
+
+    def test_editor_box_changes_debounce_recovery_draft_writes(self):
+        with patch.object(self.dialog, "_schedule_recovery_draft") as schedule_draft, \
+             patch.object(self.dialog, "_write_recovery_checkpoint") as write_checkpoint:
+            self.dialog.canvas.boxes_changed.emit([])
+
+        schedule_draft.assert_called_once_with("boxes")
+        write_checkpoint.assert_not_called()
 
     def test_editor_clear_recovery_draft_deletes_record(self):
         with patch("ui.editor_dialog.recovery_manager.delete_editor_draft") as delete_draft:
@@ -815,13 +954,96 @@ class CardEditorDialogTests(unittest.TestCase):
              patch("ui.editor_dialog.ensure_pdf_cache_profile", return_value=False), \
              patch("ui.editor_dialog.load_pdf_skeleton", return_value=skeleton), \
              patch("ui.editor_dialog.QTimer.singleShot", side_effect=lambda delay, fn: None) as single_shot, \
-             patch.object(self.dialog, "_wire_editor_scroll_ondemand") as wire_ondemand:
+             patch.object(self.dialog, "_wire_editor_scroll_ondemand") as wire_ondemand, \
+             patch("builtins.print") as fake_print:
             self.dialog._load_pdf_direct(self.pdf_path)
 
         self.assertEqual(len(self.dialog.canvas._pages), 3)
         wire_ondemand.assert_called_once_with(self.pdf_path, 3)
         single_shot.assert_called()
         self.assertEqual(self.dialog.lbl_sync.text(), "⏳ PDF ready on demand")
+        printed = "\n".join(call.args[0] for call in fake_print.call_args_list)
+        self.assertIn("[DEBUG][editor_cache_profile]", printed)
+        self.assertIn("[DEBUG][editor_skeleton] ready", printed)
+        self.assertIn("[DEBUG][editor_load] finish", printed)
+
+    def test_editor_pages_needing_render_logs_skip_counts(self):
+        self.dialog._editor_canvas_real_pages = {1}
+        self.dialog._editor_render_inflight_pages = {2}
+        self.dialog._editor_pending_visible_request = (self.pdf_path, [3])
+        cached = self._pixmap(40, 50)
+
+        def fake_cache_get(_path, page_num):
+            return cached if page_num == 4 else None
+
+        with patch.dict(os.environ, {"ANKI_EDITOR_VERBOSE": "1"}, clear=False), \
+             patch("ui.editor_dialog.PAGE_CACHE.get", side_effect=fake_cache_get), \
+             patch("builtins.print") as fake_print:
+            needed = self.dialog._editor_pages_needing_render(
+                self.pdf_path, [0, 1, 2, 3, 4], context="visible"
+            )
+
+        self.assertEqual(needed, [0])
+        debug_line = fake_print.call_args.args[0]
+        self.assertIn("[DEBUG][editor_decision]", debug_line)
+        self.assertIn("need=p.1", debug_line)
+        self.assertIn("skip_canvas=1", debug_line)
+        self.assertIn("skip_cache=1", debug_line)
+        self.assertIn("skip_inflight=1", debug_line)
+        self.assertIn("skip_pending=1", debug_line)
+
+    def test_editor_pages_needing_render_quiet_without_verbose_debug(self):
+        self.dialog._editor_canvas_real_pages = set()
+        self.dialog._editor_render_inflight_pages = set()
+        self.dialog._editor_pending_visible_request = None
+
+        with patch.dict(os.environ, {"ANKI_EDITOR_VERBOSE": ""}, clear=False), \
+             patch("ui.editor_dialog.PAGE_CACHE.get", return_value=None), \
+             patch("builtins.print") as fake_print:
+            needed = self.dialog._editor_pages_needing_render(
+                self.pdf_path, [0], context="visible"
+            )
+
+        self.assertEqual(needed, [0])
+        fake_print.assert_not_called()
+
+    def test_editor_ondemand_requested_pages_are_tracked_per_thread(self):
+        old_thread = MagicMock()
+        old_thread.isRunning.return_value = False
+        current_thread = MagicMock()
+        current_thread.isRunning.return_value = False
+        self.dialog._pdf_ondemand_thread = current_thread
+        self.dialog._editor_ondemand_requested_pages = {3}
+        self.dialog._editor_ondemand_request_pages_by_thread = {
+            id(old_thread): {1},
+            id(current_thread): {2},
+        }
+
+        old_requested = self.dialog._editor_requested_pages_for_thread(old_thread)
+        current_requested = self.dialog._editor_requested_pages_for_thread(current_thread)
+
+        self.assertEqual(old_requested, {1})
+        self.assertEqual(current_requested, {2, 3})
+
+    def test_stale_editor_ondemand_batch_does_not_consume_current_pending(self):
+        old_thread = MagicMock()
+        old_thread.isRunning.return_value = False
+        current_thread = MagicMock()
+        current_thread.isRunning.return_value = False
+        self.dialog._pdf_ondemand_thread = current_thread
+        self.dialog._editor_ondemand_request_pages_by_thread = {id(old_thread): {0}}
+        self.dialog._editor_ondemand_requested_pages = {1}
+        self.dialog._editor_render_inflight_pages = {0, 1}
+        self.dialog._editor_pending_visible_request = (self.pdf_path, [2])
+        self.dialog._start_editor_visible_page_request = MagicMock()
+
+        self.dialog._on_editor_visible_pages_batch_done([0], thread=old_thread)
+
+        self.assertEqual(self.dialog._editor_render_inflight_pages, {1})
+        self.assertEqual(self.dialog._editor_pending_visible_request, (self.pdf_path, [2]))
+        self.assertEqual(self.dialog._editor_ondemand_requested_pages, {1})
+        self.assertIs(self.dialog._pdf_ondemand_thread, current_thread)
+        self.dialog._start_editor_visible_page_request.assert_not_called()
 
     def test_editor_visible_pages_changed_injects_cache_hot_gray_pages(self):
         self.dialog._editor_ondemand_path = self.pdf_path
@@ -855,6 +1077,29 @@ class CardEditorDialogTests(unittest.TestCase):
             self.dialog._on_editor_visible_pages_changed(1, 3)
 
         self.dialog._start_editor_visible_page_request.assert_called_once_with(self.pdf_path, [1, 2, 3])
+
+    def test_editor_visible_pages_changed_logs_scroll_profile(self):
+        self.dialog._editor_ondemand_path = self.pdf_path
+        self.dialog._editor_ondemand_total = 2
+        self.dialog._editor_canvas_real_pages = {0}
+        self.dialog._editor_render_inflight_pages = set()
+        self.dialog._editor_pending_visible_request = None
+        self.dialog._editor_visible_debug_seen_pages = set()
+        self.dialog._editor_scroll_profile_last_log_ts = 0.0
+        self.dialog._editor_scroll_profile_last_event_ts = None
+        self.dialog.canvas.load_pages([self._pixmap(40, 50), self._pixmap(40, 50)])
+        self.dialog._start_editor_visible_page_request = MagicMock()
+
+        with patch.dict(os.environ, {"ANKI_EDITOR_SCROLL_PROFILE": "1"}, clear=False), \
+             patch("ui.editor_dialog.PAGE_CACHE.get", return_value=None), \
+             patch("builtins.print") as fake_print:
+            self.dialog._on_editor_visible_pages_changed(0, 0)
+
+        printed = "\n".join(call.args[0] for call in fake_print.call_args_list)
+        self.assertIn("[PROFILE][editor_scroll]", printed)
+        self.assertIn("visible=p.1-p.1", printed)
+        self.assertIn("need=none", printed)
+        self.dialog._start_editor_visible_page_request.assert_not_called()
 
 
 if __name__ == "__main__":

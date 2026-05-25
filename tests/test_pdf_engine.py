@@ -24,7 +24,9 @@ class PdfEngineTests(unittest.TestCase):
         import fitz
 
         pdf_engine._SKELETON_CACHE.clear()
+        pdf_engine._SKELETON_DIMS_CACHE.clear()
         self.addCleanup(pdf_engine._SKELETON_CACHE.clear)
+        self.addCleanup(pdf_engine._SKELETON_DIMS_CACHE.clear)
 
         tmp_root = Path(__file__).resolve().parent / "_tmp_files"
         tmp_root.mkdir(exist_ok=True)
@@ -150,6 +152,37 @@ class PdfEngineTests(unittest.TestCase):
         self.assertAlmostEqual(adapted[0]["rect"][1], 120.0, places=1)
         self.assertAlmostEqual(adapted[0]["rect"][2], 100.0, places=1)
         self.assertAlmostEqual(adapted[0]["rect"][3], 60.0, places=1)
+
+    def test_adapt_pdf_boxes_uses_dimension_only_skeletons(self):
+        boxes = [{
+            "rect": [40.0, 60.0, 50.0, 30.0],
+            "label": "Mask 1",
+        }]
+
+        with patch.object(pdf_engine, "_get_skeleton_placeholder") as placeholder:
+            adapted = pdf_engine.adapt_pdf_boxes_to_render_zoom(
+                str(self.pdf_path),
+                boxes,
+                source_zoom=1.5,
+                target_zoom=3.0,
+            )
+
+        placeholder.assert_not_called()
+        self.assertEqual(adapted[0]["page_num"], 0)
+
+    def test_skeleton_thread_uses_dimension_cache(self):
+        thread = pdf_engine.PdfSkeletonThread(str(self.pdf_path), zoom=1.0)
+        emitted = []
+        thread.done.connect(emitted.append)
+        with patch.object(pdf_engine, "load_pdf_page_dims") as load_dims:
+            load_dims.return_value = pdf_engine.PdfSkeletonResult(
+                [], [(200, 300)], 1, None
+            )
+
+            thread.run()
+
+        load_dims.assert_called_once_with(str(self.pdf_path), zoom=1.0)
+        self.assertEqual(emitted[0].page_dims, [(200, 300)])
 
     def test_adapt_pdf_boxes_to_render_zoom_recomputes_page_for_later_masks(self):
         src = pdf_engine.load_pdf_skeleton(str(self.pdf_path), zoom=1.5)

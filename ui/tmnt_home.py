@@ -49,7 +49,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import (
     Qt,
     QTimer,
+    QSettings,
     QSize,
+    QAbstractAnimation,
     pyqtSignal,
     QRect,
     QPoint,
@@ -107,6 +109,7 @@ TMNT_BASE_SIZE = 11
 TMNT_SIDEBAR_W = int(228 * 1.2)
 TMNT_RIGHTBAR_W = int(218 * 1.2)
 _PX_RE = re.compile(r"(-?\d+(?:\.\d+)?)px")
+HOME_ANIMATIONS_ENV = "ANKI_HOME_ANIMATIONS"
 
 MENTOR_QUOTES = [
     ('"FOCUS. TRAIN. MASTER."', "— DONATELLO"),
@@ -115,6 +118,11 @@ MENTOR_QUOTES = [
     ('"NEVER STOP LEARNING."', "— LEONARDO"),
     ('"SCIENCE NEVER FAILS."', "— DONATELLO"),
 ]
+
+
+def _home_animations_enabled():
+    raw = os.environ.get(HOME_ANIMATIONS_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 # ── Helper: header-font label ────────────────────────────────────────────────
@@ -197,18 +205,28 @@ class TMNTDeckItemDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._scale = scale
 
-    def paint(self, painter, option, index):
-        painter.save()
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        is_selected = bool(option.state & QStyle.State_Selected)
-        is_hovered = bool(option.state & QStyle.State_MouseOver)
+    def _row_rect(self, option):
         rect = option.rect.adjusted(
             _px(2, self._scale),
             _px(1, self._scale),
             -_px(2, self._scale),
             -_px(1, self._scale),
         )
+        tree = self.parent()
+        viewport = tree.viewport() if tree is not None and hasattr(tree, "viewport") else None
+        if viewport is not None:
+            viewport_right = viewport.width() - _px(6, self._scale)
+            if viewport_right > rect.right():
+                rect.setRight(viewport_right)
+        return rect
+
+    def paint(self, painter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        is_selected = bool(option.state & QStyle.State_Selected)
+        is_hovered = bool(option.state & QStyle.State_MouseOver)
+        rect = self._row_rect(option)
 
         if is_selected:
             painter.fillRect(rect, QColor(T_PANEL))
@@ -387,6 +405,7 @@ class TMNTStatCard(QFrame):
 class TMNTMissionBanner(QFrame):
     train_clicked = pyqtSignal()
     selected_clicked = pyqtSignal()
+    GLOW_INTERVAL_MS = 50
 
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
@@ -506,7 +525,24 @@ class TMNTMissionBanner(QFrame):
         self._glow_step = 0
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._tick_glow)
-        self._glow_timer.start(50)
+        self._glow_timer.setInterval(self.GLOW_INTERVAL_MS)
+
+    def set_animation_enabled(self, enabled):
+        enabled = bool(enabled) and _home_animations_enabled()
+        if enabled:
+            if not self._glow_timer.isActive():
+                self._glow_timer.start()
+            return
+        if self._glow_timer.isActive():
+            self._glow_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.set_animation_enabled(True)
+
+    def hideEvent(self, event):
+        self.set_animation_enabled(False)
+        super().hideEvent(event)
 
     def _tick_glow(self):
         self._glow_step += 1
@@ -546,6 +582,8 @@ class TMNTMissionBanner(QFrame):
 # ══════════════════════════════════════════════════════════════════════════════
 class TMNTBangaLab(QFrame):
     clear_clicked = pyqtSignal()
+    resources_refreshed = pyqtSignal(str)
+    AUTO_REFRESH_MS = 4000
 
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
@@ -567,9 +605,18 @@ class TMNTBangaLab(QFrame):
         )
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self.refresh)
-        self._auto_timer.start(4000)
+        self._auto_timer.setInterval(self.AUTO_REFRESH_MS)
         self._build_ui()
         self.refresh()
+
+    def set_auto_refresh_enabled(self, enabled):
+        enabled = bool(enabled)
+        if enabled:
+            if not self._auto_timer.isActive():
+                self._auto_timer.start()
+            return
+        if self._auto_timer.isActive():
+            self._auto_timer.stop()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -858,6 +905,7 @@ class TMNTBangaLab(QFrame):
         self.bar_cache.setFixedWidth(_w(to_mb(disk_b)))
         self.bar_media.setFixedWidth(_w(to_mb(mask_b)))
         self.bar_tot.setFixedWidth(_w(to_mb(tot_b)))
+        self.resources_refreshed.emit(self.lbl_tot.text())
 
     def _clear_all(self):
         try:
@@ -876,6 +924,331 @@ class TMNTBangaLab(QFrame):
             self.refresh()
         except Exception:
             pass
+
+
+class TMNTBangaDrawer(QFrame):
+    """Overlay drawer for the TMNT cache/resource panel."""
+
+    AUTO_HIDE_MS = 900
+    EDGE_W = 22
+    EDGE_BUTTON_W = 22
+    EDGE_BUTTON_H = 42
+    LOCK_SETTINGS_KEY = "home/tmnt_cache_drawer_locked"
+
+    def __init__(self, data=None, parent=None, reserve_widget=None):
+        super().__init__(parent)
+        self.setObjectName("tmnt_banga_drawer")
+        self._data = data
+        self._host = parent
+        self._reserve_widget = reserve_widget
+        self._scale = _tmnt_scale(data)
+        self._drawer_open = False
+        self._drawer_locked = self._load_locked()
+        self._open_width = _px(TMNT_RIGHTBAR_W, self._scale)
+        self._edge_w = _px(self.EDGE_W, self._scale)
+        self._edge_button_w = _px(self.EDGE_BUTTON_W, self._scale)
+        self._edge_button_h = _px(self.EDGE_BUTTON_H, self._scale)
+        self.setMouseTracking(True)
+        self.setFixedWidth(self._open_width)
+        self.setStyleSheet("QFrame#tmnt_banga_drawer{background:transparent;border:none;}")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.lab = TMNTBangaLab(data=data, parent=self)
+        lay.addWidget(self.lab)
+
+        self._edge_button = QPushButton("‹", parent)
+        self._edge_button.setObjectName("tmnt_banga_edge")
+        self._edge_button.setFocusPolicy(Qt.NoFocus)
+        self._edge_button.setToolTip("Show cache panel")
+        self._edge_button.setStyleSheet(
+            _scale_ss(
+                f"""
+            QPushButton#tmnt_banga_edge {{
+                background: rgba(11, 12, 16, 235);
+                color: {T_NEON};
+                border: 1px solid {T_GREEN};
+                border-radius: 8px 0px 0px 8px;
+                font-size: 18px;
+                font-weight: 900;
+                font-family: {T_MONO};
+                padding: 0px;
+            }}
+            QPushButton#tmnt_banga_edge:hover {{
+                background: {T_PANEL};
+                color: {T_GREEN};
+                border-color: {T_NEON};
+            }}
+        """,
+                self._scale,
+            )
+        )
+        self._edge_button.clicked.connect(self.open_drawer)
+        self._edge_glow = QGraphicsDropShadowEffect(self._edge_button)
+        self._edge_glow.setColor(QColor(T_GREEN))
+        self._edge_glow.setOffset(0, 0)
+        self._edge_glow.setBlurRadius(_px(14, self._scale))
+        self._edge_button.setGraphicsEffect(self._edge_glow)
+        self._edge_pulse = QPropertyAnimation(self._edge_glow, b"blurRadius", self)
+        self._edge_pulse.setDuration(1200)
+        self._edge_pulse.setStartValue(float(_px(8, self._scale)))
+        self._edge_pulse.setEndValue(float(_px(24, self._scale)))
+        self._edge_pulse.setEasingCurve(QEasingCurve.InOutSine)
+        self._edge_pulse.setLoopCount(-1)
+
+        self._lock_button = QPushButton("🔓", self)
+        self._lock_button.setObjectName("tmnt_banga_lock")
+        self._lock_button.setFocusPolicy(Qt.NoFocus)
+        self._lock_button.setToolTip("Lock cache panel open")
+        self._lock_button.setStyleSheet(
+            _scale_ss(
+                f"""
+            QPushButton#tmnt_banga_lock {{
+                background: rgba(11, 12, 16, 225);
+                color: {T_GREEN};
+                border: 1px solid {T_BORDER};
+                border-radius: 3px;
+                font-size: 12px;
+                font-weight: 900;
+                padding: 2px;
+            }}
+            QPushButton#tmnt_banga_lock:hover {{
+                color: {T_NEON};
+                border-color: {T_GREEN};
+            }}
+        """,
+                self._scale,
+            )
+        )
+        self._lock_button.clicked.connect(self._toggle_lock)
+
+        self._memory_chip = QLabel("TOTAL 0.0 MB", parent)
+        self._memory_chip.setObjectName("tmnt_banga_memory_chip")
+        self._memory_chip.setAlignment(Qt.AlignCenter)
+        self._memory_chip.setToolTip("Total cache memory")
+        self._memory_chip.setStyleSheet(
+            _scale_ss(
+                f"""
+            QLabel#tmnt_banga_memory_chip {{
+                background: rgba(11, 12, 16, 225);
+                color: {T_TEXT};
+                border: 1px solid {T_GREEN};
+                border-radius: 4px;
+                padding: 6px 10px;
+                font-size: 10px;
+                font-weight: 900;
+                font-family: {T_MONO};
+            }}
+        """,
+                self._scale,
+            )
+        )
+
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.setInterval(self.AUTO_HIDE_MS)
+        self._hide_timer.timeout.connect(self._hide_if_cursor_outside)
+
+        for widget in (
+            self,
+            self.lab,
+            self._edge_button,
+            self._lock_button,
+            self._memory_chip,
+        ):
+            widget.installEventFilter(self)
+            widget.setMouseTracking(True)
+        if parent is not None:
+            parent.installEventFilter(self)
+            parent.setMouseTracking(True)
+
+        self.lab.resources_refreshed.connect(self._set_total_memory_text)
+        self._set_total_memory_text(self.lab.lbl_tot.text())
+        if self._drawer_locked:
+            self._drawer_open = True
+            self.show()
+            self._edge_button.setText("›")
+        else:
+            self.hide()
+        self._sync_lab_auto_refresh()
+        self._sync_reserved_space()
+        self._sync_floating_triggers()
+        self._sync_lock_button()
+        self._sync_edge_pulse()
+        QTimer.singleShot(0, self.reposition)
+
+    @classmethod
+    def _load_locked(cls):
+        raw = QSettings("AnkiOcclusion", "App").value(cls.LOCK_SETTINGS_KEY, False)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _save_locked(cls, locked):
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue(cls.LOCK_SETTINGS_KEY, bool(locked))
+        settings.sync()
+
+    def refresh(self):
+        self.lab._data = self._data
+        self.lab.refresh()
+        self._set_total_memory_text(self.lab.lbl_tot.text())
+
+    def _sync_lab_auto_refresh(self):
+        self.lab.set_auto_refresh_enabled(self._drawer_open or self._drawer_locked)
+
+    def _set_total_memory_text(self, total_text):
+        self._memory_chip.setText(f"TOTAL {total_text}")
+        self._memory_chip.adjustSize()
+        self.reposition()
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if obj is self._host and et == QEvent.Resize:
+            self.reposition()
+        elif obj in (self._edge_button, self._memory_chip) and et in (
+            QEvent.Enter,
+            QEvent.HoverMove,
+            QEvent.MouseMove,
+        ):
+            self.open_drawer()
+        elif obj in (self, self.lab, self._lock_button) and et in (
+            QEvent.Enter,
+            QEvent.MouseMove,
+        ):
+            self._hide_timer.stop()
+        elif obj in (self, self.lab, self._lock_button) and et == QEvent.Leave:
+            if not self._drawer_locked:
+                self._hide_timer.start()
+        return super().eventFilter(obj, event)
+
+    def open_drawer(self):
+        if self._drawer_open:
+            self.reposition()
+            self._sync_lock_button()
+            return
+        self._drawer_open = True
+        self._hide_timer.stop()
+        self.show()
+        self.raise_()
+        self._edge_button.setText("›")
+        self._edge_button.setToolTip("Move away to hide cache panel")
+        self._sync_floating_triggers()
+        self._sync_lock_button()
+        self._sync_edge_pulse()
+        self._sync_lab_auto_refresh()
+        self.refresh()
+        self.reposition()
+
+    def close_drawer(self):
+        if self._drawer_locked:
+            self.open_drawer()
+            return
+        if not self._drawer_open:
+            self.reposition()
+            return
+        self._drawer_open = False
+        self.hide()
+        self._edge_button.setText("‹")
+        self._edge_button.setToolTip("Show cache panel")
+        self._sync_floating_triggers()
+        self._sync_lock_button()
+        self._sync_edge_pulse()
+        self._sync_lab_auto_refresh()
+        self.reposition()
+
+    def _toggle_lock(self):
+        self._drawer_locked = not self._drawer_locked
+        self._save_locked(self._drawer_locked)
+        self._sync_reserved_space()
+        self._sync_lock_button()
+        if self._drawer_locked:
+            self.open_drawer()
+        elif not self._contains_cursor():
+            self._hide_timer.start()
+        self._sync_edge_pulse()
+
+    def _sync_lock_button(self):
+        self._lock_button.setText("🔒" if self._drawer_locked else "🔓")
+        self._lock_button.setToolTip(
+            "Unlock cache panel" if self._drawer_locked else "Lock cache panel open"
+        )
+        self._lock_button.setVisible(self._drawer_open)
+
+    def _sync_floating_triggers(self):
+        show_floating = not self._drawer_open
+        self._edge_button.setVisible(show_floating)
+        self._memory_chip.setVisible(show_floating)
+
+    def _sync_reserved_space(self):
+        reserve = self._reserve_widget
+        if reserve is None:
+            return
+        width = self._open_width if self._drawer_locked else 0
+        reserve.setFixedWidth(width)
+        reserve.setVisible(width > 0)
+
+    def _sync_edge_pulse(self):
+        should_pulse = (
+            _home_animations_enabled()
+            and not self._drawer_open
+            and not self._drawer_locked
+        )
+        if should_pulse:
+            if self._edge_pulse.state() != QAbstractAnimation.Running:
+                self._edge_pulse.start()
+            return
+        if self._edge_pulse.state() == QAbstractAnimation.Running:
+            self._edge_pulse.stop()
+        self._edge_glow.setBlurRadius(_px(14, self._scale))
+
+    def _hide_if_cursor_outside(self):
+        if self._drawer_locked:
+            return
+        if self._contains_cursor():
+            self._hide_timer.start()
+            return
+        self.close_drawer()
+
+    def _contains_cursor(self):
+        pos = QCursor.pos()
+        for widget in (self, self._edge_button, self._lock_button, self._memory_chip):
+            if widget.isVisible() and widget.rect().contains(widget.mapFromGlobal(pos)):
+                return True
+        return False
+
+    def reposition(self):
+        host = self._host
+        if host is None:
+            return
+        h = max(1, host.height())
+        w = max(1, host.width())
+        self.setGeometry(max(0, w - self._open_width), 0, self._open_width, h)
+        edge_y = max(_px(16, self._scale), (h - self._edge_button_h) // 2)
+        self._edge_button.setGeometry(
+            max(0, w - self._edge_button_w),
+            edge_y,
+            self._edge_button_w,
+            self._edge_button_h,
+        )
+        lock_size = _px(30, self._scale)
+        self._lock_button.setGeometry(
+            max(0, self._open_width - lock_size - _px(10, self._scale)),
+            _px(10, self._scale),
+            lock_size,
+            lock_size,
+        )
+        self._memory_chip.adjustSize()
+        chip_w = self._memory_chip.width()
+        chip_h = self._memory_chip.height()
+        chip_x = max(0, w - chip_w - self._edge_button_w - _px(8, self._scale))
+        chip_y = max(0, h - chip_h - _px(12, self._scale))
+        self._memory_chip.move(chip_x, chip_y)
+        self._lock_button.raise_()
+        self._edge_button.raise_()
+        self._memory_chip.raise_()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1087,7 +1460,8 @@ class TMNTSidebar(QFrame):
         self._data = data
         self._scale = _tmnt_scale(data)
         self._selected_deck = None
-        self.setFixedWidth(_px(TMNT_SIDEBAR_W, self._scale))
+        self.setMinimumWidth(_px(220, self._scale))
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setObjectName("tmnt_sidebar1")
         self.setStyleSheet(
             _scale_ss(
@@ -2019,6 +2393,9 @@ class TMNTBgmWidget(QFrame):
 #  TOP BAR
 # ══════════════════════════════════════════════════════════════════════════════
 class TMNTTopBar(QFrame):
+    BRAND_BASE_FONT_PX = 18
+    BRAND_TITLE_SCALE = 1.5
+
     btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
@@ -2062,14 +2439,51 @@ class TMNTTopBar(QFrame):
         self._build_ui()
         self._brand_glitch_timer = QTimer(self)
         self._brand_glitch_timer.timeout.connect(self._advance_brand_glitch)
-        self._brand_glitch_timer.start(240)
+        self._brand_glitch_timer.setInterval(240)
         self._brand_flicker_timer = QTimer(self)
         self._brand_flicker_timer.timeout.connect(self._advance_brand_flicker)
-        self._brand_flicker_timer.start(420)
+        self._brand_flicker_timer.setInterval(420)
+        self._set_brand_animations_enabled(True)
         self._quote_idx = 0
         self._quote_timer = QTimer(self)
         self._quote_timer.timeout.connect(self._rotate_quote)
-        self._quote_timer.start(8000)
+        self._quote_timer.setInterval(8000)
+        self._set_quote_rotation_enabled(True)
+
+    def _set_brand_animations_enabled(self, enabled):
+        enabled = bool(enabled) and _home_animations_enabled() and self.isVisible()
+        for timer in (
+            getattr(self, "_brand_glitch_timer", None),
+            getattr(self, "_brand_flicker_timer", None),
+        ):
+            if timer is None:
+                continue
+            if enabled:
+                if not timer.isActive():
+                    timer.start()
+            elif timer.isActive():
+                timer.stop()
+
+    def _set_quote_rotation_enabled(self, enabled):
+        enabled = bool(enabled) and _home_animations_enabled() and self.isVisible()
+        timer = getattr(self, "_quote_timer", None)
+        if timer is None:
+            return
+        if enabled:
+            if not timer.isActive():
+                timer.start()
+        elif timer.isActive():
+            timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._set_brand_animations_enabled(True)
+        self._set_quote_rotation_enabled(True)
+
+    def hideEvent(self, event):
+        self._set_brand_animations_enabled(False)
+        self._set_quote_rotation_enabled(False)
+        super().hideEvent(event)
 
     def _build_ui(self):
         L = QHBoxLayout(self)
@@ -2640,6 +3054,9 @@ class TMNTTopBar(QFrame):
             f"Cache entries copied: {summary['cache_entries_copied']}",
         )
 
+    def _brand_font_px(self):
+        return int(round(self.BRAND_BASE_FONT_PX * self.BRAND_TITLE_SCALE))
+
     def _brand_name_ss(self):
         return _scale_ss(
             f"""
@@ -2648,7 +3065,7 @@ class TMNTTopBar(QFrame):
                 background: transparent;
                 border: none;
                 font-family: {T_PIXEL};
-                font-size: 18px;
+                font-size: {self._brand_font_px()}px;
                 font-weight: 900;
                 letter-spacing: 2px;
             }}
@@ -2868,6 +3285,8 @@ class TMNTHomeLayout(QWidget):
     font_change = pyqtSignal(int)
     bgm_toggle = pyqtSignal()
     deck_selected = pyqtSignal(object)
+    SIDEBAR_STRETCH = 30
+    MAIN_STRETCH = 70
 
     def __init__(self, data: dict, parent=None):
         """
@@ -2891,20 +3310,31 @@ class TMNTHomeLayout(QWidget):
 
         # Body (sidebar + main + right)
         body = QHBoxLayout()
+        self._body_layout = body
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
-
-        self.sidebar = TMNTSidebar(self._data)
-        self.main = TMNTMainContent(data=self._data)
-        self.banga = TMNTBangaLab(data=self._data)
-
-        body.addWidget(self.sidebar)
-        body.addWidget(self.main, stretch=1)
-        body.addWidget(self.banga)
 
         body_w = QWidget()
         body_w.setLayout(body)
         body_w.setStyleSheet(f"background: #151821;")
+        body_w.setMouseTracking(True)
+
+        self.sidebar = TMNTSidebar(self._data)
+        self.main = TMNTMainContent(data=self._data)
+
+        body.addWidget(self.sidebar, stretch=self.SIDEBAR_STRETCH)
+        body.addWidget(self.main, stretch=self.MAIN_STRETCH)
+
+        self._banga_reserve = QWidget()
+        self._banga_reserve.setFixedWidth(0)
+        self._banga_reserve.hide()
+        body.addWidget(self._banga_reserve)
+
+        self.banga = TMNTBangaDrawer(
+            data=self._data,
+            parent=body_w,
+            reserve_widget=self._banga_reserve,
+        )
         L.addWidget(body_w, stretch=1)
 
         # Footer

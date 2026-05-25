@@ -197,9 +197,15 @@ C_SUBTEXT = _DARK["C_SUBTEXT"]
 C_BORDER = _DARK["C_BORDER"]
 C_MASK = "#F7916A"
 C_GROUP = "#BD93F9"
+HOME_ANIMATIONS_ENV = "ANKI_HOME_ANIMATIONS"
 
 
 BASE_FONT_SIZE = 11
+
+
+def _home_animations_enabled():
+    raw = os.environ.get(HOME_ANIMATIONS_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _build_ss(font_size: int = BASE_FONT_SIZE) -> str:
@@ -346,6 +352,7 @@ class DojoMissionBanner(QFrame):
 
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._animate_glow)
+        self._glow_timer.setInterval(50)
         self._glow_step = 0
 
         from PyQt5.QtWidgets import QGraphicsDropShadowEffect
@@ -355,7 +362,23 @@ class DojoMissionBanner(QFrame):
         self.btn_train.setGraphicsEffect(self._shadow)
 
         self.update_font_scale(1.0)
-        self._glow_timer.start(50)
+
+    def set_animation_enabled(self, enabled):
+        enabled = bool(enabled) and _home_animations_enabled()
+        if enabled:
+            if not self._glow_timer.isActive():
+                self._glow_timer.start()
+            return
+        if self._glow_timer.isActive():
+            self._glow_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.set_animation_enabled(True)
+
+    def hideEvent(self, event):
+        self.set_animation_enabled(False)
+        super().hideEvent(event)
 
     def update_font_scale(self, scale: float):
         self._scale = scale
@@ -967,7 +990,14 @@ class DeckView(QWidget):
                         if k in old:
                             new_box[k] = old[k]
             cards[idx] = c
-            self._refresh()
+            from perf_utils import invalidate_deck_stats
+
+            invalidate_deck_stats()
+            home = self._find_home()
+            if home:
+                home.refresh()
+            else:
+                self._refresh()
             store.mark_dirty()
             store.save_force()
             dlg.clear_recovery_draft()

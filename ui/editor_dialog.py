@@ -1,5 +1,7 @@
 import os
 import sys
+import time
+import json
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget,
@@ -75,6 +77,8 @@ C_YELLOW = _DARK["C_YELLOW"]
 C_TEXT = _DARK["C_TEXT"]
 C_SUBTEXT = _DARK["C_SUBTEXT"]
 C_BORDER = _DARK["C_BORDER"]
+EDITOR_VERBOSE_ENV = "ANKI_EDITOR_VERBOSE"
+EDITOR_SCROLL_PROFILE_ENV = "ANKI_EDITOR_SCROLL_PROFILE"
 
 #  CARD EDITOR DIALOG
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -113,6 +117,8 @@ class CardEditorDialog(QDialog):
         self._recovery_accepted = False
         self._recovery_autosave_ready = False
         self._recovery_dirty = False
+        self._recovery_created_at = self.card.get("created") or datetime.now().isoformat()
+        self._last_recovery_draft_fingerprint = None
         self._initial_scroll = initial_scroll
         self._initial_page = initial_page
         self._pdf_pages = []
@@ -142,6 +148,12 @@ class CardEditorDialog(QDialog):
         self._editor_canvas_real_pages = set()
         self._editor_render_inflight_pages = set()
         self._editor_visible_debug_seen_pages = set()
+        self._editor_load_t0 = None
+        self._editor_ondemand_requested_pages = set()
+        self._editor_ondemand_request_pages_by_thread = {}
+        self._editor_scroll_profile_last_event_ts = None
+        self._editor_scroll_profile_last_log_ts = 0.0
+        self._editor_last_decision_stats = {}
         self._fit_timer = QTimer(self)
         self._fit_timer.setSingleShot(True)
         self._fit_timer.timeout.connect(self._zoom_fit)
@@ -533,7 +545,7 @@ class CardEditorDialog(QDialog):
     def _setup_recovery_autosave(self):
         self._recovery_autosave_ready = True
         self.canvas.boxes_changed.connect(
-            lambda _boxes: self._write_recovery_checkpoint("boxes")
+            lambda _boxes: self._schedule_recovery_draft("boxes")
         )
         self.inp_title.textChanged.connect(
             lambda _text: self._schedule_recovery_draft("title")
@@ -552,6 +564,10 @@ class CardEditorDialog(QDialog):
             return
         self._recovery_dirty = True
         self._recovery_timer.start()
+        print(
+            "[DEBUG][recovery] editor_draft_scheduled "
+            f"reason={_reason} delay_ms={self._recovery_timer.interval()}"
+        )
 
     def _has_recovery_content(self):
         try:
@@ -582,7 +598,7 @@ class CardEditorDialog(QDialog):
                 ],
                 "notes": self.inp_notes.toPlainText(),
                 "boxes": boxes,
-                "created": card.get("created", datetime.now().isoformat()),
+                "created": card.get("created") or self._recovery_created_at,
                 "reviews": card.get("reviews", 0),
             }
         )
@@ -593,6 +609,10 @@ class CardEditorDialog(QDialog):
                 self._pdf_render_zoom or PDF_LEGACY_BOX_ZOOM
             )
         return card
+
+    @staticmethod
+    def _recovery_payload_fingerprint(payload):
+        return json.dumps(payload or {}, sort_keys=True, separators=(",", ":"), default=str)
 
     def _write_recovery_draft(self):
         if self._recovery_draft_cleared or self._recovery_accepted:
@@ -615,7 +635,15 @@ class CardEditorDialog(QDialog):
             else {},
             "card": self._current_recovery_card(),
         }
+        fingerprint = self._recovery_payload_fingerprint(payload)
+        if fingerprint == self.__dict__.get("_last_recovery_draft_fingerprint"):
+            print(
+                "[DEBUG][recovery] editor_draft_skipped "
+                f"reason=unchanged boxes={len(payload.get('card', {}).get('boxes', []))}"
+            )
+            return None
         saved = recovery_manager.save_editor_draft(payload)
+        self._last_recovery_draft_fingerprint = fingerprint
         self._recovery_dirty = True
         print(
             "[DEBUG][recovery] editor_draft_saved "
@@ -673,9 +701,147 @@ class CardEditorDialog(QDialog):
     def _editor_nav_debug(self, action: str, **data):
         return
 
+    @staticmethod
+    def _editor_verbose_debug_enabled():
+        raw = os.environ.get(EDITOR_VERBOSE_ENV, "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _editor_scroll_profile_enabled():
+        raw = os.environ.get(EDITOR_SCROLL_PROFILE_ENV, "1").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+    def _log_editor_scroll_profile(
+        self,
+        *,
+        first,
+        last,
+        entered_pages,
+        needed,
+        inject_stats,
+        decision_stats,
+        total_ms,
+        queued,
+        render_started,
+    ):
+        if not self._editor_scroll_profile_enabled():
+            return
+        now = time.perf_counter()
+        prev_ts = self.__dict__.get("_editor_scroll_profile_last_event_ts")
+        event_dt_ms = 0.0 if prev_ts is None else (now - float(prev_ts)) * 1000.0
+        self._editor_scroll_profile_last_event_ts = now
+
+        # Log each expensive scroll pass, each render/queue decision, and a
+        # periodic heartbeat while scrolling so smoothness can be judged.
+        last_log = float(self.__dict__.get("_editor_scroll_profile_last_log_ts", 0.0) or 0.0)
+        should_log = (
+            total_ms >= 8.0
+            or bool(needed)
+            or int((inject_stats or {}).get("injected", 0)) > 0
+            or (now - last_log) >= 1.0
+        )
+        if not should_log:
+            return
+        self._editor_scroll_profile_last_log_ts = now
+
+        rate = 1000.0 / event_dt_ms if event_dt_ms > 0 else 0.0
+        inflight = len(self.__dict__.get("_editor_render_inflight_pages", set()) or set())
+        pending = self.__dict__.get("_editor_pending_visible_request")
+        pending_count = len(pending[1] or []) if pending else 0
+        print(
+            "[PROFILE][editor_scroll] "
+            f"visible=p.{first + 1}-p.{last + 1} "
+            f"entered={len(entered_pages or [])} "
+            f"dt={event_dt_ms:.1f}ms "
+            f"rate={rate:.1f}/s "
+            f"total={total_ms:.1f}ms "
+            f"inject={float((inject_stats or {}).get('elapsed_ms', 0.0)):.1f}ms "
+            f"decide={float((decision_stats or {}).get('elapsed_ms', 0.0)):.1f}ms "
+            f"cache_checks={int((inject_stats or {}).get('cache_checks', 0)) + int((decision_stats or {}).get('cache_checks', 0))} "
+            f"cache_hits={int((inject_stats or {}).get('cache_hits', 0)) + int((decision_stats or {}).get('cache_hits', 0))} "
+            f"injected={int((inject_stats or {}).get('injected', 0))} "
+            f"need={self._fmt_editor_pages(needed)} "
+            f"inflight={inflight} "
+            f"pending={pending_count} "
+            f"queued={'yes' if queued else 'no'} "
+            f"render={'yes' if render_started else 'no'}"
+        )
+
     def _pdf_quality_debug(self, action: str, **data):
         parts = " ".join(f"{key}={value}" for key, value in data.items())
         print(f"[DEBUG][pdf_quality][editor] {action} {parts}".rstrip())
+
+    @staticmethod
+    def _fmt_editor_pages(page_nums, max_items: int = 10):
+        pages = [int(pn) for pn in (page_nums or [])]
+        if not pages:
+            return "none"
+        shown = ", ".join(f"p.{pn + 1}" for pn in pages[:max_items])
+        if len(pages) > max_items:
+            shown += f", ... (+{len(pages) - max_items})"
+        return shown
+
+    @staticmethod
+    def _editor_cache_count(path, total_pages):
+        if hasattr(PAGE_CACHE, "cached_page_count"):
+            return PAGE_CACHE.cached_page_count(path, total_pages)
+        if hasattr(PAGE_CACHE, "cached_page_indices"):
+            return len(PAGE_CACHE.cached_page_indices(path, total_pages))
+        return "?"
+
+    def _editor_pages_needing_render(self, path, page_nums, context="visible"):
+        t0 = time.perf_counter()
+        real_pages = set(self.__dict__.get("_editor_canvas_real_pages", set()) or set())
+        inflight = set(
+            self.__dict__.get("_editor_render_inflight_pages", set()) or set()
+        )
+        pending = self.__dict__.get("_editor_pending_visible_request")
+        pending_visible = (
+            set(int(pn) for pn in (pending[1] or [])) if pending and pending[0] == path else set()
+        )
+        needed = []
+        skipped = {
+            "canvas_real": 0,
+            "cache_hot": 0,
+            "inflight": 0,
+            "pending_visible": 0,
+        }
+        cache_checks = 0
+        cache_hits = 0
+        for pn in sorted({int(pn) for pn in (page_nums or [])}):
+            if pn in real_pages:
+                skipped["canvas_real"] += 1
+                continue
+            if pn in inflight:
+                skipped["inflight"] += 1
+                continue
+            if pn in pending_visible:
+                skipped["pending_visible"] += 1
+                continue
+            cache_checks += 1
+            cached = PAGE_CACHE.get(path, pn)
+            if cached is not None and not cached.isNull():
+                cache_hits += 1
+                skipped["cache_hot"] += 1
+                continue
+            needed.append(pn)
+        self._editor_last_decision_stats = {
+            "cache_checks": cache_checks,
+            "cache_hits": cache_hits,
+            "elapsed_ms": (time.perf_counter() - t0) * 1000.0,
+            "skipped": dict(skipped),
+        }
+        if self._editor_verbose_debug_enabled():
+            print(
+                "[DEBUG][editor_decision] "
+                f"context={context} candidates={self._fmt_editor_pages(page_nums)} "
+                f"need={self._fmt_editor_pages(needed)} "
+                f"skip_canvas={skipped['canvas_real']} "
+                f"skip_cache={skipped['cache_hot']} "
+                f"skip_inflight={skipped['inflight']} "
+                f"skip_pending={skipped['pending_visible']}"
+            )
+        return needed
 
     def _set_pdf_page_ui(self, current_zero: int):
         self._pdf_viewer.set_page_ui(current_zero)
@@ -933,6 +1099,12 @@ class CardEditorDialog(QDialog):
           3. Render only visible cache misses as you scroll.
           4. Fall back to the old full-document loader if skeleton build fails.
         """
+        load_t0 = time.perf_counter()
+        self._editor_load_t0 = load_t0
+        print(
+            "[DEBUG][editor_load] start "
+            f"file={os.path.basename(path)}"
+        )
         self._stop_pdf_threads()
         self._watch_pdf(path)
         self._show_pdf_loading(False)
@@ -945,14 +1117,29 @@ class CardEditorDialog(QDialog):
 
         self._pdf_total_pages = total_pages
         self._pdf_render_zoom = choose_pdf_render_zoom(total_pages)
+        previous_zoom = PAGE_CACHE.get_render_zoom(path)
+        cached_before = self._editor_cache_count(path, total_pages)
+        profile_t0 = time.perf_counter()
         profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)
+        cached_after = self._editor_cache_count(path, total_pages)
+        print(
+            "[DEBUG][editor_cache_profile] "
+            f"file={os.path.basename(path)} pages={total_pages} "
+            f"previous_zoom={previous_zoom} target_zoom={self._pdf_render_zoom} "
+            f"reset_cache={profile_reset} "
+            f"cached_before={cached_before}/{total_pages} "
+            f"cached_after={cached_after}/{total_pages} "
+            f"t={(time.perf_counter() - profile_t0) * 1000:.1f}ms"
+        )
         self._pdf_quality_debug(
             "profile",
             pages=total_pages,
             zoom=self._pdf_render_zoom,
             reset_cache=profile_reset,
         )
+        skeleton_t0 = time.perf_counter()
         skeleton = load_pdf_skeleton(path, zoom=self._pdf_render_zoom)
+        skeleton_ms = (time.perf_counter() - skeleton_t0) * 1000
         if skeleton and not getattr(skeleton, "error", None):
             pages = list(
                 getattr(skeleton, "placeholders", None)
@@ -965,7 +1152,16 @@ class CardEditorDialog(QDialog):
                 f"color:{self._p.get('C_YELLOW', C_YELLOW)};font-size:11px;background:transparent;font-weight:bold;"
             )
             self.lbl_sync.setVisible(True)
-            print(f"[DEBUG][editor_ondemand] skeleton_ready pages={total_pages}")
+            print(
+                "[DEBUG][editor_skeleton] ready "
+                f"pages={total_pages} placeholders={len(pages)} "
+                f"dims={len(getattr(skeleton, 'page_dims', []) or [])} "
+                f"t={skeleton_ms:.1f}ms"
+            )
+            print(
+                "[DEBUG][editor_ondemand] skeleton_ready "
+                f"pages={total_pages} total={(time.perf_counter() - load_t0) * 1000:.1f}ms"
+            )
             QTimer.singleShot(120, self._sc._emit_visible_pages)
             return
 
@@ -978,7 +1174,9 @@ class CardEditorDialog(QDialog):
         self.lbl_sync.setVisible(True)
         self._show_pdf_loading(True)
         print(
-            f"[DEBUG][editor_ondemand] skeleton_fallback_render path={os.path.basename(path)}"
+            "[DEBUG][editor_ondemand] skeleton_fallback_render "
+            f"path={os.path.basename(path)} skeleton_t={skeleton_ms:.1f}ms "
+            f"error={getattr(skeleton, 'error', None)}"
         )
         self._pdf_loader_thread = PdfLoaderThread(
             path, zoom=self._pdf_render_zoom, parent=self
@@ -991,6 +1189,7 @@ class CardEditorDialog(QDialog):
         Common finalisation after pages are ready (cache hit or render done).
         Loads pages into canvas, restores boxes, sets scroll position.
         """
+        finish_t0 = time.perf_counter()
         self.canvas._current_pdf_path = path
         self._editor_ondemand_path = path
         self._editor_ondemand_total = len(pages or [])
@@ -999,7 +1198,13 @@ class CardEditorDialog(QDialog):
         self._editor_render_inflight_pages.clear()
         self._editor_pending_visible_request = None
         existing_boxes = self.canvas.get_boxes()
+        canvas_t0 = time.perf_counter()
         self.canvas.load_pages(pages)
+        print(
+            "[DEBUG][editor_canvas] load_pages "
+            f"pages={len(pages or [])} real_pages={len(real_pages or set())} "
+            f"t={(time.perf_counter() - canvas_t0) * 1000:.1f}ms"
+        )
         self._after_load_scroll()
         self._schedule_zoom_fit(80)
 
@@ -1016,6 +1221,15 @@ class CardEditorDialog(QDialog):
         boxes_to_restore = (
             self._pending_boxes or existing_boxes or list(self.card.get("boxes", []))
         )
+        boxes_source = (
+            "pending"
+            if self._pending_boxes
+            else "existing_canvas"
+            if existing_boxes
+            else "card"
+        )
+        adapt_t0 = time.perf_counter()
+        adapted_boxes = False
         if boxes_to_restore:
             if self._pending_boxes_need_pdf_adapt:
                 source_zoom = self.card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
@@ -1032,11 +1246,28 @@ class CardEditorDialog(QDialog):
                     boxes=len(boxes_to_restore),
                 )
                 self._pending_boxes_need_pdf_adapt = False
+                adapted_boxes = True
             self.canvas.set_boxes(boxes_to_restore)
             self.mask_panel._refresh(boxes_to_restore)
+        print(
+            "[DEBUG][editor_boxes] restore "
+            f"source={boxes_source} boxes={len(boxes_to_restore or [])} "
+            f"adapted={'yes' if adapted_boxes else 'no'} "
+            f"t={(time.perf_counter() - adapt_t0) * 1000:.1f}ms"
+        )
         self._pending_boxes = []
         self.btn_open_ext.setVisible(True)
         self.btn_annotate_beta.setVisible(True)
+        total_ms = (
+            (time.perf_counter() - float(self._editor_load_t0)) * 1000
+            if self._editor_load_t0
+            else (time.perf_counter() - finish_t0) * 1000
+        )
+        print(
+            "[DEBUG][editor_load] finish "
+            f"file={os.path.basename(path)} pages={len(pages or [])} "
+            f"total={total_ms:.1f}ms"
+        )
 
     def _wire_editor_scroll_ondemand(self, path: str, total_pages: int):
         try:
@@ -1049,8 +1280,13 @@ class CardEditorDialog(QDialog):
         self._editor_ondemand_total = int(total_pages or 0)
         self._editor_visible_debug_seen_pages = set()
         self._sc.visible_pages_changed.connect(self._on_editor_visible_pages_changed)
+        print(
+            "[DEBUG][editor_ondemand] wired "
+            f"pages={int(total_pages or 0)} path={os.path.basename(path)}"
+        )
 
     def _on_editor_visible_pages_changed(self, first, last):
+        handler_t0 = time.perf_counter()
         path = getattr(self, "_editor_ondemand_path", None)
         if not path:
             return
@@ -1062,7 +1298,7 @@ class CardEditorDialog(QDialog):
         )
         entered_pages = [pn for pn in visible_pages if pn not in prev_visible]
         self._editor_visible_debug_seen_pages = set(visible_pages)
-        if entered_pages:
+        if entered_pages and self._editor_verbose_debug_enabled():
             current_page = visible_pages[len(visible_pages) // 2]
             entered_states = ", ".join(
                 f"p.{pn + 1}:{self._editor_page_view_state(path, pn)}"
@@ -1073,39 +1309,93 @@ class CardEditorDialog(QDialog):
                 f"current=p.{current_page + 1}:{self._editor_page_view_state(path, current_page)} "
                 f"entered={entered_states}"
             )
-        self._inject_editor_cached_visible_pages(path, visible_pages)
-        needed = [pn for pn in visible_pages if PAGE_CACHE.get(path, pn) is None]
+        inject_stats = self._inject_editor_cached_visible_pages(path, visible_pages)
+        needed = self._editor_pages_needing_render(path, visible_pages)
+        decision_stats = dict(self.__dict__.get("_editor_last_decision_stats", {}) or {})
         if not needed:
+            self._log_editor_scroll_profile(
+                first=first,
+                last=last,
+                entered_pages=entered_pages,
+                needed=needed,
+                inject_stats=inject_stats,
+                decision_stats=decision_stats,
+                total_ms=(time.perf_counter() - handler_t0) * 1000.0,
+                queued=False,
+                render_started=False,
+            )
             return
         if self._pdf_ondemand_thread and self._pdf_ondemand_thread.isRunning():
             self._editor_pending_visible_request = (path, list(needed))
+            print(
+                "[DEBUG][editor_ondemand] queue_visible "
+                f"need={self._fmt_editor_pages(needed)}"
+            )
+            self._log_editor_scroll_profile(
+                first=first,
+                last=last,
+                entered_pages=entered_pages,
+                needed=needed,
+                inject_stats=inject_stats,
+                decision_stats=decision_stats,
+                total_ms=(time.perf_counter() - handler_t0) * 1000.0,
+                queued=True,
+                render_started=False,
+            )
             return
         self._start_editor_visible_page_request(path, needed)
+        self._log_editor_scroll_profile(
+            first=first,
+            last=last,
+            entered_pages=entered_pages,
+            needed=needed,
+            inject_stats=inject_stats,
+            decision_stats=decision_stats,
+            total_ms=(time.perf_counter() - handler_t0) * 1000.0,
+            queued=False,
+            render_started=True,
+        )
 
     def _inject_editor_cached_visible_pages(self, path, visible_pages):
+        t0 = time.perf_counter()
         visible_pages = [int(pn) for pn in (visible_pages or [])]
         real_pages = set(self.__dict__.get("_editor_canvas_real_pages", set()) or set())
         inflight = set(
             self.__dict__.get("_editor_render_inflight_pages", set()) or set()
         )
         injected = []
+        cache_checks = 0
+        cache_hits = 0
         for pn in visible_pages:
             if pn in real_pages or pn in inflight:
                 continue
+            cache_checks += 1
             cached = PAGE_CACHE.get(path, pn)
             if cached is None or cached.isNull():
                 continue
-            print(f"[DEBUG][editor_lazy] ⚡ p.{pn + 1}")
+            cache_hits += 1
+            if self._editor_verbose_debug_enabled():
+                print(f"[DEBUG][editor_lazy] ⚡ p.{pn + 1}")
             self.canvas.inject_page(pn, cached)
             self.__dict__.setdefault("_editor_canvas_real_pages", set()).add(pn)
-            print(f"[DEBUG][editor_inject] p.{pn + 1} injected=yes kind=visible_cache")
+            if self._editor_verbose_debug_enabled():
+                print(
+                    f"[DEBUG][editor_inject] p.{pn + 1} injected=yes kind=visible_cache"
+                )
             injected.append(pn)
         if injected:
-            print(
-                "[DEBUG][editor_visible_cache] hydrate "
-                + ", ".join(f"p.{pn + 1}" for pn in injected)
-            )
+            if self._editor_verbose_debug_enabled():
+                print(
+                    "[DEBUG][editor_visible_cache] hydrate "
+                    + ", ".join(f"p.{pn + 1}" for pn in injected)
+                )
             self._update_pdf_nav_ui()
+        return {
+            "cache_checks": cache_checks,
+            "cache_hits": cache_hits,
+            "injected": len(injected),
+            "elapsed_ms": (time.perf_counter() - t0) * 1000.0,
+        }
 
     def _start_editor_visible_page_request(self, path, needed):
         needed = sorted({int(pn) for pn in (needed or [])})
@@ -1115,31 +1405,64 @@ class CardEditorDialog(QDialog):
                 "[DEBUG][editor_ondemand] render_request "
                 + ", ".join(f"p.{pn + 1}" for pn in needed)
             )
+        else:
+            print("[DEBUG][editor_ondemand] render_request skipped need=none")
         self.__dict__.setdefault("_editor_render_inflight_pages", set()).update(needed)
+        self._editor_ondemand_requested_pages = set(needed)
         self._pdf_ondemand_thread = PdfOnDemandThread(
             path, needed, zoom=self._pdf_render_zoom, parent=self
         )
+        request_thread = self._pdf_ondemand_thread
+        self.__dict__.setdefault("_editor_ondemand_request_pages_by_thread", {})[
+            id(request_thread)
+        ] = set(needed)
         self._pdf_ondemand_thread.page_ready.connect(self._on_editor_page_ready)
         self._pdf_ondemand_thread.batch_done.connect(
-            self._on_editor_visible_pages_batch_done
+            lambda rendered, thread=request_thread: self._on_editor_visible_pages_batch_done(
+                rendered, thread
+            )
         )
         self._pdf_ondemand_thread.error.connect(lambda err: None)
         self._pdf_ondemand_thread.start()
 
-    def _on_editor_visible_pages_batch_done(self, rendered):
+    def _editor_requested_pages_for_thread(self, thread):
+        if thread is None:
+            return set(self.__dict__.pop("_editor_ondemand_requested_pages", set()) or set())
+        requests = self.__dict__.setdefault("_editor_ondemand_request_pages_by_thread", {})
+        requested = set(requests.pop(id(thread), set()) or set())
+        if thread is getattr(self, "_pdf_ondemand_thread", None):
+            requested |= set(
+                self.__dict__.pop("_editor_ondemand_requested_pages", set()) or set()
+            )
+        return requested
+
+    def _on_editor_visible_pages_batch_done(self, rendered, thread=None):
+        requested = self._editor_requested_pages_for_thread(thread)
+        self.__dict__.setdefault("_editor_render_inflight_pages", set()).difference_update(
+            requested
+        )
+        if thread is not None and thread is not getattr(self, "_pdf_ondemand_thread", None):
+            print(
+                "[DEBUG][editor_ondemand] stale_done "
+                f"requested={self._fmt_editor_pages(requested)} "
+                f"rendered={self._fmt_editor_pages(rendered)}"
+            )
+            return
+        if thread is not None:
+            self._pdf_ondemand_thread = None
         pending = self._editor_pending_visible_request
         self._editor_pending_visible_request = None
+        print(
+            "[DEBUG][editor_ondemand] batch_done "
+            f"requested={self._fmt_editor_pages(requested)} "
+            f"rendered={self._fmt_editor_pages(rendered)} "
+            f"pending={self._fmt_editor_pages(pending[1] if pending else [])}"
+        )
         if pending and pending[0] == getattr(self, "_editor_ondemand_path", None):
             path, needed = pending
-            fresh_needed = [
-                pn
-                for pn in needed
-                if pn
-                not in set(
-                    self.__dict__.get("_editor_canvas_real_pages", set()) or set()
-                )
-                and PAGE_CACHE.get(path, pn) is None
-            ]
+            fresh_needed = self._editor_pages_needing_render(
+                path, needed, context="after_visible"
+            )
             if fresh_needed:
                 self._start_editor_visible_page_request(path, fresh_needed)
 
@@ -1152,16 +1475,19 @@ class CardEditorDialog(QDialog):
             page_num
         )
         if path != getattr(self.canvas, "_current_pdf_path", None):
-            print(
-                f"[DEBUG][editor_inject] p.{page_num + 1} injected=no reason=stale_path"
-            )
+            if self._editor_verbose_debug_enabled():
+                print(
+                    f"[DEBUG][editor_inject] p.{page_num + 1} injected=no reason=stale_path"
+                )
             return
         if not getattr(self.canvas, "_pages", None):
-            print(
-                f"[DEBUG][editor_inject] p.{page_num + 1} injected=no reason=canvas_empty"
-            )
+            if self._editor_verbose_debug_enabled():
+                print(
+                    f"[DEBUG][editor_inject] p.{page_num + 1} injected=no reason=canvas_empty"
+                )
             return
-        print(f"[DEBUG][editor_lazy] 👀 p.{page_num + 1}")
+        if self._editor_verbose_debug_enabled():
+            print(f"[DEBUG][editor_lazy] 👀 p.{page_num + 1}")
         cache_px = None
         if isinstance(qpx, QPixmap):
             cache_px = qpx
@@ -1171,7 +1497,8 @@ class CardEditorDialog(QDialog):
             PAGE_CACHE.put(path, page_num, cache_px, render_zoom=self._pdf_render_zoom)
         self.canvas.inject_page(page_num, cache_px if cache_px is not None else qpx)
         self.__dict__.setdefault("_editor_canvas_real_pages", set()).add(page_num)
-        print(f"[DEBUG][editor_inject] p.{page_num + 1} injected=yes kind=visible")
+        if self._editor_verbose_debug_enabled():
+            print(f"[DEBUG][editor_inject] p.{page_num + 1} injected=yes kind=visible")
         print(f"[DEBUG][editor_ondemand] loaded p.{page_num + 1}")
         self._update_pdf_nav_ui()
 
@@ -1276,13 +1603,19 @@ class CardEditorDialog(QDialog):
 
     def _on_pdf_done(self, pages: list, err):
         """Called by PdfLoaderThread when all pages are rendered."""
+        done_t0 = time.perf_counter()
         self._show_pdf_loading(False)
         path = self._resolve_source_path(self.card.get("pdf_path", ""))
         if not pages:
+            print(f"[DEBUG][editor_loader] done error={err}")
             QMessageBox.warning(self, "PDF Error", err or "Could not render PDF.")
             return
         pages = self._coerce_loader_pages_to_pixmaps(path, pages)
         self._finish_pdf_load(path, pages, real_pages=set(range(len(pages))))
+        print(
+            "[DEBUG][editor_loader] done "
+            f"pages={len(pages)} t={(time.perf_counter() - done_t0) * 1000:.1f}ms"
+        )
         self.lbl_sync.setText(f"✅ Rendered {len(pages)} pages")
         self.lbl_sync.setStyleSheet(
             f"color:{self._p.get('C_GREEN', C_GREEN)};font-size:11px;background:transparent;font-weight:bold;"
@@ -1304,6 +1637,7 @@ class CardEditorDialog(QDialog):
 
     def _load_card(self, card):
         """File: editor_ui.py -> Class: CardEditorDialog"""
+        load_t0 = time.perf_counter()
         self.inp_title.setText(card.get("title", ""))
         self.inp_tags.setText(", ".join(card.get("tags", [])))
         self.inp_notes.setPlainText(card.get("notes", ""))
@@ -1313,6 +1647,11 @@ class CardEditorDialog(QDialog):
         pdf_path = self._resolve_source_path(card.get("pdf_path", ""))
 
         if card.get("image_path") and os.path.exists(image_path):
+            print(
+                "[DEBUG][editor_card] load "
+                f"source=image boxes={len(current_boxes or [])} "
+                f"file={os.path.basename(image_path)}"
+            )
             px = QPixmap(image_path)
             if px and not px.isNull():
                 self.canvas.load_pixmap(px)
@@ -1327,8 +1666,19 @@ class CardEditorDialog(QDialog):
             self._pending_boxes_need_pdf_adapt = True
             self.btn_relink.setVisible(True)
             self._show_pdf_loading(True)
+            print(
+                "[DEBUG][editor_card] load "
+                f"source=pdf boxes={len(current_boxes or [])} "
+                f"file={os.path.basename(pdf_path)} "
+                f"t={(time.perf_counter() - load_t0) * 1000:.1f}ms"
+            )
             self._load_pdf_direct(pdf_path)
         elif card.get("pdf_path") and not os.path.exists(pdf_path):
+            print(
+                "[DEBUG][editor_card] load "
+                f"source=missing_pdf boxes={len(current_boxes or [])} "
+                f"file={os.path.basename(pdf_path)}"
+            )
             self.btn_relink.setVisible(True)
             self.lbl_sync.setVisible(True)
             self.lbl_sync.setText("⚠ PDF not found — click 🔄 Relink PDF to fix")
@@ -1384,11 +1734,19 @@ class CardEditorDialog(QDialog):
             return
         if path not in self._watcher.files():
             self._watcher.addPath(path)
+        reload_t0 = time.perf_counter()
         changed = get_changed_pages(path)
         if changed is None:
             PAGE_CACHE.invalidate_pdf(path)
+            changed_text = "all"
         else:
             PAGE_CACHE.invalidate_pages(path, changed)
+            changed_text = self._fmt_editor_pages(changed)
+        print(
+            "[DEBUG][editor_reload] "
+            f"file={os.path.basename(path)} changed={changed_text} "
+            f"hash_t={(time.perf_counter() - reload_t0) * 1000:.1f}ms"
+        )
 
         saved_boxes = self.canvas.get_boxes()
         self._pending_boxes = saved_boxes
@@ -1492,7 +1850,12 @@ class CardEditorDialog(QDialog):
     def _apply_annotation_beta_refresh(
         self, path: str, changed_pages, return_page: int, return_scroll: int | None
     ):
+        refresh_t0 = time.perf_counter()
         if not changed_pages:
+            print(
+                "[DEBUG][editor_annotation] refresh "
+                f"changed=none return_page={return_page} return_scroll={return_scroll}"
+            )
             if return_page is not None:
                 QTimer.singleShot(0, lambda pg=return_page: self._go_to_page(pg))
             return
@@ -1506,15 +1869,23 @@ class CardEditorDialog(QDialog):
         for page_num in sorted(set(int(pn) for pn in changed_pages)):
             px = PAGE_CACHE.get(path, page_num)
             if px is not None and not px.isNull():
-                print(f"[DEBUG][editor_lazy] ⚡ p.{page_num + 1}")
+                if self._editor_verbose_debug_enabled():
+                    print(f"[DEBUG][editor_lazy] ⚡ p.{page_num + 1}")
                 self.canvas.inject_page(page_num, px)
                 self.__dict__.setdefault("_editor_canvas_real_pages", set()).add(
                     page_num
                 )
-                print(
-                    f"[DEBUG][editor_inject] p.{page_num + 1} injected=yes kind=annotation_refresh"
-                )
+                if self._editor_verbose_debug_enabled():
+                    print(
+                        f"[DEBUG][editor_inject] p.{page_num + 1} injected=yes kind=annotation_refresh"
+                    )
         self._update_pdf_nav_ui()
+        print(
+            "[DEBUG][editor_annotation] refresh "
+            f"changed={self._fmt_editor_pages(changed_pages)} "
+            f"return_page={return_page} return_scroll={return_scroll} "
+            f"t={(time.perf_counter() - refresh_t0) * 1000:.1f}ms"
+        )
         if return_page is not None:
             QTimer.singleShot(0, lambda pg=return_page: self._go_to_page(pg))
         elif return_scroll is not None:
@@ -1592,6 +1963,7 @@ class CardEditorDialog(QDialog):
     # ── save / close ──────────────────────────────────────────────────────────
 
     def _save(self):
+        save_t0 = time.perf_counter()
         if not self.card.get("image_path") and not self.card.get("pdf_path"):
             QMessageBox.warning(self, "No Source", "Load an image or PDF first.")
             return
@@ -1640,6 +2012,15 @@ class CardEditorDialog(QDialog):
         sm2_init(self.card)
         for box in self.card.get("boxes", []):
             sm2_init(box)
+        print(
+            "[DEBUG][editor_save] "
+            f"source={'pdf' if self.card.get('pdf_path') else 'image'} "
+            f"old_boxes={len(old_boxes or [])} "
+            f"new_boxes={len(new_boxes or [])} "
+            f"merged={len(merged)} "
+            f"pdf_zoom={self.card.get('_pdf_box_render_zoom', 'none')} "
+            f"t={(time.perf_counter() - save_t0) * 1000:.1f}ms"
+        )
         self._write_recovery_checkpoint("save_card")
         self.accept()
 

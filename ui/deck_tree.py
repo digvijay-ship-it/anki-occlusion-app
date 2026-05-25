@@ -171,6 +171,17 @@ C_GROUP = "#BD93F9"
 
 
 BASE_FONT_SIZE = 11
+HOME_ANIMATIONS_ENV = "ANKI_HOME_ANIMATIONS"
+CACHE_AUTO_REFRESH_MS = 30000
+
+
+def _home_animations_enabled() -> bool:
+    return os.environ.get(HOME_ANIMATIONS_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _build_ss(font_size: int = BASE_FONT_SIZE) -> str:
@@ -375,11 +386,31 @@ class DeckTree(QWidget):
         self._blink_state = False
         self._ensure_ids()
         self._setup_ui()
-        # Blink timer — toggles due badge color every 800ms
+        self._blink_enabled = _home_animations_enabled()
         self._blink_timer = QTimer(self)
+        self._blink_timer.setInterval(800)
         self._blink_timer.timeout.connect(self._blink_tick)
-        self._blink_timer.start(800)
+        self._sync_blink_timer()
         self.refresh()
+
+    def set_blink_enabled(self, enabled: bool):
+        self._blink_enabled = bool(enabled)
+        self._sync_blink_timer()
+
+    def _sync_blink_timer(self):
+        if self._blink_enabled and self.isVisible():
+            if not self._blink_timer.isActive():
+                self._blink_timer.start()
+        else:
+            self._blink_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_blink_timer()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._blink_timer.stop()
 
     def _blink_tick(self):
         """Toggle blink state and repaint all due items."""
@@ -1047,10 +1078,28 @@ class ClassicCacheWidget(QFrame):
             QLabel {{ background:transparent; }}
         """)
         self._auto_timer = QTimer(self)
+        self._auto_timer.setInterval(CACHE_AUTO_REFRESH_MS)
         self._auto_timer.timeout.connect(self.refresh)
-        self._auto_timer.start(4000)
+        self._auto_refresh_enabled = False
         self._build_ui()
         self.refresh()
+
+    def set_auto_refresh_enabled(self, enabled: bool):
+        self._auto_refresh_enabled = bool(enabled)
+        if self._auto_refresh_enabled and self.isVisible():
+            if not self._auto_timer.isActive():
+                self._auto_timer.start()
+        else:
+            self._auto_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._auto_refresh_enabled:
+            self._auto_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._auto_timer.stop()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -1248,10 +1297,28 @@ class DojoCacheWidget(QFrame):
             QLabel {{ background: transparent; border: none; }}
         """)
         self._auto_timer = QTimer(self)
+        self._auto_timer.setInterval(CACHE_AUTO_REFRESH_MS)
         self._auto_timer.timeout.connect(self.refresh)
-        self._auto_timer.start(4000)
+        self._auto_refresh_enabled = False
         self._build_ui()
         self.refresh()
+
+    def set_auto_refresh_enabled(self, enabled: bool):
+        self._auto_refresh_enabled = bool(enabled)
+        if self._auto_refresh_enabled and self.isVisible():
+            if not self._auto_timer.isActive():
+                self._auto_timer.start()
+        else:
+            self._auto_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._auto_refresh_enabled:
+            self._auto_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._auto_timer.stop()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -1458,19 +1525,39 @@ class CacheWidget(QWidget):
         self.stack = QStackedWidget(self)
         self.classic_widget = ClassicCacheWidget()
         self.dojo_widget = DojoCacheWidget()
+        self._theme = "classic"
 
         self.stack.addWidget(self.classic_widget)
         self.stack.addWidget(self.dojo_widget)
         l.addWidget(self.stack)
+        self._sync_auto_refresh()
+
+    def _sync_auto_refresh(self):
+        active = self.isVisible()
+        classic_active = active and self._theme != "dojo"
+        dojo_active = active and self._theme == "dojo"
+        self.classic_widget.set_auto_refresh_enabled(classic_active)
+        self.dojo_widget.set_auto_refresh_enabled(dojo_active)
 
     def set_theme(self, theme):
         theme = normalize_theme(theme)
+        self._theme = theme
         if theme == "dojo":
             self.stack.setCurrentWidget(self.dojo_widget)
             self.dojo_widget.refresh()
         else:
             self.stack.setCurrentWidget(self.classic_widget)
             self.classic_widget.refresh()
+        self._sync_auto_refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_auto_refresh()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.classic_widget.set_auto_refresh_enabled(False)
+        self.dojo_widget.set_auto_refresh_enabled(False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

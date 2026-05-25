@@ -109,7 +109,7 @@ class CanvasInteractionMixin:
 
         if et == QEvent.TabletPress:
             hit = self._hit_box(ip)
-            if hit >= 0:
+            if hit >= 0 and bool(e.modifiers() & Qt.ControlModifier):
                 self._ink_pending_mask_idx = hit
                 self._ink_pending_press_ip = QPointF(ip)
                 self._ink_pending_press_sp = QPointF(sp)
@@ -175,7 +175,9 @@ class CanvasInteractionMixin:
             # Let the surrounding scroll area own normal wheel / touchpad scroll
             # so two-finger scrolling still works while review ink is active.
             e.ignore()
-            self._smooth_timer.start(300)  # smooth re-render 300ms after scroll stops
+            # Plain scrolling does not change scale or page quality. Starting the
+            # smooth timer here clears the scaled-page cache after every scroll
+            # pause, which makes the next paint rescale full PDF pages again.
 
     def _handle_positions(self, idx):
         if not (0 <= idx < len(self._boxes)):
@@ -404,7 +406,7 @@ class CanvasInteractionMixin:
                 return
             if self._ink_active:
                 hit = self._hit_box(ip)
-                if hit >= 0:
+                if hit >= 0 and bool(mods & Qt.ControlModifier):
                     self._ink_pending_mask_idx = hit
                     self._ink_pending_press_ip = QPointF(ip)
                     self._ink_pending_press_sp = QPointF(sp)

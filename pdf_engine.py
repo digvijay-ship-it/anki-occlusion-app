@@ -58,6 +58,7 @@ PDF_LEGACY_BOX_ZOOM = 1.5
 SKELETON_COLOR = "#2A2A3E"
 SKELETON_CACHE_MAX = 8
 _SKELETON_CACHE = OrderedDict()
+_SKELETON_DIMS_CACHE = OrderedDict()
 _SKELETON_PLACEHOLDER_CACHE = OrderedDict()
 _SKELETON_PLACEHOLDER_CACHE_MAX = 32
 
@@ -198,8 +199,8 @@ def adapt_pdf_boxes_to_render_zoom(
     if not cloned or abs(source_zoom - target_zoom) <= 0.01:
         return cloned
 
-    src = load_pdf_skeleton(path, zoom=source_zoom)
-    dst = load_pdf_skeleton(path, zoom=target_zoom)
+    src = load_pdf_page_dims(path, zoom=source_zoom)
+    dst = load_pdf_page_dims(path, zoom=target_zoom)
     if (
         src.error or dst.error or
         not src.page_dims or not dst.page_dims or
@@ -327,7 +328,7 @@ class PdfSkeletonThread(QThread):
         try:
             if self._stop_flag:
                 return
-            result = _compute_pdf_skeleton_dims(self._path, zoom=self._zoom)
+            result = load_pdf_page_dims(self._path, zoom=self._zoom)
             if self._stop_flag:
                 return
             if result.error:
@@ -364,21 +365,16 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
     """
     Worker-safe skeleton scan. Computes page sizes only, without creating QPixmaps.
     """
-    t_start = time.perf_counter()
-
     if not PDF_SUPPORT:
-        print("[DEBUG][skeleton] ❌ PyMuPDF not installed")
         return PdfSkeletonResult([], [], 0, "PyMuPDF not installed")
 
     if not os.path.exists(path):
-        print(f"[DEBUG][skeleton] ❌ File not found: {path}")
         return PdfSkeletonResult([], [], 0, f"File not found: {path}")
 
     try:
         doc = fitz.open(path)
         if doc.is_encrypted:
             doc.close()
-            print(f"[DEBUG][skeleton] ❌ PDF is password-protected: {path}")
             return PdfSkeletonResult([], [], 0, "PDF is password-protected")
 
         total = len(doc)
@@ -390,15 +386,36 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
 
         doc.close()
 
-        t_ms = (time.perf_counter() - t_start) * 1000
-        print(
-            "[DEBUG][skeleton] "
-            f"dims_ready pages={total} mode=rect_only t={t_ms:.1f}ms"
-        )
         return PdfSkeletonResult([], page_dims, total, None)
     except Exception as ex:
-        print(f"[DEBUG][skeleton] ❌ Exception: {ex}")
         return PdfSkeletonResult([], [], 0, str(ex))
+
+
+def load_pdf_page_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
+    """
+    Cached dimension-only skeleton data.
+
+    Use this when callers only need page geometry. Unlike load_pdf_skeleton(),
+    this never creates placeholder QPixmaps, so box remapping cannot allocate a
+    second full placeholder set for large PDFs.
+    """
+    if not PDF_SUPPORT or not os.path.exists(path):
+        return _compute_pdf_skeleton_dims(path, zoom=zoom)
+    try:
+        cache_key = _skeleton_cache_key(path, zoom)
+    except Exception:
+        return _compute_pdf_skeleton_dims(path, zoom=zoom)
+    cached = _SKELETON_DIMS_CACHE.get(cache_key)
+    if cached is not None:
+        _SKELETON_DIMS_CACHE.move_to_end(cache_key)
+        return _clone_skeleton_result(cached)
+    result = _compute_pdf_skeleton_dims(path, zoom=zoom)
+    if not result.error:
+        _SKELETON_DIMS_CACHE[cache_key] = result
+        _SKELETON_DIMS_CACHE.move_to_end(cache_key)
+        while len(_SKELETON_DIMS_CACHE) > SKELETON_CACHE_MAX:
+            _SKELETON_DIMS_CACHE.popitem(last=False)
+    return _clone_skeleton_result(result)
 
 
 def invalidate_pdf_skeleton(path: str):
@@ -406,6 +423,9 @@ def invalidate_pdf_skeleton(path: str):
     keys = [k for k in _SKELETON_CACHE if k[0] == abs_path]
     for key in keys:
         del _SKELETON_CACHE[key]
+    dim_keys = [k for k in _SKELETON_DIMS_CACHE if k[0] == abs_path]
+    for key in dim_keys:
+        del _SKELETON_DIMS_CACHE[key]
 
 
 def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
@@ -425,17 +445,14 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
       - Never touches PAGE_CACHE       — cache is for real pages only
       - Never spawns a thread          — caller decides threading
 
-    Terminal debug output shows timing + per-page dimensions.
+    Returns placeholders and page dimensions without rendering full page pixels.
     """
-    t_start = time.perf_counter()
     cache_key = None
 
     if not PDF_SUPPORT:
-        print("[DEBUG][skeleton] ❌ PyMuPDF not installed")
         return PdfSkeletonResult([], [], 0, "PyMuPDF not installed")
 
     if not os.path.exists(path):
-        print(f"[DEBUG][skeleton] ❌ File not found: {path}")
         return PdfSkeletonResult([], [], 0, f"File not found: {path}")
 
     try:
@@ -443,14 +460,12 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         cached = _SKELETON_CACHE.get(cache_key)
         if cached is not None:
             _SKELETON_CACHE.move_to_end(cache_key)
-            t_ms = (time.perf_counter() - t_start) * 1000
             return _clone_skeleton_result(cached)
 
         doc = fitz.open(path)
 
         if doc.is_encrypted:
             doc.close()
-            print(f"[DEBUG][skeleton] ❌ PDF is password-protected: {path}")
             return PdfSkeletonResult([], [], 0, "PDF is password-protected")
 
         total        = len(doc)
@@ -471,12 +486,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 
         doc.close()
 
-        t_ms = (time.perf_counter() - t_start) * 1000
-        print(
-            "[DEBUG][skeleton] "
-            f"placeholders_ready pages={total} mode=rect_only t={t_ms:.1f}ms"
-        )
-
         # ─────────────────────────────────────────────────────────────────────
 
         result = PdfSkeletonResult(placeholders, page_dims, total, None)
@@ -488,7 +497,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         return _clone_skeleton_result(result)
 
     except Exception as ex:
-        print(f"[DEBUG][skeleton] ❌ Exception: {ex}")
         return PdfSkeletonResult([], [], 0, str(ex))
 
 

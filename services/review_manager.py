@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt
 # Keep the role constants here if they are used in review_manager
 QUEUE_ROLE = Qt.UserRole + 10
 QUEUE_INDEX_ROLE = Qt.UserRole + 11
+REVIEW_SAVE_MIN_INTERVAL = 8.0
 
 from data_manager import store
 from services import recovery_manager
@@ -25,6 +26,28 @@ _SM2_KEYS = (
     "reviewed_at",
     "last_quality",
 )
+
+
+def _sm2_snapshot(obj):
+    return {k: obj.get(k) for k in _SM2_KEYS}
+
+
+def _restore_sm2_snapshot(obj, state):
+    for key, value in (state or {}).items():
+        if value is None:
+            obj.pop(key, None)
+        else:
+            obj[key] = value
+
+
+def _sibling_snapshots_for_item(card, box_idx, sm2_obj):
+    snapshots = []
+    if isinstance(box_idx, tuple) and box_idx[0] == "group":
+        gid = box_idx[1]
+        for box in card.get("boxes", []):
+            if box.get("group_id") == gid and box is not sm2_obj:
+                snapshots.append((box, _sm2_snapshot(box)))
+    return snapshots
 
 
 class ReviewSessionManager:
@@ -47,25 +70,21 @@ class ReviewSessionManager:
         card, box_idx, sm2_obj = self._items[self._idx]
 
         # ── Save snapshot BEFORE rating so Ctrl+Z can restore it ─────────────
-        def _sm2_snapshot(obj):
-            return {k: obj.get(k) for k in _SM2_KEYS}
-
         # Snapshot all sm2 objects affected by this rating
-        sibling_snapshots = []
-        if isinstance(box_idx, tuple) and box_idx[0] == "group":
-            gid = box_idx[1]
-            for box in card.get("boxes", []):
-                if box.get("group_id") == gid and box is not sm2_obj:
-                    sibling_snapshots.append((box, _sm2_snapshot(box)))
+        sibling_snapshots = _sibling_snapshots_for_item(card, box_idx, sm2_obj)
 
         snapshot = {
             "idx": self._idx,
             "done": self._done,
             "items_order": list(self._items),  # shallow copy of order
+            "card": card,
+            "box_idx": box_idx,
+            "quality": quality,
             "sm2_obj": sm2_obj,
             "sm2_state": _sm2_snapshot(sm2_obj),
             "sibling_snapshots": sibling_snapshots,
             "card_reviewed_at": card.get("last_reviewed_at"),
+            "recovery_event": None,
         }
         self._review_undo_stack.append(snapshot)
         # New rating clears redo stack
@@ -103,33 +122,27 @@ class ReviewSessionManager:
 
         # Always stamp the parent card with the latest review time
         card["last_reviewed_at"] = _now
-
-        # Persist promptly, but keep the disk write off the UI thread so rapid
-        # rating keys do not stall the review flow. Use an immediate checkpoint
-        # request so a forced app kill loses at most the currently-running write.
+        # Persist a tiny recovery event immediately, then debounce the heavy
+        # full-data JSON save/backup so review flow and next-PDF loading stay
+        # responsive. A forced app kill can replay the recovery event.
         try:
             event = recovery_manager.build_review_event(
                 getattr(self.rs, "_data", None), card, box_idx, quality, _now
             )
-            recovery_manager.record_review_event(event)
+            snapshot["recovery_event"] = recovery_manager.record_review_event(event)
         except Exception as ex:
             print(f"[Recovery] review checkpoint failed: {ex}")
         store.mark_dirty()
-        store.save_soon(min_interval=0.0)
+        self.rs._review_data_dirty = True
+        store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
 
         state = sm2_obj.get("sched_state", "review")
 
         if state in ("learning", "relearn"):
-            # Pull item out and re-insert by due time
+            # Pull delayed learning cards behind untouched review cards. They
+            # still stay due-sorted against other learning/relearn cards.
             item = self._items.pop(self._idx)
-            due_str = sm2_obj.get("sm2_due", "")
-            insert_at = len(self._items)
-            for j in range(self._idx, len(self._items)):
-                other_due = self._items[j][2].get("sm2_due", "")
-                if other_due >= due_str:
-                    insert_at = j
-                    break
-            self._items.insert(insert_at, item)
+            self._insert_delayed_learning_item(item)
             self._queue_needs_full_rebuild = True
         else:
             self._done += 1
@@ -139,6 +152,18 @@ class ReviewSessionManager:
         self._promote_expired_learning(self._idx)
 
         self.rs._load_item()
+
+    def _insert_delayed_learning_item(self, item):
+        due_str = item[2].get("sm2_due", "")
+        insert_at = len(self._items)
+        for j in range(self._idx, len(self._items)):
+            other_due = self._items[j][2].get("sm2_due", "")
+            if other_due >= due_str:
+                insert_at = j
+                break
+        if self._idx < len(self._items):
+            insert_at = max(insert_at, self._idx + 1)
+        self._items.insert(insert_at, item)
 
     def _review_undo(self):
         """
@@ -152,21 +177,25 @@ class ReviewSessionManager:
         snap = self._review_undo_stack.pop()
 
         # Save current state to redo stack before restoring
-        card, box_idx, sm2_obj = (
-            self._items[self._idx]
-            if self._idx < len(self._items)
-            else self._items[-1] if self._items else (None, None, None)
-        )
+        card = snap.get("card")
+        box_idx = snap.get("box_idx")
+        sm2_obj = snap.get("sm2_obj")
 
         if sm2_obj is not None:
             redo_snap = {
                 "idx": self._idx,
                 "done": self._done,
                 "items_order": list(self._items),
+                "card": card,
+                "box_idx": box_idx,
+                "quality": snap.get("quality"),
                 "sm2_obj": sm2_obj,
                 "sm2_state": {k: sm2_obj.get(k) for k in _SM2_KEYS},
-                "sibling_snapshots": [],
+                "sibling_snapshots": _sibling_snapshots_for_item(
+                    card or {}, box_idx, sm2_obj
+                ),
                 "card_reviewed_at": card.get("last_reviewed_at") if card else None,
+                "recovery_event": None,
             }
             self._review_redo_stack.append(redo_snap)
 
@@ -178,19 +207,11 @@ class ReviewSessionManager:
 
         # Restore SM-2 state of main box
         sm2_obj = snap["sm2_obj"]
-        for k, v in snap["sm2_state"].items():
-            if v is None:
-                sm2_obj.pop(k, None)
-            else:
-                sm2_obj[k] = v
+        _restore_sm2_snapshot(sm2_obj, snap["sm2_state"])
 
         # Restore sibling boxes (grouped cards)
         for box, state in snap["sibling_snapshots"]:
-            for k, v in state.items():
-                if v is None:
-                    box.pop(k, None)
-                else:
-                    box[k] = v
+            _restore_sm2_snapshot(box, state)
 
         # Restore card-level reviewed_at
         card = self._items[self._idx][0] if self._idx < len(self._items) else None
@@ -200,8 +221,13 @@ class ReviewSessionManager:
             else:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
 
+        try:
+            recovery_manager.discard_review_event(snap.get("recovery_event"))
+        except Exception as ex:
+            print(f"[Recovery] review checkpoint discard failed: {ex}")
         store.mark_dirty()
-        store.save_soon(min_interval=0.0)
+        self.rs._review_data_dirty = True
+        store.save_force()
 
         self.rs.canvas._show_toast(f"↩ Undo — back to card {self._idx + 1}")
         self.rs._load_item()
@@ -215,35 +241,36 @@ class ReviewSessionManager:
             return
 
         snap = self._review_redo_stack.pop()
+        card = snap.get("card")
+        box_idx = snap.get("box_idx")
+        sm2_obj = snap["sm2_obj"]
 
         # Save current state back to undo stack
-        self._review_undo_stack.append(
-            {
-                "idx": self._idx,
-                "done": self._done,
-                "items_order": list(self._items),
-                "sm2_obj": snap["sm2_obj"],
-                "sm2_state": {k: snap["sm2_obj"].get(k) for k in _SM2_KEYS},
-                "sibling_snapshots": [],
-                "card_reviewed_at": (
-                    self._items[self._idx][0].get("last_reviewed_at")
-                    if self._idx < len(self._items)
-                    else None
-                ),
-            }
-        )
+        undo_snap = {
+            "idx": self._idx,
+            "done": self._done,
+            "items_order": list(self._items),
+            "card": card,
+            "box_idx": box_idx,
+            "quality": snap.get("quality"),
+            "sm2_obj": sm2_obj,
+            "sm2_state": _sm2_snapshot(sm2_obj),
+            "sibling_snapshots": _sibling_snapshots_for_item(
+                card or {}, box_idx, sm2_obj
+            ),
+            "card_reviewed_at": card.get("last_reviewed_at") if card else None,
+            "recovery_event": None,
+        }
+        self._review_undo_stack.append(undo_snap)
 
         self._items = list(snap["items_order"])
         self._queue_needs_full_rebuild = True
         self._idx = snap["idx"]
         self._done = snap["done"]
 
-        sm2_obj = snap["sm2_obj"]
-        for k, v in snap["sm2_state"].items():
-            if v is None:
-                sm2_obj.pop(k, None)
-            else:
-                sm2_obj[k] = v
+        _restore_sm2_snapshot(sm2_obj, snap["sm2_state"])
+        for box, state in snap.get("sibling_snapshots", []):
+            _restore_sm2_snapshot(box, state)
 
         card = self._items[self._idx][0] if self._idx < len(self._items) else None
         if card is not None:
@@ -252,8 +279,21 @@ class ReviewSessionManager:
             else:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
 
+        try:
+            timestamp = datetime.now().isoformat(timespec="seconds")
+            event = recovery_manager.build_review_event(
+                getattr(self.rs, "_data", None),
+                card,
+                box_idx,
+                snap.get("quality"),
+                timestamp,
+            )
+            undo_snap["recovery_event"] = recovery_manager.record_review_event(event)
+        except Exception as ex:
+            print(f"[Recovery] review redo checkpoint failed: {ex}")
         store.mark_dirty()
-        store.save_soon(min_interval=0.0)
+        self.rs._review_data_dirty = True
+        store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
 
         self.rs.canvas._show_toast(f"↪ Redo — card {self._idx + 1}")
         self.rs._load_item()

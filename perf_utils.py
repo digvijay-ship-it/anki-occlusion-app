@@ -1,5 +1,8 @@
 import os
 import threading
+import json
+import time
+from contextlib import contextmanager
 from datetime import date
 
 from sm2_engine import is_due_today, sm2_init
@@ -16,6 +19,99 @@ _DECK_STATS_CACHE = {}
 _CACHE_DATE = None
 _CACHE_FINGERPRINT = None
 _STATS_LOCK = threading.Lock()
+_PERF_LOG_LOCK = threading.Lock()
+
+PERF_DEBUG_ENV = "ANKI_PERF_DEBUG"
+PERF_LOG_PATH_ENV = "ANKI_PERF_LOG_PATH"
+PERF_BREAKPOINT_ENV = "ANKI_PERF_BREAKPOINT"
+
+
+def _env_truthy(name):
+    raw = os.environ.get(name, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def perf_debug_enabled():
+    return _env_truthy(PERF_DEBUG_ENV) or bool(
+        os.environ.get(PERF_LOG_PATH_ENV, "").strip()
+    )
+
+
+def perf_log_path():
+    raw = os.environ.get(PERF_LOG_PATH_ENV, "").strip()
+    if raw:
+        return os.path.abspath(os.path.expanduser(raw))
+    return os.path.join(os.path.expanduser("~"), "anki_occlusion_perf.jsonl")
+
+
+def _perf_safe_value(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_perf_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _perf_safe_value(v) for k, v in value.items()}
+    return str(value)
+
+
+def _perf_breakpoint_requested(event):
+    raw = os.environ.get(PERF_BREAKPOINT_ENV, "").strip()
+    if not raw:
+        return False
+    lowered = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    return bool(
+        lowered
+        & {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "all",
+            str(event).strip().lower(),
+        }
+    )
+
+
+def maybe_perf_breakpoint(event):
+    if _perf_breakpoint_requested(event):
+        breakpoint()
+
+
+def perf_log(event, **fields):
+    if not perf_debug_enabled():
+        return None
+
+    record = {
+        "ts": time.time(),
+        "event": str(event),
+        **{str(key): _perf_safe_value(value) for key, value in fields.items()},
+    }
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True)
+    path = perf_log_path()
+    with _PERF_LOG_LOCK:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    print(f"[PROFILE][perf] {line}")
+    maybe_perf_breakpoint(event)
+    return record
+
+
+@contextmanager
+def perf_timer(event, **fields):
+    if not perf_debug_enabled():
+        yield None
+        return
+
+    start = time.perf_counter()
+    try:
+        yield None
+    finally:
+        perf_log(
+            event,
+            elapsed_ms=round((time.perf_counter() - start) * 1000.0, 3),
+            **fields,
+        )
 
 
 def invalidate_deck_stats():

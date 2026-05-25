@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QWidget, QScrollArea, QApplication, QLabel
-from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, QTimer, QRect, QRectF, QPointF, pyqtSignal, QEvent
 from PyQt5.QtGui import (
     QCursor,
     QPainter,
@@ -18,6 +18,7 @@ import uuid
 import time
 import math
 import copy
+import os
 
 from cache_manager import MASK_REGISTRY, PIXMAP_REGISTRY
 
@@ -65,8 +66,72 @@ def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
 
 
 class CanvasRendererMixin:
+    CANVAS_PAINT_PROFILE_ENV = "ANKI_CANVAS_PAINT_PROFILE"
+
+    def _canvas_paint_profile_enabled(self):
+        raw = os.environ.get(self.CANVAS_PAINT_PROFILE_ENV, "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _mask_cache_source_rect(self, clip, pixmap):
+        if pixmap is None or pixmap.isNull():
+            return QRect()
+        pixmap_rect = QRect(0, 0, pixmap.width(), pixmap.height())
+        return clip.intersected(pixmap_rect)
+
+    def _draw_mask_cache_layer(self, painter, clip):
+        source = self._mask_cache_source_rect(clip, self._mask_cache_layer)
+        if source.isEmpty():
+            return QRect()
+        painter.drawPixmap(source, self._mask_cache_layer, source)
+        return source
+
+    def _log_canvas_paint_profile(self, elapsed_ms, clip, pages_drawn, phases):
+        if getattr(self, "_mode", "") != "review":
+            return
+        if not self._canvas_paint_profile_enabled():
+            return
+        now = time.perf_counter()
+        last = float(getattr(self, "_last_canvas_paint_profile_log_ts", 0.0) or 0.0)
+        if elapsed_ms < 12.0 and (now - last) < 1.0:
+            return
+        self._last_canvas_paint_profile_log_ts = now
+        cache_entries = len(getattr(self, "_spx_cache", {}) or {})
+        print(
+            "[PROFILE][canvas_paint] "
+            f"mode={getattr(self, '_mode', '')} "
+            f"total={elapsed_ms:.1f}ms "
+            f"clip={clip.width()}x{clip.height()}@{clip.x()},{clip.y()} "
+            f"pages_drawn={pages_drawn} "
+            f"boxes={len(getattr(self, '_boxes', []) or [])} "
+            f"mask_cache={'yes' if getattr(self, '_mask_cache_layer', None) else 'no'} "
+            f"scale={float(getattr(self, '_scale', 1.0) or 1.0):.4f} "
+            f"scaled_cache={cache_entries} "
+            f"scale_miss={int((phases or {}).get('scale_miss', 0))} "
+            f"page_scale={float((phases or {}).get('page_scale_ms', 0.0)):.1f}ms "
+            f"page_draw={float((phases or {}).get('page_draw_ms', 0.0)):.1f}ms "
+            f"mask={float((phases or {}).get('mask_ms', 0.0)):.1f}ms "
+            f"mask_clip={phases.get('mask_clip', 'none') if phases else 'none'} "
+            f"boxes_draw={float((phases or {}).get('boxes_ms', 0.0)):.1f}ms "
+            f"boxes_drawn={int((phases or {}).get('boxes_drawn', 0))} "
+            f"overlay={float((phases or {}).get('overlay_ms', 0.0)):.1f}ms "
+            f"ink={float((phases or {}).get('ink_ms', 0.0)):.1f}ms"
+        )
+
     def paintEvent(self, event):
         """File: editor_ui.py -> Class: OcclusionCanvas -> Fixed paintEvent"""
+        paint_t0 = time.perf_counter()
+        pages_drawn = 0
+        phases = {
+            "page_scale_ms": 0.0,
+            "page_draw_ms": 0.0,
+            "mask_ms": 0.0,
+            "boxes_ms": 0.0,
+            "boxes_drawn": 0,
+            "overlay_ms": 0.0,
+            "ink_ms": 0.0,
+            "scale_miss": 0,
+            "mask_clip": "none",
+        }
         p = QPainter(self)
         clip = event.rect()
 
@@ -75,6 +140,8 @@ class CanvasRendererMixin:
         if self._px and not self._px.isNull():
             cached_scale, cached_spx = self._spx_cache.get("_px", (None, None))
             if cached_scale != self._scale or cached_spx is None:
+                phases["scale_miss"] += 1
+                scale_t0 = time.perf_counter()
                 cached_spx = self._px.scaled(
                     max(int(self._px.width() * self._scale), 1),
                     max(int(self._px.height() * self._scale), 1),
@@ -82,7 +149,10 @@ class CanvasRendererMixin:
                     Qt.FastTransformation,
                 )
                 self._spx_cache["_px"] = (self._scale, cached_spx)
+                phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+            draw_t0 = time.perf_counter()
             p.drawPixmap(0, 0, cached_spx)
+            phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
 
         elif self._pages:
             sep_pen = QPen(QColor("#45475A"), 2)
@@ -96,7 +166,21 @@ class CanvasRendererMixin:
                 if scr_top > clip.bottom():
                     break
 
-                p.drawPixmap(0, scr_top, self._get_scaled_page(i))
+                cached_scale, cached_spx = self._spx_cache.get(i, (None, None))
+                cache_hit = (
+                    cached_scale == self._scale
+                    and cached_spx is not None
+                    and not cached_spx.isNull()
+                )
+                scale_t0 = time.perf_counter()
+                scaled_page = self._get_scaled_page(i)
+                phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+                if not cache_hit:
+                    phases["scale_miss"] += 1
+                draw_t0 = time.perf_counter()
+                p.drawPixmap(0, scr_top, scaled_page)
+                phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
+                pages_drawn += 1
 
                 if i < len(self._pages) - 1:
                     sep_y = scr_bot + int(PAGE_GAP * self._scale) // 2
@@ -104,9 +188,17 @@ class CanvasRendererMixin:
                     p.drawLine(0, sep_y, self.width(), sep_y)
 
         if self._mask_cache_layer and not self._mask_cache_layer.isNull():
-            p.drawPixmap(0, 0, self._mask_cache_layer)
+            mask_t0 = time.perf_counter()
+            mask_clip = self._draw_mask_cache_layer(p, clip)
+            phases["mask_ms"] += (time.perf_counter() - mask_t0) * 1000.0
+            if not mask_clip.isEmpty():
+                phases["mask_clip"] = (
+                    f"{mask_clip.width()}x{mask_clip.height()}"
+                    f"@{mask_clip.x()},{mask_clip.y()}"
+                )
         else:
             p.setRenderHint(QPainter.Antialiasing)
+            boxes_t0 = time.perf_counter()
             for i, b in enumerate(self._boxes):
                 if self._drag_op and (
                     i == self._selected_idx or i in self._selected_indices
@@ -116,8 +208,11 @@ class CanvasRendererMixin:
                 if not clip.intersects(sr.toRect()):
                     continue
                 self._draw_box(p, i, b)
+                phases["boxes_drawn"] += 1
+            phases["boxes_ms"] += (time.perf_counter() - boxes_t0) * 1000.0
 
         p.setRenderHint(QPainter.Antialiasing)
+        overlay_t0 = time.perf_counter()
         if self._drag_op == "move" and self._drag_orig_boxes:
             drag_pos = self._drag_current_pos or self._drag_start_pos
             delta = (drag_pos - self._drag_start_pos) / self._scale
@@ -135,9 +230,18 @@ class CanvasRendererMixin:
 
         if self._drawing and not self._live_rect.isEmpty():
             self._draw_live(p)
+        phases["overlay_ms"] += (time.perf_counter() - overlay_t0) * 1000.0
 
+        ink_t0 = time.perf_counter()
         self._draw_ink_layer(p)
+        phases["ink_ms"] += (time.perf_counter() - ink_t0) * 1000.0
         p.end()
+        self._log_canvas_paint_profile(
+            (time.perf_counter() - paint_t0) * 1000.0,
+            clip,
+            pages_drawn,
+            phases,
+        )
 
     def _draw_box(self, p: QPainter, i: int, b: dict):
         sr = self._sr(b["rect"])

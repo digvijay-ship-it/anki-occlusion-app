@@ -401,6 +401,41 @@ class ReviewScreen(QWidget):
         ("review.rate_perfect", 6),
     )
     RATING_LABELS = ["Again", "Hard", "Good", "Easy", "Perfect"]
+    REVEAL_BUTTON_SCALE = 1.3
+    RATING_BUTTON_SCALE = 1.3
+    QUEUE_EDGE_HANDLE_HOT_ZONE_PX = 10
+    QUEUE_EDGE_HANDLE_GRACE_PX = 4
+    REVIEW_VERBOSE_ENV = "ANKI_REVIEW_VERBOSE"
+    REVIEW_SCROLL_PROFILE_ENV = "ANKI_REVIEW_SCROLL_PROFILE"
+    FLOATING_TIMER_REPOSITION_MIN_MS = 80
+
+    @staticmethod
+    def _scaled_px(value, scale):
+        return max(1, int(round(float(value) * float(scale))))
+
+    @classmethod
+    def _review_control_metrics(cls, dojo=False):
+        return {
+            "reveal_padding_y": cls._scaled_px(8, cls.REVEAL_BUTTON_SCALE),
+            "reveal_padding_x": cls._scaled_px(40, cls.REVEAL_BUTTON_SCALE),
+            "reveal_font": cls._scaled_px(9 if dojo else 13, cls.REVEAL_BUTTON_SCALE),
+            "reveal_min_height": cls._scaled_px(40 if dojo else 38, cls.REVEAL_BUTTON_SCALE),
+            "rating_height": cls._scaled_px(44 if dojo else 40, cls.RATING_BUTTON_SCALE),
+            "rating_min_width": cls._scaled_px(140, cls.RATING_BUTTON_SCALE),
+            "rating_font": cls._scaled_px(14 if dojo else 13, cls.RATING_BUTTON_SCALE),
+            "rating_padding_x": cls._scaled_px(16, cls.RATING_BUTTON_SCALE),
+            "rating_spacing": cls._scaled_px(8, cls.RATING_BUTTON_SCALE),
+        }
+
+    @classmethod
+    def _review_verbose_debug_enabled(cls):
+        raw = os.environ.get(cls.REVIEW_VERBOSE_ENV, "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _review_scroll_profile_enabled(cls):
+        raw = os.environ.get(cls.REVIEW_SCROLL_PROFILE_ENV, "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
 
     @property
     def _items(self):
@@ -546,8 +581,102 @@ class ReviewScreen(QWidget):
         count = self._active_queue_count() if total is None else int(total)
         queue_label.setText(f"TO REVIEW: {max(0, count)}")
 
+    def _init_review_profile(self, cards):
+        raw = os.environ.get("ANKI_REVIEW_PROFILE", "").strip().lower()
+        pdf_filter = os.environ.get("ANKI_REVIEW_PROFILE_PDF", "").strip().lower()
+        enabled = raw in {"1", "true", "yes", "on"}
+        if enabled and pdf_filter:
+            enabled = any(
+                pdf_filter
+                in " ".join(
+                    (
+                        str((card or {}).get("title", "")),
+                        os.path.basename(str((card or {}).get("pdf_path", ""))),
+                        str((card or {}).get("pdf_path", "")),
+                    )
+                ).lower()
+                for card in cards or []
+            )
+        self._review_profile_enabled = enabled
+        self._review_profile_filter = pdf_filter
+        self._review_profile_t0 = time.perf_counter()
+        self._review_profile_last = self._review_profile_t0
+        self._review_profile_counts = {}
+        if enabled:
+            self._review_profile_log(
+                "session_start",
+                cards=len(cards or []),
+                filter=pdf_filter or "all",
+            )
+
+    def _review_profile_active(self):
+        return bool(self.__dict__.get("_review_profile_enabled", False))
+
+    def _review_profile_rss_mb(self):
+        try:
+            if os.name == "nt":
+                import ctypes
+
+                class ProcessMemoryCounters(ctypes.Structure):
+                    _fields_ = [
+                        ("cb", ctypes.c_ulong),
+                        ("PageFaultCount", ctypes.c_ulong),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t),
+                    ]
+
+                counters = ProcessMemoryCounters()
+                counters.cb = ctypes.sizeof(counters)
+                handle = ctypes.windll.kernel32.GetCurrentProcess()
+                ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+                    handle, ctypes.byref(counters), counters.cb
+                )
+                if ok:
+                    return counters.WorkingSetSize / (1024 * 1024)
+            else:
+                import resource
+
+                rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                return rss / 1024 if rss > 1024 * 1024 else rss / (1024 * 1024)
+        except Exception:
+            return None
+        return None
+
+    def _review_profile_log(self, event, **fields):
+        if not self._review_profile_active():
+            return
+        now = time.perf_counter()
+        last = float(self.__dict__.get("_review_profile_last", now) or now)
+        start = float(self.__dict__.get("_review_profile_t0", now) or now)
+        self._review_profile_last = now
+        parts = [
+            f"+{(now - last) * 1000:.1f}ms",
+            f"total={(now - start) * 1000:.1f}ms",
+        ]
+        rss_mb = self._review_profile_rss_mb()
+        if rss_mb is not None:
+            peak = max(float(self.__dict__.get("_review_profile_peak_rss_mb", 0.0)), rss_mb)
+            self._review_profile_peak_rss_mb = peak
+            parts.append(f"rss={rss_mb:.1f}MB")
+            parts.append(f"peak_rss={peak:.1f}MB")
+        for key, value in fields.items():
+            parts.append(f"{key}={value}")
+        print(f"[PROFILE][review] {event} " + " ".join(parts))
+
+    def _review_profile_count(self, name, amount=1):
+        counts = self.__dict__.setdefault("_review_profile_counts", {})
+        counts[name] = int(counts.get(name, 0)) + int(amount)
+        return counts[name]
+
     def __init__(self, cards, data=None, parent=None):
         super().__init__(parent)
+        self._init_review_profile(cards)
         from services.review_manager import ReviewSessionManager
 
         self.mgr = ReviewSessionManager(self)
@@ -578,6 +707,7 @@ class ReviewScreen(QWidget):
         self._external_pdf_page_hint = None
         self._pending_visible_request = None
         self._pending_skeleton_result = None
+        self._review_defer_visible_until_centered = False
         self._background_fill_state = None
         self._ondemand_kind = None
         self._ondemand_thread = None
@@ -585,6 +715,7 @@ class ReviewScreen(QWidget):
         self._bg_accept_mode = False
         self._review_canvas_real_pages = set()
         self._review_render_inflight_pages = set()
+        self._ondemand_request_pages_by_thread = {}
         self._review_priority_pages_cache = {}
         self._review_adapted_boxes_cache = {}
         self._bg_prefetch_dialog = None
@@ -592,7 +723,15 @@ class ReviewScreen(QWidget):
         self._bg_prefetch_cached_count = 0
         self._bg_prefetch_rendered_count = 0
         self._queue_locked = self._load_queue_locked()
-        self._queue_drawer_open = True
+        self._queue_drawer_open = True if self._queue_locked else False
+        self._review_overlays_ready = False
+        self._queue_edge_handle_visible = False
+        self._review_data_dirty = False
+        self._floating_timer_reposition_pending = False
+        self._floating_timer_last_reposition_ts = 0.0
+        self._review_scroll_profile_last_event_ts = None
+        self._review_scroll_profile_last_log_ts = 0.0
+        self._review_last_decision_stats = {}
         self._queue_auto_hide_timer = QTimer(self)
         self._queue_auto_hide_timer.setSingleShot(True)
         self._queue_auto_hide_timer.setInterval(self.QUEUE_AUTO_HIDE_MS)
@@ -620,8 +759,11 @@ class ReviewScreen(QWidget):
 
         # ── SM-2 Debug Logger removed ─────────────────────────────────────────
 
+        queue_t0 = time.perf_counter()
+        total_boxes_seen = 0
         for card in cards:
             boxes = card.get("boxes", [])
+            total_boxes_seen += len(boxes)
             card_key = id(card)
 
             if len(boxes) == 0:
@@ -659,6 +801,14 @@ class ReviewScreen(QWidget):
                             self._queued_ids.add(box_id)  # O(1) track
 
         self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
+        self._review_profile_log(
+            "queue_built",
+            elapsed=f"{(time.perf_counter() - queue_t0) * 1000:.1f}ms",
+            source_cards=len(cards or []),
+            boxes=total_boxes_seen,
+            due_items=len(self._items),
+            queued_ids=len(self._queued_ids),
+        )
         self._idx = 0
         self._done = 0
         # ── Review undo/redo stacks ───────────────────────────────────────────
@@ -674,7 +824,11 @@ class ReviewScreen(QWidget):
         else:
             self._stimer = None
 
+        ui_t0 = time.perf_counter()
         self._setup_ui()
+        self._review_profile_log(
+            "ui_built", elapsed=f"{(time.perf_counter() - ui_t0) * 1000:.1f}ms"
+        )
         for w in (
             self,
             self.canvas,
@@ -691,6 +845,7 @@ class ReviewScreen(QWidget):
             except Exception:
                 pass
         self._load_item()
+        self._review_profile_log("init_complete", items=len(self._items))
 
     def _toggle_cache_panel(self):
         from cache_manager import CacheManagerPanel
@@ -743,7 +898,7 @@ class ReviewScreen(QWidget):
         ):
             self._note_user_activity()
         if et in (QEvent.MouseMove, QEvent.HoverMove):
-            self._maybe_show_queue_edge_handle(event)
+            self._maybe_show_queue_edge_handle(event, source=obj)
             self._update_queue_auto_hide_from_event(event)
         elif et in (QEvent.Enter, QEvent.Leave):
             self._update_queue_auto_hide_from_event(event)
@@ -894,6 +1049,7 @@ class ReviewScreen(QWidget):
             )
         if edge_button is not None:
             edge_button.setVisible(False)
+            self._queue_edge_handle_visible = False
 
         self._reposition_queue_overlay()
         queue_panel.setVisible(open_now)
@@ -984,12 +1140,41 @@ class ReviewScreen(QWidget):
         self._sync_queue_timer_count()
         self._reposition_floating_timer()
 
+    def _set_floating_timer_sync_enabled(self, enabled: bool):
+        timer = self.__dict__.get("_floating_timer_sync_timer")
+        if timer is None:
+            return
+        enabled = bool(enabled)
+        if enabled:
+            if not timer.isActive():
+                timer.start()
+            return
+        if timer.isActive():
+            timer.stop()
+
     def _keep_floating_timer_on_top(self):
         frame = self.__dict__.get("_floating_timer_frame")
         if frame is None or frame.isHidden():
             return
+        now = time.perf_counter()
+        last = float(self.__dict__.get("_floating_timer_last_reposition_ts", 0.0) or 0.0)
+        min_interval = float(self.FLOATING_TIMER_REPOSITION_MIN_MS) / 1000.0
+        if now - last >= min_interval:
+            self._flush_floating_timer_reposition()
+            return
+        if self.__dict__.get("_floating_timer_reposition_pending", False):
+            return
+        self._floating_timer_reposition_pending = True
+        delay_ms = max(0, int(round((min_interval - (now - last)) * 1000)))
+        QTimer.singleShot(delay_ms, self._flush_floating_timer_reposition)
+
+    def _flush_floating_timer_reposition(self):
+        self._floating_timer_reposition_pending = False
+        frame = self.__dict__.get("_floating_timer_frame")
+        if frame is None or frame.isHidden():
+            return
         self._reposition_floating_timer()
-        QTimer.singleShot(0, self._reposition_floating_timer)
+        self._floating_timer_last_reposition_ts = time.perf_counter()
 
     def _reposition_floating_timer(self):
         frame = self.__dict__.get("_floating_timer_frame")
@@ -1004,25 +1189,34 @@ class ReviewScreen(QWidget):
         )
         frame.raise_()
 
+    def _finish_initial_overlay_placement(self):
+        self._review_overlays_ready = True
+        self._apply_queue_drawer_state(recenter=False)
+        self._reposition_queue_edge_handle()
+        self._keep_floating_timer_on_top()
+
     def _update_floating_timer_visibility(self):
         frame = self.__dict__.get("_floating_timer_frame")
         if frame is None:
+            return
+        if not self.__dict__.get("_review_overlays_ready", True):
+            self._floating_timer_visible = False
+            frame.hide()
+            self._set_floating_timer_sync_enabled(False)
             return
         locked = bool(self.__dict__.get("_queue_locked", True))
         open_now = locked or bool(self.__dict__.get("_queue_drawer_open", True))
         show_float = bool(self.__dict__.get("_stimer")) and not open_now
         if show_float:
             self._sync_floating_timer()
-            if not self.__dict__.get("_floating_timer_visible", False):
-                print("[DEBUG][review_timer] floating_timer visible=yes")
             self._floating_timer_visible = True
             frame.show()
             frame.raise_()
+            self._set_floating_timer_sync_enabled(True)
         else:
-            if self.__dict__.get("_floating_timer_visible", False):
-                print("[DEBUG][review_timer] floating_timer visible=no")
             self._floating_timer_visible = False
             frame.hide()
+            self._set_floating_timer_sync_enabled(False)
 
     def _reposition_queue_edge_handle(self):
         edge_button = self.__dict__.get("_queue_edge_button")
@@ -1032,31 +1226,68 @@ class ReviewScreen(QWidget):
         height = max(edge_button.sizeHint().height(), 58)
         edge_button.setFixedSize(width, height)
         edge_button.move(
-            max(0, self.width() - width - 2),
+            max(0, self.width() - width),
             max(0, (self.height() - height) // 2),
         )
 
-    def _maybe_show_queue_edge_handle(self, event):
+    def _event_pos_in_self(self, event, source=None):
+        try:
+            global_pos = event.globalPos()
+            if global_pos is not None:
+                return self.mapFromGlobal(global_pos)
+        except Exception:
+            pass
+        if isinstance(source, QWidget):
+            try:
+                return source.mapTo(self, event.pos())
+            except Exception:
+                pass
+        try:
+            return event.pos()
+        except Exception:
+            return None
+
+    def _queue_edge_handle_hot(self, pos) -> bool:
+        if pos is None:
+            return False
+        edge_button = self.__dict__.get("_queue_edge_button")
+        if isinstance(edge_button, QWidget) and not edge_button.isHidden():
+            grace = int(self.QUEUE_EDGE_HANDLE_GRACE_PX)
+            if edge_button.geometry().adjusted(-grace, -grace, grace, grace).contains(pos):
+                return True
+        try:
+            return pos.x() >= self.width() - int(self.QUEUE_EDGE_HANDLE_HOT_ZONE_PX)
+        except Exception:
+            return False
+
+    def _hide_queue_edge_handle(self, reason: str = "left_edge"):
+        edge_button = self.__dict__.get("_queue_edge_button")
+        if edge_button is None:
+            return
+        self._queue_edge_handle_visible = False
+        edge_button.hide()
+
+    def _maybe_show_queue_edge_handle(self, event, source=None):
         queue_panel = self.__dict__.get("_queue_panel")
         if queue_panel is not None and queue_panel.isVisible():
+            self._hide_queue_edge_handle("queue_visible")
             return
         if self.__dict__.get("_queue_locked", True):
+            self._hide_queue_edge_handle("locked")
             return
         if self.__dict__.get("_queue_drawer_open", True):
+            self._hide_queue_edge_handle("queue_open")
             return
         edge_button = self.__dict__.get("_queue_edge_button")
         if edge_button is None:
             return
-        pos = event.pos()
-        try:
-            if event.globalPos is not None:
-                pos = self.mapFromGlobal(event.globalPos())
-        except Exception:
-            pass
-        if pos.x() >= self.width() - 10:
-            self._reposition_queue_edge_handle()
-            edge_button.show()
-            edge_button.raise_()
+        if not self._queue_edge_handle_hot(self._event_pos_in_self(event, source)):
+            self._hide_queue_edge_handle("left_edge")
+            return
+        self._reposition_queue_edge_handle()
+        self._queue_edge_handle_visible = True
+        edge_button.show()
+        edge_button.raise_()
 
     def _event_global_pos(self, event):
         try:
@@ -1108,6 +1339,7 @@ class ReviewScreen(QWidget):
         self._hide_queue_drawer()
 
     def _load_item(self):
+        load_t0 = time.perf_counter()
         # [O(1) FIX] Skip tombstoned (deleted) boxes
         while self._idx < len(self._items):
             _, b, _ = self._items[self._idx]
@@ -1122,6 +1354,7 @@ class ReviewScreen(QWidget):
             return
 
         card, box_idx, sm2_obj = self._items[self._idx]
+        item_title = card.get("title", "Untitled")
         if hasattr(self.canvas, "clear_review_ink_for_card_switch"):
             self.canvas.clear_review_ink_for_card_switch()
         self._sync_queue_state()  # state-only fast path for normal card advances
@@ -1201,6 +1434,14 @@ class ReviewScreen(QWidget):
         else:
             self._reload_current_canvas()
 
+        self._review_profile_log(
+            "item_loaded",
+            idx=f"{self._idx + 1}/{len(self._items)}",
+            same_pdf=same_pdf,
+            title=item_title,
+            box_ref=box_idx,
+            elapsed=f"{(time.perf_counter() - load_t0) * 1000:.1f}ms",
+        )
         self.canvas.setFocus()  # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
         self._rating_frame.hide()  # ← rating frame explicitly hide karo
         QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
@@ -1636,9 +1877,6 @@ class ReviewScreen(QWidget):
             lambda *_: self._note_user_activity()
         )
         self._canvas_scroll.verticalScrollBar().valueChanged.connect(
-            lambda *_: self._keep_floating_timer_on_top()
-        )
-        self._canvas_scroll.verticalScrollBar().valueChanged.connect(
             self._on_review_scroll_page_changed
         )
 
@@ -1741,11 +1979,11 @@ class ReviewScreen(QWidget):
             self._floating_timer_sync_timer = QTimer(self)
             self._floating_timer_sync_timer.setInterval(1000)
             self._floating_timer_sync_timer.timeout.connect(self._sync_floating_timer)
-            self._floating_timer_sync_timer.start()
 
         # ── Queue panel (right sidebar) ───────────────────────────────────────
         queue_panel = QWidget()
         queue_panel.setFixedWidth(200)
+        queue_panel.hide()
         if dojo:
             queue_panel.setStyleSheet(
                 f"background:{surface};border-left:1px solid {border};"
@@ -1923,6 +2161,7 @@ class ReviewScreen(QWidget):
         self._queue_edge_button.clicked.connect(self._open_queue_drawer)
         self._queue_edge_button.hide()
         self._apply_queue_drawer_state(recenter=False)
+        QTimer.singleShot(0, self._finish_initial_overlay_placement)
 
         # ── Bottom bar ────────────────────────────────────────────────────────
         bottom_w = QWidget()
@@ -1992,6 +2231,8 @@ class ReviewScreen(QWidget):
         bl.addWidget(self._wait_bar)
         L.addWidget(bottom_w)
 
+        control_metrics = self._review_control_metrics(dojo)
+
         # ── Floating overlay: Show Answer button ──────────────────────────────
         self._reveal_bar = QFrame(self._canvas_scroll)
         self._reveal_bar.setStyleSheet("QFrame{background:transparent;border:none;}")
@@ -1999,21 +2240,27 @@ class ReviewScreen(QWidget):
         rb_l.setContentsMargins(0, 0, 0, 20)
         rb_l.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
         b_rev = QPushButton("👁  Show Answer  [Space]")
+        b_rev.setMinimumHeight(control_metrics["reveal_min_height"])
         if dojo:
             b_rev.setStyleSheet(
                 f"background:rgba(7,7,11,210);color:{accent};"
                 f"border:1px solid {accent};border-radius:2px;"
-                f"padding:8px 40px;font-size:9px;font-weight:900;"
+                f"padding:{control_metrics['reveal_padding_y']}px "
+                f"{control_metrics['reveal_padding_x']}px;"
+                f"font-size:{control_metrics['reveal_font']}px;font-weight:900;"
                 f"font-family:{font};letter-spacing:1px;"
             )
         else:
             b_rev.setStyleSheet(
                 f"background:rgba(42,42,62,220);color:{text};"
                 f"border:1px solid {border};border-radius:8px;"
-                f"padding:8px 40px;font-size:13px;font-weight:bold;"
+                f"padding:{control_metrics['reveal_padding_y']}px "
+                f"{control_metrics['reveal_padding_x']}px;"
+                f"font-size:{control_metrics['reveal_font']}px;font-weight:bold;"
             )
         b_rev.clicked.connect(self._reveal_current)
         rb_l.addWidget(b_rev)
+        self._reveal_button = b_rev
         self._reveal_bar.hide()
 
         # ── Floating overlay: Rating buttons ──────────────────────────────────
@@ -2021,7 +2268,7 @@ class ReviewScreen(QWidget):
         self._rating_frame.setStyleSheet("QFrame{background:transparent;border:none;}")
         rfl = QHBoxLayout(self._rating_frame)
         rfl.setContentsMargins(0, 0, 0, 0)
-        rfl.setSpacing(8)
+        rfl.setSpacing(control_metrics["rating_spacing"])
         rfl.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
 
         RATING_COLORS = {
@@ -2047,13 +2294,14 @@ class ReviewScreen(QWidget):
             btn = QPushButton(
                 f"{orig_lbl.split()[0]}  {orig_lbl.split()[1]}  ?  {color_lbl}"
             )
-            btn.setFixedHeight(44 if dojo else 40)
-            btn.setMinimumWidth(140)
+            btn.setFixedHeight(control_metrics["rating_height"])
+            btn.setMinimumWidth(control_metrics["rating_min_width"])
             if dojo:
                 btn.setStyleSheet(
                     f"QPushButton{{background:rgba(7,7,11,200);color:{bg_r};"
                     f"border:1px solid {bg_r};border-radius:2px;"
-                    f"font-size:14px;font-weight:900;padding:0 16px;"
+                    f"font-size:{control_metrics['rating_font']}px;font-weight:900;"
+                    f"padding:0 {control_metrics['rating_padding_x']}px;"
                     f"font-family:{font};letter-spacing:0.5px;}}"
                     f"QPushButton:hover{{background:{bg_r};color:{bg};}}"
                 )
@@ -2061,7 +2309,8 @@ class ReviewScreen(QWidget):
                 btn.setStyleSheet(
                     f"QPushButton{{background:{bg_r};color:#1E1E2E;"
                     f"border:none;border-radius:8px;"
-                    f"font-size:13px;font-weight:bold;padding:0 16px;}}"
+                    f"font-size:{control_metrics['rating_font']}px;font-weight:bold;"
+                    f"padding:0 {control_metrics['rating_padding_x']}px;}}"
                     f"QPushButton:hover{{background:{fg_hover};color:#111;}}"
                 )
             btn.clicked.connect(lambda _, qq=q: self._rate(qq))
@@ -2133,11 +2382,12 @@ class ReviewScreen(QWidget):
             return
         available_w = max(vp.width(), 1)
         self.canvas._scale = available_w / w
-        print(
-            "[DEBUG][review_image_fit] "
-            f"img={w}x{h} viewport={vp.width()}x{vp.height()} "
-            f"scale={self.canvas._scale:.4f}"
-        )
+        if self._review_verbose_debug_enabled():
+            print(
+                "[DEBUG][review_image_fit] "
+                f"img={w}x{h} viewport={vp.width()}x{vp.height()} "
+                f"scale={self.canvas._scale:.4f}"
+            )
         self.canvas._on_zoom()
 
     def _update_review_page_nav_ui(self, *_):
@@ -2150,17 +2400,71 @@ class ReviewScreen(QWidget):
     def _pdf_quality_debug(self, action: str, **data):
         return
 
+    def _log_review_scroll_profile(
+        self,
+        *,
+        value,
+        page_zero,
+        page_changed,
+        page_calc_ms,
+        page_ui_ms,
+        overlay_ms,
+        total_ms,
+    ):
+        if not self._review_scroll_profile_enabled():
+            return
+        now = time.perf_counter()
+        prev_ts = self.__dict__.get("_review_scroll_profile_last_event_ts")
+        dt_ms = 0.0 if prev_ts is None else (now - float(prev_ts)) * 1000.0
+        self._review_scroll_profile_last_event_ts = now
+        last_log = float(self.__dict__.get("_review_scroll_profile_last_log_ts", 0.0) or 0.0)
+        should_log = page_changed or total_ms >= 8.0 or (now - last_log) >= 1.0
+        if not should_log:
+            return
+        self._review_scroll_profile_last_log_ts = now
+        rate = 1000.0 / dt_ms if dt_ms > 0 else 0.0
+        print(
+            "[PROFILE][review_scroll] "
+            f"value={int(value)} "
+            f"page=p.{int(page_zero) + 1} "
+            f"changed={'yes' if page_changed else 'no'} "
+            f"dt={dt_ms:.1f}ms "
+            f"rate={rate:.1f}/s "
+            f"total={total_ms:.1f}ms "
+            f"page_calc={page_calc_ms:.1f}ms "
+            f"page_ui={page_ui_ms:.1f}ms "
+            f"overlay={overlay_ms:.1f}ms"
+        )
+
     def _set_review_page_ui(self, current_zero: int):
         self._pdf_viewer.set_page_ui(current_zero)
         self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
 
     def _on_review_scroll_page_changed(self, value: int):
+        handler_t0 = time.perf_counter()
+        calc_t0 = handler_t0
         page_zero = self.canvas.get_current_page(value)
-        if page_zero != self._review_ui_page_zero:
+        page_calc_ms = (time.perf_counter() - calc_t0) * 1000.0
+        page_changed = page_zero != self._review_ui_page_zero
+        page_ui_ms = 0.0
+        if page_changed:
             self._review_nav_debug("scroll", value=value, page=page_zero + 1)
-        self._pdf_viewer.set_page_ui(page_zero)
-        self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+            ui_t0 = time.perf_counter()
+            self._pdf_viewer.set_page_ui(page_zero)
+            self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+            page_ui_ms = (time.perf_counter() - ui_t0) * 1000.0
+        overlay_t0 = time.perf_counter()
         self._keep_floating_timer_on_top()
+        overlay_ms = (time.perf_counter() - overlay_t0) * 1000.0
+        self._log_review_scroll_profile(
+            value=value,
+            page_zero=page_zero,
+            page_changed=page_changed,
+            page_calc_ms=page_calc_ms,
+            page_ui_ms=page_ui_ms,
+            overlay_ms=overlay_ms,
+            total_ms=(time.perf_counter() - handler_t0) * 1000.0,
+        )
 
     def _go_to_review_page(self, page_zero: int):
         self._pdf_viewer.go_to_page(page_zero)
@@ -2378,6 +2682,7 @@ class ReviewScreen(QWidget):
         card.update(edited)
         if self._data:
             store.mark_dirty()
+            self._review_data_dirty = True
 
         after_ids = {
             b.get("box_id", ""): b.get("group_id", "")
@@ -2575,6 +2880,10 @@ class ReviewScreen(QWidget):
         )
         active_dialog = self.__dict__.get("_active_annotation_dialog")
         if active_dialog is not None and active_dialog.isVisible():
+            if hasattr(active_dialog, "retarget_from_review"):
+                active_dialog.retarget_from_review(page_zero, img_y)
+            if hasattr(active_dialog, "showFullScreen"):
+                active_dialog.showFullScreen()
             active_dialog.raise_()
             active_dialog.activateWindow()
             return
@@ -2592,19 +2901,12 @@ class ReviewScreen(QWidget):
         )
         self._pause_review_lazy_activity_for_annotation()
         self._prepare_annotation_window(dialog)
-        dialog.showMaximized()
+        dialog.showFullScreen()
         dialog.raise_()
         dialog.activateWindow()
 
     def _annotation_window_flags(self):
-        return (
-            Qt.Window
-            | Qt.WindowTitleHint
-            | Qt.WindowSystemMenuHint
-            | Qt.WindowMinimizeButtonHint
-            | Qt.WindowMaximizeButtonHint
-            | Qt.WindowCloseButtonHint
-        )
+        return Qt.Window | Qt.FramelessWindowHint
 
     def _prepare_annotation_window(self, dialog):
         dialog.setParent(None, Qt.Window)
@@ -2660,6 +2962,18 @@ class ReviewScreen(QWidget):
 
     def _pause_review_lazy_activity_for_annotation(self):
         self._review_lazy_trace_suspended = True
+        reveal_bar = getattr(self, "_reveal_bar", None)
+        rating_frame = getattr(self, "_rating_frame", None)
+        self._annotation_prev_reveal_visible = bool(
+            reveal_bar is not None and reveal_bar.isVisible()
+        )
+        self._annotation_prev_rating_visible = bool(
+            rating_frame is not None and rating_frame.isVisible()
+        )
+        if reveal_bar is not None:
+            reveal_bar.hide()
+        if rating_frame is not None:
+            rating_frame.hide()
         timer = getattr(self, "_ui_idle_timer", None)
         if timer is not None:
             timer.stop()
@@ -2673,6 +2987,14 @@ class ReviewScreen(QWidget):
 
     def _resume_review_lazy_activity_after_annotation(self, path: str | None = None):
         self._review_lazy_trace_suspended = False
+        reveal_bar = getattr(self, "_reveal_bar", None)
+        rating_frame = getattr(self, "_rating_frame", None)
+        if bool(self.__dict__.pop("_annotation_prev_rating_visible", False)):
+            if rating_frame is not None:
+                self._show_overlay(rating_frame)
+        elif bool(self.__dict__.pop("_annotation_prev_reveal_visible", False)):
+            if reveal_bar is not None:
+                self._show_overlay(reveal_bar)
         if path:
             watcher = self.__dict__.get("_pdf_watcher")
             if watcher is not None:
@@ -2707,6 +3029,7 @@ class ReviewScreen(QWidget):
         if not path or not boxes:
             return boxes
 
+        adapt_t0 = time.perf_counter()
         source_zoom = card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
         try:
             source_zoom_key = float(source_zoom)
@@ -2735,6 +3058,21 @@ class ReviewScreen(QWidget):
             cache[key] = cached
             while len(cache) > 32:
                 cache.pop(next(iter(cache)))
+            self._review_profile_count("adapt_boxes_miss")
+            self._review_profile_log(
+                "adapt_boxes",
+                result="miss",
+                boxes=len(boxes),
+                elapsed=f"{(time.perf_counter() - adapt_t0) * 1000:.1f}ms",
+            )
+        else:
+            self._review_profile_count("adapt_boxes_hit")
+            self._review_profile_log(
+                "adapt_boxes",
+                result="hit",
+                boxes=len(boxes),
+                elapsed=f"{(time.perf_counter() - adapt_t0) * 1000:.1f}ms",
+            )
         return copy.deepcopy(cached)
 
     def _start_review_lazy_trace(self, page_nums, ttl_seconds: float = 8.0):
@@ -2796,12 +3134,11 @@ class ReviewScreen(QWidget):
         if not (0 <= view_idx < len(self._items)):
             return
         card, box_idx, _ = self._items[view_idx]
+        reload_t0 = time.perf_counter()
         self._bg_pending_inserts.clear()
         self._pending_skeleton_result = None
         self._close_bg_prefetch_dialog()
         self._stop_skeleton_thread()
-
-        import time
 
         t_start = time.perf_counter()
         display_path = resolve_asset_path(
@@ -2858,13 +3195,15 @@ class ReviewScreen(QWidget):
                 if hasattr(PAGE_CACHE, "cached_page_count")
                 else "?"
             )
-            print(
-                "[DEBUG][review_cache_profile] "
-                f"file={fname} pages={total_pages} "
-                f"previous_zoom={previous_zoom} target_zoom={self._pdf_render_zoom} "
-                f"reset_cache={profile_reset} "
-                f"cached_before={cached_before}/{total_pages} "
-                f"cached_after={cached_after}/{total_pages}"
+            self._review_profile_log(
+                "pdf_profile",
+                file=fname,
+                pages=total_pages,
+                zoom=self._pdf_render_zoom,
+                cached_before=f"{cached_before}/{total_pages}",
+                cached_after=f"{cached_after}/{total_pages}",
+                reset=profile_reset,
+                elapsed=f"{(time.perf_counter() - reload_t0) * 1000:.1f}ms",
             )
             self._pdf_quality_debug(
                 "profile",
@@ -2946,7 +3285,14 @@ class ReviewScreen(QWidget):
         priority_cache = self.__dict__.setdefault("_review_priority_pages_cache", {})
         cached = priority_cache.get(cache_key)
         if cached is not None:
+            self._review_profile_count("priority_pages_hit")
+            self._review_profile_log(
+                "priority_pages",
+                result="hit",
+                pages=self._fmt_review_pages(cached),
+            )
             return list(cached)
+        self._review_profile_count("priority_pages_miss")
 
         def _clean(page_nums):
             result = []
@@ -2963,7 +3309,11 @@ class ReviewScreen(QWidget):
 
         raw_current_pages = _clean(self._card_review_pages(card, box_idx))
         current_pages = _clean(self._card_review_pages(card, box_idx, card_path))
-        if current_pages and current_pages != raw_current_pages:
+        if (
+            current_pages
+            and current_pages != raw_current_pages
+            and self._review_verbose_debug_enabled()
+        ):
             print(
                 "[DEBUG][review_queue_pages] "
                 f"inferred_current={self._fmt_review_pages(current_pages)} "
@@ -2985,18 +3335,26 @@ class ReviewScreen(QWidget):
         result = _clean(ordered)
         if len(result) > self.PRIORITY_PAGE_LIMIT:
             result = result[: self.PRIORITY_PAGE_LIMIT]
-        if result:
-            print(
-                "[DEBUG][review_queue_pages] "
-                f"current={self._fmt_review_pages(current_pages)} "
-                f"priority={self._fmt_review_pages(result)} "
-                f"limit={self.PRIORITY_PAGE_LIMIT}"
-            )
-        else:
-            print("[DEBUG][review_queue_pages] priority none")
+        if self._review_verbose_debug_enabled():
+            if result:
+                print(
+                    "[DEBUG][review_queue_pages] "
+                    f"current={self._fmt_review_pages(current_pages)} "
+                    f"priority={self._fmt_review_pages(result)} "
+                    f"limit={self.PRIORITY_PAGE_LIMIT}"
+                )
+            else:
+                print("[DEBUG][review_queue_pages] priority none")
         priority_cache[cache_key] = tuple(result)
         while len(priority_cache) > 16:
             priority_cache.pop(next(iter(priority_cache)))
+        self._review_profile_log(
+            "priority_pages",
+            result="miss",
+            current=self._fmt_review_pages(current_pages),
+            priority=self._fmt_review_pages(result),
+            session_candidates=len(session_pages),
+        )
         return result
 
     def _stop_skeleton_thread(self):
@@ -3068,14 +3426,22 @@ class ReviewScreen(QWidget):
         t_skel_ms = (time.perf_counter() - t_start) * 1000
 
         priority_pages = self._get_priority_pages(card, box_idx, skel.total_pages, path)
-        print(
-            "[DEBUG][review_load] "
-            f"skeleton_ready pages={skel.total_pages} "
-            f"cache_ram_limit={getattr(PAGE_CACHE, '_max_pages', '?')} "
-            f"priority_count={len(priority_pages)} "
-            f"priority={self._fmt_review_pages(priority_pages)} "
-            f"t={t_skel_ms:.1f}ms"
+        self._review_profile_log(
+            "skeleton_ready",
+            pages=skel.total_pages,
+            clean_pages=len(clean_pages),
+            priority_count=len(priority_pages),
+            elapsed=f"{t_skel_ms:.1f}ms",
         )
+        if self._review_verbose_debug_enabled():
+            print(
+                "[DEBUG][review_load] "
+                f"skeleton_ready pages={skel.total_pages} "
+                f"cache_ram_limit={getattr(PAGE_CACHE, '_max_pages', '?')} "
+                f"priority_count={len(priority_pages)} "
+                f"priority={self._fmt_review_pages(priority_pages)} "
+                f"t={t_skel_ms:.1f}ms"
+            )
         self._start_priority_render(path, priority_pages, skel.total_pages)
         self._wire_scroll_ondemand(path, skel.total_pages)
 
@@ -3103,6 +3469,7 @@ class ReviewScreen(QWidget):
 
         cached_priority_pages = {}
         to_render = []
+        priority_t0 = time.perf_counter()
         for page_num in priority_pages:
             cached_page = PAGE_CACHE.get(path, page_num)
             if cached_page is not None and not cached_page.isNull():
@@ -3110,6 +3477,13 @@ class ReviewScreen(QWidget):
             else:
                 to_render.append(page_num)
         self._review_render_inflight_pages = set(int(p) for p in to_render)
+        self._review_profile_log(
+            "priority_split",
+            requested=len(priority_pages),
+            cache_hits=len(cached_priority_pages),
+            renders=len(to_render),
+            elapsed=f"{(time.perf_counter() - priority_t0) * 1000:.1f}ms",
+        )
 
         # Inject already-cached pages immediately (no thread needed)
         for pn, pg in cached_priority_pages.items():
@@ -3142,25 +3516,46 @@ class ReviewScreen(QWidget):
         self._ondemand_thread = PdfOnDemandThread(
             path, to_render, zoom=self._pdf_render_zoom, parent=self
         )
+        request_thread = self._ondemand_thread
         self._ondemand_path = path
         self._ondemand_total = total_pages
         self._ondemand_kind = "priority"
         self._ondemand_requested_pages = set(int(p) for p in to_render)
+        self.__dict__.setdefault("_ondemand_request_pages_by_thread", {})[
+            id(request_thread)
+        ] = set(
+            int(p) for p in to_render
+        )
 
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(
-            lambda rendered: self._on_priority_batch_done(
-                path, priority_pages, total_pages
+            lambda rendered, thread=request_thread: self._on_priority_batch_done(
+                path, priority_pages, total_pages, thread
             )
         )
         self._ondemand_thread.error.connect(lambda err: None)
         self._ondemand_thread.start()
 
-    def _on_priority_batch_done(self, path, priority_pages, total_pages):
-        requested = set(self.__dict__.pop("_ondemand_requested_pages", set()) or set())
+    def _requested_pages_for_thread(self, thread):
+        if thread is None:
+            return set(self.__dict__.pop("_ondemand_requested_pages", set()) or set())
+        requests = self.__dict__.setdefault("_ondemand_request_pages_by_thread", {})
+        requested = set(requests.pop(id(thread), set()) or set())
+        if thread is getattr(self, "_ondemand_thread", None):
+            requested |= set(self.__dict__.pop("_ondemand_requested_pages", set()) or set())
+        return requested
+
+    def _on_priority_batch_done(self, path, priority_pages, total_pages, thread=None):
+        requested = self._requested_pages_for_thread(thread)
         self.__dict__.setdefault("_review_render_inflight_pages", set()).difference_update(
             requested
         )
+        if thread is not None and thread is not getattr(self, "_ondemand_thread", None):
+            print(
+                "[DEBUG][review_priority] "
+                f"stale_done requested={self._fmt_review_pages(requested)}"
+            )
+            return
         self._background_fill_state = None
         self._ondemand_kind = None
         pending = self._pending_visible_request
@@ -3365,11 +3760,17 @@ class ReviewScreen(QWidget):
         self._ondemand_thread = PdfOnDemandThread(
             path, windowed, zoom=self._pdf_render_zoom, parent=self
         )
+        request_thread = self._ondemand_thread
         self._ondemand_path = path
         self._ondemand_total = total_pages
         self._ondemand_kind = "background"
         self._review_render_inflight_pages = set(int(p) for p in windowed)
         self._ondemand_requested_pages = set(int(p) for p in windowed)
+        self.__dict__.setdefault("_ondemand_request_pages_by_thread", {})[
+            id(request_thread)
+        ] = set(
+            int(p) for p in windowed
+        )
         print(
             "[DEBUG][review_bg] "
             f"start window={self._fmt_review_pages(windowed)} "
@@ -3378,20 +3779,26 @@ class ReviewScreen(QWidget):
 
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
         self._ondemand_thread.batch_done.connect(
-            lambda rendered, p=path, ar=next_rendered, tp=total_pages: self._on_background_fill_batch_done(
-                rendered, p, ar, tp
+            lambda rendered, thread=request_thread, p=path, ar=next_rendered, tp=total_pages: self._on_background_fill_batch_done(
+                rendered, p, ar, tp, thread
             )
         )
         self._ondemand_thread.error.connect(lambda err: None)
         self._ondemand_thread.start()
 
     def _on_background_fill_batch_done(
-        self, rendered, path, already_rendered, total_pages
+        self, rendered, path, already_rendered, total_pages, thread=None
     ):
-        requested = set(self.__dict__.pop("_ondemand_requested_pages", set()) or set())
+        requested = self._requested_pages_for_thread(thread)
         self.__dict__.setdefault("_review_render_inflight_pages", set()).difference_update(
             requested
         )
+        if thread is not None and thread is not getattr(self, "_ondemand_thread", None):
+            print(
+                "[DEBUG][review_bg] "
+                f"stale_done requested={self._fmt_review_pages(requested)}"
+            )
+            return
         if path != getattr(self, "_canvas_pdf_path", None):
             print(f"[DEBUG][review_bg] batch_skip reason=stale_path path={path}")
             self._background_fill_state = None
@@ -3494,16 +3901,17 @@ class ReviewScreen(QWidget):
                 continue
             needed.append(pn)
 
-        print(
-            "[DEBUG][review_decision] "
-            f"context={context} candidates={self._fmt_review_pages(page_nums)} "
-            f"need={self._fmt_review_pages(needed)} "
-            f"skip_canvas={skipped['canvas_real']} "
-            f"skip_cache={skipped['cache_hot']} "
-            f"skip_inflight={skipped['inflight']} "
-            f"skip_pending={skipped['pending_visible']} "
-            f"skip_bg={skipped['pending_bg']}"
-        )
+        if self._review_verbose_debug_enabled():
+            print(
+                "[DEBUG][review_decision] "
+                f"context={context} candidates={self._fmt_review_pages(page_nums)} "
+                f"need={self._fmt_review_pages(needed)} "
+                f"skip_canvas={skipped['canvas_real']} "
+                f"skip_cache={skipped['cache_hot']} "
+                f"skip_inflight={skipped['inflight']} "
+                f"skip_pending={skipped['pending_visible']} "
+                f"skip_bg={skipped['pending_bg']}"
+            )
         return needed
 
     def _on_visible_pages_changed(self, first, last):
@@ -3517,6 +3925,8 @@ class ReviewScreen(QWidget):
 
         if not path:
             return
+        if self.__dict__.get("_review_defer_visible_until_centered", False):
+            return
 
         first = max(0, int(first))
         last = max(first, int(last))
@@ -3526,7 +3936,7 @@ class ReviewScreen(QWidget):
         )
         entered_pages = [pn for pn in visible_pages if pn not in prev_visible]
         self._visible_debug_seen_pages = set(visible_pages)
-        if entered_pages:
+        if entered_pages and self._review_verbose_debug_enabled():
             current_page = visible_pages[len(visible_pages) // 2]
             entered_states = ", ".join(
                 f"p.{pn + 1}:{self._review_page_view_state(path, pn)}"
@@ -3551,19 +3961,21 @@ class ReviewScreen(QWidget):
         if self._ondemand_thread and self._ondemand_thread.isRunning():
             kind = getattr(self, "_ondemand_kind", None)
             if kind in ("background", "priority"):
-                print(
-                    "[DEBUG][review_ondemand] "
-                    f"preempt kind={kind} need={self._fmt_review_pages(needed)}"
-                )
+                if self._review_verbose_debug_enabled():
+                    print(
+                        "[DEBUG][review_ondemand] "
+                        f"preempt kind={kind} need={self._fmt_review_pages(needed)}"
+                    )
                 self._stop_ondemand_thread()
                 self._ondemand_kind = None
                 self._start_visible_page_request(path, needed)
                 return
 
-            print(
-                "[DEBUG][review_ondemand] "
-                f"queue_visible kind={kind} need={self._fmt_review_pages(needed)}"
-            )
+            if self._review_verbose_debug_enabled():
+                print(
+                    "[DEBUG][review_ondemand] "
+                    f"queue_visible kind={kind} need={self._fmt_review_pages(needed)}"
+                )
             self._pending_visible_request = (path, list(needed))
             return
 
@@ -3597,10 +4009,11 @@ class ReviewScreen(QWidget):
             )
             injected.append(pn)
         if injected:
-            print(
-                "[DEBUG][review_visible_cache] hydrate "
-                + ", ".join(f"p.{pn + 1}" for pn in injected)
-            )
+            if self._review_verbose_debug_enabled():
+                print(
+                    "[DEBUG][review_visible_cache] hydrate "
+                    + ", ".join(f"p.{pn + 1}" for pn in injected)
+                )
             self._update_review_page_nav_ui()
 
     def _start_visible_page_request(self, path, needed):
@@ -3611,29 +4024,41 @@ class ReviewScreen(QWidget):
             context="start_visible",
         )
         if needed:
-            print(
-                "[DEBUG][review_ondemand] render_request "
-                + ", ".join(f"p.{pn + 1}" for pn in needed)
-            )
+            if self._review_verbose_debug_enabled():
+                print(
+                    "[DEBUG][review_ondemand] render_request "
+                    + ", ".join(f"p.{pn + 1}" for pn in needed)
+                )
         else:
-            print("[DEBUG][review_ondemand] render_request skipped need=none")
             return
         self.__dict__.setdefault("_review_render_inflight_pages", set()).update(needed)
         self._ondemand_kind = "visible"
         self._ondemand_thread = PdfOnDemandThread(
             path, needed, zoom=self._pdf_render_zoom, parent=self
         )
+        request_thread = self._ondemand_thread
         self._ondemand_requested_pages = set(int(p) for p in needed)
+        self.__dict__.setdefault("_ondemand_request_pages_by_thread", {})[
+            id(request_thread)
+        ] = set(
+            int(p) for p in needed
+        )
         self._ondemand_thread.page_ready.connect(self._on_page_ready)
-        self._ondemand_thread.batch_done.connect(self._on_visible_pages_batch_done)
+        self._ondemand_thread.batch_done.connect(
+            lambda rendered, thread=request_thread: self._on_visible_pages_batch_done(
+                rendered, thread
+            )
+        )
         self._ondemand_thread.start()
 
-    def _on_visible_pages_batch_done(self, rendered):
+    def _on_visible_pages_batch_done(self, rendered, thread=None):
         self._note_user_activity()
-        requested = set(self.__dict__.pop("_ondemand_requested_pages", set()) or set())
+        requested = self._requested_pages_for_thread(thread)
         self.__dict__.setdefault("_review_render_inflight_pages", set()).difference_update(
             requested
         )
+        if thread is not None and thread is not getattr(self, "_ondemand_thread", None):
+            return
 
         pending = self._pending_visible_request
         self._pending_visible_request = None
@@ -3650,12 +4075,13 @@ class ReviewScreen(QWidget):
                 self._ondemand_kind = None
         elif getattr(self, "_ondemand_kind", None) == "visible":
             self._ondemand_kind = None
-        print(
-            "[DEBUG][review_ondemand] "
-            f"batch_done requested={self._fmt_review_pages(requested)} "
-            f"rendered={self._fmt_review_pages(rendered)} "
-            f"pending={self._fmt_review_pages(pending[1] if pending else [])}"
-        )
+        if self._review_verbose_debug_enabled():
+            print(
+                "[DEBUG][review_ondemand] "
+                f"batch_done requested={self._fmt_review_pages(requested)} "
+                f"rendered={self._fmt_review_pages(rendered)} "
+                f"pending={self._fmt_review_pages(pending[1] if pending else [])}"
+            )
 
         bg_state = self._background_fill_state
         if (
@@ -3747,7 +4173,7 @@ class ReviewScreen(QWidget):
             injected=True,
             kind=load_kind,
         )
-        if load_kind == "visible":
+        if load_kind == "visible" and self._review_verbose_debug_enabled():
             print(f"[DEBUG][review_ondemand] loaded p.{page_num + 1}")
         self._update_review_page_nav_ui()
 
@@ -3773,6 +4199,8 @@ class ReviewScreen(QWidget):
     def _debug_review_lazy_page_loaded(
         self, source: str, page_num: int, pixmap, kind: str = "", canvas_wh: str = ""
     ):
+        if not self._review_verbose_debug_enabled():
+            return
         if self.__dict__.get("_review_lazy_trace_suspended", False):
             return
         page_num = int(page_num)
@@ -3809,6 +4237,8 @@ class ReviewScreen(QWidget):
     def _debug_review_page_injection(
         self, page_num: int, injected: bool, kind: str = "", reason: str = ""
     ):
+        if not self._review_verbose_debug_enabled():
+            return
         page_num = int(page_num)
         status = "yes" if injected else "no"
         parts = [f"[DEBUG][review_inject] p.{page_num + 1} injected={status}"]
@@ -3853,6 +4283,9 @@ class ReviewScreen(QWidget):
             self.__dict__.setdefault(
                 "_review_render_inflight_pages", set()
             ).difference_update(requested)
+        requests = self.__dict__.setdefault("_ondemand_request_pages_by_thread", {})
+        if t:
+            requests.pop(id(t), None)
         # Always clear the reference so the next start gets a fresh thread
         self._ondemand_thread = None
 
@@ -3934,6 +4367,7 @@ class ReviewScreen(QWidget):
         path = resolve_asset_path(card.get("pdf_path", ""))
         self._canvas_pdf_path = path
         self.canvas._current_pdf_path = path
+        self._review_defer_visible_until_centered = True
         if hasattr(self.canvas, "clear_peek_target"):
             self.canvas.clear_peek_target()
 
@@ -3979,13 +4413,13 @@ class ReviewScreen(QWidget):
         if self._pending_reload_page is not None:
             reload_page = self._pending_reload_page
             self._pending_reload_page = None
-            QTimer.singleShot(
-                0,
-                lambda pg=reload_page: (
-                    self._zoom_fit(),
-                    self.canvas.scroll_to_page(pg, self._canvas_scroll),
-                ),
-            )
+            def _apply_reload_zoom_and_page(pg=reload_page):
+                self._zoom_fit()
+                self.canvas.scroll_to_page(pg, self._canvas_scroll)
+                self._review_defer_visible_until_centered = False
+                self._canvas_scroll._emit_visible_pages()
+
+            QTimer.singleShot(0, _apply_reload_zoom_and_page)
         else:
             # FIX: retain user-set zoom across cards
             def _apply_zoom_and_center():
@@ -3995,6 +4429,8 @@ class ReviewScreen(QWidget):
                 else:
                     self._zoom_fit()
                 self._center_on_target()
+                self._review_defer_visible_until_centered = False
+                self._canvas_scroll._emit_visible_pages()
 
             QTimer.singleShot(0, _apply_zoom_and_center)
         QTimer.singleShot(0, self._update_review_page_nav_ui)

@@ -141,20 +141,34 @@ class RecoveryDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        title = QLabel("We found unsaved work")
-        title.setStyleSheet("font-size:16px;font-weight:bold;")
-        layout.addWidget(title)
-
-        help_text = QLabel(
-            "The newest draft is selected for you. Choose Restore to inspect it. "
-            "Delete only removes the selected recovery draft."
-        )
-        help_text.setWordWrap(True)
-        layout.addWidget(help_text)
-
+        drafts = self.summary.get("drafts", []) or []
         events = self.summary.get("review_events", []) or []
         recoverable = [event for event in events if event.get("status") == "recoverable"]
         blocked = [event for event in events if event.get("status") != "recoverable"]
+        review_only = bool(events) and not bool(drafts)
+
+        title_text = (
+            "We found unsaved review progress"
+            if review_only
+            else "We found unsaved work"
+        )
+        title = QLabel(title_text)
+        title.setStyleSheet("font-size:16px;font-weight:bold;")
+        layout.addWidget(title)
+
+        help_copy = (
+            "No card drafts are waiting. Choose Recover Review Progress to apply "
+            "the saved review updates."
+            if review_only
+            else (
+                "The newest draft is selected for you. Choose Restore to inspect it. "
+                "Delete only removes the selected recovery draft."
+            )
+        )
+        help_text = QLabel(help_copy)
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+
         event_text = f"Review progress ready to restore: {len(recoverable)}"
         if blocked:
             event_text += f"  |  Needs attention: {len(blocked)}"
@@ -164,11 +178,19 @@ class RecoveryDialog(QDialog):
 
         self.draft_list = QListWidget()
         self.draft_list.setMinimumHeight(180)
-        for index, draft in enumerate(self.summary.get("drafts", []) or []):
+        if review_only:
+            review_item = QListWidgetItem(
+                "Review progress checkpoint\n"
+                f"{len(recoverable)} review update(s) can be restored from recovery.\n"
+                "There is no editor draft to inspect."
+            )
+            review_item.setFlags(Qt.NoItemFlags)
+            self.draft_list.addItem(review_item)
+        for index, draft in enumerate(drafts):
             item = QListWidgetItem(_draft_label(draft, index))
             item.setData(Qt.UserRole, draft)
             self.draft_list.addItem(item)
-        if self.draft_list.count() > 0:
+        if drafts:
             self.draft_list.setCurrentRow(0)
         layout.addWidget(self.draft_list)
 
@@ -177,9 +199,9 @@ class RecoveryDialog(QDialog):
         self.btn_delete_all = QPushButton("Delete All Drafts")
         self.btn_restore_latest.setObjectName("primaryRecoveryButton")
         self.btn_delete_all.setObjectName("dangerRecoveryButton")
-        self.btn_restore_latest.setEnabled(self.draft_list.count() > 0)
-        self.btn_delete_all.setEnabled(self.draft_list.count() > 0)
-        self.btn_restore_latest.setDefault(True)
+        self.btn_restore_latest.setEnabled(bool(drafts))
+        self.btn_delete_all.setEnabled(bool(drafts))
+        self.btn_restore_latest.setDefault(bool(drafts))
         quick_row.addWidget(self.btn_restore_latest)
         quick_row.addWidget(self.btn_delete_all)
         layout.addLayout(quick_row)
@@ -193,12 +215,15 @@ class RecoveryDialog(QDialog):
         self.btn_recover_reviews = QPushButton(review_button_text)
         self.btn_open_draft = QPushButton("Restore Selected Draft")
         self.btn_delete_draft = QPushButton("Delete Selected Draft")
-        self.btn_close = QPushButton("Close (Keep Drafts)")
+        self.btn_close = QPushButton("Close (Keep Progress)" if review_only else "Close (Keep Drafts)")
+        if recoverable:
+            self.btn_recover_reviews.setObjectName("primaryRecoveryButton")
         self.btn_open_draft.setObjectName("primaryRecoveryButton")
         self.btn_delete_draft.setObjectName("dangerRecoveryButton")
         self.btn_recover_reviews.setEnabled(bool(recoverable))
-        self.btn_open_draft.setEnabled(self.draft_list.count() > 0)
-        self.btn_delete_draft.setEnabled(self.draft_list.count() > 0)
+        self.btn_recover_reviews.setDefault(bool(recoverable) and not bool(drafts))
+        self.btn_open_draft.setEnabled(bool(drafts))
+        self.btn_delete_draft.setEnabled(bool(drafts))
         row.addWidget(self.btn_recover_reviews)
         row.addWidget(self.btn_open_draft)
         row.addWidget(self.btn_delete_draft)

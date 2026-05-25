@@ -4,13 +4,28 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtCore import QAbstractAnimation, QEvent, QRect, Qt
 from PyQt5.QtGui import QKeyEvent
-from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QPushButton,
+    QStyleOptionViewItem,
+    QTreeWidget,
+    QWidget,
+)
 
 from data_manager import deck_history, find_deck_by_id, store
 from theme_manager import get_palette
-from ui.tmnt_home import T_PIXEL, TMNTHomeLayout, TMNTSidebar, TMNTTopBar
+from ui.tmnt_home import (
+    T_PIXEL,
+    TMNTBangaDrawer,
+    TMNTDeckItemDelegate,
+    TMNTMissionBanner,
+    TMNTHomeLayout,
+    TMNTSidebar,
+    TMNTTopBar,
+)
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -80,6 +95,19 @@ class TMNTDeckTreeTests(unittest.TestCase):
 
         self.assertIsNone(find_deck_by_id(3, self.data["decks"]))
 
+    def test_due_badge_row_rect_extends_to_viewport_right_edge(self):
+        tree = QTreeWidget()
+        tree.resize(400, 200)
+        tree.viewport().resize(400, 200)
+        self.addCleanup(tree.close)
+        delegate = TMNTDeckItemDelegate(scale=1.0, parent=tree)
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, 120, 44)
+
+        rect = delegate._row_rect(option)
+
+        self.assertEqual(rect.right(), tree.viewport().width() - 6)
+
 
 class TMNTTopBarTests(unittest.TestCase):
     def test_tmnt_headers_use_math_dojo_header_font(self):
@@ -93,6 +121,26 @@ class TMNTTopBarTests(unittest.TestCase):
         labels = [button.text() for button in topbar._more_panel.findChildren(QPushButton)]
 
         self.assertTrue(any("SHORTCUTS" in label for label in labels))
+
+    def test_brand_title_uses_one_and_half_times_base_size(self):
+        topbar = TMNTTopBar({"_font_size": 11})
+        self.addCleanup(topbar.close)
+
+        expected_px = int(
+            round(TMNTTopBar.BRAND_BASE_FONT_PX * TMNTTopBar.BRAND_TITLE_SCALE)
+        )
+
+        self.assertEqual(TMNTTopBar.BRAND_TITLE_SCALE, 1.5)
+        self.assertEqual(expected_px, 27)
+        self.assertIn(f"font-size: {expected_px}px", topbar._brand_name_ss())
+
+    def test_brand_animation_timers_are_idle_by_default(self):
+        topbar = TMNTTopBar({"_font_size": 11})
+        self.addCleanup(topbar.close)
+
+        self.assertFalse(topbar._brand_glitch_timer.isActive())
+        self.assertFalse(topbar._brand_flicker_timer.isActive())
+        self.assertFalse(topbar._quote_timer.isActive())
 
     def test_shortcuts_signal_is_forwarded_to_home_layout(self):
         layout = TMNTHomeLayout({"decks": [], "_font_size": 11})
@@ -157,6 +205,256 @@ class TMNTTopBarTests(unittest.TestCase):
         layout.keyPressEvent(redo_event)
 
         self.assertIsNotNone(find_deck_by_id(2, store.get()["decks"]))
+
+
+class TMNTMissionBannerTests(unittest.TestCase):
+    def test_glow_timer_stays_idle_by_default(self):
+        banner = TMNTMissionBanner({"_font_size": 11})
+        self.addCleanup(banner.close)
+
+        self.assertFalse(banner._glow_timer.isActive())
+
+        banner.set_animation_enabled(True)
+
+        self.assertFalse(banner._glow_timer.isActive())
+
+    def test_glow_timer_runs_when_home_animations_are_enabled(self):
+        with patch.dict(os.environ, {"ANKI_HOME_ANIMATIONS": "1"}, clear=False):
+            banner = TMNTMissionBanner({"_font_size": 11})
+            self.addCleanup(banner.close)
+
+            self.assertFalse(banner._glow_timer.isActive())
+
+            banner.set_animation_enabled(True)
+
+            self.assertTrue(banner._glow_timer.isActive())
+
+            banner.set_animation_enabled(False)
+
+            self.assertFalse(banner._glow_timer.isActive())
+
+
+class TMNTBangaDrawerTests(unittest.TestCase):
+    def setUp(self):
+        self.load_locked_patch = patch.object(
+            TMNTBangaDrawer, "_load_locked", return_value=False
+        )
+        self.save_locked_patch = patch.object(TMNTBangaDrawer, "_save_locked")
+        self.load_locked = self.load_locked_patch.start()
+        self.save_locked = self.save_locked_patch.start()
+        self.addCleanup(self.load_locked_patch.stop)
+        self.addCleanup(self.save_locked_patch.stop)
+
+    def test_cache_drawer_starts_closed_with_floating_total_memory(self):
+        host = QWidget()
+        host.resize(900, 600)
+        self.addCleanup(host.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer({"_font_size": 11}, parent=host)
+        self.addCleanup(drawer.close)
+
+        self.assertFalse(drawer._drawer_open)
+        self.assertTrue(drawer.isHidden())
+        self.assertFalse(drawer._edge_button.isHidden())
+        self.assertLess(drawer._edge_button.height(), 50)
+        self.assertTrue(drawer._lock_button.isHidden())
+        self.assertFalse(drawer._memory_chip.isHidden())
+        self.assertIn("TOTAL", drawer._memory_chip.text())
+        self.assertEqual(drawer._edge_pulse.state(), QAbstractAnimation.Stopped)
+        self.assertFalse(drawer.lab._auto_timer.isActive())
+
+    def test_cache_drawer_does_not_reserve_width_until_locked(self):
+        host = QWidget()
+        host.resize(900, 600)
+        reserve = QWidget()
+        reserve.setFixedWidth(99)
+        self.addCleanup(host.close)
+        self.addCleanup(reserve.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer(
+                {"_font_size": 11}, parent=host, reserve_widget=reserve
+            )
+            drawer.open_drawer()
+
+        self.addCleanup(drawer.close)
+        self.assertEqual(reserve.width(), 0)
+        self.assertTrue(reserve.isHidden())
+
+    def test_cache_drawer_opens_from_right_edge_and_closes(self):
+        host = QWidget()
+        host.resize(900, 600)
+        self.addCleanup(host.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer({"_font_size": 11}, parent=host)
+            drawer.eventFilter(drawer._edge_button, QEvent(QEvent.Enter))
+
+        self.addCleanup(drawer.close)
+        self.assertTrue(drawer._drawer_open)
+        self.assertFalse(drawer.isHidden())
+        self.assertEqual(drawer._edge_button.text(), "›")
+        self.assertTrue(drawer._edge_button.isHidden())
+        self.assertTrue(drawer._memory_chip.isHidden())
+        self.assertFalse(drawer._lock_button.isHidden())
+        self.assertEqual(drawer._edge_pulse.state(), QAbstractAnimation.Stopped)
+        self.assertTrue(drawer.lab._auto_timer.isActive())
+
+        with patch("builtins.print"):
+            drawer.close_drawer()
+
+        self.assertFalse(drawer._drawer_open)
+        self.assertTrue(drawer.isHidden())
+        self.assertEqual(drawer._edge_button.text(), "‹")
+        self.assertFalse(drawer._edge_button.isHidden())
+        self.assertFalse(drawer._memory_chip.isHidden())
+        self.assertTrue(drawer._lock_button.isHidden())
+        self.assertEqual(drawer._edge_pulse.state(), QAbstractAnimation.Stopped)
+        self.assertFalse(drawer.lab._auto_timer.isActive())
+
+    def test_cache_drawer_lock_keeps_panel_open(self):
+        host = QWidget()
+        host.resize(900, 600)
+        self.addCleanup(host.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer({"_font_size": 11}, parent=host)
+            drawer.open_drawer()
+            drawer._toggle_lock()
+
+        self.addCleanup(drawer.close)
+        self.assertTrue(drawer._drawer_locked)
+        self.assertTrue(drawer._drawer_open)
+        self.assertFalse(drawer.isHidden())
+        self.assertEqual(drawer._lock_button.text(), "🔒")
+        self.assertTrue(drawer._edge_button.isHidden())
+        self.assertTrue(drawer._memory_chip.isHidden())
+        self.assertTrue(drawer.lab._auto_timer.isActive())
+        self.save_locked.assert_called_with(True)
+
+        with patch.object(drawer, "_contains_cursor", return_value=False):
+            drawer._hide_if_cursor_outside()
+
+        self.assertTrue(drawer._drawer_open)
+        self.assertFalse(drawer.isHidden())
+
+    def test_cache_drawer_lock_reserves_layout_width(self):
+        host = QWidget()
+        host.resize(900, 600)
+        reserve = QWidget()
+        reserve.setFixedWidth(0)
+        reserve.hide()
+        self.addCleanup(host.close)
+        self.addCleanup(reserve.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer(
+                {"_font_size": 11}, parent=host, reserve_widget=reserve
+            )
+            drawer.open_drawer()
+            drawer._toggle_lock()
+
+        self.addCleanup(drawer.close)
+        self.assertEqual(reserve.width(), drawer._open_width)
+        self.assertFalse(reserve.isHidden())
+
+        with patch("builtins.print"), patch.object(
+            drawer, "_contains_cursor", return_value=True
+        ):
+            drawer._toggle_lock()
+
+        self.assertEqual(reserve.width(), 0)
+        self.assertTrue(reserve.isHidden())
+
+    def test_cache_drawer_unlock_allows_close(self):
+        host = QWidget()
+        host.resize(900, 600)
+        self.addCleanup(host.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer({"_font_size": 11}, parent=host)
+            drawer.open_drawer()
+            drawer._toggle_lock()
+            drawer._toggle_lock()
+            drawer.close_drawer()
+
+        self.addCleanup(drawer.close)
+        self.assertFalse(drawer._drawer_locked)
+        self.assertFalse(drawer._drawer_open)
+        self.assertTrue(drawer.isHidden())
+        self.assertEqual(drawer._lock_button.text(), "🔓")
+        self.save_locked.assert_called_with(False)
+
+    def test_cache_drawer_restores_locked_open_state(self):
+        self.load_locked.return_value = True
+        host = QWidget()
+        host.resize(900, 600)
+        self.addCleanup(host.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer({"_font_size": 11}, parent=host)
+
+        self.addCleanup(drawer.close)
+        self.assertTrue(drawer._drawer_locked)
+        self.assertTrue(drawer._drawer_open)
+        self.assertFalse(drawer.isHidden())
+        self.assertEqual(drawer._lock_button.text(), "🔒")
+        self.assertTrue(drawer._edge_button.isHidden())
+        self.assertTrue(drawer._memory_chip.isHidden())
+        self.assertTrue(drawer.lab._auto_timer.isActive())
+
+    def test_cache_drawer_restores_locked_state_with_reserved_width(self):
+        self.load_locked.return_value = True
+        host = QWidget()
+        host.resize(900, 600)
+        reserve = QWidget()
+        reserve.setFixedWidth(0)
+        reserve.hide()
+        self.addCleanup(host.close)
+        self.addCleanup(reserve.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer(
+                {"_font_size": 11}, parent=host, reserve_widget=reserve
+            )
+
+        self.addCleanup(drawer.close)
+        self.assertEqual(reserve.width(), drawer._open_width)
+        self.assertFalse(reserve.isHidden())
+
+    def test_cache_drawer_updates_floating_total_memory_label(self):
+        host = QWidget()
+        host.resize(900, 600)
+        self.addCleanup(host.close)
+
+        with patch("builtins.print"):
+            drawer = TMNTBangaDrawer({"_font_size": 11}, parent=host)
+        self.addCleanup(drawer.close)
+
+        drawer.lab.resources_refreshed.emit("42.5 MB")
+
+        self.assertEqual(drawer._memory_chip.text(), "TOTAL 42.5 MB")
+
+    def test_tmnt_layout_uses_overlay_cache_drawer(self):
+        with patch("builtins.print"):
+            layout = TMNTHomeLayout({"decks": [], "_font_size": 11})
+        self.addCleanup(layout.close)
+
+        self.assertIsInstance(layout.banga, TMNTBangaDrawer)
+        self.assertFalse(layout.banga._drawer_open)
+        self.assertTrue(layout._banga_reserve.isHidden())
+
+    def test_tmnt_layout_splits_sidebar_and_main_30_70_when_cache_hidden(self):
+        with patch("builtins.print"):
+            layout = TMNTHomeLayout({"decks": [], "_font_size": 11})
+        self.addCleanup(layout.close)
+
+        self.assertEqual(layout._body_layout.stretch(0), 30)
+        self.assertEqual(layout._body_layout.stretch(1), 70)
+        self.assertEqual(layout._body_layout.stretch(2), 0)
+        self.assertLess(layout.sidebar.minimumWidth(), 300)
+        self.assertGreater(layout.sidebar.maximumWidth(), 1000)
 
 
 if __name__ == "__main__":

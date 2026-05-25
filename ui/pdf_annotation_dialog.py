@@ -5,6 +5,7 @@ from PyQt5.QtCore import (
     QBuffer,
     QIODevice,
     QPointF,
+    QRect,
     QRectF,
     Qt,
     QTimer,
@@ -36,6 +37,8 @@ from pdf_engine import (
 )
 from services.pdf_annotation_service import PdfAnnotationSession
 from ui.pdf_viewer_controller import PdfViewerController
+
+ANNOTATION_VERBOSE_ENV = "ANKI_ANNOTATION_VERBOSE"
 
 PAGE_GAP = 10
 
@@ -114,10 +117,33 @@ class PdfAnnotationCanvas(QWidget):
         self.updateGeometry()
         self.update()
 
+    def _page_screen_rect(self, page_num: int) -> QRect:
+        if not (0 <= page_num < len(self._pages)):
+            return QRect()
+        px = self._pages[page_num]
+        top = int(self._page_tops[page_num] * self._scale)
+        return QRect(
+            0,
+            top,
+            int(px.width() * self._scale),
+            int(px.height() * self._scale),
+        )
+
     def replace_page(self, page_num: int, pixmap: QPixmap):
         if 0 <= page_num < len(self._pages):
+            old = self._pages[page_num]
+            same_size = (
+                old is not None
+                and not old.isNull()
+                and pixmap is not None
+                and not pixmap.isNull()
+                and old.size() == pixmap.size()
+            )
             self._pages[page_num] = pixmap
-            self.load_pages(self._pages)
+            if same_size:
+                self.update(self._page_screen_rect(page_num))
+            else:
+                self.load_pages(self._pages)
 
     def set_tool(self, tool: str):
         self._tool = tool
@@ -702,6 +728,7 @@ class PdfAnnotationDialog(QDialog):
         self.pdf_path = os.path.abspath(pdf_path)
         self.initial_page = max(0, int(initial_page or 0))
         self.initial_anchor_y = initial_anchor_y
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.session = PdfAnnotationSession(
             self.pdf_path,
             initial_page=self.initial_page,
@@ -720,6 +747,11 @@ class PdfAnnotationDialog(QDialog):
 
     def _debug(self, action: str, **data):
         return
+
+    @staticmethod
+    def _annotation_verbose_debug_enabled():
+        raw = os.environ.get(ANNOTATION_VERBOSE_ENV, "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
 
     def _target_page_window(self, center_page: int):
         total = max(0, int(getattr(self.session, "page_count", 0) or 0))
@@ -923,7 +955,7 @@ class PdfAnnotationDialog(QDialog):
         self._update_pen_controls()
 
     def exec_(self):
-        self.showMaximized()
+        self.showFullScreen()
         return super().exec_()
 
     def _set_tool(self, tool: str):
@@ -1098,13 +1130,50 @@ class PdfAnnotationDialog(QDialog):
                 ),
             )
 
+    def retarget_from_review(
+        self, page_zero: int, anchor_y: float | None = None, delays_ms=(0, 35, 90)
+    ):
+        total = max(0, int(getattr(self.session, "page_count", 0) or 0))
+        if total <= 0:
+            return
+        page_zero = max(0, min(int(page_zero), total - 1))
+        self.initial_page = page_zero
+        self.return_page = page_zero
+        self._current_page_zero = page_zero
+        self._viewer.set_page_ui(page_zero)
+        self._ensure_annotation_window(page_zero, reason="review_handoff")
+        self._ensure_render_window(page_zero, reason="review_handoff")
+
+        if anchor_y is None:
+            self._viewer.go_to_page(page_zero)
+            return
+
+        self.return_anchor_y = anchor_y
+        self.__dict__["_review_handoff_seq"] = (
+            int(self.__dict__.get("_review_handoff_seq", 0) or 0) + 1
+        )
+        seq = self.__dict__["_review_handoff_seq"]
+        delays = list(delays_ms) if delays_ms else [0]
+
+        def _apply(seq_id=seq, target_page=page_zero, img_y=float(anchor_y)):
+            if self.__dict__.get("_review_handoff_seq") != seq_id:
+                return
+            scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
+            self.scroll.verticalScrollBar().setValue(int(img_y * scale))
+            self._current_page_zero = target_page
+            self._viewer.set_page_ui(target_page)
+
+        for delay in delays:
+            QTimer.singleShot(int(delay), _apply)
+
     def _on_page_ready(self, page_num, qpx):
         if qpx is None:
             return
         pixmap = qpx if isinstance(qpx, QPixmap) else QPixmap.fromImage(qpx)
         if pixmap.isNull():
             return
-        print(f"[DEBUG][annotation_lazy] 👀 p.{int(page_num) + 1}")
+        if self._annotation_verbose_debug_enabled():
+            print(f"[DEBUG][annotation_lazy] 👀 p.{int(page_num) + 1}")
         self.canvas.replace_page(page_num, pixmap)
 
     def _on_render_window_done(self, rendered_pages):

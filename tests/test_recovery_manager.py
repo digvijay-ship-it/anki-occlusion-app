@@ -1,6 +1,8 @@
 import json
+import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -206,6 +208,338 @@ class RecoveryManagerTests(unittest.TestCase):
         self.assertEqual(summary["moved_applied"], 1)
         self.assertEqual(len(list(self.pending.glob("*.json"))), 0)
         self.assertEqual(len(list(self.applied.glob("*.json"))), 1)
+
+    def test_scan_moves_review_event_superseded_by_newer_loaded_review(self):
+        box = {
+            "box_id": "box-1",
+            "sched_state": "review",
+            "sm2_interval": 4,
+            "sm2_repetitions": 4,
+            "reviews": 4,
+            "reviewed_at": "2026-05-19T11:57:52",
+        }
+        card = {
+            "title": "Superseded",
+            "created": "2026-05-15T09:00:00",
+            "last_reviewed_at": "2026-05-20T10:00:00",
+            "boxes": [box],
+        }
+        data = {"decks": [{"_id": 1, "name": "Math", "cards": [card], "children": []}]}
+        event = {
+            "record_type": "review_event",
+            "event_id": "old-review",
+            "timestamp": "2026-05-15T12:17:42",
+            "card_locator": {
+                "deck_id": 1,
+                "card_index": 0,
+                "title": "Superseded",
+                "created": "2026-05-15T09:00:00",
+            },
+            "updates": [
+                {
+                    "target": "box",
+                    "box_locator": {"box_id": "box-1", "box_index": 0},
+                    "fields": {
+                        "sched_state": "review",
+                        "sm2_interval": 4,
+                        "sm2_repetitions": 3,
+                        "reviews": 3,
+                        "reviewed_at": "2026-05-15T12:17:42",
+                    },
+                },
+                {
+                    "target": "card_meta",
+                    "fields": {"last_reviewed_at": "2026-05-15T12:17:42"},
+                },
+            ],
+        }
+        recovery_manager.record_review_event(event)
+
+        summary = recovery_manager.scan_recovery(data)
+
+        self.assertEqual(summary["review_events"], [])
+        self.assertEqual(summary["moved_applied"], 1)
+        self.assertEqual(len(list(self.pending.glob("*.json"))), 0)
+        self.assertEqual(len(list(self.applied.glob("*.json"))), 1)
+
+    def test_scan_moves_review_event_when_only_legacy_alias_fields_are_missing(self):
+        box = {
+            "box_id": "box-1",
+            "sched_state": "review",
+            "sched_step": 0,
+            "sm2_interval": 4,
+            "sm2_repetitions": 3,
+            "sm2_last_quality": 4,
+            "reviews": 3,
+        }
+        card = {
+            "title": "Legacy Alias",
+            "created": "2026-05-15T09:00:00",
+            "last_reviewed_at": "2026-05-20T10:00:00",
+            "boxes": [box],
+        }
+        data = {"decks": [{"_id": 1, "name": "Math", "cards": [card], "children": []}]}
+        event = {
+            "record_type": "review_event",
+            "event_id": "legacy-alias",
+            "timestamp": "2026-05-15T12:17:42",
+            "card_locator": {
+                "deck_id": 1,
+                "card_index": 0,
+                "title": "Legacy Alias",
+                "created": "2026-05-15T09:00:00",
+            },
+            "updates": [
+                {
+                    "target": "box",
+                    "box_locator": {"box_id": "box-1", "box_index": 0},
+                    "fields": {
+                        "sched_state": "review",
+                        "sched_step": 0,
+                        "sm2_interval": 4,
+                        "sm2_repetitions": 3,
+                        "sm2_last_quality": 4,
+                        "reviews": 3,
+                        "reviewed_at": "2026-05-15T12:17:42",
+                        "last_quality": 4,
+                    },
+                },
+                {
+                    "target": "card_meta",
+                    "fields": {"last_reviewed_at": "2026-05-15T12:17:42"},
+                },
+            ],
+        }
+        recovery_manager.record_review_event(event)
+
+        summary = recovery_manager.scan_recovery(data)
+
+        self.assertEqual(summary["review_events"], [])
+        self.assertEqual(summary["moved_applied"], 1)
+        self.assertEqual(len(list(self.pending.glob("*.json"))), 0)
+        self.assertEqual(len(list(self.applied.glob("*.json"))), 1)
+
+    def test_scan_keeps_review_event_when_target_box_is_not_newer(self):
+        box = {
+            "box_id": "box-1",
+            "sched_state": "new",
+            "reviews": 0,
+            "reviewed_at": "2026-05-15T09:00:00",
+        }
+        card = {
+            "title": "Still Needed",
+            "created": "2026-05-15T09:00:00",
+            "last_reviewed_at": "2026-05-20T10:00:00",
+            "boxes": [box],
+        }
+        data = {"decks": [{"_id": 1, "name": "Math", "cards": [card], "children": []}]}
+        event = {
+            "record_type": "review_event",
+            "event_id": "needed-review",
+            "timestamp": "2026-05-15T12:17:42",
+            "card_locator": {
+                "deck_id": 1,
+                "card_index": 0,
+                "title": "Still Needed",
+                "created": "2026-05-15T09:00:00",
+            },
+            "updates": [
+                {
+                    "target": "box",
+                    "box_locator": {"box_id": "box-1", "box_index": 0},
+                    "fields": {
+                        "sched_state": "review",
+                        "reviews": 1,
+                        "reviewed_at": "2026-05-15T12:17:42",
+                    },
+                },
+                {
+                    "target": "card_meta",
+                    "fields": {"last_reviewed_at": "2026-05-15T12:17:42"},
+                },
+            ],
+        }
+        recovery_manager.record_review_event(event)
+
+        summary = recovery_manager.scan_recovery(data)
+
+        self.assertEqual(len(summary["review_events"]), 1)
+        self.assertEqual(summary["review_events"][0]["status"], "recoverable")
+        self.assertEqual(summary["moved_applied"], 0)
+        self.assertEqual(len(list(self.pending.glob("*.json"))), 1)
+        self.assertEqual(len(list(self.applied.glob("*.json"))), 0)
+
+    def test_scan_deletes_editor_draft_already_reflected_in_loaded_data(self):
+        card = {
+            "title": "Saved",
+            "created": "2026-05-20T10:00:00",
+            "pdf_path": "pdfs/saved.pdf",
+            "notes": "done",
+            "boxes": [{"box_id": "b1", "rect": [1, 2, 3, 4]}],
+            "reviews": 0,
+        }
+        data = {"decks": [{"_id": 1, "name": "Math", "cards": [card], "children": []}]}
+        recovery_manager.save_editor_draft(
+            {
+                "draft_id": "already-saved",
+                "mode": "edit",
+                "initial_card_locator": {
+                    "deck_id": 1,
+                    "card_index": 0,
+                    "title": "Saved",
+                    "created": "2026-05-20T10:00:00",
+                    "pdf_path": "pdfs/saved.pdf",
+                },
+                "card": dict(card),
+            }
+        )
+
+        summary = recovery_manager.scan_recovery(data)
+
+        self.assertEqual(summary["drafts"], [])
+        self.assertEqual(summary["moved_saved_drafts"], 1)
+        self.assertFalse(Path(recovery_manager.draft_path("already-saved")).exists())
+
+    def test_scan_ignores_review_metadata_when_matching_editor_draft(self):
+        draft_card = {
+            "title": "Reviewed Later",
+            "created": "2026-05-20T10:00:00",
+            "pdf_path": "pdfs/reviewed.pdf",
+            "notes": "same editor content",
+            "boxes": [{"box_id": "b1", "rect": [1, 2, 3, 4]}],
+            "reviews": 0,
+        }
+        saved_card = {
+            "title": "Reviewed Later",
+            "created": "2026-05-20T10:00:00",
+            "pdf_path": "pdfs/reviewed.pdf",
+            "notes": "same editor content",
+            "boxes": [
+                {
+                    "box_id": "b1",
+                    "rect": [1, 2, 3, 4],
+                    "sched_state": "review",
+                    "reviews": 4,
+                    "reviewed_at": "2026-05-20T19:00:00",
+                }
+            ],
+            "reviews": 4,
+            "last_reviewed_at": "2026-05-20T19:00:00",
+        }
+        data = {
+            "decks": [
+                {"_id": 1, "name": "Math", "cards": [saved_card], "children": []}
+            ]
+        }
+        recovery_manager.save_editor_draft(
+            {
+                "draft_id": "review-metadata-only",
+                "mode": "edit",
+                "initial_card_locator": {
+                    "deck_id": 1,
+                    "card_index": 0,
+                    "title": "Reviewed Later",
+                    "created": "2026-05-20T10:00:00",
+                    "pdf_path": "pdfs/reviewed.pdf",
+                },
+                "card": draft_card,
+            }
+        )
+
+        summary = recovery_manager.scan_recovery(data)
+
+        self.assertEqual(summary["drafts"], [])
+        self.assertEqual(summary["moved_saved_drafts"], 1)
+        self.assertFalse(Path(recovery_manager.draft_path("review-metadata-only")).exists())
+
+    def test_scan_deletes_add_draft_already_saved_as_new_card(self):
+        card = {
+            "title": "New Saved",
+            "created": "2026-05-20T11:00:00",
+            "image_path": "images/new.png",
+            "notes": "already in deck",
+            "tags": ["math"],
+            "boxes": [{"box_id": "b2", "rect": [4, 3, 2, 1]}],
+        }
+        data = {"decks": [{"_id": 1, "name": "Math", "cards": [card], "children": []}]}
+        recovery_manager.save_editor_draft(
+            {
+                "draft_id": "add-already-saved",
+                "mode": "add",
+                "card": dict(card),
+            }
+        )
+
+        summary = recovery_manager.scan_recovery(data)
+
+        self.assertEqual(summary["drafts"], [])
+        self.assertEqual(summary["moved_saved_drafts"], 1)
+        self.assertFalse(Path(recovery_manager.draft_path("add-already-saved")).exists())
+
+    def test_scan_keeps_editor_draft_with_unsaved_changes(self):
+        saved_card = {
+            "title": "Saved",
+            "created": "2026-05-20T10:00:00",
+            "pdf_path": "pdfs/saved.pdf",
+            "notes": "old",
+            "boxes": [{"box_id": "b1", "rect": [1, 2, 3, 4]}],
+            "reviews": 0,
+        }
+        draft_card = dict(saved_card)
+        draft_card["notes"] = "new unsaved note"
+        data = {
+            "decks": [
+                {"_id": 1, "name": "Math", "cards": [saved_card], "children": []}
+            ]
+        }
+        recovery_manager.save_editor_draft(
+            {
+                "draft_id": "unsaved",
+                "mode": "edit",
+                "initial_card_locator": {
+                    "deck_id": 1,
+                    "card_index": 0,
+                    "title": "Saved",
+                    "created": "2026-05-20T10:00:00",
+                    "pdf_path": "pdfs/saved.pdf",
+                },
+                "card": draft_card,
+            }
+        )
+
+        summary = recovery_manager.scan_recovery(data)
+
+        self.assertEqual(len(summary["drafts"]), 1)
+        self.assertEqual(summary["drafts"][0]["draft_id"], "unsaved")
+        self.assertEqual(summary["drafts"][0]["status"], "recoverable")
+        self.assertTrue(Path(recovery_manager.draft_path("unsaved")).exists())
+
+    def test_startup_scan_skips_stale_draft_older_than_loaded_data_file(self):
+        data_file = self.root / "anki_occlusion_data.json"
+        data_file.write_text("{}", encoding="utf-8")
+        old_time = datetime(2026, 5, 20, 10, 0, 0).timestamp()
+        new_time = datetime(2026, 5, 20, 11, 0, 0).timestamp()
+        draft = recovery_manager.save_editor_draft(
+            {
+                "draft_id": "old-add",
+                "mode": "add",
+                "card": {"title": "Old unsaved", "boxes": [{"box_id": "b1"}]},
+            }
+        )
+        draft["updated_at"] = "2026-05-20T10:00:00"
+        recovery_manager._atomic_write_json(recovery_manager.draft_path("old-add"), draft)
+        os.utime(recovery_manager.draft_path("old-add"), (old_time, old_time))
+        os.utime(data_file, (new_time, new_time))
+        data = {"decks": [{"_id": 1, "name": "Math", "cards": [], "children": []}]}
+
+        with patch.object(recovery_manager, "current_data_file", lambda: str(data_file)):
+            startup_summary = recovery_manager.scan_recovery(data, startup=True)
+            manual_summary = recovery_manager.scan_recovery(data, startup=False)
+
+        self.assertEqual(startup_summary["drafts"], [])
+        self.assertEqual(startup_summary["skipped_stale_drafts"], 1)
+        self.assertEqual(len(manual_summary["drafts"]), 1)
+        self.assertTrue(Path(recovery_manager.draft_path("old-add")).exists())
 
 
 if __name__ == "__main__":
