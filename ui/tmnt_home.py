@@ -3366,7 +3366,7 @@ class TMNTHomeLayout(QWidget):
             return
         if shortcut_manager.event_matches(event, "home.save"):
             store.mark_dirty()
-            store.save_force()
+            store.save_force(async_save=True)
             print("[TMNTHome][key] Ctrl+S — manual save triggered")
             # If we want a toast, we could potentially call it on self.main.canvas if it was open,
             # but usually TMNT uses a separate toast mechanism or we just print to console.

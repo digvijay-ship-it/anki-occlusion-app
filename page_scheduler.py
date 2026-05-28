@@ -11,6 +11,7 @@ from PyQt5.QtGui import QImage, QPixmap
 
 from pdf_engine import PdfOnDemandThread
 from cache_manager import PAGE_CACHE
+from perf_utils import perf_log
 
 if TYPE_CHECKING:
     from editor_ui import OcclusionCanvas
@@ -87,9 +88,12 @@ class PageScheduler(QObject):
         self._inject_set.clear()
         due_set = set(due_page_nums or [])
         self.pages = {}
+        scan_t0 = time.perf_counter()
+        cache_hits = 0
         for pn in range(total_pages):
             cached = PAGE_CACHE.get(path, pn)
             if cached and not cached.isNull():
+                cache_hits += 1
                 self.pages[pn] = PageState(
                     status="loaded", pixmap=cached, priority=(0 if pn in due_set else 2)
                 )
@@ -100,6 +104,15 @@ class PageScheduler(QObject):
         priority_pages = sorted(
             (pn for pn, ps in self.pages.items() if ps.priority == 0),
             key=lambda p: self.pages[p].priority,
+        )
+        perf_log(
+            "page_scheduler_init_scan",
+            file=os.path.basename(path) if path else "",
+            total_pages=total_pages,
+            due_pages=len(due_set),
+            cache_probes=total_pages,
+            cache_hits=cache_hits,
+            elapsed_ms=round((time.perf_counter() - scan_t0) * 1000.0, 3),
         )
         if priority_pages:
             self._start_worker(priority_pages, kind="priority")

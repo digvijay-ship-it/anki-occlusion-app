@@ -104,6 +104,26 @@ class ReviewScreenZoomTests(unittest.TestCase):
 
         screen.keyPressEvent(event)
 
+        screen._zoom_fit.assert_not_called()
+        screen._center_on_target.assert_called_once()
+        screen._debug_report.assert_not_called()
+
+    def test_r_key_resets_zoom(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen.canvas._scale = 1.1
+        screen._user_zoom_scale = None
+        screen._rating_frame = MagicMock()
+        screen._rating_frame.isVisible.return_value = False
+        screen._peek_idx = None
+        screen._zoom_fit = MagicMock()
+        screen._center_on_target = MagicMock()
+        screen._debug_report = MagicMock()
+
+        event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_R, Qt.NoModifier)
+
+        screen.keyPressEvent(event)
+
         screen._zoom_fit.assert_called_once()
         screen._center_on_target.assert_called_once()
         screen._debug_report.assert_not_called()

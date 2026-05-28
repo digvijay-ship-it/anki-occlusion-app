@@ -10,8 +10,143 @@ Draw masks over the parts of your notes you want to hide. Each mask becomes a
 flashcard. Study with **Again / Hard / Good / Easy / Perfect**, annotate while
 reviewing, and keep everything stored locally on your machine.
 
-> This root README is for the **offline desktop app**.
+> This root README documents the mature **offline desktop app** and the planned
+> commercial browser direction.
 > Desktop entry point: `anki_occlusion_v19.py`
+
+---
+
+## Commercial Web Direction
+
+The desktop app is the mature current product. The next commercial direction is
+a browser-based paid app that can be tested locally now and deployed publicly
+later.
+
+The reason for moving the paid product to the browser is practical: piracy
+resistance should come from hosted accounts, subscription entitlements, and
+server-side sync gates rather than from shipping a fully copyable desktop binary.
+Frontend code can still be inspected or copied, so the business value should be
+protected by login, billing state, user data sync, and account-level limits.
+
+The existing `web/` folder is a useful prototype, not the final public
+architecture. It currently provides a thin FastAPI + React review console over
+the desktop JSON data file. The production web app should evolve from that
+prototype toward a low-cost SaaS shape.
+
+### What Carries To Web
+
+Carry forward directly:
+
+- SM-2 scheduling and rating logic.
+- Decks, subdecks, cards, boxes, and occlusion mask metadata.
+- Due queue calculation, review states, and rating history.
+- Import/export concepts for moving user study data safely.
+
+Redesign for browser use:
+
+- PDF/image editor and review canvas.
+- Browser PDF rendering with PDF.js.
+- Mask drawing, moving, resizing, grouping, and reveal behavior.
+- Annotation tools, keyboard shortcuts, and local file access.
+- Cache strategy using browser storage instead of desktop RAM/QPixmap caches.
+
+Delay or drop for the first web MVP:
+
+- PyQt-specific UI code.
+- Desktop installer and PyInstaller packaging.
+- Desktop file watcher and system PDF reader integration.
+- Music-heavy assets and desktop theme effects.
+- TensorFlow OCR and Math Trainer OCR unless there is a paid reason to carry
+  the server cost.
+
+### Low-Cost SaaS Stack
+
+Recommended first public stack:
+
+- **Frontend:** Vite + React hosted as static files.
+- **Local testing:** Vite dev server plus the existing FastAPI backend.
+- **Public launch:** static frontend plus a small FastAPI API server.
+- **Database:** SQLite first for the lowest fixed cost; upgrade to Postgres only
+  when real usage proves it is needed.
+- **Payments:** Stripe subscription.
+- **Piracy gate:** login plus active subscription entitlement checks.
+
+The first paid version should avoid a heavy backend. The browser should perform
+the expensive work wherever possible, while the server stores only the minimum
+data needed to authenticate users, preserve paid value, and sync study metadata.
+
+### Cost Strategy
+
+Use the user's local device for heavy work:
+
+- Render PDFs in the browser with PDF.js.
+- Draw and edit masks on the client canvas.
+- Cache PDF pages, previews, and working state in IndexedDB/local browser
+  storage.
+- Batch review activity locally before syncing.
+
+Keep the server responsible for minimal paid-product state:
+
+- Accounts, subscription status, and entitlement checks.
+- Deck/card/mask metadata.
+- Schedule state, review history, and sync revisions.
+- Lightweight telemetry needed to understand cost and performance.
+
+Avoid for the MVP:
+
+- Server-side PDF page rendering for normal review/edit flows.
+- Uploading every PDF/image to the server by default.
+- Per-click server writes during review.
+- Always-on background workers per user.
+- Server-side TensorFlow/OCR.
+
+PDFs and large source images should stay local/browser-side for the first public
+MVP. Optional cloud PDF storage can become a paid upgrade later if users clearly
+need cross-device document sync.
+
+### Cost Monitoring
+
+Before public deployment, add local/dev visibility for:
+
+- API calls per user per day.
+- Payload bytes sent and received.
+- Database reads and writes.
+- Sync frequency and batch sizes.
+- Storage used per account.
+- Slow routes and failed sync attempts.
+
+Cost optimizations should be part of the product design:
+
+- Batch sync changes instead of writing on every small action.
+- Debounce autosaves from the browser.
+- Sync diffs/revisions rather than full decks whenever possible.
+- Use IndexedDB as the main working cache.
+- Keep PDF rendering and page cache work on the user's device.
+
+### Public API Direction
+
+The current prototype endpoints are temporary:
+
+```text
+GET  /api/health
+GET  /api/summary
+GET  /api/decks
+GET  /api/review/items
+POST /api/review/rate
+```
+
+The paid public API should move toward:
+
+```text
+GET  /api/me              Account, plan, and entitlement status
+GET  /api/sync/pull       Revision-based metadata sync
+POST /api/sync/push       Batched local changes
+POST /api/review/rate     Optional server-validated rating writes
+POST /api/metrics/client  Lightweight cost/performance telemetry
+```
+
+Default rule: avoid per-click server writes when the browser can safely batch
+changes and sync them as session-level metadata.
 
 ---
 
@@ -454,7 +589,7 @@ Persistence behavior:
 
 | Version | Highlights |
 |---------|------------|
-| Current | Fast metadata-only PDF skeleton loading, current-page priority rendering, visible-page lazy hydration, default review pen, large floating timer, async OCR, thread-safe PDF workers |
+| Current | Viewport-scoped mask cache & scroll paint fixes, O(1) deck stats cache, fast deepcopy undo/redo snapshots, on-demand OCR lifecycle (54MB boot memory) with animated theme-aware loading toast |
 | v19 | SM-2 Hard/EF/fuzzing fixes, DirtyStore autosave, review queue panel, learning countdown, session summary, tablet-friendly pan |
 | v18 | Hardware mask cache and LRU page cache |
 | v17 | Progressive chunk loading and RAM cache improvements |

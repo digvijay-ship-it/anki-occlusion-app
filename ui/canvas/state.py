@@ -287,35 +287,52 @@ class CanvasStateMixin:
             self._rebuild_mask_cache()
             self.update()
 
+    def _get_viewport_rect(self):
+        """Return the visible viewport rectangle in screen-space coordinates."""
+        sc = self._scroll_area()
+        if sc is not None:
+            vp = sc.viewport()
+            sx = sc.horizontalScrollBar().value()
+            sy = sc.verticalScrollBar().value()
+            from PyQt5.QtCore import QRect
+            return QRect(sx, sy, vp.width(), vp.height())
+        # Fallback: use widget's visible region
+        vr = self.visibleRegion().boundingRect()
+        if vr.isEmpty():
+            w, h = self._canvas_wh()
+            from PyQt5.QtCore import QRect
+            return QRect(0, 0, max(int(w * self._scale), 1), max(int(h * self._scale), 1))
+        return vr
+
     def _rebuild_mask_cache(self):
         if not self.has_content():
             self._mask_cache_layer = None
             self._mask_cache_dirty = False
             return
-        w, h = self._canvas_wh()
-        sw, sh = int(w * self._scale), int(h * self._scale)
-        if sw < 1 or sh < 1:
+        # Get viewport rect in screen-space
+        viewport = self._get_viewport_rect()
+        if viewport is None or viewport.width() < 1 or viewport.height() < 1:
             self._mask_cache_layer = None
             self._mask_cache_dirty = False
             return
-
-        # ✅ FIX (v21): Agar canvas height Qt GPU limit (32 767px) se zyada ho,
-        # QPixmap silently fail/truncate hota hai — same bug jo pages mein v17 mein tha.
-        # Is case mein cache skip karo; paintEvent direct-draw fallback use karega.
+        sw, sh = viewport.width(), viewport.height()
         _QT_MAX_PX = 32767
         if sh > _QT_MAX_PX or sw > _QT_MAX_PX:
-            self._mask_cache_layer = None  # None = direct-draw signal for paintEvent
+            self._mask_cache_layer = None
             self._mask_cache_dirty = False
             return
-
         self._mask_cache_layer = QPixmap(sw, sh)
         self._mask_cache_layer.fill(Qt.transparent)
+        self._mask_cache_offset = viewport.topLeft()
         mp = QPainter(self._mask_cache_layer)
         mp.setRenderHint(QPainter.Antialiasing)
+        mp.translate(-viewport.x(), -viewport.y())
         for i, b in enumerate(self._boxes):
             if self._drag_op and i == self._selected_idx:
-                continue  # skip dragged box — drawn live in paintEvent
-            self._draw_box(mp, i, b)
+                continue
+            box_sr = self._sr(b["rect"])
+            if box_sr.toRect().intersects(viewport):
+                self._draw_box(mp, i, b)
         mp.end()
         self._mask_cache_dirty = False
 
@@ -366,7 +383,6 @@ class CanvasStateMixin:
             "text": Qt.IBeamCursor,
         }
         self.setCursor(QCursor(cursors.get(tool, Qt.CrossCursor)))
-        self.update()
 
     def set_boxes(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=False) for b in boxes]
@@ -671,8 +687,19 @@ class CanvasStateMixin:
         self.boxes_changed.emit([])
 
     def highlight(self, idx):
+        old_idx = self._selected_idx
         self._selected_idx = idx
-        self.update()
+        # Only repaint affected boxes, not entire canvas
+        from PyQt5.QtCore import QRect
+        dirty = QRect()
+        if 0 <= old_idx < len(self._boxes):
+            dirty = dirty.united(self._sr(self._boxes[old_idx]["rect"]).toRect().adjusted(-10, -10, 10, 10))
+        if 0 <= idx < len(self._boxes):
+            dirty = dirty.united(self._sr(self._boxes[idx]["rect"]).toRect().adjusted(-10, -10, 10, 10))
+        if dirty.isEmpty():
+            self.update()
+        else:
+            self.update(dirty)
 
     def update_label(self, idx, text):
         if 0 <= idx < len(self._boxes):

@@ -91,3 +91,5 @@ web/frontend/node_modules/
 web/frontend/dist/
 web/frontend/*.log
 web/backend/*.log
+web/backend/.data/
+web/.run/

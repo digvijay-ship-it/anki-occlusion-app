@@ -18,6 +18,7 @@ _pdf_page_count_lock = threading.Lock()
 _DECK_STATS_CACHE = {}
 _CACHE_DATE = None
 _CACHE_FINGERPRINT = None
+_CACHE_REF = None
 _STATS_LOCK = threading.Lock()
 _PERF_LOG_LOCK = threading.Lock()
 
@@ -116,11 +117,12 @@ def perf_timer(event, **fields):
 
 def invalidate_deck_stats():
     """Clear the memoized deck statistics. Call this when data changes."""
-    global _DECK_STATS_CACHE, _CACHE_DATE, _CACHE_FINGERPRINT
+    global _DECK_STATS_CACHE, _CACHE_DATE, _CACHE_FINGERPRINT, _CACHE_REF
     with _STATS_LOCK:
         _DECK_STATS_CACHE = {}
         _CACHE_DATE = None
         _CACHE_FINGERPRINT = None
+        _CACHE_REF = None
 
 
 def _deck_stats_fingerprint(decks):
@@ -206,16 +208,21 @@ def count_due_units_in_card(card):
 
 
 def build_deck_rollups(decks):
-    global _DECK_STATS_CACHE, _CACHE_DATE, _CACHE_FINGERPRINT
+    global _DECK_STATS_CACHE, _CACHE_DATE, _CACHE_FINGERPRINT, _CACHE_REF
 
     today = date.today()
-    fingerprint = _deck_stats_fingerprint(decks)
+    from data_manager import store
+    is_store_decks = (decks is store.get().get("decks"))
+    if is_store_decks:
+        current_ref = store.revision
+    else:
+        current_ref = _deck_stats_fingerprint(decks)
 
     # Single lock scope: check cache, compute if stale, store — no double-entry gap
     with _STATS_LOCK:
         if (
             _CACHE_DATE == today
-            and _CACHE_FINGERPRINT == fingerprint
+            and _CACHE_REF == current_ref
             and _DECK_STATS_CACHE
         ):
             return _DECK_STATS_CACHE
@@ -257,7 +264,8 @@ def build_deck_rollups(decks):
             "due_units": due_units,
         }
         _CACHE_DATE = today
-        _CACHE_FINGERPRINT = fingerprint
+        _CACHE_FINGERPRINT = current_ref if not is_store_decks else None
+        _CACHE_REF = current_ref
         return _DECK_STATS_CACHE
 
 

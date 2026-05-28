@@ -50,7 +50,7 @@ from pdf_engine import (
     PDF_LEGACY_BOX_ZOOM,
     get_cached_pdf_page_set,
 )
-from perf_utils import get_pdf_page_count
+from perf_utils import get_pdf_page_count, perf_log
 from storage_paths import (
     build_archive_asset_path,
     find_deck_segments,
@@ -841,6 +841,17 @@ class CardEditorDialog(QDialog):
                 f"skip_inflight={skipped['inflight']} "
                 f"skip_pending={skipped['pending_visible']}"
             )
+        perf_log(
+            "editor_pages_needing_render",
+            context=context,
+            file=os.path.basename(path) if path else "",
+            candidates=len(sorted({int(pn) for pn in (page_nums or [])})),
+            needed=len(needed),
+            cache_checks=cache_checks,
+            cache_hits=cache_hits,
+            skipped=skipped,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         return needed
 
     def _set_pdf_page_ui(self, current_zero: int):
@@ -1131,6 +1142,17 @@ class CardEditorDialog(QDialog):
             f"cached_after={cached_after}/{total_pages} "
             f"t={(time.perf_counter() - profile_t0) * 1000:.1f}ms"
         )
+        perf_log(
+            "editor_pdf_profile",
+            file=os.path.basename(path),
+            pages=total_pages,
+            zoom=self._pdf_render_zoom,
+            previous_zoom=previous_zoom,
+            reset_cache=profile_reset,
+            cached_before=cached_before,
+            cached_after=cached_after,
+            elapsed_ms=round((time.perf_counter() - profile_t0) * 1000.0, 3),
+        )
         self._pdf_quality_debug(
             "profile",
             pages=total_pages,
@@ -1390,6 +1412,15 @@ class CardEditorDialog(QDialog):
                     + ", ".join(f"p.{pn + 1}" for pn in injected)
                 )
             self._update_pdf_nav_ui()
+        perf_log(
+            "editor_inject_cached_visible",
+            file=os.path.basename(path) if path else "",
+            visible=len(visible_pages),
+            injected=len(injected),
+            cache_checks=cache_checks,
+            cache_hits=cache_hits,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         return {
             "cache_checks": cache_checks,
             "cache_hits": cache_hits,

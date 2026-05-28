@@ -124,6 +124,7 @@ class OcclusionCanvas(
         self._mask_cache_layer = None  # QPixmap
         self._mask_cache_dirty = True
         self._mask_cache_rebuild_pending = False
+        self._mask_cache_offset = QPointF(0, 0)
 
         # ── ink layer ─────────────────────────────────────────────────────────
         self._ink_active = False

@@ -939,7 +939,7 @@ class DeckView(QWidget):
         else:
             self._refresh()
         store.mark_dirty()  # 🔒 DirtyStore
-        store.save_force()
+        store.save_force(async_save=True)
         dlg.clear_recovery_draft()
         print("[DEBUG][data_save] card_add_checkpoint_saved")
 
@@ -999,7 +999,7 @@ class DeckView(QWidget):
             else:
                 self._refresh()
             store.mark_dirty()
-            store.save_force()
+            store.save_force(async_save=True)
             dlg.clear_recovery_draft()
             print("[DEBUG][data_save] card_edit_checkpoint_saved")
         else:

@@ -227,7 +227,7 @@ class ReviewSessionManager:
             print(f"[Recovery] review checkpoint discard failed: {ex}")
         store.mark_dirty()
         self.rs._review_data_dirty = True
-        store.save_force()
+        store.save_force(async_save=True)
 
         self.rs.canvas._show_toast(f"↩ Undo — back to card {self._idx + 1}")
         self.rs._load_item()

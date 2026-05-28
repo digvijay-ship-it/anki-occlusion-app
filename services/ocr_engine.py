@@ -4,8 +4,15 @@ import base64
 import io
 import threading
 import time
+import tempfile
+import queue
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal, QObject
+
+class OcrSignals(QObject):
+    ready = pyqtSignal()
+
+SIGNALS = OcrSignals()
 
 _worker_process = None
 _worker_lock = threading.RLock()
@@ -13,6 +20,27 @@ _worker_io_lock = threading.Lock()
 _worker_ready = False
 _worker_started = False
 _worker_thread = None
+_worker_ready_event = threading.Event()
+
+
+def _readline_with_timeout(proc, timeout=15):
+    """Read one line from worker stdout with a timeout using a queue."""
+    q = queue.Queue()
+    def _reader():
+        try:
+            line = proc.stdout.readline()
+            q.put(line)
+        except Exception:
+            q.put(None)
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    try:
+        res = q.get(timeout=timeout)
+        if res is None:
+            return ""
+        return res
+    except queue.Empty:
+        return ""
 
 
 def _reset_worker_state(proc=None):
@@ -24,6 +52,7 @@ def _reset_worker_state(proc=None):
         _worker_process = None
         _worker_ready = False
         _worker_started = False
+        _worker_ready_event.clear()
     if old_proc is not None:
         try:
             if old_proc.stdin:
@@ -43,22 +72,30 @@ def _init_worker_thread():
     script_path = os.path.join(os.path.dirname(__file__), "tf_worker.py")
     try:
         print("[ocr_engine] Booting local TF background worker...")
+        log_path = os.path.join(tempfile.gettempdir(), 'anki_tf_worker.log')
+        try:
+            stderr_log = open(log_path, "a", encoding="utf-8")
+        except Exception:
+            stderr_log = subprocess.DEVNULL
+            
         proc = subprocess.Popen(
             [os.sys.executable, script_path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_log,
             text=True,
             bufsize=1,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         # Block until worker loads model and prints READY
-        ready_msg = proc.stdout.readline().strip()
+        ready_msg = _readline_with_timeout(proc, timeout=30).strip()
         if ready_msg == "READY":
             with _worker_lock:
                 _worker_process = proc
                 _worker_ready = True
+                _worker_ready_event.set()
             print("[ocr_engine] Local TF background worker is READY!")
+            SIGNALS.ready.emit()
         else:
             with _worker_lock:
                 _worker_started = False
@@ -85,19 +122,34 @@ def _ensure_worker_started():
         _worker_thread.start()
 
 
-def ocr_number(pil_img) -> str:
+def warm_up():
+    """Eager-starts the OCR worker subprocess in the background."""
+    _ensure_worker_started()
+
+
+def shutdown():
+    """Stops the OCR worker subprocess and frees memory."""
+    print("[ocr_engine] Shutting down OCR background worker...")
+    _reset_worker_state()
+
+
+def is_ready() -> bool:
+    """Returns True if the OCR worker is loaded and ready."""
+    with _worker_lock:
+        return _worker_ready
+
+
+def ocr_number(pil_img, _retried=False) -> str:
     _ensure_worker_started()
     print("[ocr_engine] Requesting local subprocess OCR prediction...")
 
     # Wait up to 30s for worker to boot (first call after Anki loads)
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        with _worker_lock:
-            ready = _worker_ready
-        if ready:
-            break
-        print("[ocr_engine] Worker still booting, waiting...")
-        time.sleep(0.5)
+    with _worker_lock:
+        ready = _worker_ready
+    if not ready:
+        if not _worker_ready_event.wait(timeout=30):
+            print("[ocr_engine] Worker failed to boot in time.")
+            return ""
 
     with _worker_lock:
         proc = _worker_process if _worker_ready else None
@@ -108,8 +160,8 @@ def ocr_number(pil_img) -> str:
     with _worker_io_lock:
         with _worker_lock:
             if not _worker_ready or _worker_process is not proc:
-                print("[ocr_engine] Worker is not ready.")
-                return ""
+                  print("[ocr_engine] Worker is not ready.")
+                  return ""
 
         try:
             buf = io.BytesIO()
@@ -119,7 +171,7 @@ def ocr_number(pil_img) -> str:
             proc.stdin.write(b64_str + "\n")
             proc.stdin.flush()
 
-            response = proc.stdout.readline().strip()
+            response = _readline_with_timeout(proc, timeout=15).strip()
 
             if response.startswith("RESULT:"):
                 res = response[len("RESULT:") :]
@@ -128,6 +180,10 @@ def ocr_number(pil_img) -> str:
             if response == "":
                 _reset_worker_state(proc)
                 print("[ocr_engine] Local Worker exited unexpectedly.")
+                if not _retried:
+                    print("[ocr_engine] Retrying OCR request once...")
+                    _ensure_worker_started()
+                    return ocr_number(pil_img, _retried=True)
                 return ""
             else:
                 print(f"[ocr_engine] Local Worker returned error: {response}")
@@ -135,6 +191,10 @@ def ocr_number(pil_img) -> str:
         except Exception as e:
             _reset_worker_state(proc)
             print(f"[ocr_engine] Subprocess communication error: {e}")
+            if not _retried:
+                print("[ocr_engine] Retrying OCR request once...")
+                _ensure_worker_started()
+                return ocr_number(pil_img, _retried=True)
             return ""
 
 

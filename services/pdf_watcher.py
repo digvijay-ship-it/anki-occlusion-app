@@ -1,6 +1,8 @@
 import os
+import time
 from PyQt5.QtCore import QObject, pyqtSignal, QFileSystemWatcher, QTimer
 from pdf_engine import PAGE_CACHE, invalidate_pdf_skeleton
+from perf_utils import perf_log
 
 class PdfWatcher(QObject):
     file_changed = pyqtSignal(str)
@@ -56,6 +58,7 @@ class PdfWatcher(QObject):
         self._reload_timer.start()
 
     def _reload_modified_pdf(self):
+        t0 = time.perf_counter()
         path = self._watched_pdf_path
         if not path: return
         if not os.path.exists(path):
@@ -83,5 +86,13 @@ class PdfWatcher(QObject):
         else:
             PAGE_CACHE.invalidate_pages(path, changed)
             invalidate_pdf_skeleton(path)
-            
+        perf_log(
+            "pdf_watcher_reload",
+            file=os.path.basename(path),
+            changed_pages=None if changed is None else len(changed),
+            invalidated="pdf" if changed is None else "pages",
+            current_page=current_page,
+            target_page=target_page,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         self.reload_requested.emit(path, current_page, target_page)

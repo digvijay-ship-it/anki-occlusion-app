@@ -1094,6 +1094,74 @@ class MusicWidget(QFrame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class ToastNotification(QLabel):
+    def __init__(self, parent, text, duration_ms=2500):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignCenter)
+        
+        # Style matching the parent theme colors
+        p = getattr(parent, "_p", {})
+        bg = p.get("C_SURFACE", "#161B25")
+        border = p.get("C_BORDER", "#2C3545")
+        green = p.get("C_GREEN", "#50FA7B")
+        text_color = p.get("C_TEXT", "#E1E6ED")
+        
+        self.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bg};
+                color: {text_color};
+                border: 1px solid {border};
+                border-left: 3px solid {green};
+                border-radius: 4px;
+                padding: 10px 18px;
+                font-size: 10pt;
+                font-weight: bold;
+            }}
+        """)
+        
+        # Position at bottom-center of parent
+        self.adjustSize()
+        self.resize(max(self.width() + 10, 300), self.height() + 10)
+        self.move_to_position()
+        
+        # Opacity effect for fade animation
+        from PyQt5.QtWidgets import QGraphicsOpacityEffect
+        self._effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._effect)
+        
+        # Animation: Fade In
+        from PyQt5.QtCore import QPropertyAnimation, QEasingCurve, QTimer
+        self._anim_in = QPropertyAnimation(self._effect, b"opacity")
+        self._anim_in.setDuration(300)
+        self._anim_in.setStartValue(0.0)
+        self._anim_in.setEndValue(1.0)
+        self._anim_in.setEasingCurve(QEasingCurve.OutCubic)
+        
+        # Animation: Fade Out
+        self._anim_out = QPropertyAnimation(self._effect, b"opacity")
+        self._anim_out.setDuration(400)
+        self._anim_out.setStartValue(1.0)
+        self._anim_out.setEndValue(0.0)
+        self._anim_out.setEasingCurve(QEasingCurve.InCubic)
+        self._anim_out.finished.connect(self.deleteLater)
+        
+        # Start
+        self.show()
+        self._anim_in.start()
+        
+        # Schedule Fade Out
+        QTimer.singleShot(duration_ms, self._anim_out.start)
+        
+    def move_to_position(self):
+        if not self.parent():
+            return
+        parent_rect = self.parent().rect()
+        x = (parent_rect.width() - self.width()) // 2
+        y = parent_rect.height() - self.height() - 40
+        self.move(x, y)
+
+
 class HomeScreen(QWidget):
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
@@ -1552,6 +1620,21 @@ class HomeScreen(QWidget):
         mt = page_cls(parent=self)
         mt.closed.connect(self._hide_math_trainer)
         self._math_trainer = mt
+
+        # Warm up the OCR background worker when entering Math Trainer
+        try:
+            from services.ocr_engine import warm_up as ocr_warm_up, SIGNALS, is_ready as ocr_is_ready
+            try:
+                SIGNALS.ready.disconnect(self._on_ocr_ready_popup)
+            except Exception:
+                pass
+            if ocr_is_ready():
+                QTimer.singleShot(100, self._on_ocr_ready_popup)
+            else:
+                SIGNALS.ready.connect(self._on_ocr_ready_popup)
+            ocr_warm_up()
+        except Exception as e:
+            print(f"[MathTrainer] Failed to warm up OCR worker: {e}")
         if self._current_theme == "tmnt" and self._tmnt_layout:
             self._pre_math_tmnt = True
             self.top_frame.hide()
@@ -1569,6 +1652,12 @@ class HomeScreen(QWidget):
             split.setSizes([split.sizes()[0], split.width(), 0])
 
     def _hide_math_trainer(self):
+        try:
+            from services.ocr_engine import SIGNALS
+            SIGNALS.ready.disconnect(self._on_ocr_ready_popup)
+        except Exception:
+            pass
+
         mt = getattr(self, "_math_trainer", None)
         self._math_trainer = None
         if not mt:
@@ -1589,6 +1678,21 @@ class HomeScreen(QWidget):
                 sizes = getattr(self, "_pre_math_sizes", [340, 760, 220])
                 split.setSizes(sizes)
         self.refresh()
+
+        # Shutdown the OCR background worker when exiting Math Trainer to free RAM
+        try:
+            from services.ocr_engine import shutdown as ocr_shutdown
+            ocr_shutdown()
+        except Exception as e:
+            print(f"[MathTrainer] Failed to shutdown OCR worker: {e}")
+
+    def _on_ocr_ready_popup(self):
+        try:
+            from services.ocr_engine import SIGNALS
+            SIGNALS.ready.disconnect(self._on_ocr_ready_popup)
+        except Exception:
+            pass
+        ToastNotification(self, "⚡ OCR engine loaded completely and is ready!")
 
     def _show_about(self):
         AboutDialog(self).exec_()
@@ -1616,7 +1720,7 @@ class HomeScreen(QWidget):
     def _save_current_data_now(self):
         try:
             store.mark_dirty()
-            store.save_force()
+            store.save_force(async_save=True)
             flush_runtime_state()
         except Exception as ex:
             QMessageBox.warning(
@@ -1941,7 +2045,7 @@ class HomeScreen(QWidget):
 
         if shortcut_manager.event_matches(e, "home.save"):
             store.mark_dirty()
-            store.save_force()
+            store.save_force(async_save=True)
             if hasattr(self, "canvas"):
                 self.canvas._show_toast("💾 Manual Save")
             print("[HomeScreen][key] Ctrl+S — manual save triggered")
@@ -2270,7 +2374,7 @@ class HomeScreen(QWidget):
                 )
                 target_deck.setdefault("cards", []).append(recovered_card)
             store.mark_dirty()
-            store.save_force()
+            store.save_force(async_save=True)
             dlg.clear_recovery_draft()
             recovery_manager.delete_editor_draft(draft.get("draft_id"))
             self.refresh()

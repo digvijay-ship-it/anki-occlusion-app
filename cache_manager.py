@@ -65,6 +65,7 @@ from PyQt5.QtGui import QColor, QPalette, QFont
 # ── Theme (matches your app) ─────────────────────────────────────────────────
 # ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
 from theme_manager import get_palette as _get_palette
+from perf_utils import perf_debug_enabled, perf_log
 
 _DARK = _get_palette("dark")
 C_BG = _DARK["C_BG"]
@@ -315,6 +316,8 @@ class LRUPageCache:
     # ── Main API ──────────────────────────────────────────────────────────────
 
     def get(self, path: str, page_num: int, variant: str | None = None):
+        trace = perf_debug_enabled()
+        t0 = time.perf_counter() if trace else None
         path = _canonical_pdf_path(path)
         key = self._page_key(path, page_num, variant)
 
@@ -322,6 +325,17 @@ class LRUPageCache:
         with self._state_lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
+                if trace and t0 is not None:
+                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    if elapsed_ms >= 2.0:
+                        perf_log(
+                            "page_cache_get",
+                            source="ram",
+                            page=page_num,
+                            variant=self._variant_name(variant),
+                            elapsed_ms=round(elapsed_ms, 3),
+                            ram_entries=len(self._cache),
+                        )
                 return self._cache[key]
 
             pending = self._pending_images.get(key)
@@ -333,6 +347,15 @@ class LRUPageCache:
                     self._cache[key] = px
                     self._cache.move_to_end(key)
                     self._enforce_ram_limit()
+                    if trace and t0 is not None:
+                        perf_log(
+                            "page_cache_get",
+                            source="pending",
+                            page=page_num,
+                            variant=self._variant_name(variant),
+                            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+                            ram_entries=len(self._cache),
+                        )
                     return px
 
         # 2. Disk hit — load PNG → put back in RAM
@@ -342,8 +365,28 @@ class LRUPageCache:
                 self._cache[key] = px
                 self._cache.move_to_end(key)
                 self._enforce_ram_limit()
+            if trace and t0 is not None:
+                perf_log(
+                    "page_cache_get",
+                    source="disk",
+                    page=page_num,
+                    variant=self._variant_name(variant),
+                    elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+                    ram_entries=len(self._cache),
+                )
             return px
 
+        if trace and t0 is not None:
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            if elapsed_ms >= 2.0:
+                perf_log(
+                    "page_cache_get",
+                    source="miss",
+                    page=page_num,
+                    variant=self._variant_name(variant),
+                    elapsed_ms=round(elapsed_ms, 3),
+                    ram_entries=len(self._cache),
+                )
         return None
 
     def get_image(self, path: str, page_num: int, variant: str | None = None):
@@ -395,6 +438,8 @@ class LRUPageCache:
         variant: str | None = None,
     ) -> list[int]:
         """Return RAM/pending/disk cached page numbers without loading pixmaps."""
+        trace = perf_debug_enabled()
+        t0 = time.perf_counter() if trace else None
         path = _canonical_pdf_path(path)
         variant_name = self._variant_name(variant)
         limit = None
@@ -403,6 +448,7 @@ class LRUPageCache:
         except (TypeError, ValueError):
             limit = None
         cached = set()
+        disk_files_scanned = 0
 
         def _accept(page_num: int) -> bool:
             return page_num >= 0 and (limit is None or page_num < limit)
@@ -420,6 +466,7 @@ class LRUPageCache:
             if os.path.isdir(folder):
                 suffix = self._variant_suffix(variant)
                 for name in os.listdir(folder):
+                    disk_files_scanned += 1
                     if not name.startswith("page_") or not name.endswith(".png"):
                         continue
                     stem = name[:-4]
@@ -438,7 +485,18 @@ class LRUPageCache:
                         cached.add(page_num)
         except Exception as exc:
             print(f"[DEBUG][page_cache] cached_page_indices failed: {exc}")
-        return sorted(cached)
+        result = sorted(cached)
+        if trace and t0 is not None:
+            perf_log(
+                "page_cache_indices",
+                total_pages=limit,
+                variant=variant_name,
+                cached_count=len(result),
+                disk_files_scanned=disk_files_scanned,
+                ram_entries=len(self._cache),
+                elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+            )
+        return result
 
     def cached_page_count(
         self,

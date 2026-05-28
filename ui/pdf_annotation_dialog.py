@@ -1,4 +1,5 @@
 import os
+import time
 
 from PyQt5.QtCore import (
     QByteArray,
@@ -35,6 +36,7 @@ from pdf_engine import (
     get_cached_pdf_page_set,
     load_pdf_skeleton,
 )
+from perf_utils import perf_log
 from services.pdf_annotation_service import PdfAnnotationSession
 from ui.pdf_viewer_controller import PdfViewerController
 
@@ -781,13 +783,18 @@ class PdfAnnotationDialog(QDialog):
         self._loader_targets = ()
 
     def _ensure_render_window(self, center_page: int, reason: str):
+        t0 = time.perf_counter()
         targets = self._target_page_window(center_page)
         if not targets:
             return []
         missing = []
+        cache_hits = 0
+        cache_checks = 0
         for page_num in targets:
+            cache_checks += 1
             cached = PAGE_CACHE.get(self.pdf_path, page_num)
             if cached is not None and not cached.isNull():
+                cache_hits += 1
                 self.canvas.replace_page(page_num, cached)
                 continue
             missing.append(page_num)
@@ -795,12 +802,33 @@ class PdfAnnotationDialog(QDialog):
         if not missing:
             self.lbl_status.setText(f"ready p.{center_page + 1}")
             self._stop_loader_thread()
+            perf_log(
+                "annotation_render_window",
+                reason=reason,
+                center_page=center_page,
+                targets=len(targets),
+                missing=0,
+                cache_checks=cache_checks,
+                cache_hits=cache_hits,
+                elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+            )
             return []
         if (
             self._loader_thread
             and self._loader_thread.isRunning()
             and target_key == self._loader_targets
         ):
+            perf_log(
+                "annotation_render_window",
+                reason=reason,
+                center_page=center_page,
+                targets=len(targets),
+                missing=len(missing),
+                cache_checks=cache_checks,
+                cache_hits=cache_hits,
+                reused_loader=True,
+                elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+            )
             return list(missing)
         self._stop_loader_thread()
         self._loader_targets = target_key
@@ -819,6 +847,17 @@ class PdfAnnotationDialog(QDialog):
         self._loader_thread.batch_done.connect(self._on_render_window_done)
         self._loader_thread.error.connect(self._on_render_window_error)
         self._loader_thread.start()
+        perf_log(
+            "annotation_render_window",
+            reason=reason,
+            center_page=center_page,
+            targets=len(targets),
+            missing=len(missing),
+            cache_checks=cache_checks,
+            cache_hits=cache_hits,
+            reused_loader=False,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         return list(missing)
 
     def _setup_ui(self):
@@ -1069,6 +1108,7 @@ class PdfAnnotationDialog(QDialog):
         self._debug("pen_color_pick", color=self._annotation_pen_color)
 
     def _load_pages(self):
+        t0 = time.perf_counter()
         startup_pages = self._target_page_window(self.initial_page)
         cache_state = get_cached_pdf_page_set(
             self.pdf_path,
@@ -1103,6 +1143,16 @@ class PdfAnnotationDialog(QDialog):
             self._viewer.restore_position(page_zero=self.initial_page)
         self._ensure_annotation_window(self.initial_page, reason="open")
         self._ensure_render_window(self.initial_page, reason="open")
+        perf_log(
+            "annotation_load_pages",
+            pages=total,
+            startup_pages=startup_pages,
+            cache_hits=cache_state["cache_hit_count"],
+            cache_misses=cache_state["cache_miss_count"],
+            hydrated=len(cached_pages),
+            zoom=self.session.render_zoom,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
 
     def _apply_initial_anchor_position(
         self, reason: str = "manual", finalize: bool = False

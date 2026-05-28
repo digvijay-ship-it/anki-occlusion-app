@@ -348,6 +348,24 @@ class CanvasInteractionMixin:
     def _ink_release(self):
         if len(self._ink_current) >= 2:
             self._ink_strokes.append(list(self._ink_current))
+            # Compute bounding box of completed stroke for dirty-rect update
+            pts = self._ink_current[1:]  # skip color element
+            if pts:
+                pen_w = max(2.0, self._ink_width * self._scale) + 10
+                xs = [pt.x() * self._scale for pt in pts]
+                ys = [pt.y() * self._scale for pt in pts]
+                import math
+                from PyQt5.QtCore import QRect
+                dirty = QRect(
+                    int(math.floor(min(xs) - pen_w)),
+                    int(math.floor(min(ys) - pen_w)),
+                    int(math.ceil(max(xs) - min(xs) + 2 * pen_w)),
+                    int(math.ceil(max(ys) - min(ys) + 2 * pen_w)),
+                )
+                self._ink_current = []
+                self._ink_input_kind = None
+                self.update(dirty)
+                return
         self._ink_current = []
         self._ink_input_kind = None
         self.update()
@@ -669,9 +687,12 @@ class CanvasInteractionMixin:
             nh = max(10, h - ldy)
         if hi in (5, 6, 7):
             nh = max(10, h + ldy)
+        old_sr = self._sr(b["rect"])
         b["rect"] = QRectF(nx, ny, nw, nh)
         b["angle"] = ang
-        self.update()
+        new_sr = self._sr(b["rect"])
+        dirty = old_sr.united(new_sr).adjusted(-30, -30, 30, 30)
+        self.update(dirty.toRect())
 
     def keyPressEvent(self, e):
         mods = e.modifiers()

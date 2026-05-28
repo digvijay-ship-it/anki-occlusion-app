@@ -429,6 +429,11 @@ class MainWindow(QMainWindow):
             if active_editor is not None:
                 active_editor.close()
         store.stop_autosave()  # 🔒 Final force-save + background thread stop
+        try:
+            from services.ocr_engine import shutdown as ocr_shutdown
+            ocr_shutdown()
+        except Exception:
+            pass
         super().closeEvent(e)
 
 

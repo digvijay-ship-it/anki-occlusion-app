@@ -34,6 +34,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.zoom_in", "Review", "Zoom in", "Ctrl++"),
     ShortcutAction("review.zoom_out", "Review", "Zoom out", "Ctrl+-"),
     ShortcutAction("review.zoom_reset", "Review", "Reset zoom", "Ctrl+0"),
+    ShortcutAction("review.resize_fit", "Review", "Resize to fit", "R"),
     ShortcutAction("review.center", "Review", "Center current mask", "C"),
     ShortcutAction("review.undo", "Review", "Undo rating", "Ctrl+Z"),
     ShortcutAction("review.redo", "Review", "Redo rating", "Ctrl+Y"),

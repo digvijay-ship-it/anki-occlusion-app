@@ -150,7 +150,7 @@ class DeckViewRefreshTests(unittest.TestCase):
         home.refresh.assert_called_once_with()
         local_refresh.assert_not_called()
         mark_dirty.assert_called_once_with()
-        save_force.assert_called_once_with()
+        save_force.assert_called_once_with(async_save=True)
         dialog.clear_recovery_draft.assert_called_once_with()
         self.assertEqual(deck["cards"][0]["title"], "Q1 edited")
         self.assertEqual(deck["cards"][0]["boxes"][0]["sched_state"], "review")

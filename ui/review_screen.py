@@ -113,7 +113,7 @@ from data_manager import (
     DATA_FILE,
     store,
 )
-from perf_utils import get_pdf_page_count
+from perf_utils import get_pdf_page_count, perf_log
 from storage_paths import resolve_asset_path
 
 import sys, os, copy, uuid, math, time
@@ -535,23 +535,13 @@ class ReviewScreen(QWidget):
             self._exit_peek()
             return
 
-        zoom_fit = self.__dict__.get("_zoom_fit")
-        if zoom_fit is None:
-            if "_canvas_scroll" not in self.__dict__ or "canvas" not in self.__dict__:
-                return
-            zoom_fit = self._zoom_fit
-
         center_on_target = self.__dict__.get("_center_on_target")
         if center_on_target is None:
-            if "canvas" not in self.__dict__:
+            if "canvas" not in self.__dict__ or "_canvas_scroll" not in self.__dict__:
                 return
             center_on_target = self._center_on_target
 
-        zoom_fit()
         center_on_target()
-        canvas = self.__dict__.get("canvas")
-        if canvas is not None:
-            self._user_zoom_scale = canvas._scale
 
     def _update_queue_label(self, total):
         dojo = _is_dojo()
@@ -1495,6 +1485,10 @@ class ReviewScreen(QWidget):
         elif shortcut_manager.event_matches(e, "review.zoom_reset"):
             self._zoom_fit()
             self._user_zoom_scale = None  # reset to auto-fit
+        elif shortcut_manager.event_matches(e, "review.resize_fit"):
+            self._zoom_fit()
+            self._center_on_target()
+            self._user_zoom_scale = self.canvas._scale
         elif shortcut_manager.event_matches(e, "review.center"):
             self._trigger_center_fit()
         elif key == Qt.Key_D and not e.isAutoRepeat():
@@ -1547,8 +1541,22 @@ class ReviewScreen(QWidget):
                 self.canvas.ink_cycle_color()
         elif shortcut_manager.event_matches(e, "review.pen_clear") and not e.isAutoRepeat():
             self.canvas.ink_clear()
+        elif key == Qt.Key_Control and not e.isAutoRepeat():
+            if getattr(self, "canvas", None) and getattr(self.canvas, "_ink_active", False):
+                self._was_ink_active_before_ctrl = True
+                self.canvas.ink_set_active(False)
+                self._update_ink_hint()
         else:
             super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key_Control and not e.isAutoRepeat():
+            if getattr(self, "_was_ink_active_before_ctrl", False):
+                if getattr(self, "canvas", None):
+                    self.canvas.ink_set_active(True)
+                    self._update_ink_hint()
+                self._was_ink_active_before_ctrl = False
+        super().keyReleaseEvent(e)
 
     def _rating_quality_for_event(self, event):
         for action_id, quality in self.RATING_SHORTCUT_ACTIONS:
@@ -3184,6 +3192,7 @@ class ReviewScreen(QWidget):
             total_pages = get_pdf_page_count(path)
             self._pdf_render_zoom = choose_pdf_render_zoom(total_pages)
             previous_zoom = PAGE_CACHE.get_render_zoom(path)
+            profile_t0 = time.perf_counter()
             cached_before = (
                 PAGE_CACHE.cached_page_count(path, total_pages)
                 if hasattr(PAGE_CACHE, "cached_page_count")
@@ -3195,6 +3204,7 @@ class ReviewScreen(QWidget):
                 if hasattr(PAGE_CACHE, "cached_page_count")
                 else "?"
             )
+            profile_ms = (time.perf_counter() - profile_t0) * 1000.0
             self._review_profile_log(
                 "pdf_profile",
                 file=fname,
@@ -3204,6 +3214,18 @@ class ReviewScreen(QWidget):
                 cached_after=f"{cached_after}/{total_pages}",
                 reset=profile_reset,
                 elapsed=f"{(time.perf_counter() - reload_t0) * 1000:.1f}ms",
+            )
+            perf_log(
+                "review_pdf_profile",
+                file=fname,
+                pages=total_pages,
+                zoom=self._pdf_render_zoom,
+                previous_zoom=previous_zoom,
+                reset_cache=profile_reset,
+                cached_before=cached_before,
+                cached_after=cached_after,
+                profile_ms=round(profile_ms, 3),
+                load_item_ms=round((time.perf_counter() - reload_t0) * 1000.0, 3),
             )
             self._pdf_quality_debug(
                 "profile",
@@ -3688,10 +3710,18 @@ class ReviewScreen(QWidget):
         if not self._canvas_alive():
             print("[DEBUG][review_bg] start_skip reason=canvas_deleted")
             return
-        cached_pages = sum(
-            1
-            for page_num in range(total_pages)
-            if PAGE_CACHE.get(path, page_num) is not None
+        scan_t0 = time.perf_counter()
+        cached_pages = 0
+        for page_num in range(total_pages):
+            if PAGE_CACHE.get(path, page_num) is not None:
+                cached_pages += 1
+        perf_log(
+            "review_bg_fill_count_scan",
+            file=os.path.basename(path),
+            total_pages=total_pages,
+            cache_probes=total_pages,
+            cached_pages=cached_pages,
+            elapsed_ms=round((time.perf_counter() - scan_t0) * 1000.0, 3),
         )
         self._bg_accept_mode = False
         self._bg_prefetch_total_pages = total_pages
@@ -3721,9 +3751,22 @@ class ReviewScreen(QWidget):
         all_pages = set(range(total_pages))
         canvas_real = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
         pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
-        skip = set(already_rendered) | {
+        skip_scan_t0 = time.perf_counter()
+        cached_skip_pages = {
             p for p in all_pages if PAGE_CACHE.get(path, p) is not None
-        } | canvas_real | pending_bg
+        }
+        perf_log(
+            "review_bg_fill_remaining_scan",
+            file=os.path.basename(path),
+            total_pages=total_pages,
+            cache_probes=total_pages,
+            cached_pages=len(cached_skip_pages),
+            already_rendered=len(already_rendered or []),
+            canvas_real=len(canvas_real),
+            pending_bg=len(pending_bg),
+            elapsed_ms=round((time.perf_counter() - skip_scan_t0) * 1000.0, 3),
+        )
+        skip = set(already_rendered) | cached_skip_pages | canvas_real | pending_bg
         remaining = sorted(all_pages - skip)
 
         if not remaining:
@@ -3808,14 +3851,30 @@ class ReviewScreen(QWidget):
         self._queue_background_ready(path, rendered)
         canvas_real = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
         pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
-        remaining = [
-            pn
-            for pn in range(total_pages)
-            if PAGE_CACHE.get(path, pn) is None
-            and pn not in combined
-            and pn not in canvas_real
-            and pn not in pending_bg
-        ]
+        scan_t0 = time.perf_counter()
+        cache_probes = 0
+        cache_hits = 0
+        remaining = []
+        for pn in range(total_pages):
+            cache_probes += 1
+            if PAGE_CACHE.get(path, pn) is not None:
+                cache_hits += 1
+                continue
+            if pn in combined or pn in canvas_real or pn in pending_bg:
+                continue
+            remaining.append(pn)
+        perf_log(
+            "review_bg_batch_remaining_scan",
+            file=os.path.basename(path),
+            total_pages=total_pages,
+            cache_probes=cache_probes,
+            cache_hits=cache_hits,
+            remaining=len(remaining),
+            combined=len(combined),
+            canvas_real=len(canvas_real),
+            pending_bg=len(pending_bg),
+            elapsed_ms=round((time.perf_counter() - scan_t0) * 1000.0, 3),
+        )
 
         if remaining:
             self._background_fill_state = (path, combined, total_pages)
@@ -3863,6 +3922,7 @@ class ReviewScreen(QWidget):
         )
 
     def _review_pages_needing_render(self, path, page_nums, context="visible"):
+        t0 = time.perf_counter()
         real_pages = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
         pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
         inflight = set(
@@ -3882,7 +3942,10 @@ class ReviewScreen(QWidget):
             "pending_visible": 0,
             "cache_hot": 0,
         }
-        for pn in sorted({int(pn) for pn in (page_nums or [])}):
+        candidates = sorted({int(pn) for pn in (page_nums or [])})
+        cache_checks = 0
+        cache_hits = 0
+        for pn in candidates:
             if pn in real_pages:
                 skipped["canvas_real"] += 1
                 continue
@@ -3895,8 +3958,10 @@ class ReviewScreen(QWidget):
             if pn in pending_visible:
                 skipped["pending_visible"] += 1
                 continue
+            cache_checks += 1
             cached = PAGE_CACHE.get(path, pn)
             if cached is not None and not cached.isNull():
+                cache_hits += 1
                 skipped["cache_hot"] += 1
                 continue
             needed.append(pn)
@@ -3912,6 +3977,17 @@ class ReviewScreen(QWidget):
                 f"skip_pending={skipped['pending_visible']} "
                 f"skip_bg={skipped['pending_bg']}"
             )
+        perf_log(
+            "review_pages_needing_render",
+            context=context,
+            file=os.path.basename(path) if path else "",
+            candidates=len(candidates),
+            needed=len(needed),
+            cache_checks=cache_checks,
+            cache_hits=cache_hits,
+            skipped=skipped,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         return needed
 
     def _on_visible_pages_changed(self, first, last):
@@ -3982,6 +4058,7 @@ class ReviewScreen(QWidget):
         self._start_visible_page_request(path, needed)
 
     def _inject_cached_visible_pages(self, path, visible_pages):
+        t0 = time.perf_counter()
         visible_pages = [int(pn) for pn in (visible_pages or [])]
         real_pages = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
         pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
@@ -3989,12 +4066,16 @@ class ReviewScreen(QWidget):
             self.__dict__.get("_review_render_inflight_pages", set()) or set()
         )
         injected = []
+        cache_checks = 0
+        cache_hits = 0
         for pn in visible_pages:
             if pn in real_pages or pn in pending_bg or pn in inflight:
                 continue
+            cache_checks += 1
             cached = PAGE_CACHE.get(path, pn)
             if cached is None or cached.isNull():
                 continue
+            cache_hits += 1
             self._debug_review_lazy_page_loaded(
                 source="cache",
                 page_num=pn,
@@ -4008,6 +4089,15 @@ class ReviewScreen(QWidget):
                 page_num=pn, injected=True, kind="visible_cache"
             )
             injected.append(pn)
+        perf_log(
+            "review_inject_cached_visible",
+            file=os.path.basename(path) if path else "",
+            visible=len(visible_pages),
+            injected=len(injected),
+            cache_checks=cache_checks,
+            cache_hits=cache_hits,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         if injected:
             if self._review_verbose_debug_enabled():
                 print(

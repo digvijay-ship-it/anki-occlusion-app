@@ -19,7 +19,7 @@ def predict(model, pil_img):
     batch = []
     for c in contours:
         x, y, w, h = cv2.boundingRect(c)
-        if w < 5 and h < 5:
+        if w * h < 25:
             continue
         digit = thresh[y : y + h, x : x + w]
         side = max(w, h)

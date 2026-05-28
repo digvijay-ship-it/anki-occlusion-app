@@ -37,6 +37,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter
 
 from cache_manager import PAGE_CACHE
+from perf_utils import perf_log
 
 # PyMuPDF
 try:
@@ -600,6 +601,16 @@ class PdfOnDemandThread(QThread):
     def run(self):
         t_thread_start = time.perf_counter()
         fname = os.path.basename(self._path)
+        perf_log(
+            "pdf_on_demand_start",
+            file=fname,
+            requested=len(self._page_nums),
+            pages=self._page_nums[:25],
+            zoom=self._zoom,
+            use_cache=self._use_cache,
+            store_cache=self._store_cache,
+            variant=self._cache_variant or "default",
+        )
 
         _render_debug("[DEBUG][on_demand] -> Thread started")
         _render_debug(f"[DEBUG][on_demand]   file      : {fname}")
@@ -640,6 +651,13 @@ class PdfOnDemandThread(QThread):
             for page_num in self._page_nums:
                 if self._stop_flag:
                     _render_debug(f"[DEBUG][on_demand] stop requested at page {page_num} ({len(rendered)}/{len(self._page_nums)} rendered)")
+                    perf_log(
+                        "pdf_on_demand_stop",
+                        file=fname,
+                        rendered=len(rendered),
+                        requested=len(self._page_nums),
+                        elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
+                    )
                     doc.close()
                     return
 
@@ -652,6 +670,15 @@ class PdfOnDemandThread(QThread):
                 if cached and not cached.isNull():
                     t_ms = (time.perf_counter() - t_page_start) * 1000
                     _render_debug(f"[DEBUG][on_demand]   p.{page_num+1:>3} cache hit  ({t_ms:.1f}ms)  {cached.width()}x{cached.height()}px")
+                    perf_log(
+                        "pdf_on_demand_page",
+                        file=fname,
+                        page=page_num,
+                        source="cache",
+                        width=cached.width(),
+                        height=cached.height(),
+                        elapsed_ms=round(t_ms, 3),
+                    )
                     self.page_ready.emit(page_num, cached)
                     rendered.append(page_num)
                     continue
@@ -667,6 +694,15 @@ class PdfOnDemandThread(QThread):
                         continue
 
                     _render_debug(f"[DEBUG][on_demand]   p.{page_num+1:>3} rendered   ({t_ms:.1f}ms)  {img.width()}x{img.height()}px")
+                    perf_log(
+                        "pdf_on_demand_page",
+                        file=fname,
+                        page=page_num,
+                        source="render",
+                        width=img.width(),
+                        height=img.height(),
+                        elapsed_ms=round(t_ms, 3),
+                    )
                     self.page_ready.emit(page_num, img)   # emit QImage — thread-safe
                     rendered.append(page_num)
 
@@ -679,6 +715,13 @@ class PdfOnDemandThread(QThread):
             t_total_ms = (time.perf_counter() - t_thread_start) * 1000
             _render_debug("[DEBUG][on_demand] ------------------------------------------------")
             _render_debug(f"[DEBUG][on_demand] batch_done  rendered={len(rendered)}/{len(self._page_nums)}  total_time={t_total_ms:.1f}ms")
+            perf_log(
+                "pdf_on_demand_done",
+                file=fname,
+                rendered=len(rendered),
+                requested=len(self._page_nums),
+                elapsed_ms=round(t_total_ms, 3),
+            )
 
             self.batch_done.emit(rendered)
 
@@ -756,11 +799,14 @@ def update_page_hashes(path: str, page_nums=None, zoom: float = PDF_HASH_ZOOM):
 def get_changed_pages(path: str):
     if not PDF_SUPPORT or not os.path.exists(path):
         return None
+    t0 = time.perf_counter()
+    total = 0
     try:
         doc = fitz.open(path)
         changed = []
         mat = fitz.Matrix(PDF_HASH_ZOOM, PDF_HASH_ZOOM)   # 20% zoom — sirf hash ke liye
-        for i in range(len(doc)):
+        total = len(doc)
+        for i in range(total):
             pix = doc[i].get_pixmap(matrix=mat, alpha=False)
             new_hash = hashlib.md5(pix.samples).hexdigest()
             old_hash = PAGE_CACHE.get_page_hash(path, i)
@@ -768,9 +814,24 @@ def get_changed_pages(path: str):
                 changed.append(i)
             PAGE_CACHE.set_page_hash(path, i, new_hash)
         doc.close()
+        perf_log(
+            "pdf_changed_pages_scan",
+            file=os.path.basename(path),
+            pages=total,
+            changed=len(changed),
+            zoom=PDF_HASH_ZOOM,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         return changed
     except Exception as ex:
         print(f"[changed_pages] error: {ex}")
+        perf_log(
+            "pdf_changed_pages_scan",
+            file=os.path.basename(path),
+            pages=total,
+            error=str(ex),
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
         return None
     
 class PdfLoaderThread(QThread):
@@ -799,6 +860,8 @@ class PdfLoaderThread(QThread):
         self._stop_flag = True
 
     def run(self):
+        t_thread_start = time.perf_counter()
+        fname = os.path.basename(self._path)
         if not PDF_SUPPORT:
             self.done.emit([], "PyMuPDF not installed — run: pip install pymupdf")
             return
@@ -819,6 +882,16 @@ class PdfLoaderThread(QThread):
                 "[DEBUG][pdf_loader] "
                 f"start file={os.path.basename(self._path)} pages={total} "
                 f"zoom={self._zoom} cache={self._use_cache}"
+            )
+            perf_log(
+                "pdf_loader_start",
+                file=fname,
+                pages=total,
+                zoom=self._zoom,
+                chunk_size=self._chunk_size,
+                use_cache=self._use_cache,
+                store_cache=self._store_cache,
+                variant=self._cache_variant or "default",
             )
 
             for page_num in range(total):
@@ -855,6 +928,15 @@ class PdfLoaderThread(QThread):
                         f"chunk loaded={loaded}/{total} "
                         f"cache_hits={cache_hits} rendered={rendered_pages}"
                     )
+                    perf_log(
+                        "pdf_loader_chunk",
+                        file=fname,
+                        loaded=loaded,
+                        pages=total,
+                        cache_hits=cache_hits,
+                        rendered=rendered_pages,
+                        elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
+                    )
                     self.pages_ready.emit(list(pages), loaded, total)
                     last_emitted = loaded
 
@@ -869,9 +951,24 @@ class PdfLoaderThread(QThread):
                 f"done loaded={len(pages)}/{total} "
                 f"cache_hits={cache_hits} rendered={rendered_pages}"
             )
+            perf_log(
+                "pdf_loader_done",
+                file=fname,
+                loaded=len(pages),
+                pages=total,
+                cache_hits=cache_hits,
+                rendered=rendered_pages,
+                elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
+            )
             self.done.emit(list(pages), None)
 
         except Exception as ex:
+            perf_log(
+                "pdf_loader_done",
+                file=fname,
+                error=str(ex),
+                elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
+            )
             self.done.emit([], str(ex))
 
 

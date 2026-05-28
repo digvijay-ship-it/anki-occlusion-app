@@ -133,7 +133,7 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
         save_soon.assert_called_once_with(
             min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True
         )
-        save_force.assert_called_once_with()
+        save_force.assert_called_once_with(async_save=True)
         self.assertEqual(card["boxes"][0]["reviews"], 5)
 
     def test_undo_redo_restores_the_same_rated_item(self):

@@ -67,6 +67,8 @@ def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
 
 class CanvasRendererMixin:
     CANVAS_PAINT_PROFILE_ENV = "ANKI_CANVAS_PAINT_PROFILE"
+    _LABEL_FONT = QFont("Segoe UI", 9)
+    _SMALL_FONT = QFont("Segoe UI", 7)
 
     def _canvas_paint_profile_enabled(self):
         raw = os.environ.get(self.CANVAS_PAINT_PROFILE_ENV, "").strip().lower()
@@ -79,11 +81,23 @@ class CanvasRendererMixin:
         return clip.intersected(pixmap_rect)
 
     def _draw_mask_cache_layer(self, painter, clip):
-        source = self._mask_cache_source_rect(clip, self._mask_cache_layer)
-        if source.isEmpty():
+        if self._mask_cache_layer is None or self._mask_cache_layer.isNull():
             return QRect()
-        painter.drawPixmap(source, self._mask_cache_layer, source)
-        return source
+        offset = self._mask_cache_offset
+        cache_rect = QRect(
+            int(offset.x()),
+            int(offset.y()),
+            self._mask_cache_layer.width(),
+            self._mask_cache_layer.height(),
+        )
+        canvas_intersection = clip.intersected(cache_rect)
+        if canvas_intersection.isEmpty():
+            return QRect()
+        source_rect = canvas_intersection.translated(
+            -int(offset.x()), -int(offset.y())
+        )
+        painter.drawPixmap(canvas_intersection, self._mask_cache_layer, source_rect)
+        return canvas_intersection
 
     def _log_canvas_paint_profile(self, elapsed_ms, clip, pages_drawn, phases):
         if getattr(self, "_mode", "") != "review":
@@ -134,6 +148,18 @@ class CanvasRendererMixin:
         }
         p = QPainter(self)
         clip = event.rect()
+
+        # Viewport check: Rebuild mask cache if shifted, size changed, or dirty
+        viewport = self._get_viewport_rect()
+        if (
+            self._mask_cache_dirty
+            or self._mask_cache_layer is None
+            or self._mask_cache_layer.isNull()
+            or self._mask_cache_offset != viewport.topLeft()
+            or self._mask_cache_layer.width() != viewport.width()
+            or self._mask_cache_layer.height() != viewport.height()
+        ):
+            self._rebuild_mask_cache()
 
         p.fillRect(clip, QColor("#1E1E2E"))
 
@@ -245,6 +271,13 @@ class CanvasRendererMixin:
 
     def _draw_box(self, p: QPainter, i: int, b: dict):
         sr = self._sr(b["rect"])
+        self._draw_box_impl(p, i, b, sr)
+
+    def _draw_box_at_rect(self, p: QPainter, i: int, b: dict, rect: QRectF):
+        sr = self._sr(rect)
+        self._draw_box_impl(p, i, b, sr)
+
+    def _draw_box_impl(self, p: QPainter, i: int, b: dict, sr: QRectF):
         cx, cy = sr.center().x(), sr.center().y()
         ang = b.get("angle", 0.0)
         lbl = b.get("label") or f"#{i+1}"
@@ -292,68 +325,9 @@ class CanvasRendererMixin:
             p.setPen(QPen(border_col, 2, Qt.DashLine if not grouped else Qt.SolidLine))
             (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
             p.setPen(QPen(border_col, 1))
-            p.setFont(QFont("Segoe UI", 9))
+            p.setFont(self._LABEL_FONT)
             dlbl = (
                 f"[{gid[:4]}] {lbl}" if gid and lbl else f"[{gid[:4]}]" if gid else lbl
-            )
-            p.drawText(local, Qt.AlignCenter, dlbl)
-
-        p.restore()
-        if self._mode == "edit" and i == self._selected_idx:
-            self._draw_handles(p, i)
-
-    def _draw_box_at_rect(self, p: QPainter, i: int, b: dict, rect: QRectF):
-        sr = self._sr(rect)
-        cx, cy = sr.center().x(), sr.center().y()
-        ang = b.get("angle", 0.0)
-        lbl = b.get("label") or f"#{i+1}"
-        shape = b.get("shape", "rect")
-        sel = (i == self._selected_idx) or (i in self._selected_indices)
-
-        p.save()
-        p.translate(cx, cy)
-        p.rotate(ang)
-        local = QRectF(-sr.width() / 2, -sr.height() / 2, sr.width(), sr.height())
-
-        if self._mode == "review":
-            revealed = b.get("revealed", False)
-            is_target = self._is_current_target(i, b)
-            is_peek_target = self._is_peek_target(i, b)
-            hide_one = self._review_mode_style == "hide_one"
-
-            if hide_one and not is_target and not is_peek_target:
-                color = QColor("#3A3A4F")
-                p.setBrush(QBrush(color))
-                p.setPen(QPen(QColor(color), 2, Qt.SolidLine))
-                (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
-            else:
-                color = QColor(
-                    "#D64545" if is_peek_target else (C_GREEN if is_target else C_MASK)
-                )
-                p.setBrush(QBrush(color))
-                p.setPen(QPen(QColor("#D64545" if is_peek_target else C_GREEN), 2))
-                (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
-                if revealed:
-                    p.setBrush(Qt.NoBrush)
-                    p.setPen(QPen(QColor("#4CAF50"), 2, Qt.DashLine))
-                    (p.drawEllipse if shape == "ellipse" else p.drawRect)(
-                        local.adjusted(2, 2, -2, -2)
-                    )
-        else:
-            gid = b.get("group_id", "")
-            grouped = bool(gid)
-            fill = QColor("#50FA7B" if sel else "#6EB5FF" if grouped else C_MASK)
-            fill.setAlpha(155)
-            p.setBrush(QBrush(fill))
-            border_col = QColor(C_GREEN if sel else "#2288FF" if grouped else "#FFF")
-            p.setPen(QPen(border_col, 2, Qt.DashLine if not grouped else Qt.SolidLine))
-            (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
-            p.setPen(QPen(border_col, 1))
-            p.setFont(QFont("Segoe UI", 9))
-            dlbl = (
-                f"[{gid[:4]}] {lbl}"
-                if gid and lbl
-                else (f"[{gid[:4]}]" if gid else lbl)
             )
             p.drawText(local, Qt.AlignCenter, dlbl)
 
@@ -377,7 +351,7 @@ class CanvasRendererMixin:
         p.setBrush(QBrush(QColor(C_ACCENT)))
         p.setPen(QPen(QColor("#FFF"), 1))
         p.drawEllipse(rpt, hr + 1, hr + 1)
-        p.setFont(QFont("Segoe UI", 7))
+        p.setFont(self._SMALL_FONT)
         p.drawText(QRectF(rpt.x() - 6, rpt.y() - 6, 12, 12), Qt.AlignCenter, "↻")
 
     def _draw_live(self, p: QPainter):
