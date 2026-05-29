@@ -31,6 +31,185 @@ import {
   flushQueuedChanges,
 } from "./localFirstStore.js";
 
+
+// ── Web Client-Side OCR Engine using ONNX Runtime Web ────────────────────────
+
+let onnxSession = null;
+
+async function loadOnnxSession() {
+  if (onnxSession) return onnxSession;
+  try {
+    if (!window.ort) {
+      console.warn("ONNX Runtime Web (window.ort) is not loaded yet.");
+      return null;
+    }
+    onnxSession = await window.ort.InferenceSession.create("/model/mnist_math_cnn.onnx");
+    console.log("ONNX model loaded successfully client-side!");
+    return onnxSession;
+  } catch (error) {
+    console.error("Failed to load ONNX model client-side:", error);
+    return null;
+  }
+}
+
+function preprocessCanvas(canvas) {
+  const ctx = canvas.getContext("2d");
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imgData.data;
+
+  // Step 1: Scan columns to check if they contain drawn stroke pixels
+  const colHasPixels = new Array(canvas.width).fill(false);
+  for (let x = 0; x < canvas.width; x++) {
+    for (let y = 0; y < canvas.height; y++) {
+      const idx = (y * canvas.width + x) * 4;
+      const a = data[idx + 3];
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      if (a > 50 && (r < 220 || g < 220 || b < 220)) {
+        colHasPixels[x] = true;
+        break;
+      }
+    }
+  }
+
+  // Step 2: Group columns into digit segments
+  const segments = [];
+  let inSegment = false;
+  let startX = 0;
+  const minGap = 6;
+  let gapCount = 0;
+
+  for (let x = 0; x < canvas.width; x++) {
+    if (colHasPixels[x]) {
+      if (!inSegment) {
+        startX = x;
+        inSegment = true;
+      }
+      gapCount = 0;
+    } else {
+      if (inSegment) {
+        gapCount++;
+        if (gapCount >= minGap || x === canvas.width - 1) {
+          segments.push({ startX, endX: x - gapCount });
+          inSegment = false;
+        }
+      }
+    }
+  }
+  
+  if (inSegment) {
+    segments.push({ startX, endX: canvas.width - 1 });
+  }
+
+  // Step 3: For each segmented column range, crop vertical bounds and center-scale
+  const digitTensors = [];
+
+  for (const seg of segments) {
+    let minY = canvas.height, maxY = 0;
+    let hasPixels = false;
+
+    for (let x = seg.startX; x <= seg.endX; x++) {
+      for (let y = 0; y < canvas.height; y++) {
+        const idx = (y * canvas.width + x) * 4;
+        const a = data[idx + 3];
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        if (a > 50 && (r < 220 || g < 220 || b < 220)) {
+          hasPixels = true;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (!hasPixels) continue;
+
+    const w = seg.endX - seg.startX + 1;
+    const h = maxY - minY + 1;
+    
+    // Ignore extremely small stroke noise
+    if (w < 4 || h < 4) continue;
+
+    const side = Math.max(w, h);
+    const centerX = seg.startX + w / 2;
+    const centerY = minY + h / 2;
+    
+    const cropX = Math.max(0, centerX - side / 2);
+    const cropY = Math.max(0, centerY - side / 2);
+    const cropW = Math.min(canvas.width - cropX, side);
+    const cropH = Math.min(canvas.height - cropY, side);
+
+    // Create 20x20 centered offscreen canvas
+    const offscreen = document.createElement("canvas");
+    offscreen.width = 20;
+    offscreen.height = 20;
+    const oCtx = offscreen.getContext("2d");
+    oCtx.fillStyle = "#ffffff";
+    oCtx.fillRect(0, 0, 20, 20);
+    oCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, 20, 20);
+
+    // Create 28x28 centered canvas with 4px padding
+    const finalCanvas = document.createElement("canvas");
+    finalCanvas.width = 28;
+    finalCanvas.height = 28;
+    const fCtx = finalCanvas.getContext("2d");
+    fCtx.fillStyle = "#ffffff";
+    fCtx.fillRect(0, 0, 28, 28);
+    fCtx.drawImage(offscreen, 4, 4);
+
+    // Get normalized tensor data
+    const finalImgData = fCtx.getImageData(0, 0, 28, 28);
+    const finalData = finalImgData.data;
+    const tensorData = new Float32Array(28 * 28);
+
+    for (let i = 0; i < 28 * 28; i++) {
+      const r = finalData[i * 4];
+      const g = finalData[i * 4 + 1];
+      const b = finalData[i * 4 + 2];
+      const brightness = (r + g + b) / 3;
+      tensorData[i] = 1.0 - brightness / 255.0; // Invert: white digit on black background
+    }
+
+    digitTensors.push(tensorData);
+  }
+
+  return digitTensors;
+}
+
+async function predictDigitDrawing(canvas) {
+  const session = await loadOnnxSession();
+  if (!session) return { error: "ONNX model session not loaded." };
+
+  const digitTensors = preprocessCanvas(canvas);
+  if (!digitTensors || digitTensors.length === 0) {
+    return { error: "No drawing detected. Write your answer on the board." };
+  }
+
+  let predictedValue = "";
+
+  for (const tensorData of digitTensors) {
+    const inputTensor = new window.ort.Tensor("float32", tensorData, [1, 28, 28, 1]);
+    const feeds = { [session.inputNames[0]]: inputTensor };
+    const results = await session.run(feeds);
+    const output = results[session.outputNames[0]].data;
+
+    let maxIdx = 0;
+    let maxVal = output[0];
+    for (let i = 1; i < output.length; i++) {
+      if (output[i] > maxVal) {
+        maxVal = output[i];
+        maxIdx = i;
+      }
+    }
+    predictedValue += maxIdx.toString();
+  }
+
+  return { result: predictedValue };
+}
+
+
 const fallbackSummary = {
   deck_count: 0,
   card_count: 0,
@@ -490,6 +669,11 @@ function App() {
   const [mathSeed, setMathSeed] = useState(1);
   const [mathAnswer, setMathAnswer] = useState("");
   const [mathResult, setMathResult] = useState("");
+  const [mathScore, setMathScore] = useState(0);
+  const [mathTotal, setMathTotal] = useState(0);
+  const [mathStreak, setMathStreak] = useState(0);
+  const [mathRecognised, setMathRecognised] = useState("");
+  const [mathModelStatus, setMathModelStatus] = useState("idle"); // 'idle', 'loading', 'loaded', 'error'
 
   const [localDb, setLocalDb] = useState(null);
 
@@ -573,6 +757,7 @@ function App() {
   const editorCanvasRef = useRef(null);
   const editorDragInitialMasksRef = useRef(null);
   const lastActivityTimeRef = useRef(Date.now());
+  const mathCanvasRef = useRef(null);
 
   useEffect(() => {
     if (!draftPdfDoc || !draftCanvasRef.current) return;
@@ -747,6 +932,21 @@ function App() {
       fitAndCenterReviewSurface("load");
     }
   }, [activeInkKey]);
+
+  useEffect(() => {
+    if (screen === "math_trainer" && mathModelStatus === "idle") {
+      setMathModelStatus("loading");
+      loadOnnxSession().then((session) => {
+        if (session) {
+          setMathModelStatus("loaded");
+          recordAction("AI OCR model loaded client-side successfully.");
+        } else {
+          setMathModelStatus("error");
+          recordAction("Failed to load local AI OCR model.");
+        }
+      });
+    }
+  }, [screen, mathModelStatus]);
   const draftPreviewMasks = useMemo(() => {
     if (!draftMaskDrag) return draftMasks;
     const mask = normalizeMask(draftMaskDrag.start, draftMaskDrag.end);
@@ -2145,23 +2345,89 @@ function App() {
     recordAction(`${title} saved locally in editor.`);
   }
 
-  function handleCheckMathAnswer(event) {
-    event.preventDefault();
-    const answer = Number(mathAnswer.trim());
-    if (Number.isFinite(answer) && answer === mathProblem.answer) {
-      setMathResult("Correct.");
-      recordAction("Math answer correct.");
+  async function handleCheckMathAnswer(event) {
+    if (event && event.preventDefault) event.preventDefault();
+    
+    // Check text box answer first as fallback
+    if (mathAnswer.trim()) {
+      const answer = Number(mathAnswer.trim());
+      const correctVal = mathProblem.answer;
+      setMathTotal((t) => t + 1);
+      if (Number.isFinite(answer) && answer === correctVal) {
+        setMathScore((s) => s + 1);
+        setMathStreak((st) => st + 1);
+        setMathResult(`Correct! Answer = ${correctVal}`);
+        recordAction("Math answer correct.");
+        setTimeout(() => {
+          handleNextMathProblem();
+        }, 2000);
+      } else {
+        setMathStreak(0);
+        setMathResult(`Wrong. Correct answer is ${correctVal}`);
+        recordAction("Math answer checked (wrong).");
+      }
       return;
     }
-    setMathResult(`Answer: ${mathProblem.answer}`);
-    recordAction("Math answer checked.");
+
+    // Otherwise, check canvas drawing
+    if (!mathCanvasRef.current) return;
+    setMathResult("Predicting...");
+    
+    const predictionResult = await predictDigitDrawing(mathCanvasRef.current);
+    
+    if (predictionResult.error) {
+      setMathResult(predictionResult.error);
+      return;
+    }
+    
+    const recognised = predictionResult.result;
+    setMathRecognised(recognised);
+    
+    const guessedVal = parseInt(recognised, 10);
+    const correctVal = mathProblem.answer;
+    
+    setMathTotal((t) => t + 1);
+    if (!isNaN(guessedVal) && guessedVal === correctVal) {
+      setMathScore((s) => s + 1);
+      setMathStreak((st) => st + 1);
+      setMathResult(`Correct! Answer = ${correctVal}`);
+      recordAction(`Math practice correct: ${recognised}`);
+      setTimeout(() => {
+        handleNextMathProblem();
+      }, 2000);
+    } else {
+      setMathStreak(0);
+      setMathResult(`Wrong. Correct answer is ${correctVal} (Recognised: ${recognised || "?"})`);
+      recordAction(`Math practice wrong. Recognised: ${recognised || "?"}, Correct: ${correctVal}`);
+    }
   }
 
   function handleNextMathProblem() {
     setMathSeed((current) => current + 1);
     setMathAnswer("");
     setMathResult("");
+    setMathRecognised("");
     recordAction("Next math problem loaded.");
+    
+    // Clear drawing canvas
+    if (mathCanvasRef.current) {
+      const canvas = mathCanvasRef.current;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  function handleClearMathCanvas() {
+    setMathResult("");
+    setMathRecognised("");
+    if (mathCanvasRef.current) {
+      const canvas = mathCanvasRef.current;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      recordAction("Math canvas cleared.");
+    }
   }
 
   function handleCreateDojo(event) {
@@ -3151,58 +3417,189 @@ function App() {
     }
 
     if (screen === "math") {
+      let isDrawing = false;
+      let lastX = 0;
+      let lastY = 0;
+
+      const getCoordinates = (e, canvas) => {
+        const rect = canvas.getBoundingClientRect();
+        if (e.touches && e.touches[0]) {
+          return {
+            x: e.touches[0].clientX - rect.left,
+            y: e.touches[0].clientY - rect.top
+          };
+        }
+        return {
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top
+        };
+      };
+
+      const startDrawing = (e, canvas) => {
+        isDrawing = true;
+        const coords = getCoordinates(e, canvas);
+        lastX = coords.x;
+        lastY = coords.y;
+        
+        // Setup initial white background if canvas is clean
+        const ctx = canvas.getContext("2d");
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        // Check if canvas is completely empty (all transparent alpha)
+        let isClean = true;
+        for (let i = 3; i < imgData.data.length; i += 4) {
+          if (imgData.data[i] !== 0) {
+            isClean = false;
+            break;
+          }
+        }
+        if (isClean) {
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      };
+
+      const draw = (e, canvas) => {
+        if (!isDrawing) return;
+        const coords = getCoordinates(e, canvas);
+        const ctx = canvas.getContext("2d");
+        
+        ctx.beginPath();
+        ctx.strokeStyle = "#1a1a2e"; // Dark stroke color
+        ctx.lineWidth = 14;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(coords.x, coords.y);
+        ctx.stroke();
+        
+        lastX = coords.x;
+        lastY = coords.y;
+      };
+
+      const stopDrawing = () => {
+        isDrawing = false;
+      };
+
+      const accuracyPct = mathTotal > 0 ? Math.round((mathScore / mathTotal) * 100) : 0;
+
       return (
         <section className="mode-panel math-panel">
-          <div className="mode-heading">
-            <div>
-              <span className="mode-kicker">Math Trainer</span>
-              <h3>{mathProblem.label}</h3>
-              <p>Practice mode</p>
+          <div className="math-trainer-container">
+            <div className="math-header">
+              <div>
+                <span className="mode-kicker">✦ MATH PRACTISE • LOCAL AI</span>
+                <h3>{mathProblem.label}</h3>
+              </div>
+              <div className="math-score">
+                {mathScore}/{mathTotal} ({accuracyPct}%) 🔥{mathStreak}
+              </div>
             </div>
-            <button
-              className="ghost-button"
-              onClick={() => {
-                setScreen("home");
-                recordAction("Math trainer closed.");
-              }}
-              type="button"
-            >
-              Back
-            </button>
-          </div>
-          <div className="math-mode-row">
-            {["tables", "squares", "cubes"].map((mode) => (
+            
+            <div className="math-mode-row">
+              {["tables", "squares", "cubes"].map((mode) => (
+                <button
+                  className={mathMode === mode ? "active-toggle" : ""}
+                  key={mode}
+                  onClick={() => {
+                    setMathMode(mode);
+                    setMathAnswer("");
+                    setMathResult("");
+                    setMathRecognised("");
+                    recordAction(`${mode} practice opened.`);
+                  }}
+                  type="button"
+                >
+                  {mode}
+                </button>
+              ))}
               <button
-                className={mathMode === mode ? "active-toggle" : ""}
-                key={mode}
+                className="ghost-button"
+                style={{ marginLeft: "auto" }}
                 onClick={() => {
-                  setMathMode(mode);
-                  setMathAnswer("");
-                  setMathResult("");
-                  recordAction(`${mode} practice opened.`);
+                  setScreen("home");
+                  recordAction("Math trainer closed.");
                 }}
                 type="button"
               >
-                {mode}
+                Exit
               </button>
-            ))}
+            </div>
+
+            <div className="math-problem-card">
+              <div className="math-problem-text">{mathProblem.prompt}</div>
+            </div>
+
+            <div className="math-canvas-wrapper">
+              <div className="math-canvas-label">✏ Write your answer on the scratchpad:</div>
+              <canvas
+                ref={mathCanvasRef}
+                width={512}
+                height={220}
+                className="math-drawing-canvas"
+                onMouseDown={(e) => startDrawing(e, mathCanvasRef.current)}
+                onMouseMove={(e) => draw(e, mathCanvasRef.current)}
+                onMouseUp={stopDrawing}
+                onMouseLeave={stopDrawing}
+                onTouchStart={(e) => startDrawing(e, mathCanvasRef.current)}
+                onTouchMove={(e) => draw(e, mathCanvasRef.current)}
+                onTouchEnd={stopDrawing}
+              />
+            </div>
+
+            <div className="math-actions-row">
+              <button 
+                className="secondary-button" 
+                onClick={() => handleCheckMathAnswer()}
+                type="button"
+                disabled={mathModelStatus === "loading"}
+              >
+                {mathModelStatus === "loading" ? "Loading Model..." : "✓ Check"}
+              </button>
+              <button 
+                className="ghost-button" 
+                onClick={handleClearMathCanvas} 
+                type="button"
+              >
+                Clear
+              </button>
+              <button 
+                className="ghost-button" 
+                onClick={() => handleNextMathProblem()} 
+                type="button"
+              >
+                Skip →
+              </button>
+            </div>
+
+            <div className="math-status-bar">
+              <div className="math-recognised-display">
+                <span>Recognised:</span>
+                <span className="math-digit-badge">{mathRecognised || "—"}</span>
+              </div>
+              <div style={{ color: mathResult.includes("Correct") ? "var(--green)" : mathResult.includes("Wrong") ? "var(--red)" : "var(--muted)" }}>
+                {mathResult || "Ready."}
+              </div>
+            </div>
+            
+            <div style={{ marginTop: "12px", borderTop: "1px dashed var(--border)", paddingTop: "12px", display: "flex", gap: "8px", alignItems: "center" }}>
+              <span style={{ fontSize: "11px", color: "var(--muted)" }}>Keyboard Fallback:</span>
+              <input
+                onChange={(event) => setMathAnswer(event.target.value)}
+                placeholder="Type answer"
+                type="number"
+                value={mathAnswer}
+                style={{ width: "100px", padding: "4px 8px", fontSize: "12px" }}
+              />
+              <button 
+                className="ghost-button" 
+                onClick={() => handleCheckMathAnswer()}
+                type="button"
+                style={{ padding: "4px 8px", fontSize: "12px" }}
+              >
+                Submit Text
+              </button>
+            </div>
           </div>
-          <form className="math-card" onSubmit={handleCheckMathAnswer}>
-            <strong>{mathProblem.prompt}</strong>
-            <input
-              onChange={(event) => setMathAnswer(event.target.value)}
-              placeholder="Answer"
-              type="number"
-              value={mathAnswer}
-            />
-            <button className="secondary-button" type="submit">
-              Check
-            </button>
-            <button className="ghost-button" onClick={handleNextMathProblem} type="button">
-              Next
-            </button>
-            <span>{mathResult || "Ready."}</span>
-          </form>
         </section>
       );
     }

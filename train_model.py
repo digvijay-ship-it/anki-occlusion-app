@@ -9,11 +9,12 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import tensorflow as tf
 
 print("=====================================================")
-print("  MATH DOJO - LOCAL MODEL TRAINING SCRIPT")
+print("  MATH DOJO - ADVANCED MODEL TRAINING SCRIPT")
 print("=====================================================")
 print("Loading TensorFlow and preparing to train the model...")
-print("This process will take a few minutes as it trains for 10")
-print("epochs with Data Augmentation (Rotation & Zoom).")
+print("This process trains an advanced, highly robust CNN for 10")
+print("epochs with Batch Normalization, Dropout, and learning rate scheduling.")
+print("Training will take approximately 60 to 80 minutes on CPU...")
 print("=====================================================\n")
 
 # Import the get_model function which contains our training logic

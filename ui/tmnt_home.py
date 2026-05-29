@@ -84,7 +84,7 @@ from storage_paths import (
     get_mission_archive_root,
     migrate_to_mission_archive,
 )
-from ui.deck_tree import DeckTree, _DeckTreeWidget
+from ui.deck_tree import DeckTree, _DeckTreeWidget, depth_color
 from ui.deck_view import DeckView
 
 
@@ -245,7 +245,8 @@ class TMNTDeckItemDelegate(QStyledItemDelegate):
         due = int(due_str) if due_str else 0
         is_complete = due == 0 and total_cards > 0
 
-        text_color = QColor(T_PURPLE if is_selected else T_TEXT)
+        depth = index.data(Qt.UserRole + 4) or 0
+        text_color = QColor(T_PURPLE if is_selected else depth_color(depth, "tmnt"))
         font = QFont("Press Start 2P")
         font.setPixelSize(_px(10, self._scale))
         font.setBold(True)
@@ -1385,7 +1386,7 @@ class TMNTDeckEngine(DeckTree):
                 return
         super().keyPressEvent(event)
 
-    def _make_item(self, deck):
+    def _make_item(self, deck, depth=0):
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         item = QTreeWidgetItem([deck["name"].upper()])
         item.setData(0, Qt.UserRole, deck.get("_id"))
@@ -1396,8 +1397,9 @@ class TMNTDeckEngine(DeckTree):
             Qt.UserRole + 3,
             getattr(self, "_total_cards", {}).get(deck.get("_id"), 0),
         )
+        item.setData(0, Qt.UserRole + 4, depth)
         for child in deck.get("children", []):
-            item.addChild(self._make_item(child))
+            item.addChild(self._make_item(child, depth + 1))
         return item
 
     def _blink_tick(self):

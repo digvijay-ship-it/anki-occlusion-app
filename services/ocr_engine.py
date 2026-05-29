@@ -224,10 +224,15 @@ class OcrNumberThread(QThread):
 
 def _get_model(force_retrain=True):
     """
-    Trains the CNN OCR model on the MNIST dataset and saves it to the standard path.
-    This fulfills the training logic needed by train_model.py.
+    Trains an advanced, highly robust CNN OCR model on a 3x expanded
+    offline augmented MNIST dataset. Uses deep conv layers, batch normalization,
+    dropout, learning rate callbacks, and saves it to the standard path.
     """
     import tensorflow as tf
+    from tensorflow.keras import callbacks
+    import cv2
+    import numpy as np
+
     current_dir = os.path.dirname(os.path.abspath(__file__))
     model_dir = os.path.normpath(os.path.join(current_dir, "..", "assets", "model"))
     model_path = os.path.join(model_dir, "mnist_math_cnn.keras")
@@ -239,44 +244,124 @@ def _get_model(force_retrain=True):
         except Exception as e:
             print(f"[ocr_engine] Failed to load existing model: {e}. Re-training...")
 
-    print("[ocr_engine] Starting MNIST model training with Data Augmentation (Rotation & Zoom)...")
+    print("[ocr_engine] Loading MNIST dataset...")
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-    x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
-    x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+
+    print("[ocr_engine] Generating 3x expanded augmented dataset offline using OpenCV...")
+    augmented_x = []
+    augmented_y = []
+
+    def augment(img):
+        # Random rotation (-12 to 12 degrees)
+        angle = np.random.uniform(-12, 12)
+        M_rot = cv2.getRotationMatrix2D((14, 14), angle, 1.0)
+        img_aug = cv2.warpAffine(img, M_rot, (28, 28))
+
+        # Random translation (-3 to 3 pixels)
+        dx = np.random.randint(-3, 4)
+        dy = np.random.randint(-3, 4)
+        M_trans = np.float32([[1, 0, dx], [0, 1, dy]])
+        img_aug = cv2.warpAffine(img_aug, M_trans, (28, 28))
+
+        # Random zoom (0.88 to 1.12 factor)
+        zoom = np.random.uniform(0.88, 1.12)
+        M_zoom = cv2.getRotationMatrix2D((14, 14), 0, zoom)
+        img_aug = cv2.warpAffine(img_aug, M_zoom, (28, 28))
+
+        return img_aug
+
+    for i in range(len(x_train)):
+        img = x_train[i]
+        lbl = y_train[i]
+        
+        # 1. Original
+        augmented_x.append(img.reshape(28, 28, 1))
+        augmented_y.append(lbl)
+        
+        # 2. Augmentation Copy A
+        augmented_x.append(augment(img).reshape(28, 28, 1))
+        augmented_y.append(lbl)
+        
+        # 3. Augmentation Copy B
+        augmented_x.append(augment(img).reshape(28, 28, 1))
+        augmented_y.append(lbl)
+
+    x_train_expanded = np.array(augmented_x, dtype='float32') / 255.0
+    y_train_expanded = np.array(augmented_y, dtype='int32')
+
+    x_test_expanded = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+    y_test_expanded = y_test.astype('int32')
+
+    print(f"[ocr_engine] Dataset expanded to {len(x_train_expanded)} training images.")
+    print("[ocr_engine] Initializing Advanced Deep CNN structure...")
 
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=(28, 28, 1)),
-        tf.keras.layers.RandomRotation(0.1),
-        tf.keras.layers.RandomZoom(0.1),
-        tf.keras.layers.RandomTranslation(0.1, 0.1),
+        
+        # Conv Block 1
         tf.keras.layers.Conv2D(32, (3, 3), padding='same', activation='relu'),
         tf.keras.layers.BatchNormalization(),
         tf.keras.layers.Conv2D(32, (3, 3), padding='same', activation='relu'),
+        tf.keras.layers.BatchNormalization(),
         tf.keras.layers.MaxPooling2D((2, 2)),
-        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.Dropout(0.25),
+        
+        # Conv Block 2
         tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu'),
         tf.keras.layers.BatchNormalization(),
         tf.keras.layers.Conv2D(64, (3, 3), padding='same', activation='relu'),
+        tf.keras.layers.BatchNormalization(),
         tf.keras.layers.MaxPooling2D((2, 2)),
-        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.Dropout(0.25),
+        
+        # Conv Block 3
         tf.keras.layers.Conv2D(128, (3, 3), padding='same', activation='relu'),
         tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.GlobalAveragePooling2D(),
+        tf.keras.layers.MaxPooling2D((2, 2)),
+        tf.keras.layers.Dropout(0.3),
+        
+        # Classification dense block
+        tf.keras.layers.Flatten(),
         tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dropout(0.5),
         tf.keras.layers.Dense(10, activation='softmax')
     ])
 
     model.compile(
-        optimizer='adam',
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
         loss='sparse_categorical_crossentropy',
         metrics=['accuracy']
     )
 
+    lr_reduction = callbacks.ReduceLROnPlateau(
+        monitor='val_loss',
+        patience=4,
+        verbose=1,
+        factor=0.5,
+        min_lr=1e-6
+    )
+
+    early_stopping = callbacks.EarlyStopping(
+        monitor='val_accuracy',
+        patience=15,
+        restore_best_weights=True,
+        verbose=1
+    )
+
     os.makedirs(model_dir, exist_ok=True)
-    # Train for 10 epochs as described in the print statement of train_model.py
-    model.fit(x_train, y_train, epochs=10, batch_size=128, validation_data=(x_test, y_test))
+    
+    # 10 epochs on 180k images runs for about 60-80 mins on CPU, ensuring deep training
+    print("[ocr_engine] Commencing training (10 epochs, batch size 128)...")
+    model.fit(
+        x_train_expanded, y_train_expanded,
+        epochs=10,
+        batch_size=128,
+        validation_data=(x_test_expanded, y_test_expanded),
+        callbacks=[lr_reduction, early_stopping]
+    )
+    
     model.save(model_path)
-    print(f"[ocr_engine] Model trained and saved successfully to: {model_path}")
+    print(f"[ocr_engine] Advanced model trained and saved successfully to: {model_path}")
     return model
 

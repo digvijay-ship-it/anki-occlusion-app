@@ -169,6 +169,41 @@ C_BORDER = _DARK["C_BORDER"]
 C_MASK = "#F7916A"
 C_GROUP = "#BD93F9"
 
+# ── Depth-based color palettes for deck tree hierarchy ────────────────────────
+DEPTH_COLORS = {
+    "classic": [
+        "#1864AB",  # 0: Deep Blue
+        "#087F5B",  # 1: Emerald Green
+        "#D9480F",  # 2: Rust Orange
+        "#6741D9",  # 3: Rich Violet
+        "#C92A2A",  # 4: Bold Red
+        "#0C8599",  # 5: Ocean Teal
+    ],
+    "dojo": [
+        "#39FF14",  # 0: Electric Green
+        "#FF2DF1",  # 1: Hot Magenta
+        "#00D4FF",  # 2: Laser Cyan
+        "#FF6600",  # 3: Vivid Orange
+        "#FFFF00",  # 4: Neon Yellow
+        "#FF1493",  # 5: Deep Pink
+    ],
+    "tmnt": [
+        "#00FFFF",  # 0: Full Cyan
+        "#32CD32",  # 1: Lime Green
+        "#FF8C00",  # 2: Dark Orange
+        "#DA70D6",  # 3: Orchid Purple
+        "#FF4444",  # 4: Bright Red
+        "#FFD700",  # 5: Gold
+    ],
+}
+
+
+def depth_color(depth: int, theme: str = "classic") -> str:
+    """Return a hex color for the given nesting depth and theme."""
+    palette = DEPTH_COLORS.get(theme, DEPTH_COLORS["classic"])
+    return palette[depth % len(palette)]
+
+
 
 BASE_FONT_SIZE = 11
 HOME_ANIMATIONS_ENV = "ANKI_HOME_ANIMATIONS"
@@ -323,8 +358,9 @@ class DeckItemDelegate(QStyledItemDelegate):
             painter.setPen(QPen(QColor("#45475A"), 1))
             painter.drawRoundedRect(icon_rect, 6, 6)
 
-        # Draw Text
-        painter.setPen(QColor("#A86CFF" if is_selected else "#CDD6F4"))
+        # Draw Text — use depth-based color
+        depth = index.data(Qt.UserRole + 4) or 0
+        painter.setPen(QColor("#A86CFF" if is_selected else depth_color(depth, "dojo")))
         font = QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold)
         painter.setFont(font)
         text_rect = QRect(
@@ -424,6 +460,9 @@ class DeckTree(QWidget):
                 badge = f"🔴{due}" if self._blink_state else f"⭕{due}"
                 if getattr(self, "_theme", "classic") == "classic":
                     item.setText(0, f"  📂  {name}  {badge}")
+                    # Preserve depth-based text color
+                    d = item.data(0, Qt.UserRole + 4) or 0
+                    item.setForeground(0, QBrush(QColor(depth_color(d, "classic"))))
                 else:
                     item.setText(0, "")
             for i in range(item.childCount()):
@@ -634,20 +673,25 @@ class DeckTree(QWidget):
         if sel_id is not None:
             self._select_by_id(sel_id)
 
-    def _make_item(self, deck):
+    def _make_item(self, deck, depth=0):
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         badge = f"🔴{due}" if due else "✅"
+        theme = getattr(self, "_theme", "classic")
         text = (
             f"  📂  {deck['name']}  {badge}"
-            if getattr(self, "_theme", "classic") == "classic"
+            if theme == "classic"
             else ""
         )
         item = QTreeWidgetItem([text])
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
+        item.setData(0, Qt.UserRole + 4, depth)
+        # Apply depth-based text color for classic theme
+        if theme == "classic":
+            item.setForeground(0, QBrush(QColor(depth_color(depth, "classic"))))
         for child in deck.get("children", []):
-            item.addChild(self._make_item(child))
+            item.addChild(self._make_item(child, depth + 1))
         return item
 
     def _get_id_from_item(self, item):
