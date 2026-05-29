@@ -4,6 +4,10 @@ import sys
 # Optional: You can comment out the next line if you want to see ALL TensorFlow logs
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+# ⚡ CRITICAL: Import tensorflow before importing services.ocr_engine (which loads PyQt5).
+# On Windows, loading PyQt5 DLLs before TensorFlow's native DLLs causes initialization (DllMain) failure.
+import tensorflow as tf
+
 print("=====================================================")
 print("  MATH DOJO - LOCAL MODEL TRAINING SCRIPT")
 print("=====================================================")

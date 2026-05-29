@@ -1362,12 +1362,25 @@ class HomeScreen(QWidget):
         from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
         import gc
 
-        page_count = len(getattr(PAGE_CACHE, "_cache", {}) or {})
+        before = len(getattr(PAGE_CACHE, "_cache", {}) or {})
         mask_pdfs = list(MASK_REGISTRY.all_registered_pdfs())
         pixmap_entries = list(getattr(PIXMAP_REGISTRY, "_entries", {}).items())
         hidden_count = len(pixmap_entries)
         thumb_count = 0
         canvas_count = 0
+
+        # Purge PyMuPDF internal caches and skeleton caches
+        try:
+            import fitz
+            from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE, _SKELETON_DIMS_CACHE
+            from perf_utils import _pdf_page_count_cache
+            _SKELETON_CACHE.clear()
+            _SKELETON_PLACEHOLDER_CACHE.clear()
+            _SKELETON_DIMS_CACHE.clear()
+            _pdf_page_count_cache.clear()
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
 
         PAGE_CACHE.clear_ram_only()
 
@@ -1410,6 +1423,16 @@ class HomeScreen(QWidget):
             tmnt_main._thumb_cache.clear()
 
         gc.collect()
+        gc.collect()
+
+        # Debug: Check if any ReviewScreen or OcclusionCanvas is leaked
+        try:
+            screens = [o for o in gc.get_objects() if type(o).__name__ == "ReviewScreen"]
+            canvases = [o for o in gc.get_objects() if type(o).__name__ == "OcclusionCanvas"]
+            print(f"[DEBUG][GC] Active ReviewScreen count: {len(screens)}")
+            print(f"[DEBUG][GC] Active OcclusionCanvas count: {len(canvases)}")
+        except Exception:
+            pass
 
         cache_widget = getattr(self, "_cache_widget", None)
         if cache_widget is not None and hasattr(cache_widget, "refresh"):
@@ -1418,9 +1441,14 @@ class HomeScreen(QWidget):
         if tmnt_banga is not None and hasattr(tmnt_banga, "refresh"):
             tmnt_banga.refresh()
 
+        print(
+            f"[HomeScreen][Auto-Clean] 🧹 RAM cache cleared — "
+            f"{before} pages evicted, mask layers invalidated, disk untouched"
+        )
+
         win = self.window()
         if win is not None and hasattr(win, "statusBar") and win.statusBar():
-            win.statusBar().showMessage("RAM cache cleared", 2500)
+            win.statusBar().showMessage(f"🧹 RAM cache cleared — {before} pages freed", 3000)
 
     def show_review(self, cards, data, _on_batch_done=None):
         """Replace the DeckView panel with ReviewScreen inline."""
@@ -1505,10 +1533,45 @@ class HomeScreen(QWidget):
         """Restore layout after review ends."""
         rev = getattr(self, "_active_review", None)
         self._active_review = None
-        if rev and getattr(rev, "canvas", None) is not None:
-            from cache_manager import MASK_REGISTRY
 
-            MASK_REGISTRY.unregister(rev.canvas)
+        if rev:
+            # 1. Disconnect signals to break python closure reference cycles
+            try:
+                rev.finished.disconnect()
+            except Exception:
+                pass
+            try:
+                rev.cancelled.disconnect()
+            except Exception:
+                pass
+
+            # 2. Call close() to trigger closeEvent and release threads/monitors
+            try:
+                rev.close()
+            except Exception:
+                pass
+
+            # 3. Explicitly clear high-memory attributes on the canvas and review screen
+            if hasattr(rev, "canvas") and rev.canvas is not None:
+                try:
+                    from cache_manager import MASK_REGISTRY
+                    MASK_REGISTRY.unregister(rev.canvas)
+                except Exception:
+                    pass
+                try:
+                    rev.canvas._pages = []
+                    rev.canvas._px = None
+                    rev.canvas._mask_cache_layer = None
+                    if hasattr(rev.canvas, "_spx_cache"):
+                        rev.canvas._spx_cache.clear()
+                except Exception:
+                    pass
+            try:
+                rev._current_pixmap = None
+                if hasattr(rev, "_pdf_cache"):
+                    rev._pdf_cache.clear()
+            except Exception:
+                pass
 
         if getattr(self, "_pre_review_tmnt", False) and self._tmnt_layout:
             if rev:
@@ -1531,6 +1594,7 @@ class HomeScreen(QWidget):
             if split:
                 split.setSizes(sizes)
         self.refresh()
+        QTimer.singleShot(100, self._clear_home_ram_caches)
 
     def _get_splitter(self):
         """Return the main QSplitter child."""

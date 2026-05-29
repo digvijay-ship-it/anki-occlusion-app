@@ -852,6 +852,29 @@ class ReviewScreen(QWidget):
         from cache_manager import MASK_REGISTRY
 
         MASK_REGISTRY.unregister(self.canvas)
+
+        # Clear canvas page/pixmap cache to free QPixmap memory immediately
+        if getattr(self, "canvas", None) is not None:
+            try:
+                self.canvas._pages = []
+                self.canvas._px = None
+                self.canvas._mask_cache_layer = None
+                if hasattr(self.canvas, "_spx_cache"):
+                    self.canvas._spx_cache.clear()
+            except Exception:
+                pass
+
+        self._current_pixmap = None
+        if hasattr(self, "_pdf_cache"):
+            self._pdf_cache.clear()
+
+        # Unregister from pixmap registry
+        try:
+            from cache_manager import PIXMAP_REGISTRY
+            PIXMAP_REGISTRY.unregister(f"review_current_{id(self)}")
+        except Exception:
+            pass
+
         self._close_bg_prefetch_dialog()
         self._stop_skeleton_thread()
         if (
@@ -866,7 +889,7 @@ class ReviewScreen(QWidget):
         # STEP 4 — stop on-demand thread on close
         self._stop_ondemand_thread()
 
-        if hasattr(self, "_stop_watch"):
+        if hasattr(self, "_pdf_watcher") and self._pdf_watcher is not None:
             self._pdf_watcher.stop_watch()
 
         # Stop timer and write focus time to today's journal

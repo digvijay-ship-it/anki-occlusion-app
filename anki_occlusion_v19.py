@@ -397,28 +397,30 @@ class MainWindow(QMainWindow):
             self.change_font_size(0)
         elif mods & Qt.ControlModifier and key == Qt.Key_C:
             # Ctrl+C → RAM cache clear (disk untouched)
-            from cache_manager import PAGE_CACHE, MASK_REGISTRY
-
-            try:
-                import fitz
-                from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE
-
-                _SKELETON_CACHE.clear()
-                _SKELETON_PLACEHOLDER_CACHE.clear()
-                fitz.TOOLS.store_shrink(100)  # Purge PyMuPDF internal caches
-            except Exception as ex:
-                pass
-            before = len(PAGE_CACHE._cache)
-            PAGE_CACHE.clear_ram_only()
-            for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):
-                MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
-            print(
-                f"[MainWindow][Ctrl+C] 🧹 RAM cache cleared — "
-                f"{before} pages evicted, mask layers invalidated, disk untouched"
-            )
-            sb = self.statusBar()
-            if sb:
-                sb.showMessage(f"🧹 RAM cache cleared — {before} pages freed", 3000)
+            home = self.centralWidget()
+            if home is not None and hasattr(home, "_clear_home_ram_caches"):
+                home._clear_home_ram_caches()
+            else:
+                from cache_manager import PAGE_CACHE, MASK_REGISTRY
+                try:
+                    import fitz
+                    from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE
+                    _SKELETON_CACHE.clear()
+                    _SKELETON_PLACEHOLDER_CACHE.clear()
+                    fitz.TOOLS.store_shrink(100)  # Purge PyMuPDF internal caches
+                except Exception as ex:
+                    pass
+                before = len(PAGE_CACHE._cache)
+                PAGE_CACHE.clear_ram_only()
+                for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):
+                    MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
+                print(
+                    f"[MainWindow][Ctrl+C] 🧹 RAM cache cleared — "
+                    f"{before} pages evicted, mask layers invalidated, disk untouched"
+                )
+                sb = self.statusBar()
+                if sb:
+                    sb.showMessage(f"🧹 RAM cache cleared — {before} pages freed", 3000)
         else:
             super().keyPressEvent(e)
 

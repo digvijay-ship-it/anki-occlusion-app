@@ -1,47 +1,59 @@
 # Anki Occlusion Web
 
-The web port is now a working review-console prototype over the existing
-desktop app data file. It is intentionally thin: the backend reuses the current
-Python scheduler/data logic, and the frontend focuses on fast review workflows
-instead of duplicating the full PyQt editor.
+The web app is moving from a local review-console prototype toward the paid
+browser product. The commercial direction is documented in
+[`docs/WEB_MVP_ARCHITECTURE.md`](../docs/WEB_MVP_ARCHITECTURE.md).
 
 ## Current Status
 
-- FastAPI backend reads and writes the existing `anki_occlusion_data.json`.
-- Dashboard summary shows deck, card, occlusion, due, learning, and review counts.
-- Recursive deck tree supports selecting a deck and loading its due review queue.
-- Review console shows the active due item and posts SM-2 ratings back to Python.
-- Frontend has lightweight API tests with Node's built-in test runner.
+- Existing review prototype: FastAPI reads/writes the desktop
+  `anki_occlusion_data.json` and React shows deck/review data.
+- New commercial foundation: SQLite-backed dev user entitlement, revision sync,
+  and request-cost metrics.
+- Frontend remains Vite + React and is still focused on review workflow testing.
 
 Not built yet:
 
-- Browser-based occlusion editor.
-- PDF/image canvas rendering in the browser.
-- Authentication or remote sync.
-- SQLite/web migration. The web backend still uses the desktop JSON store.
+- Browser PDF.js review canvas.
+- Browser occlusion editor.
+- Real production auth provider.
+- Stripe checkout/customer portal.
+- Cloud PDF storage.
 
-## Stack Decision
+## Low-Cost Stack
 
-This repo should stay on this stack for the next phase:
-
-- Backend: `FastAPI` + `Pydantic` because it lets the web API reuse the existing
-  Python scheduler, storage, and PDF code safely.
-- Frontend: `Vite` + `React` because it is fast to iterate and a good fit for a
-  dense review dashboard.
-- Tests: Python `unittest` for backend/store behavior, Node `node:test` for
-  frontend API helpers.
-
-Future upgrades that make sense after the review UI stabilizes:
-
-- TypeScript for the frontend API contracts.
-- SQLite or SQLModel-backed persistence when web editing/sync becomes serious.
-- Browser PDF rendering with PDF.js when the web editor begins.
+- Frontend: Vite + React, deployable as static files.
+- Backend: FastAPI + Pydantic.
+- Local database: SQLite.
+- Public database default: SQLite first, then Postgres only when usage proves it
+  is needed.
+- Payments: Stripe subscription.
+- Cost control: client-side PDF rendering, IndexedDB local state, batched sync,
+  metadata-only server storage for the MVP.
 
 ## Run Backend
+
+Fast local start:
+
+```powershell
+.\start_web_app.cmd
+```
+
+This starts the FastAPI backend, starts the Vite frontend, opens
+`http://127.0.0.1:5173`, and writes logs/PID files under `web\.run\`.
+
+To stop both servers:
+
+```powershell
+.\stop_web_app.cmd
+```
+
+Manual backend start:
 
 Install backend dependencies if needed:
 
 ```powershell
+cd web\backend
 python -m pip install -r requirements.txt
 ```
 
@@ -52,14 +64,23 @@ cd web\backend
 python -m uvicorn run:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Use a separate data file for testing:
+Optional local settings:
 
 ```powershell
 $env:ANKI_OCCLUSION_WEB_DATA="C:\path\to\anki_occlusion_data.json"
-python -m uvicorn run:app --reload --host 127.0.0.1 --port 8000
+$env:ANKI_OCCLUSION_WEB_DB="C:\path\to\anki_web.sqlite3"
+$env:ANKI_OCCLUSION_WEB_USER="dev-user"
+```
+
+If `ANKI_OCCLUSION_WEB_DB` is not set, the backend uses:
+
+```text
+web/backend/.data/anki_web.sqlite3
 ```
 
 ## Run Frontend
+
+Manual frontend start:
 
 ```powershell
 cd web\frontend
@@ -86,6 +107,48 @@ $env:VITE_API_BASE="http://127.0.0.1:8000"
 npm run dev
 ```
 
+## API Surface
+
+Prototype review routes:
+
+```text
+GET  /api/health
+GET  /api/summary
+GET  /api/decks
+GET  /api/review/items?limit=<n>
+GET  /api/review/items?deck_id=<id>&limit=<n>
+POST /api/review/rate
+```
+
+Commercial foundation routes:
+
+```text
+GET  /api/me
+GET  /api/sync/pull?since_revision=<n>
+POST /api/sync/push
+POST /api/metrics/client
+GET  /api/metrics/cost
+```
+
+Sync push payload:
+
+```json
+{
+  "base_revision": 0,
+  "changes": [
+    {
+      "collection": "cards",
+      "item_id": "card-1",
+      "payload": { "title": "Integrals" },
+      "deleted": false
+    }
+  ]
+}
+```
+
+The server stores metadata changes. PDFs/images should stay local in the browser
+for the first MVP.
+
 ## Tests And Build
 
 From the repo root:
@@ -99,27 +162,4 @@ From `web\frontend`:
 ```powershell
 npm test
 npm run build
-```
-
-## API Surface
-
-```text
-GET  /api/health
-GET  /api/summary
-GET  /api/decks
-GET  /api/review/items
-GET  /api/review/items?deck_id=<id>
-POST /api/review/rate
-```
-
-Rating payload:
-
-```json
-{
-  "deck_id": 1,
-  "card_id": "card-1",
-  "box_id": "box-1",
-  "box_index": 0,
-  "quality": 4
-}
 ```

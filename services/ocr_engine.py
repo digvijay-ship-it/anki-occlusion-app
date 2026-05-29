@@ -217,3 +217,54 @@ class OcrNumberThread(QThread):
             return
         print(f"[DEBUG][ocr_async] done result={predicted!r}")
         self.result.emit(predicted or "")
+
+
+# ── Model Training ────────────────────────────────────────────────────────────
+
+
+def _get_model(force_retrain=True):
+    """
+    Trains the CNN OCR model on the MNIST dataset and saves it to the standard path.
+    This fulfills the training logic needed by train_model.py.
+    """
+    import tensorflow as tf
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    model_dir = os.path.normpath(os.path.join(current_dir, "..", "assets", "model"))
+    model_path = os.path.join(model_dir, "mnist_math_cnn.keras")
+
+    if not force_retrain and os.path.exists(model_path):
+        try:
+            print(f"[ocr_engine] Loading existing model from {model_path}")
+            return tf.keras.models.load_model(model_path)
+        except Exception as e:
+            print(f"[ocr_engine] Failed to load existing model: {e}. Re-training...")
+
+    print("[ocr_engine] Starting MNIST model training with Data Augmentation (Rotation & Zoom)...")
+    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
+    x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+    x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+
+    model = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(28, 28, 1)),
+        tf.keras.layers.RandomRotation(0.1),
+        tf.keras.layers.RandomZoom(0.1),
+        tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
+        tf.keras.layers.MaxPooling2D((2, 2)),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(128, activation='relu'),
+        tf.keras.layers.Dense(10, activation='softmax')
+    ])
+
+    model.compile(
+        optimizer='adam',
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    os.makedirs(model_dir, exist_ok=True)
+    # Train for 10 epochs as described in the print statement of train_model.py
+    model.fit(x_train, y_train, epochs=10, batch_size=128, validation_data=(x_test, y_test))
+    model.save(model_path)
+    print(f"[ocr_engine] Model trained and saved successfully to: {model_path}")
+    return model
+
