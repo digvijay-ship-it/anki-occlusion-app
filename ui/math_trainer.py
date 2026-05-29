@@ -542,8 +542,20 @@ class MathTrainerPage(QWidget):
         self._particles.raise_()
         super().showEvent(e)
 
+    def go_back(self):
+        if not self._p2.isHidden():
+            self._show(1)
+        elif not self._p1.isHidden() or not self._p3.isHidden():
+            self._show(0)
+        elif not self._p0.isHidden():
+            self.closed.emit()
+
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key_QuoteLeft:
+        if e.key() == Qt.Key_Escape:
+            self.go_back()
+            e.accept()
+            return
+        elif e.key() == Qt.Key_QuoteLeft:
             self._toggle_pen()
             e.accept()
             return
@@ -1122,6 +1134,14 @@ class MathTrainerPage(QWidget):
         L.addWidget(body, 1)
         return p
 
+    def _trigger_home_cache_clear(self):
+        w = self.parent()
+        while w:
+            if hasattr(w, "_clear_home_ram_caches"):
+                w._clear_home_ram_caches()
+                break
+            w = w.parent()
+
     # ── Navigation ────────────────────────────────────────────────────────────
     def _show(self, idx):
         if idx != 2 and getattr(self, "_practice_timer", None):
@@ -1133,6 +1153,7 @@ class MathTrainerPage(QWidget):
         self._p3.setVisible(idx == 3)
         if idx == 0:
             self._top_mode_lbl.hide()
+            self._trigger_home_cache_clear()
 
     def _select_mode(self, m):
         self._mode = m

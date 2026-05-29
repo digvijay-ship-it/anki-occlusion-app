@@ -893,7 +893,11 @@ class DeckView(QWidget):
             return
         self._push_undo()
         dlg = _load_card_editor_dialog()(self, data=self._data, deck=self.deck)
-        if dlg.exec_() != QDialog.Accepted:
+        res = dlg.exec_()
+        home = self._find_home()
+        if home and hasattr(home, "_clear_home_ram_caches"):
+            home._clear_home_ram_caches()
+        if res != QDialog.Accepted:
             self._undo_stack.pop() if self._undo_stack else None
             return
         card = dlg.get_card()
@@ -964,7 +968,11 @@ class DeckView(QWidget):
         dlg = _load_card_editor_dialog()(
             self, card=dict(cards[idx]), data=self._data, deck=self.deck
         )
-        if dlg.exec_() == QDialog.Accepted:
+        res = dlg.exec_()
+        home = self._find_home()
+        if home and hasattr(home, "_clear_home_ram_caches"):
+            home._clear_home_ram_caches()
+        if res == QDialog.Accepted:
             c = dlg.get_card()
             c.pop("_auto_subdeck", None)
             # [FIX] Preserve SM-2 data — editor returns fresh box dicts without

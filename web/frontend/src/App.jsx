@@ -12,6 +12,9 @@ import {
   rateReviewItem,
   revealMediaPath,
   undoReviewRating,
+  loadJournal,
+  saveJournal,
+  loadRawData,
 } from "./api.js";
 import {
   boxIdentity,
@@ -665,15 +668,56 @@ function App() {
   }
   const [activityLog, setActivityLog] = useState([]);
   const [costSnapshot, setCostSnapshot] = useState(null);
-  const [mathMode, setMathMode] = useState("tables");
-  const [mathSeed, setMathSeed] = useState(1);
+  const [mathStage, setMathStage] = useState("loading"); // 'loading', 'discipline', 'configure', 'practice', 'report'
+  const [mathMode, setMathMode] = useState("tables"); // 'tables', 'squares', 'cubes'
+  const [mathTablesConfig, setMathTablesConfig] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("anki_math_tables")) || {};
+    } catch {
+      return {};
+    }
+  });
+  const [mathSquaresConfig, setMathSquaresConfig] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("anki_math_squares")) || {};
+    } catch {
+      return {};
+    }
+  });
+  const [mathCubesConfig, setMathCubesConfig] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("anki_math_cubes")) || {};
+    } catch {
+      return {};
+    }
+  });
+  const [mathTimerConfig, setMathTimerConfig] = useState(() => {
+    const val = localStorage.getItem("anki_math_timer");
+    return val !== null ? Number(val) : 0;
+  });
+
+  const [mathProblem, setMathProblem] = useState({ prompt: "", answer: 0, label: "" });
+  const [mathCorrectCount, setMathCorrectCount] = useState(0);
+  const [mathWrongCount, setMathWrongCount] = useState(0);
+  const [mathTimeLeft, setMathTimeLeft] = useState(0);
+  const [mathQAttempted, setMathQAttempted] = useState(false);
+  const [mathStreak, setMathStreak] = useState(0);
   const [mathAnswer, setMathAnswer] = useState("");
   const [mathResult, setMathResult] = useState("");
-  const [mathScore, setMathScore] = useState(0);
-  const [mathTotal, setMathTotal] = useState(0);
-  const [mathStreak, setMathStreak] = useState(0);
   const [mathRecognised, setMathRecognised] = useState("");
   const [mathModelStatus, setMathModelStatus] = useState("idle"); // 'idle', 'loading', 'loaded', 'error'
+  const [mathLastQuestion, setMathLastQuestion] = useState(null);
+  const [mathRevealTable, setMathRevealTable] = useState(false);
+
+  // Daily Journal State
+  const [journalData, setJournalData] = useState({});
+  const [journalDate, setJournalDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [journalMode, setJournalMode] = useState("pen"); // 'pen', 'eraser', 'text'
+  const [journalColorIdx, setJournalColorIdx] = useState(0);
+  const [journalTextSize, setJournalTextSize] = useState(14);
+  const [journalTextBuf, setJournalTextBuf] = useState("");
+  const [journalTextPos, setJournalTextPos] = useState(null);
+  const [journalCanvasHeight, setJournalCanvasHeight] = useState(1200);
 
   const [localDb, setLocalDb] = useState(null);
 
@@ -721,8 +765,8 @@ function App() {
           const existingDecks = await db.list("decks");
           if (existingDecks.length === 0) {
             recordAction("IndexedDB is empty. Bootstrapping from API...");
-            const apiData = await loadDashboard();
-            await importDecksToIndexedDb(apiData.decks, db);
+            const rawData = await loadRawData();
+            await importDecksToIndexedDb(rawData.decks || [], db);
             recordAction("IndexedDB populated from backend JSON data.");
           }
         } catch (e) {
@@ -758,6 +802,8 @@ function App() {
   const editorDragInitialMasksRef = useRef(null);
   const lastActivityTimeRef = useRef(Date.now());
   const mathCanvasRef = useRef(null);
+  const journalCanvasRef = useRef(null);
+  const journalTextInputRef = useRef(null);
 
   useEffect(() => {
     if (!draftPdfDoc || !draftCanvasRef.current) return;
@@ -856,6 +902,48 @@ function App() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
+  useEffect(() => {
+    function handleGlobalEscape(event) {
+      if (event.key === "Escape") {
+        if (
+          event.target.tagName === "INPUT" ||
+          event.target.tagName === "TEXTAREA"
+        ) {
+          return;
+        }
+        if (screen === "math") {
+          event.preventDefault();
+          if (mathStage === "practice") {
+            setMathStage("configure");
+            recordAction("Math practice exited via Escape.");
+          } else if (mathStage === "configure") {
+            setMathStage("discipline");
+            recordAction("Math config exited via Escape.");
+          } else {
+            setScreen("home");
+            recordAction("Math trainer closed via Escape.");
+          }
+        } else if (screen === "editor") {
+          event.preventDefault();
+          setScreen(editorReturnScreen === "review" ? "review" : "home");
+          recordAction("Editor closed via Escape.");
+        } else if (
+          screen === "journal" ||
+          screen === "settings" ||
+          screen === "more" ||
+          screen === "review-summary"
+        ) {
+          event.preventDefault();
+          setScreen("home");
+          recordAction("Screen closed via Escape.");
+        }
+      }
+    }
+    window.addEventListener("keydown", handleGlobalEscape);
+    return () => window.removeEventListener("keydown", handleGlobalEscape);
+  }, [screen, mathStage, editorReturnScreen]);
+
+
   const visibleDecks = useMemo(
     () => filterDecks(data.decks, searchQuery),
     [data.decks, searchQuery],
@@ -934,19 +1022,67 @@ function App() {
   }, [activeInkKey]);
 
   useEffect(() => {
-    if (screen === "math_trainer" && mathModelStatus === "idle") {
+    if (screen === "math" && mathModelStatus === "idle") {
       setMathModelStatus("loading");
       loadOnnxSession().then((session) => {
         if (session) {
           setMathModelStatus("loaded");
+          setMathStage("discipline");
           recordAction("AI OCR model loaded client-side successfully.");
         } else {
           setMathModelStatus("error");
+          setMathStage("discipline");
           recordAction("Failed to load local AI OCR model.");
         }
       });
     }
   }, [screen, mathModelStatus]);
+
+  useEffect(() => {
+    if (screen === "journal") {
+      loadJournal()
+        .then((data) => {
+          setJournalData(data || {});
+          recordAction("Daily journal loaded from local server.");
+        })
+        .catch((err) => {
+          console.error("Failed to load daily journal", err);
+          recordAction("Failed to fetch daily journal.");
+        });
+    }
+  }, [screen]);
+
+  // Handle timer countdown
+  useEffect(() => {
+    if (screen === "math" && mathStage === "practice" && mathTimerConfig > 0) {
+      const interval = setInterval(() => {
+        setMathTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            setMathStage("report");
+            playMathSound("powerup");
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [screen, mathStage, mathTimerConfig]);
+
+  // Auto check input when target digit length is met
+  useEffect(() => {
+    if (screen === "math" && mathStage === "practice" && mathAnswer && mathProblem.answer) {
+      const digits = mathAnswer.replace(/\D/g, "");
+      const targetStr = String(mathProblem.answer);
+      if (digits.length === targetStr.length) {
+        const timer = setTimeout(() => {
+          runMathCheck(digits);
+        }, 300);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [mathAnswer, mathProblem.answer, mathStage, screen]);
   const draftPreviewMasks = useMemo(() => {
     if (!draftMaskDrag) return draftMasks;
     const mask = normalizeMask(draftMaskDrag.start, draftMaskDrag.end);
@@ -957,10 +1093,6 @@ function App() {
     const mask = normalizeMask(editorMaskDrag.start, editorMaskDrag.end);
     return mask ? [...editorMasks, { ...mask, id: "editor-mask-preview" }] : editorMasks;
   }, [editorMaskDrag, editorMasks]);
-  const mathProblem = useMemo(
-    () => createMathProblem(mathMode, mathSeed),
-    [mathMode, mathSeed],
-  );
 
   function setActiveInkStrokes(strokes) {
     if (!activeInkKey) return;
@@ -1421,6 +1553,42 @@ function App() {
       await refreshDashboard(selectedDeck?.id ?? selectedDeckId);
       recordAction("Dashboard refreshed from the local API.");
     } catch (err) {
+      setError(err.message);
+      setStatus("error");
+    }
+  }
+
+  async function handleForceResetFromBackend() {
+    if (!localDb) {
+      alert("Local IndexedDB is not loaded yet.");
+      return;
+    }
+    if (!window.confirm("This will clear all browser-cached decks and reload everything fresh from your local server's database. Proceed?")) {
+      return;
+    }
+    setStatus("loading");
+    try {
+      const storeNames = ["decks", "cards", "masks", "review_state", "sync_queue", "files"];
+      for (const store of storeNames) {
+        const list = await localDb.list(store);
+        for (const item of list) {
+          const key = item.local_id || item.id || item.item_id;
+          if (key) {
+            await localDb.delete(store, key);
+          }
+        }
+      }
+      
+      const rawData = await loadRawData();
+      await importDecksToIndexedDb(rawData.decks || [], localDb);
+      await refreshDashboard(null, localDb);
+      setSelectedDeckId(rawData.decks[0]?.id ?? rawData.decks[0]?._id ?? null);
+      
+      recordAction("IndexedDB reset and re-populated from backend JSON data.");
+      setStatus("ready");
+      alert("Local cache reset successfully! Real PyQt database is now loaded.");
+    } catch (err) {
+      console.error("Force reset failed", err);
       setError(err.message);
       setStatus("error");
     }
@@ -2345,31 +2513,268 @@ function App() {
     recordAction(`${title} saved locally in editor.`);
   }
 
+  const mathDrawingRef = useRef({ isDrawing: false, lastX: 0, lastY: 0, idleTimer: null });
+  const journalDrawingRef = useRef({ isDrawing: false, lastX: 0, lastY: 0, currentStrokePoints: [] });
+
+  function playMathSound(type) {
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+      const ctx = new AudioContext();
+      
+      if (type === "coin") {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "square";
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        const now = ctx.currentTime;
+        osc.frequency.setValueAtTime(587.33, now); // D5
+        osc.frequency.setValueAtTime(880, now + 0.08); // A5
+        
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+        
+        osc.start(now);
+        osc.stop(now + 0.35);
+      } else if (type === "powerup") {
+        const now = ctx.currentTime;
+        const freqs = [330, 392, 659, 523, 587, 784];
+        freqs.forEach((f, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "triangle";
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          
+          osc.frequency.setValueAtTime(f, now + idx * 0.06);
+          gain.gain.setValueAtTime(0.06, now + idx * 0.06);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + idx * 0.06 + 0.12);
+          
+          osc.start(now + idx * 0.06);
+          osc.stop(now + idx * 0.06 + 0.15);
+        });
+      } else if (type === "hit") {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sawtooth";
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        const now = ctx.currentTime;
+        osc.frequency.setValueAtTime(180, now);
+        osc.frequency.exponentialRampToValueAtTime(40, now + 0.25);
+        
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+        
+        osc.start(now);
+        osc.stop(now + 0.3);
+      }
+    } catch (e) {
+      console.warn("Failed to play synth sound:", e);
+    }
+  }
+
+  function getMathCanvasCoordinates(e, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches && e.touches[0] ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches && e.touches[0] ? e.touches[0].clientY : e.clientY;
+    
+    const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  }
+
+  function startMathDrawing(e, canvas) {
+    mathDrawingRef.current.isDrawing = true;
+    const coords = getMathCanvasCoordinates(e, canvas);
+    mathDrawingRef.current.lastX = coords.x;
+    mathDrawingRef.current.lastY = coords.y;
+    
+    if (mathDrawingRef.current.idleTimer) {
+      clearTimeout(mathDrawingRef.current.idleTimer);
+      mathDrawingRef.current.idleTimer = null;
+    }
+
+    const ctx = canvas.getContext("2d");
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let isClean = true;
+    for (let i = 3; i < imgData.data.length; i += 4) {
+      if (imgData.data[i] !== 0) {
+        isClean = false;
+        break;
+      }
+    }
+    if (isClean) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  function drawMath(e, canvas) {
+    if (!mathDrawingRef.current.isDrawing) return;
+    const coords = getMathCanvasCoordinates(e, canvas);
+    const ctx = canvas.getContext("2d");
+    
+    ctx.beginPath();
+    ctx.strokeStyle = "#1a1a2e"; // Dark stroke color
+    ctx.lineWidth = 10;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.moveTo(mathDrawingRef.current.lastX, mathDrawingRef.current.lastY);
+    ctx.lineTo(coords.x, coords.y);
+    ctx.stroke();
+    
+    mathDrawingRef.current.lastX = coords.x;
+    mathDrawingRef.current.lastY = coords.y;
+  }
+
+  function stopMathDrawing(canvas) {
+    if (!mathDrawingRef.current.isDrawing) return;
+    mathDrawingRef.current.isDrawing = false;
+    
+    if (mathDrawingRef.current.idleTimer) {
+      clearTimeout(mathDrawingRef.current.idleTimer);
+    }
+    
+    mathDrawingRef.current.idleTimer = setTimeout(async () => {
+      if (!canvas) return;
+      setMathResult("Predicting...");
+      const predictionResult = await predictDigitDrawing(canvas);
+      if (predictionResult.error) {
+        setMathResult(predictionResult.error);
+      } else {
+        const recognised = predictionResult.result;
+        setMathRecognised(recognised);
+        setMathAnswer(recognised);
+        
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }, 800);
+  }
+
+  function generateNextMathProblem(mode, tablesConfig, squaresConfig, cubesConfig) {
+    if (mode === "tables") {
+      const activeTables = Object.keys(tablesConfig).filter(k => tablesConfig[k]).map(Number);
+      if (activeTables.length === 0) return null;
+      let n1;
+      let n2;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        n1 = activeTables[Math.floor(Math.random() * activeTables.length)];
+        n2 = [2, 3, 4, 5, 6, 7, 8, 9][Math.floor(Math.random() * 8)];
+        const key = `${n1}x${n2}`;
+        if (mathLastQuestion !== key || activeTables.length === 1) {
+          setMathLastQuestion(key);
+          break;
+        }
+      }
+      return {
+        prompt: `${n1} × ${n2} = ?`,
+        answer: n1 * n2,
+        label: "Table",
+        n1,
+        n2
+      };
+    } else {
+      const config = mode === "squares" ? squaresConfig : cubesConfig;
+      const activeRanges = Object.keys(config).filter(k => config[k]);
+      if (activeRanges.length === 0) return null;
+      let num;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const range = activeRanges[Math.floor(Math.random() * activeRanges.length)];
+        const [start, end] = range.split("-").map(Number);
+        num = Math.floor(Math.random() * (end - start + 1)) + start;
+        const key = `${num}`;
+        if (mathLastQuestion !== key || (activeRanges.length === 1 && start === end)) {
+          setMathLastQuestion(key);
+          break;
+        }
+      }
+      if (mode === "squares") {
+        return {
+          prompt: `${num}² = ?`,
+          answer: num * num,
+          label: "Square",
+          num
+        };
+      } else {
+        return {
+          prompt: `${num}³ = ?`,
+          answer: num * num * num,
+          label: "Cube",
+          num
+        };
+      }
+    }
+  }
+
+  function runMathCheck(ansVal) {
+    const answer = parseInt(ansVal, 10);
+    const correctVal = mathProblem.answer;
+    
+    if (isNaN(answer)) return;
+    
+    if (answer === correctVal) {
+      if (!mathQAttempted) {
+        setMathCorrectCount((c) => c + 1);
+      }
+      setMathStreak((st) => {
+        const nextStreak = st + 1;
+        if (nextStreak > 0 && nextStreak % 5 === 0) {
+          playMathSound("powerup");
+        } else {
+          playMathSound("coin");
+        }
+        return nextStreak;
+      });
+      
+      const msgs = ["COWABUNGA!", "CORRECT!", "LETHAL!", "PERFECT!", "NAILED IT!", "KAME-HA!"];
+      const randomMsg = msgs[Math.floor(Math.random() * msgs.length)];
+      setMathResult(randomMsg);
+      recordAction(`Math practice correct: ${ansVal}`);
+      
+      setTimeout(() => {
+        const next = generateNextMathProblem(mathMode, mathTablesConfig, mathSquaresConfig, mathCubesConfig);
+        if (next) {
+          setMathProblem(next);
+          setMathAnswer("");
+          setMathResult("");
+          setMathRecognised("");
+          setMathQAttempted(false);
+          setMathRevealTable(false);
+          handleClearMathCanvas();
+        } else {
+          setMathStage("report");
+        }
+      }, 1000);
+    } else {
+      playMathSound("hit");
+      if (!mathQAttempted) {
+        setMathWrongCount((w) => w + 1);
+      }
+      setMathQAttempted(true);
+      setMathStreak(0);
+      setMathResult("WRONG! ADJUST OR REVEAL.");
+      recordAction(`Math practice wrong: ${ansVal}, correct: ${correctVal}`);
+    }
+  }
+
   async function handleCheckMathAnswer(event) {
     if (event && event.preventDefault) event.preventDefault();
     
-    // Check text box answer first as fallback
     if (mathAnswer.trim()) {
-      const answer = Number(mathAnswer.trim());
-      const correctVal = mathProblem.answer;
-      setMathTotal((t) => t + 1);
-      if (Number.isFinite(answer) && answer === correctVal) {
-        setMathScore((s) => s + 1);
-        setMathStreak((st) => st + 1);
-        setMathResult(`Correct! Answer = ${correctVal}`);
-        recordAction("Math answer correct.");
-        setTimeout(() => {
-          handleNextMathProblem();
-        }, 2000);
-      } else {
-        setMathStreak(0);
-        setMathResult(`Wrong. Correct answer is ${correctVal}`);
-        recordAction("Math answer checked (wrong).");
-      }
+      runMathCheck(mathAnswer.trim());
       return;
     }
 
-    // Otherwise, check canvas drawing
     if (!mathCanvasRef.current) return;
     setMathResult("Predicting...");
     
@@ -2382,39 +2787,24 @@ function App() {
     
     const recognised = predictionResult.result;
     setMathRecognised(recognised);
-    
-    const guessedVal = parseInt(recognised, 10);
-    const correctVal = mathProblem.answer;
-    
-    setMathTotal((t) => t + 1);
-    if (!isNaN(guessedVal) && guessedVal === correctVal) {
-      setMathScore((s) => s + 1);
-      setMathStreak((st) => st + 1);
-      setMathResult(`Correct! Answer = ${correctVal}`);
-      recordAction(`Math practice correct: ${recognised}`);
-      setTimeout(() => {
-        handleNextMathProblem();
-      }, 2000);
-    } else {
-      setMathStreak(0);
-      setMathResult(`Wrong. Correct answer is ${correctVal} (Recognised: ${recognised || "?"})`);
-      recordAction(`Math practice wrong. Recognised: ${recognised || "?"}, Correct: ${correctVal}`);
-    }
+    setMathAnswer(recognised);
+    runMathCheck(recognised);
   }
 
   function handleNextMathProblem() {
-    setMathSeed((current) => current + 1);
     setMathAnswer("");
     setMathResult("");
     setMathRecognised("");
+    setMathQAttempted(false);
+    setMathRevealTable(false);
     recordAction("Next math problem loaded.");
+    handleClearMathCanvas();
     
-    // Clear drawing canvas
-    if (mathCanvasRef.current) {
-      const canvas = mathCanvasRef.current;
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const next = generateNextMathProblem(mathMode, mathTablesConfig, mathSquaresConfig, mathCubesConfig);
+    if (next) {
+      setMathProblem(next);
+    } else {
+      setMathStage("report");
     }
   }
 
@@ -2423,6 +2813,11 @@ function App() {
     setMathRecognised("");
     if (mathCanvasRef.current) {
       const canvas = mathCanvasRef.current;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+      }
       const ctx = canvas.getContext("2d");
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -2827,6 +3222,341 @@ function App() {
     recordAction(`${deletedDeck.name} removed from this browser session.`);
   }
 
+  // ── Daily Journal Features & Canvas Managers ──────────────────────────────
+  const JOURNAL_COLORS = ["#72FF4F", "#A86CFF", "#E0E0FF", "#FF4444", "#F1FA8C", "#F7916A"];
+
+  function redrawJournalContent(canvas) {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dateEntry = journalData[journalDate] || { strokes: [], texts: [] };
+    
+    // Clear canvas
+    ctx.fillStyle = classicMode ? "#1e1e2e" : "#07070b";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Grid lines
+    ctx.strokeStyle = classicMode ? "#2a2a4a" : "#0d1220";
+    ctx.lineWidth = 1;
+    for (let y = 40; y < canvas.height; y += 32) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y);
+      ctx.stroke();
+    }
+    
+    // Margin line
+    ctx.strokeStyle = classicMode ? "#3a2a3a" : "#0f1a10";
+    ctx.beginPath();
+    const marginX = classicMode ? 48 : 60;
+    ctx.moveTo(marginX, 0);
+    ctx.lineTo(marginX, canvas.height);
+    ctx.stroke();
+    
+    // Strokes
+    const strokes = dateEntry.strokes || [];
+    for (const stroke of strokes) {
+      if (!stroke.pts || stroke.pts.length === 0) continue;
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = 2.0;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      
+      const pts = stroke.pts;
+      if (pts.length === 1) {
+        ctx.arc(pts[0][0], pts[0][1], 1, 0, 2 * Math.PI);
+        ctx.fillStyle = stroke.color;
+        ctx.fill();
+      } else {
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i][0], pts[i][1]);
+        }
+        ctx.stroke();
+      }
+    }
+    
+    // Texts
+    const texts = dateEntry.texts || [];
+    for (const t of texts) {
+      ctx.font = `${t.size || 14}px Segoe UI, sans-serif`;
+      ctx.fillStyle = t.color;
+      ctx.fillText(t.text, t.x, t.y);
+    }
+  }
+
+  useEffect(() => {
+    if (screen === "journal" && journalCanvasRef.current) {
+      const canvas = journalCanvasRef.current;
+      canvas.width = 900;
+      canvas.height = journalCanvasHeight;
+      redrawJournalContent(canvas);
+    }
+  }, [screen, journalData, journalDate, journalCanvasHeight, classicMode]);
+
+  function getJournalCanvasCoordinates(e, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches && e.touches[0] ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches && e.touches[0] ? e.touches[0].clientY : e.clientY;
+    
+    const scaleX = rect.width > 0 ? 900 / rect.width : 1;
+    const scaleY = rect.height > 0 ? journalCanvasHeight / rect.height : 1;
+    
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  }
+
+  function startJournalDrawing(e) {
+    if (journalMode === "text") {
+      const canvas = journalCanvasRef.current;
+      const coords = getJournalCanvasCoordinates(e, canvas);
+      commitJournalText();
+      setJournalTextPos(coords);
+      setJournalTextBuf("");
+      setTimeout(() => {
+        journalTextInputRef.current?.focus();
+      }, 50);
+      return;
+    }
+    
+    journalDrawingRef.current.isDrawing = true;
+    const canvas = journalCanvasRef.current;
+    const coords = getJournalCanvasCoordinates(e, canvas);
+    journalDrawingRef.current.lastX = coords.x;
+    journalDrawingRef.current.lastY = coords.y;
+    
+    if (journalMode === "pen") {
+      journalDrawingRef.current.currentStrokePoints = [[coords.x, coords.y]];
+    } else if (journalMode === "eraser") {
+      eraseStrokesAt(coords.x, coords.y);
+    }
+  }
+
+  function drawJournal(e) {
+    if (!journalDrawingRef.current.isDrawing) return;
+    const canvas = journalCanvasRef.current;
+    const coords = getJournalCanvasCoordinates(e, canvas);
+    
+    if (journalMode === "pen") {
+      const ctx = canvas.getContext("2d");
+      ctx.strokeStyle = JOURNAL_COLORS[journalColorIdx];
+      ctx.lineWidth = 2.0;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(journalDrawingRef.current.lastX, journalDrawingRef.current.lastY);
+      ctx.lineTo(coords.x, coords.y);
+      ctx.stroke();
+      
+      journalDrawingRef.current.currentStrokePoints.push([coords.x, coords.y]);
+      journalDrawingRef.current.lastX = coords.x;
+      journalDrawingRef.current.lastY = coords.y;
+      
+      maybeExpandJournalCanvas(coords.y);
+    } else if (journalMode === "eraser") {
+      eraseStrokesAt(coords.x, coords.y);
+    }
+  }
+
+  function stopJournalDrawing() {
+    if (!journalDrawingRef.current.isDrawing) return;
+    journalDrawingRef.current.isDrawing = false;
+    
+    if (journalMode === "pen" && journalDrawingRef.current.currentStrokePoints.length > 0) {
+      const newStroke = {
+        color: JOURNAL_COLORS[journalColorIdx],
+        pts: journalDrawingRef.current.currentStrokePoints
+      };
+      
+      const dateEntry = journalData[journalDate] || { strokes: [], texts: [] };
+      const updatedEntry = {
+        ...dateEntry,
+        strokes: [...(dateEntry.strokes || []), newStroke]
+      };
+      
+      const updatedData = {
+        ...journalData,
+        [journalDate]: updatedEntry
+      };
+      
+      setJournalData(updatedData);
+      saveJournal(updatedData).catch(err => console.error("Failed to save journal", err));
+    }
+    
+    journalDrawingRef.current.currentStrokePoints = [];
+  }
+
+  function eraseStrokesAt(x, y) {
+    const radius = 11;
+    const dateEntry = journalData[journalDate] || { strokes: [], texts: [] };
+    const strokes = dateEntry.strokes || [];
+    let changed = false;
+    
+    const keptStrokes = strokes.filter(stroke => {
+      const hit = stroke.pts.some(pt => {
+        const dx = pt[0] - x;
+        const dy = pt[1] - y;
+        return dx * dx + dy * dy <= radius * radius;
+      });
+      if (hit) {
+        changed = true;
+        return false;
+      }
+      return true;
+    });
+    
+    if (changed) {
+      const updatedEntry = {
+        ...dateEntry,
+        strokes: keptStrokes
+      };
+      const updatedData = {
+        ...journalData,
+        [journalDate]: updatedEntry
+      };
+      setJournalData(updatedData);
+      saveJournal(updatedData).catch(err => console.error("Failed to save journal", err));
+    }
+  }
+
+  function commitJournalText() {
+    if (journalTextBuf.trim() && journalTextPos) {
+      const dateEntry = journalData[journalDate] || { strokes: [], texts: [] };
+      const newText = {
+        x: journalTextPos.x,
+        y: journalTextPos.y,
+        text: journalTextBuf,
+        color: JOURNAL_COLORS[journalColorIdx],
+        size: journalTextSize
+      };
+      
+      const updatedEntry = {
+        ...dateEntry,
+        texts: [...(dateEntry.texts || []), newText]
+      };
+      const updatedData = {
+        ...journalData,
+        [journalDate]: updatedEntry
+      };
+      
+      setJournalData(updatedData);
+      saveJournal(updatedData).catch(err => console.error("Failed to save journal", err));
+    }
+    setJournalTextBuf("");
+    setJournalTextPos(null);
+  }
+
+  function handleJournalTextKeyDown(e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitJournalText();
+      const nextY = journalTextPos.y + journalTextSize + 8;
+      setJournalTextPos({ x: journalTextPos.x, y: nextY });
+      setJournalTextBuf("");
+      maybeExpandJournalCanvas(nextY);
+      setTimeout(() => {
+        journalTextInputRef.current?.focus();
+      }, 50);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setJournalTextBuf("");
+      setJournalTextPos(null);
+    }
+  }
+
+  function handlePrevDay() {
+    commitJournalText();
+    const current = new Date(journalDate);
+    current.setDate(current.getDate() - 1);
+    const prevDateStr = current.toISOString().slice(0, 10);
+    setJournalDate(prevDateStr);
+  }
+
+  function handleNextDay() {
+    commitJournalText();
+    const current = new Date(journalDate);
+    current.setDate(current.getDate() + 1);
+    const nextDateStr = current.toISOString().slice(0, 10);
+    setJournalDate(nextDateStr);
+  }
+
+  function formatJournalDate(dateStr) {
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleDateString("en-US", { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }).toUpperCase();
+    } catch {
+      return dateStr;
+    }
+  }
+
+  function getJournalDatesList() {
+    return Object.keys(journalData)
+      .filter(d => {
+        const entry = journalData[d];
+        return (entry.strokes && entry.strokes.length > 0) || (entry.texts && entry.texts.length > 0);
+      })
+      .sort((a, b) => b.localeCompare(a));
+  }
+
+  function maybeExpandJournalCanvas(y) {
+    if (y > journalCanvasHeight - 120) {
+      setJournalCanvasHeight(h => h + 400);
+    }
+  }
+
+  function handleClearJournal() {
+    const updatedData = {
+      ...journalData,
+      [journalDate]: { strokes: [], texts: [] }
+    };
+    setJournalData(updatedData);
+    setJournalCanvasHeight(1200);
+    saveJournal(updatedData).catch(err => console.error("Failed to save journal", err));
+    recordAction("Journal cleared for today.");
+  }
+
+  function handleUndoJournal() {
+    const dateEntry = journalData[journalDate] || { strokes: [], texts: [] };
+    const strokes = dateEntry.strokes || [];
+    const texts = dateEntry.texts || [];
+    
+    if (texts.length > 0) {
+      const updatedEntry = {
+        ...dateEntry,
+        texts: texts.slice(0, -1)
+      };
+      const updatedData = {
+        ...journalData,
+        [journalDate]: updatedEntry
+      };
+      setJournalData(updatedData);
+      saveJournal(updatedData).catch(err => console.error("Failed to save journal", err));
+    } else if (strokes.length > 0) {
+      const updatedEntry = {
+        ...dateEntry,
+        strokes: strokes.slice(0, -1)
+      };
+      const updatedData = {
+        ...journalData,
+        [journalDate]: updatedEntry
+      };
+      setJournalData(updatedData);
+      saveJournal(updatedData).catch(err => console.error("Failed to save journal", err));
+    }
+  }
+
+  function handleExportJournalPng() {
+    if (journalCanvasRef.current) {
+      const link = document.createElement("a");
+      link.download = `journal_${journalDate}.png`;
+      link.href = journalCanvasRef.current.toDataURL("image/png");
+      link.click();
+      recordAction("Journal page exported as PNG.");
+    }
+  }
+
   function handleMathNav() {
     setScreen("math");
     setActionPanel("");
@@ -2837,6 +3567,17 @@ function App() {
     setReviewRedoStack([]);
     setMathAnswer("");
     setMathResult("");
+    setMathCorrectCount(0);
+    setMathWrongCount(0);
+    setMathStreak(0);
+    setMathRevealTable(false);
+    
+    if (mathModelStatus === "loaded") {
+      setMathStage("discipline");
+    } else {
+      setMathStage("loading");
+    }
+    
     recordAction("Math trainer opened.");
   }
 
@@ -3417,189 +4158,381 @@ function App() {
     }
 
     if (screen === "math") {
-      let isDrawing = false;
-      let lastX = 0;
-      let lastY = 0;
-
-      const getCoordinates = (e, canvas) => {
-        const rect = canvas.getBoundingClientRect();
-        if (e.touches && e.touches[0]) {
-          return {
-            x: e.touches[0].clientX - rect.left,
-            y: e.touches[0].clientY - rect.top
-          };
-        }
-        return {
-          x: e.clientX - rect.left,
-          y: e.clientY - rect.top
-        };
-      };
-
-      const startDrawing = (e, canvas) => {
-        isDrawing = true;
-        const coords = getCoordinates(e, canvas);
-        lastX = coords.x;
-        lastY = coords.y;
-        
-        // Setup initial white background if canvas is clean
-        const ctx = canvas.getContext("2d");
-        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        // Check if canvas is completely empty (all transparent alpha)
-        let isClean = true;
-        for (let i = 3; i < imgData.data.length; i += 4) {
-          if (imgData.data[i] !== 0) {
-            isClean = false;
-            break;
-          }
-        }
-        if (isClean) {
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-      };
-
-      const draw = (e, canvas) => {
-        if (!isDrawing) return;
-        const coords = getCoordinates(e, canvas);
-        const ctx = canvas.getContext("2d");
-        
-        ctx.beginPath();
-        ctx.strokeStyle = "#1a1a2e"; // Dark stroke color
-        ctx.lineWidth = 14;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.moveTo(lastX, lastY);
-        ctx.lineTo(coords.x, coords.y);
-        ctx.stroke();
-        
-        lastX = coords.x;
-        lastY = coords.y;
-      };
-
-      const stopDrawing = () => {
-        isDrawing = false;
-      };
-
-      const accuracyPct = mathTotal > 0 ? Math.round((mathScore / mathTotal) * 100) : 0;
-
       return (
         <section className="mode-panel math-panel">
-          <div className="math-trainer-container">
-            <div className="math-header">
-              <div>
-                <span className="mode-kicker">✦ MATH PRACTISE • LOCAL AI</span>
-                <h3>{mathProblem.label}</h3>
+          {mathStage === "loading" && (
+            <div className="math-loading-container">
+              <div className="math-hex-logo spinner">∑</div>
+              <h3>Warming up local AI models...</h3>
+              <p>Initializing client-side digit classifier (MNIST ONNX Core)...</p>
+              <div className="math-loading-bar-container">
+                <div className="math-loading-bar-fill" />
               </div>
-              <div className="math-score">
-                {mathScore}/{mathTotal} ({accuracyPct}%) 🔥{mathStreak}
-              </div>
+              <button className="secondary-button font-pixel" onClick={() => setMathStage("discipline")} style={{ marginTop: '20px' }}>
+                Skip Loading →
+              </button>
             </div>
-            
-            <div className="math-mode-row">
-              {["tables", "squares", "cubes"].map((mode) => (
-                <button
-                  className={mathMode === mode ? "active-toggle" : ""}
-                  key={mode}
-                  onClick={() => {
-                    setMathMode(mode);
-                    setMathAnswer("");
-                    setMathResult("");
-                    setMathRecognised("");
-                    recordAction(`${mode} practice opened.`);
-                  }}
-                  type="button"
-                >
-                  {mode}
+          )}
+
+          {mathStage === "discipline" && (
+            <div className="math-trainer-container">
+              <div className="math-header">
+                <div>
+                  <span className="mode-kicker">✦ MATH PRACTISE • SELECT DISCIPLINE</span>
+                  <h3 className="font-pixel">Choose Your Training Dojo</h3>
+                </div>
+                <button className="ghost-button font-pixel" onClick={() => setScreen("home")}>Exit</button>
+              </div>
+              <div className="math-discipline-cards">
+                <button className="discipline-card tables" onClick={() => { setMathMode("tables"); setMathStage("configure"); }}>
+                  <span className="discipline-icon">⚔</span>
+                  <div>
+                    <h4 className="font-pixel">TABLES (पहाड़े)</h4>
+                    <p>Master multiplication tables 1–45</p>
+                  </div>
                 </button>
-              ))}
+                <button className="discipline-card squares" onClick={() => { setMathMode("squares"); setMathStage("configure"); }}>
+                  <span className="discipline-icon">🛡</span>
+                  <div>
+                    <h4 className="font-pixel">SQUARES (वर्ग)</h4>
+                    <p>Practice perfect squares up to 50²</p>
+                  </div>
+                </button>
+                <button className="discipline-card cubes" onClick={() => { setMathMode("cubes"); setMathStage("configure"); }}>
+                  <span className="discipline-icon">🌀</span>
+                  <div>
+                    <h4 className="font-pixel">CUBES (घन)</h4>
+                    <p>Practice perfect cubes up to 30³</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {mathStage === "configure" && (
+            <div className="math-trainer-container">
+              <div className="math-header">
+                <div>
+                  <span className="mode-kicker">✦ MATH PRACTISE • CONFIGURE MISSION</span>
+                  <h3 className="font-pixel">Setup Your Challenge</h3>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="ghost-button font-pixel" onClick={() => setMathStage("discipline")}>◀ Back</button>
+                  <button className="ghost-button font-pixel" onClick={() => setScreen("home")}>Exit</button>
+                </div>
+              </div>
+
+              {mathMode === "tables" ? (
+                <div className="configure-section">
+                  <div className="section-header">
+                    <h4 className="font-pixel">SELECT TABLES (1–45)</h4>
+                    <div className="helper-buttons">
+                      <button className="tiny-button" onClick={() => {
+                        const all = {};
+                        for (let i = 1; i <= 45; i++) all[i] = true;
+                        setMathTablesConfig(all);
+                        localStorage.setItem("anki_math_tables", JSON.stringify(all));
+                      }}>Select All</button>
+                      <button className="tiny-button" onClick={() => {
+                        setMathTablesConfig({});
+                        localStorage.setItem("anki_math_tables", JSON.stringify({}));
+                      }}>Clear All</button>
+                    </div>
+                  </div>
+                  <div className="tables-grid">
+                    {Array.from({ length: 45 }, (_, i) => i + 1).map((n) => (
+                      <button
+                        key={n}
+                        className={`grid-cb ${mathTablesConfig[n] ? "checked" : ""}`}
+                        onClick={() => {
+                          const next = { ...mathTablesConfig, [n]: !mathTablesConfig[n] };
+                          setMathTablesConfig(next);
+                          localStorage.setItem("anki_math_tables", JSON.stringify(next));
+                        }}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="configure-section">
+                  <div className="section-header">
+                    <h4 className="font-pixel">SELECT RANGE</h4>
+                    <div className="helper-buttons">
+                      <button className="tiny-button" onClick={() => {
+                        const maxVal = mathMode === "squares" ? 50 : 30;
+                        const all = {};
+                        for (let s = 1; s <= maxVal; s += 5) {
+                          const e = Math.min(s + 4, maxVal);
+                          all[`${s}-${e}`] = true;
+                        }
+                        const key = mathMode === "squares" ? "anki_math_squares" : "anki_math_cubes";
+                        if (mathMode === "squares") setMathSquaresConfig(all);
+                        else setMathCubesConfig(all);
+                        localStorage.setItem(key, JSON.stringify(all));
+                      }}>Select All</button>
+                      <button className="tiny-button" onClick={() => {
+                        const key = mathMode === "squares" ? "anki_math_squares" : "anki_math_cubes";
+                        if (mathMode === "squares") setMathSquaresConfig({});
+                        else setMathCubesConfig({});
+                        localStorage.setItem(key, JSON.stringify({}));
+                      }}>Clear All</button>
+                    </div>
+                  </div>
+                  <div className="ranges-grid">
+                    {(() => {
+                      const maxVal = mathMode === "squares" ? 50 : 30;
+                      const ranges = [];
+                      for (let s = 1; s <= maxVal; s += 5) {
+                        const e = Math.min(s + 4, maxVal);
+                        ranges.push(`${s}-${e}`);
+                      }
+                      const activeConfig = mathMode === "squares" ? mathSquaresConfig : mathCubesConfig;
+                      return ranges.map((r) => (
+                        <button
+                          key={r}
+                          className={`grid-cb range-cb ${activeConfig[r] ? "checked" : ""}`}
+                          onClick={() => {
+                            const next = { ...activeConfig, [r]: !activeConfig[r] };
+                            const key = mathMode === "squares" ? "anki_math_squares" : "anki_math_cubes";
+                            if (mathMode === "squares") setMathSquaresConfig(next);
+                            else setMathCubesConfig(next);
+                            localStorage.setItem(key, JSON.stringify(next));
+                          }}
+                        >
+                          {r}
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              <div className="configure-section timer-section">
+                <h4 className="font-pixel">SELECT TIMER</h4>
+                <div className="timer-options-row">
+                  {[
+                    { value: 0, label: "NONE" },
+                    { value: 1, label: "1 MIN" },
+                    { value: 3, label: "3 MIN" },
+                    { value: 5, label: "5 MIN" }
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      className={`timer-cb ${mathTimerConfig === opt.value ? "checked" : ""}`}
+                      onClick={() => {
+                        setMathTimerConfig(opt.value);
+                        localStorage.setItem("anki_math_timer", String(opt.value));
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <button
-                className="ghost-button"
-                style={{ marginLeft: "auto" }}
+                className="start-mission-btn font-pixel"
                 onClick={() => {
-                  setScreen("home");
-                  recordAction("Math trainer closed.");
+                  const config = mathMode === "tables" ? mathTablesConfig : (mathMode === "squares" ? mathSquaresConfig : mathCubesConfig);
+                  const hasSelected = Object.keys(config).some(k => config[k]);
+                  if (!hasSelected) {
+                    setMathResult("SELECT AT LEAST ONE TARGET, NINJA!");
+                    return;
+                  }
+                  setMathResult("");
+                  setMathCorrectCount(0);
+                  setMathWrongCount(0);
+                  setMathStreak(0);
+                  setMathQAttempted(false);
+                  setMathRevealTable(false);
+                  setMathAnswer("");
+                  
+                  const problem = generateNextMathProblem(mathMode, mathTablesConfig, mathSquaresConfig, mathCubesConfig);
+                  if (problem) {
+                    setMathProblem(problem);
+                    setMathStage("practice");
+                    if (mathTimerConfig > 0) {
+                      setMathTimeLeft(mathTimerConfig * 60);
+                    }
+                    setTimeout(() => {
+                      handleClearMathCanvas();
+                    }, 50);
+                  } else {
+                    setMathResult("GENERATE PROBLEM FAILED");
+                  }
                 }}
-                type="button"
               >
-                Exit
+                ▶ START MISSION
               </button>
-            </div>
 
-            <div className="math-problem-card">
-              <div className="math-problem-text">{mathProblem.prompt}</div>
+              {mathResult && <div className="config-error-message">{mathResult}</div>}
             </div>
+          )}
 
-            <div className="math-canvas-wrapper">
-              <div className="math-canvas-label">✏ Write your answer on the scratchpad:</div>
-              <canvas
-                ref={mathCanvasRef}
-                width={512}
-                height={220}
-                className="math-drawing-canvas"
-                onMouseDown={(e) => startDrawing(e, mathCanvasRef.current)}
-                onMouseMove={(e) => draw(e, mathCanvasRef.current)}
-                onMouseUp={stopDrawing}
-                onMouseLeave={stopDrawing}
-                onTouchStart={(e) => startDrawing(e, mathCanvasRef.current)}
-                onTouchMove={(e) => draw(e, mathCanvasRef.current)}
-                onTouchEnd={stopDrawing}
-              />
-            </div>
-
-            <div className="math-actions-row">
-              <button 
-                className="secondary-button" 
-                onClick={() => handleCheckMathAnswer()}
-                type="button"
-                disabled={mathModelStatus === "loading"}
-              >
-                {mathModelStatus === "loading" ? "Loading Model..." : "✓ Check"}
-              </button>
-              <button 
-                className="ghost-button" 
-                onClick={handleClearMathCanvas} 
-                type="button"
-              >
-                Clear
-              </button>
-              <button 
-                className="ghost-button" 
-                onClick={() => handleNextMathProblem()} 
-                type="button"
-              >
-                Skip →
-              </button>
-            </div>
-
-            <div className="math-status-bar">
-              <div className="math-recognised-display">
-                <span>Recognised:</span>
-                <span className="math-digit-badge">{mathRecognised || "—"}</span>
+          {mathStage === "practice" && (
+            <div className="math-practice-container">
+              <div className="math-header">
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button className="ghost-button font-pixel" onClick={() => setMathStage("configure")}>◀ Back</button>
+                  <div className="math-mode-badge uppercase font-pixel">{mathMode} MODE</div>
+                </div>
+                <div className="practice-meta">
+                  <span className="practice-timer-display font-pixel">
+                    {mathTimerConfig > 0
+                      ? `TIME: ${Math.floor(mathTimeLeft / 60)}:${String(mathTimeLeft % 60).padStart(2, "0")}`
+                      : `MISSION ${mathCorrectCount + mathWrongCount + 1}`}
+                  </span>
+                  <span className="practice-streak-display font-pixel">
+                    🔥 {mathStreak}
+                  </span>
+                </div>
               </div>
-              <div style={{ color: mathResult.includes("Correct") ? "var(--green)" : mathResult.includes("Wrong") ? "var(--red)" : "var(--muted)" }}>
-                {mathResult || "Ready."}
+
+              <div className="math-split-workspace">
+                {/* Left Panel (60%) */}
+                <div className="math-workspace-left">
+                  <div className="math-problem-display-card">
+                    <div className="math-problem-text-giant font-pixel">{mathProblem.prompt}</div>
+                  </div>
+
+                  <div className="math-giant-input-wrapper">
+                    <input
+                      ref={(el) => el && el.focus()}
+                      type="text"
+                      pattern="[0-9]*"
+                      inputMode="numeric"
+                      className={`math-large-input ${mathResult.includes("Correct") || mathResult.includes("COWABUNGA") || mathResult.includes("LETHAL") || mathResult.includes("PERFECT") || mathResult.includes("NAILED") || mathResult.includes("KAME-HA") ? "correct-border" : (mathResult.includes("WRONG") ? "wrong-border" : "")}`}
+                      placeholder="?"
+                      value={mathAnswer}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (/^\d*$/.test(val)) {
+                          setMathAnswer(val);
+                        }
+                      }}
+                    />
+                    {mathResult && (
+                      <div className={`math-feedback-text font-pixel ${mathResult.includes("Correct") || mathResult.includes("COWABUNGA") || mathResult.includes("LETHAL") || mathResult.includes("PERFECT") || mathResult.includes("NAILED") || mathResult.includes("KAME-HA") ? "green-text" : "red-text"}`}>
+                        {mathResult}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="math-drawing-wrapper">
+                    <div className="math-canvas-label-row">
+                      <span>✏ Write answer below:</span>
+                      {mathRecognised && <span className="ocr-recognised-badge">Recognised: {mathRecognised}</span>}
+                    </div>
+                    <canvas
+                      ref={mathCanvasRef}
+                      width={512}
+                      height={200}
+                      className="math-drawing-scratchpad"
+                      onMouseDown={(e) => startMathDrawing(e, mathCanvasRef.current)}
+                      onMouseMove={(e) => drawMath(e, mathCanvasRef.current)}
+                      onMouseUp={() => stopMathDrawing(mathCanvasRef.current)}
+                      onMouseLeave={() => stopMathDrawing(mathCanvasRef.current)}
+                      onTouchStart={(e) => startMathDrawing(e, mathCanvasRef.current)}
+                      onTouchMove={(e) => drawMath(e, mathCanvasRef.current)}
+                      onTouchEnd={() => stopMathDrawing(mathCanvasRef.current)}
+                    />
+                  </div>
+
+                  <div className="math-buttons-bar">
+                    <button className="secondary-button" onClick={() => handleCheckMathAnswer()}>✓ Check</button>
+                    <button className="ghost-button" onClick={handleClearMathCanvas}>Clear</button>
+                    <button className="ghost-button" onClick={handleNextMathProblem}>Skip →</button>
+                    {mathQAttempted && (
+                      <button className="reveal-answer-btn font-pixel" onClick={() => setMathRevealTable(true)}>REVEAL ANSWER 👁</button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Panel (40%) */}
+                <div className="math-workspace-right">
+                  <div className="reference-header font-pixel">▣ REFERENCE</div>
+                  <div className="reference-content">
+                    {!mathRevealTable ? (
+                      <div className="reference-hint">
+                        Draw your answer on the scratchpad or type it in.
+                        <br /><br />
+                        Wrong answer? Click <strong>REVEAL ANSWER</strong> to view hint helper table here.
+                      </div>
+                    ) : (
+                      <div className="reference-reveal-details">
+                        {mathMode === "tables" ? (
+                          <div className="table-hint-rows">
+                            {(() => {
+                              const base = mathProblem.n1;
+                              const asked = mathProblem.n2;
+                              const rows = [];
+                              for (let i = 1; i <= 20; i++) {
+                                rows.push(
+                                  <div key={i} className={`table-row-line ${i === asked ? "highlight-row" : ""}`}>
+                                    <span>{i === asked ? "▶" : "·"}</span>
+                                    <span>{base} × {String(i).padStart(2, " ")} = {base * i}</span>
+                                  </div>
+                                );
+                              }
+                              return rows;
+                            })()}
+                          </div>
+                        ) : (
+                          <div className="square-cube-reveal-hint">
+                            <div className="giant-answer-badge font-pixel">
+                              {mathProblem.prompt.replace("= ?", "").replace("?", "").trim()} = {mathProblem.answer}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
-            
-            <div style={{ marginTop: "12px", borderTop: "1px dashed var(--border)", paddingTop: "12px", display: "flex", gap: "8px", alignItems: "center" }}>
-              <span style={{ fontSize: "11px", color: "var(--muted)" }}>Keyboard Fallback:</span>
-              <input
-                onChange={(event) => setMathAnswer(event.target.value)}
-                placeholder="Type answer"
-                type="number"
-                value={mathAnswer}
-                style={{ width: "100px", padding: "4px 8px", fontSize: "12px" }}
-              />
-              <button 
-                className="ghost-button" 
-                onClick={() => handleCheckMathAnswer()}
-                type="button"
-                style={{ padding: "4px 8px", fontSize: "12px" }}
-              >
-                Submit Text
+          )}
+
+          {mathStage === "report" && (
+            <div className="math-trainer-container">
+              <div className="math-header">
+                <div>
+                  <span className="mode-kicker">✦ MISSION COMPLETED</span>
+                  <h3 className="font-pixel">Training Report</h3>
+                </div>
+              </div>
+              
+              <div className="report-summary-stats">
+                <div className="report-badge green">
+                  <span className="report-badge-val font-pixel">{mathCorrectCount}</span>
+                  <span className="report-badge-lbl">CORRECT ANSWERS</span>
+                </div>
+                
+                <div className="report-badge purple">
+                  <span className="report-badge-val font-pixel">
+                    {mathCorrectCount + mathWrongCount > 0
+                      ? Math.round((mathCorrectCount / (mathCorrectCount + mathWrongCount)) * 100)
+                      : 0}%
+                  </span>
+                  <span className="report-badge-lbl">ACCURACY</span>
+                </div>
+
+                <div className="report-badge orange">
+                  <span className="report-badge-val font-pixel">
+                    {mathTimerConfig > 0
+                      ? (mathCorrectCount / mathTimerConfig).toFixed(1)
+                      : "—"}
+                  </span>
+                  <span className="report-badge-lbl">SPEED (Q/MIN)</span>
+                </div>
+              </div>
+
+              <button className="finish-mission-btn font-pixel" onClick={() => setMathStage("discipline")}>
+                FINISH MISSION
               </button>
             </div>
-          </div>
+          )}
         </section>
       );
     }
@@ -3979,36 +4912,239 @@ function App() {
     }
 
     if (screen === "journal") {
+      const datesWithEntries = getJournalDatesList();
       return (
-        <section className="mode-panel">
-          <div className="mode-heading">
-            <div>
-              <span className="mode-kicker">Journal</span>
-              <h3>Session Log</h3>
-              <p>Recent browser-side actions for this local run.</p>
+        <section className="journal-panel">
+          {/* Header */}
+          <div className="journal-header">
+            <div className="journal-header-left">
+              <span className="journal-kicker">SHINOBI LOGBOOK</span>
+              <h2>Daily Journal</h2>
             </div>
+            
+            {/* Interactive Date Selector */}
+            <div className="journal-date-navigator">
+              <button 
+                className="journal-date-arrow" 
+                onClick={handlePrevDay}
+                title="Previous Day"
+                type="button"
+              >
+                ◀
+              </button>
+              <input 
+                type="date" 
+                className="journal-date-input"
+                value={journalDate} 
+                onChange={(e) => {
+                  commitJournalText();
+                  setJournalDate(e.target.value);
+                }} 
+              />
+              <span className="journal-date-display">
+                {formatJournalDate(journalDate)}
+              </span>
+              <button 
+                className="journal-date-arrow" 
+                onClick={handleNextDay}
+                title="Next Day"
+                type="button"
+              >
+                ▶
+              </button>
+            </div>
+            
             <button
-              className="ghost-button"
+              className="ghost-button journal-back-btn"
               onClick={() => {
+                commitJournalText();
                 setScreen("home");
                 recordAction("Journal closed.");
               }}
               type="button"
             >
-              Back
+              Back [ESC]
             </button>
           </div>
-          <div className="journal-list">
-            {activityLog.length ? (
-              activityLog.map((entry) => (
-                <div className="journal-row" key={entry.id}>
-                  <span>{entry.at}</span>
-                  <strong>{entry.message}</strong>
+
+          <div className="journal-split-workspace">
+            {/* Sidebar with log list */}
+            <aside className="journal-sidebar">
+              <div className="journal-sidebar-title">PAST ENTRIES</div>
+              <div className="journal-sidebar-list">
+                {datesWithEntries.length > 0 ? (
+                  datesWithEntries.map((d) => (
+                    <button
+                      key={d}
+                      className={`journal-sidebar-item ${d === journalDate ? "active" : ""}`}
+                      onClick={() => {
+                        commitJournalText();
+                        setJournalDate(d);
+                      }}
+                      type="button"
+                    >
+                      <span className="sidebar-item-dot">◈</span>
+                      <span className="sidebar-item-date">{d}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="sidebar-empty">No entries yet. Start writing!</div>
+                )}
+              </div>
+            </aside>
+
+            {/* Main Canvas Workspace */}
+            <div className="journal-canvas-container">
+              <div 
+                className="journal-canvas-wrapper"
+                style={{ 
+                  position: "relative", 
+                  width: "900px", 
+                  height: `${journalCanvasHeight}px`,
+                  margin: "0 auto" 
+                }}
+              >
+                <canvas
+                  ref={journalCanvasRef}
+                  onMouseDown={startJournalDrawing}
+                  onMouseMove={drawJournal}
+                  onMouseUp={stopJournalDrawing}
+                  onMouseLeave={stopJournalDrawing}
+                  onTouchStart={startJournalDrawing}
+                  onTouchMove={drawJournal}
+                  onTouchEnd={stopJournalDrawing}
+                  style={{
+                    display: "block",
+                    width: "900px",
+                    height: `${journalCanvasHeight}px`,
+                    cursor: journalMode === "pen" ? "crosshair" : journalMode === "eraser" ? "cell" : "text"
+                  }}
+                />
+                {/* Active Text Input overlay */}
+                {journalTextPos && (
+                  <input
+                    ref={journalTextInputRef}
+                    type="text"
+                    value={journalTextBuf}
+                    onChange={(e) => setJournalTextBuf(e.target.value)}
+                    onKeyDown={handleJournalTextKeyDown}
+                    onBlur={commitJournalText}
+                    style={{
+                      position: "absolute",
+                      left: `${(journalTextPos.x / 900) * 100}%`,
+                      top: `${(journalTextPos.y / journalCanvasHeight) * 100}%`,
+                      transform: "translateY(-80%)",
+                      font: `${journalTextSize}px Segoe UI, sans-serif`,
+                      color: JOURNAL_COLORS[journalColorIdx],
+                      background: "transparent",
+                      border: "none",
+                      outline: "none",
+                      borderBottom: `1px dashed ${JOURNAL_COLORS[journalColorIdx]}`,
+                      caretColor: JOURNAL_COLORS[journalColorIdx],
+                      zIndex: 10,
+                      minWidth: "150px",
+                      padding: "0 2px"
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Floating Toolbar Controls */}
+          <div className="journal-toolbar">
+            <div className="journal-toolbar-group">
+              <span className="toolbar-label">MODE:</span>
+              <button 
+                className={`toolbar-btn ${journalMode === "pen" ? "active" : ""}`}
+                onClick={() => { commitJournalText(); setJournalMode("pen"); }}
+                title="Pen Tool"
+                type="button"
+              >
+                ✏️ PEN
+              </button>
+              <button 
+                className={`toolbar-btn ${journalMode === "eraser" ? "active" : ""}`}
+                onClick={() => { commitJournalText(); setJournalMode("eraser"); }}
+                title="Eraser Tool"
+                type="button"
+              >
+                🧽 ERASER
+              </button>
+              <button 
+                className={`toolbar-btn ${journalMode === "text" ? "active" : ""}`}
+                onClick={() => setJournalMode("text")}
+                title="Text Block Tool"
+                type="button"
+              >
+                ⌨️ TEXT
+              </button>
+            </div>
+
+            {journalMode !== "eraser" && (
+              <div className="journal-toolbar-group">
+                <span className="toolbar-label">COLOR:</span>
+                <div className="journal-colors-list">
+                  {JOURNAL_COLORS.map((color, idx) => (
+                    <button
+                      key={color}
+                      className={`journal-color-dot ${journalColorIdx === idx ? "active" : ""}`}
+                      style={{ backgroundColor: color }}
+                      onClick={() => setJournalColorIdx(idx)}
+                      title={`Select Color ${idx + 1}`}
+                      type="button"
+                    />
+                  ))}
                 </div>
-              ))
-            ) : (
-              <div className="stage-empty">- NO JOURNAL ENTRIES YET -</div>
+              </div>
             )}
+
+            {journalMode === "text" && (
+              <div className="journal-toolbar-group">
+                <span className="toolbar-label">SIZE:</span>
+                <select 
+                  className="journal-size-select"
+                  value={journalTextSize}
+                  onChange={(e) => setJournalTextSize(Number(e.target.value))}
+                >
+                  <option value={12}>12px</option>
+                  <option value={14}>14px</option>
+                  <option value={16}>16px</option>
+                  <option value={18}>18px</option>
+                  <option value={24}>24px</option>
+                  <option value={32}>32px</option>
+                </select>
+              </div>
+            )}
+
+            <div className="journal-toolbar-separator" />
+
+            <div className="journal-toolbar-group">
+              <button 
+                className="toolbar-btn action-btn" 
+                onClick={handleUndoJournal}
+                title="Undo last stroke or text"
+                type="button"
+              >
+                ↩️ UNDO
+              </button>
+              <button 
+                className="toolbar-btn action-btn danger-btn" 
+                onClick={handleClearJournal}
+                title="Clear current day's sheet"
+                type="button"
+              >
+                🗑️ CLEAR
+              </button>
+              <button 
+                className="toolbar-btn action-btn success-btn" 
+                onClick={handleExportJournalPng}
+                title="Export as PNG image"
+                type="button"
+              >
+                💾 EXPORT
+              </button>
+            </div>
           </div>
         </section>
       );
@@ -4046,6 +5182,10 @@ function App() {
             <button className="toggle-row" onClick={handleRefresh} type="button">
               <span>Local API</span>
               <strong>{status === "error" ? "OFFLINE" : "SYNC"}</strong>
+            </button>
+            <button className="toggle-row" onClick={handleForceResetFromBackend} type="button" style={{ color: "#FF4444" }}>
+              <span>Reset Local Cache</span>
+              <strong>RELOAD FROM SERVER</strong>
             </button>
           </div>
         </section>
@@ -4115,12 +5255,16 @@ function App() {
 
   const isReviewScreen = screen === "review";
   const isEditorScreen = screen === "editor";
+  const isMathScreen = screen === "math";
+  const isJournalScreen = screen === "journal";
 
   return (
     <div
       className={`app-shell ${classicMode ? "classic-mode" : ""} ${
         isReviewScreen ? "review-fullscreen" : ""
-      } ${isEditorScreen ? "editor-fullscreen review-fullscreen" : ""}`}
+      } ${isEditorScreen ? "editor-fullscreen review-fullscreen" : ""} ${
+        isMathScreen ? "math-fullscreen review-fullscreen" : ""
+      } ${isJournalScreen ? "journal-fullscreen review-fullscreen" : ""}`}
     >
       <div className="scanlines" />
       <header className="topbar local-topbar">
@@ -4129,7 +5273,7 @@ function App() {
         </div>
         <nav className="nav-links local-nav">
           <button onClick={handleMathNav} type="button">
-            ▣ Math
+            🧮 Math Trainer
           </button>
           <button onClick={handleJournalNav} type="button">
             ▤ Journal

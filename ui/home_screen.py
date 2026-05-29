@@ -1220,7 +1220,7 @@ class HomeScreen(QWidget):
             b.setObjectName("nav_btn")
             return b
 
-        btn_math = _topbtn("🧮 MATH", "Practice Tables, Squares & Cubes")
+        btn_math = _topbtn("🧮 MATH TRAINER", "Practice Tables, Squares & Cubes")
         btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
         self._btn_save = _topbtn("💾 SAVE", "Save now  Ctrl+S")
         self._btn_settings = _topbtn("⚙ SETTINGS", "Visual scale and Mission Archive")
@@ -1265,7 +1265,6 @@ class HomeScreen(QWidget):
         tl.addWidget(self._btn_save)
         tl.addWidget(self._btn_settings)
         tl.addWidget(self._btn_shortcuts)
-        tl.addWidget(self._btn_theme)
         tl.addWidget(btn_help)
         tl.addWidget(btn_about)
         tl.addSpacing(6)
@@ -1353,6 +1352,11 @@ class HomeScreen(QWidget):
         self._clear_home_ram_shortcut.activated.connect(self._clear_home_ram_caches)
 
     def _clear_home_ram_caches(self):
+        try:
+            _ = self.parent()
+        except RuntimeError:
+            return
+
         if (
             getattr(self, "_active_review", None) is not None
             or getattr(self, "_active_editor", None) is not None
@@ -1659,6 +1663,7 @@ class HomeScreen(QWidget):
         dialog_cls = _load_journal_dialog()
         if dialog_cls is not None:
             dialog_cls(self).exec_()
+            self._clear_home_ram_caches()
         else:
             from PyQt5.QtWidgets import QMessageBox
 
@@ -1742,6 +1747,7 @@ class HomeScreen(QWidget):
                 sizes = getattr(self, "_pre_math_sizes", [340, 760, 220])
                 split.setSizes(sizes)
         self.refresh()
+        self._clear_home_ram_caches()
 
         # Shutdown the OCR background worker when exiting Math Trainer to free RAM
         try:
@@ -1760,9 +1766,11 @@ class HomeScreen(QWidget):
 
     def _show_about(self):
         AboutDialog(self).exec_()
+        self._clear_home_ram_caches()
 
     def _show_help(self):
         OnboardingDialog(self).exec_()
+        self._clear_home_ram_caches()
 
     def _create_tmnt_layout(self):
         layout_cls = _load_tmnt_home_layout()
@@ -1804,6 +1812,7 @@ class HomeScreen(QWidget):
     def _show_shortcuts(self):
         dlg = _load_shortcut_settings_dialog()(self)
         dlg.exec_()
+        self._clear_home_ram_caches()
 
     def _build_classic_settings_panel(self):
         panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
@@ -1838,6 +1847,34 @@ class HomeScreen(QWidget):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
+
+        theme_title = QLabel("THEME")
+        theme_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(theme_title)
+
+        theme_box = QFrame()
+        theme_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        theme_layout = QHBoxLayout(theme_box)
+        theme_layout.setContentsMargins(10, 8, 10, 8)
+        theme_layout.setSpacing(8)
+        theme_label = QLabel("Active Mode")
+        theme_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        theme_layout.addWidget(theme_label, 1)
+
+        saved_theme = self._data.get("_theme", "classic")
+        self._current_theme = normalize_theme(saved_theme)
+        _next_lbl = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
+        btn_text = _next_lbl.get(self._current_theme, "🐢 TMNT MODE")
+        self._btn_theme = QPushButton(btn_text)
+        self._btn_theme.setCursor(Qt.PointingHandCursor)
+        self._btn_theme.setObjectName("font_btn")
+        self._btn_theme.clicked.connect(self._toggle_theme)
+        theme_layout.addWidget(self._btn_theme, 0, Qt.AlignRight)
+        layout.addWidget(theme_box)
 
         scale_title = QLabel("VISUAL SCALE")
         scale_title.setStyleSheet(
@@ -2323,6 +2360,7 @@ class HomeScreen(QWidget):
         while True:
             dlg = _load_recovery_dialog()(summary, self, startup=startup)
             dlg.exec_()
+            self._clear_home_ram_caches()
             action = getattr(dlg, "action", "close")
             if action == "recover_reviews":
                 result = recovery_manager.apply_pending_review_events(store.get())

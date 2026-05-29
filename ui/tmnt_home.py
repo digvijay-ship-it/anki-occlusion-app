@@ -2531,16 +2531,35 @@ class TMNTTopBar(QFrame):
         left_l.addStretch()
         L.addWidget(left, 1)
 
-        btn_math = self._make_nav_button("📘 MATH", "Math Trainer")
-        btn_journal = self._make_nav_button("📜 JOURNAL", "Daily Journal")
-        btn_theme = self._make_theme_nav_button("🖥 CLASSIC MODE", "Switch Theme")
+        btn_math = self._make_nav_button("🧮 MATH TRAINER", "Math Trainer")
+        btn_journal = self._make_nav_button("📓", "Daily Journal")
+        btn_journal.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {T_SUBTEXT};
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    font-family: {T_MONO};
+                    font-size: 24px;
+                    font-weight: bold;
+                    padding: 6px 8px;
+                }}
+                QPushButton:hover {{
+                    color: {T_GREEN};
+                    border-bottom: 2px solid {T_GREEN};
+                }}
+            """,
+                self._scale,
+            )
+        )
         self._more_btn = self._make_nav_button("MORE ▾", "More")
         self._more_btn.installEventFilter(self)
         self._more_panel = self._build_more_panel()
 
         btn_math.clicked.connect(self.btn_math_clicked)
         btn_journal.clicked.connect(self.btn_journal_clicked)
-        btn_theme.clicked.connect(self.btn_theme_clicked)
         self._more_btn.clicked.connect(
             lambda: self._toggle_panel(self._more_panel, self._more_btn, "left")
         )
@@ -2551,7 +2570,7 @@ class TMNTTopBar(QFrame):
         center_l.setContentsMargins(0, 0, 0, 0)
         center_l.setSpacing(_px(10, self._scale))
         center_l.addStretch()
-        for b in (btn_math, btn_journal, btn_theme, self._more_btn):
+        for b in (btn_math, btn_journal, self._more_btn):
             center_l.addWidget(b, 0, Qt.AlignCenter)
         center_l.addStretch()
         L.addWidget(center, 1)
@@ -2828,6 +2847,51 @@ class TMNTTopBar(QFrame):
             _px(12, self._scale),
         )
         panel_l.setSpacing(_px(10, self._scale))
+
+        theme_lbl = QLabel("THEME")
+        theme_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(theme_lbl)
+
+        theme_box = QFrame()
+        theme_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        theme_l = QHBoxLayout(theme_box)
+        theme_l.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        theme_l.setSpacing(_px(6, self._scale))
+        theme_mode_lbl = QLabel("ACTIVE MODE")
+        theme_mode_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        theme_l.addWidget(theme_mode_lbl)
+        theme_l.addStretch()
+
+        self._btn_theme = self._menu_button("📚 CLASSIC THEME", T_PURPLE, self.btn_theme_clicked, divider=False)
+        self._btn_theme.setCursor(Qt.PointingHandCursor)
+        self._btn_theme.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px; padding: 2px 6px; color: {T_PURPLE}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        theme_l.addWidget(self._btn_theme)
+        panel_l.addWidget(theme_box)
 
         scale_lbl = QLabel("VISUAL SCALE")
         scale_lbl.setStyleSheet(
@@ -3362,6 +3426,17 @@ class TMNTHomeLayout(QWidget):
         self.sidebar.new_sub.connect(self._new_sub)
 
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            panels_closed = False
+            if getattr(self, "_settings_panel", None) is not None and self._settings_panel.isVisible():
+                self._hide_panel(self._settings_panel)
+                panels_closed = True
+            if getattr(self, "_more_panel", None) is not None and self._more_panel.isVisible():
+                self._hide_panel(self._more_panel)
+                panels_closed = True
+            if panels_closed:
+                event.accept()
+                return
         if event.key() == Qt.Key_K and event.modifiers() & Qt.ControlModifier:
             self.sidebar._focus_search()
             event.accept()

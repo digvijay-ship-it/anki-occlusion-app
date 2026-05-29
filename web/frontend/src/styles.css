@@ -2342,5 +2342,972 @@ button:disabled {
   color: var(--neon);
 }
 
+/* Math Trainer Upgraded Styles */
+
+.font-pixel {
+  font-family: "Press Start 2P", cursive !important;
+}
+
+/* Loading stage */
+.math-loading-panel {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 480px;
+}
+
+.math-loading-container {
+  text-align: center;
+  max-width: 450px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.math-hex-logo {
+  font-size: 42px;
+  color: var(--green);
+  border: 2px solid var(--green);
+  border-radius: 8px;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  box-shadow: 0 0 20px rgba(75, 179, 79, 0.4);
+}
+
+.math-hex-logo.spinner {
+  animation: math-spin 3s linear infinite;
+}
+
+@keyframes math-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.math-loading-bar-container {
+  width: 100%;
+  height: 6px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.math-loading-bar-fill {
+  height: 100%;
+  width: 60%;
+  background: var(--green);
+  box-shadow: 0 0 10px var(--green);
+  animation: math-loading-anim 2s ease-in-out infinite;
+}
+
+@keyframes math-loading-anim {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* Discipline Stage */
+.math-discipline-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.math-discipline-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.discipline-card {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 24px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  text-align: left;
+  transition: all 0.2s;
+}
+
+.discipline-card:hover {
+  transform: translateY(-2px);
+  background: rgba(35, 40, 51, 0.6);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+}
+
+.discipline-card.tables { border-left: 4px solid var(--neon); }
+.discipline-card.tables:hover { border-color: var(--neon); }
+.discipline-card.squares { border-left: 4px solid var(--purple); }
+.discipline-card.squares:hover { border-color: var(--purple); }
+.discipline-card.cubes { border-left: 4px solid var(--red); }
+.discipline-card.cubes:hover { border-color: var(--red); }
+
+.discipline-icon {
+  font-size: 32px;
+  min-width: 50px;
+  text-align: center;
+}
+
+.discipline-card h4 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+}
+
+.discipline-card.tables h4 { color: var(--neon); }
+.discipline-card.squares h4 { color: var(--purple); }
+.discipline-card.cubes h4 { color: var(--red); }
+
+.discipline-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Configuration Stage */
+.math-configure-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.configure-section {
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.configure-section .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 8px;
+}
+
+.configure-section h4 {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+
+.helper-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.tiny-button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.tiny-button:hover {
+  color: var(--text);
+  border-color: var(--green);
+}
+
+.tables-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 6px;
+}
+
+.ranges-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+
+.grid-cb {
+  height: 44px;
+  background: rgba(13, 13, 22, 0.9);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-weight: bold;
+  border-radius: 4px;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.grid-cb:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.grid-cb.checked {
+  background: rgba(75, 179, 79, 0.12);
+  border-color: var(--green);
+  color: var(--green);
+  box-shadow: 0 0 8px rgba(75, 179, 79, 0.2);
+}
+
+.grid-cb.range-cb.checked {
+  background: rgba(167, 125, 255, 0.12);
+  border-color: var(--purple);
+  color: var(--purple);
+  box-shadow: 0 0 8px rgba(167, 125, 255, 0.2);
+}
+
+.grid-cb.range-cb:hover {
+  border-color: var(--purple);
+  color: var(--purple);
+}
+
+.timer-options-row {
+  display: flex;
+  gap: 12px;
+}
+
+.timer-cb {
+  flex: 1;
+  height: 44px;
+  background: rgba(13, 13, 22, 0.9);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-weight: bold;
+  border-radius: 4px;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+
+.timer-cb:hover {
+  border-color: var(--purple);
+  color: var(--purple);
+}
+
+.timer-cb.checked {
+  background: rgba(167, 125, 255, 0.12);
+  border-color: var(--purple);
+  color: var(--purple);
+  box-shadow: 0 0 8px rgba(167, 125, 255, 0.2);
+}
+
+.start-mission-btn {
+  width: 100%;
+  height: 50px;
+  background: var(--green);
+  border: none;
+  border-radius: 6px;
+  color: #070b0d;
+  font-size: 14px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  margin-top: 20px;
+  transition: all 0.2s;
+  box-shadow: 0 0 15px rgba(75, 179, 79, 0.35);
+}
+
+.start-mission-btn:hover {
+  background: white;
+  box-shadow: 0 0 25px rgba(255, 255, 255, 0.6);
+  transform: translateY(-1px);
+}
+
+.config-error-message {
+  color: var(--red);
+  font-size: 11px;
+  font-family: "Press Start 2P", cursive;
+  text-align: center;
+  margin-top: 12px;
+}
+
+/* Practice Stage */
+.math-practice-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.practice-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.practice-timer-display {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.practice-streak-display {
+  color: var(--orange);
+  font-size: 10px;
+}
+
+.math-split-workspace {
+  display: grid;
+  grid-template-columns: 6.5fr 3.5fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.math-workspace-left {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.math-problem-display-card {
+  height: 140px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.math-problem-display-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(102, 252, 241, 0.04), transparent 50%, rgba(102, 252, 241, 0.04));
+}
+
+.math-problem-text-giant {
+  font-size: 40px;
+  color: var(--text);
+  letter-spacing: 2px;
+  text-shadow: 0 0 10px rgba(216, 221, 228, 0.3);
+}
+
+.math-giant-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+.math-large-input {
+  width: 100%;
+  height: 80px;
+  background: var(--panel-3) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 42px;
+  text-align: center;
+  font-family: "Roboto Mono", monospace;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.math-large-input:focus {
+  border-color: var(--neon) !important;
+  box-shadow: 0 0 15px rgba(102, 252, 241, 0.25) !important;
+}
+
+.math-large-input.correct-border {
+  border-color: var(--green) !important;
+  color: var(--green);
+  box-shadow: 0 0 15px rgba(75, 179, 79, 0.25) !important;
+}
+
+.math-large-input.wrong-border {
+  border-color: var(--red) !important;
+  color: var(--red);
+  box-shadow: 0 0 15px rgba(255, 77, 90, 0.25) !important;
+}
+
+.math-feedback-text {
+  font-size: 14px;
+  letter-spacing: 1px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.math-feedback-text.green-text { color: var(--green); }
+.math-feedback-text.red-text { color: var(--red); }
+
+.math-drawing-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.math-canvas-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ocr-recognised-badge {
+  color: var(--neon);
+  border: 1px solid var(--neon);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.math-drawing-scratchpad {
+  width: 100%;
+  height: 180px;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: crosshair;
+  touch-action: none;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);
+  transition: border-color 0.2s;
+}
+
+.math-drawing-scratchpad:active {
+  border-color: var(--neon);
+}
+
+.math-buttons-bar {
+  display: flex;
+  gap: 12px;
+}
+
+.math-buttons-bar .reveal-answer-btn {
+  background: transparent;
+  border: 1px solid var(--orange);
+  color: var(--orange);
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 9px;
+  margin-left: auto;
+  transition: all 0.2s;
+}
+
+.math-buttons-bar .reveal-answer-btn:hover {
+  background: rgba(255, 159, 67, 0.1);
+  box-shadow: 0 0 10px rgba(255, 159, 67, 0.2);
+}
+
+.math-workspace-right {
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 480px;
+}
+
+.reference-header {
+  padding: 12px 16px;
+  font-size: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+
+.reference-content {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.reference-hint {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+  margin: auto;
+}
+
+.table-hint-rows {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 15px;
+  color: var(--neon);
+  white-space: pre;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.table-row-line {
+  display: flex;
+  gap: 12px;
+}
+
+.table-row-line.highlight-row {
+  color: var(--green);
+  font-weight: bold;
+  background: rgba(75, 179, 79, 0.1);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+
+.giant-answer-badge {
+  font-size: 24px;
+  color: var(--green);
+  text-shadow: 0 0 10px rgba(75, 179, 79, 0.4);
+  text-align: center;
+  margin: auto;
+}
+
+/* Report Stage */
+.math-report-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.report-summary-stats {
+  display: flex;
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.report-badge {
+  flex: 1;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.report-badge.green { border-top: 3px solid var(--green); }
+.report-badge.purple { border-top: 3px solid var(--purple); }
+.report-badge.orange { border-top: 3px solid var(--orange); }
+
+.report-badge-val {
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.report-badge.green .report-badge-val { color: var(--green); }
+.report-badge.purple .report-badge-val { color: var(--purple); }
+.report-badge.orange .report-badge-val { color: var(--orange); }
+
+.report-badge-lbl {
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.finish-mission-btn {
+  width: 100%;
+  height: 50px;
+  background: var(--purple);
+  border: none;
+  border-radius: 6px;
+  color: #070b0d;
+  font-size: 14px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  transition: all 0.2s;
+  box-shadow: 0 0 15px rgba(167, 125, 255, 0.35);
+}
+
+.finish-mission-btn:hover {
+  background: white;
+  box-shadow: 0 0 25px rgba(255, 255, 255, 0.6);
+  transform: translateY(-1px);
+}
+
+/* Fullscreen Math Trainer Styles */
+.review-fullscreen .math-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+.review-fullscreen .math-trainer-container {
+  margin: 40px auto 0 auto;
+}
+
+.review-fullscreen .math-practice-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.review-fullscreen .math-split-workspace {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.review-fullscreen .math-workspace-right {
+  min-height: 0;
+}
+
+/* Scrollbar & Overflow Prevention in Fullscreen */
+.app-shell.review-fullscreen {
+  overflow: hidden !important;
+}
+
+.app-shell.review-fullscreen .local-workspace {
+  overflow: hidden !important;
+}
+
+/* Daily Journal Shinobi Logbook Styles */
+.review-fullscreen .journal-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  background: #07070b;
+  position: relative;
+}
+
+.journal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 2px solid #1a1a2e;
+  background: rgba(13, 13, 23, 0.95);
+  z-index: 10;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.journal-kicker {
+  font-family: 'Outfit', sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: #72FF4F;
+  text-shadow: 0 0 8px rgba(114, 255, 79, 0.4);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.journal-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.journal-date-navigator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid #1a1a2e;
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+
+.journal-date-arrow {
+  background: transparent;
+  border: none;
+  color: #72FF4F;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: all 0.2s ease;
+  border-radius: 4px;
+}
+
+.journal-date-arrow:hover {
+  background: rgba(114, 255, 79, 0.15);
+  transform: scale(1.1);
+}
+
+.journal-date-input {
+  background: #12121f;
+  border: 1px solid #1a1a2e;
+  color: #ffffff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: 'Segoe UI', monospace;
+  outline: none;
+  cursor: pointer;
+}
+
+.journal-date-display {
+  font-family: monospace;
+  color: #e0e0ff;
+  font-weight: bold;
+  font-size: 14px;
+  min-width: 180px;
+  text-align: center;
+}
+
+.journal-split-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.journal-sidebar {
+  width: 240px;
+  background: #0a0a0f;
+  border-right: 2px solid #1a1a2e;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.journal-sidebar-title {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  padding: 16px 20px 8px 20px;
+  font-weight: 600;
+  border-bottom: 1px solid #1a1a2e;
+}
+
+.journal-sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.journal-sidebar-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.journal-sidebar-list::-webkit-scrollbar-thumb {
+  background: #1a1a2e;
+  border-radius: 3px;
+}
+
+.journal-sidebar-item {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #a0a0b0;
+  padding: 10px 14px;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  transition: all 0.2s ease;
+}
+
+.journal-sidebar-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: #ffffff;
+}
+
+.journal-sidebar-item.active {
+  background: rgba(114, 255, 79, 0.08);
+  border-color: rgba(114, 255, 79, 0.3);
+  color: #72FF4F;
+}
+
+.sidebar-item-dot {
+  font-size: 8px;
+  color: inherit;
+}
+
+.sidebar-item-date {
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.sidebar-empty {
+  padding: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.journal-canvas-container {
+  flex: 1;
+  overflow: auto;
+  background: #040406;
+  padding: 30px 30px 100px 30px;
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  position: relative;
+}
+
+.journal-canvas-container::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.journal-canvas-container::-webkit-scrollbar-thumb {
+  background: #1a1a2e;
+  border-radius: 5px;
+  border: 2px solid #040406;
+}
+
+.journal-canvas-container::-webkit-scrollbar-track {
+  background: #040406;
+}
+
+.journal-canvas-wrapper {
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+  border: 2px solid #1a1a2e;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #07070b;
+}
+
+.journal-toolbar {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(13, 13, 23, 0.95);
+  border: 2px solid #252542;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.7), 0 0 15px rgba(114, 255, 79, 0.15);
+  border-radius: 50px;
+  padding: 8px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 100;
+  backdrop-filter: blur(10px);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.journal-toolbar:hover {
+  border-color: #72FF4F;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.7), 0 0 25px rgba(114, 255, 79, 0.3);
+}
+
+.journal-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.toolbar-btn {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid #1a1a2e;
+  color: #a0a0b0;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  border-color: #252542;
+}
+
+.toolbar-btn.active {
+  background: #72FF4F;
+  color: #000000;
+  border-color: #72FF4F;
+  box-shadow: 0 0 12px rgba(114, 255, 79, 0.4);
+}
+
+.journal-colors-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.journal-color-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.2s ease;
+}
+
+.journal-color-dot:hover {
+  transform: scale(1.2);
+}
+
+.journal-color-dot.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+  transform: scale(1.25);
+}
+
+.journal-size-select {
+  background: #12121f;
+  border: 1px solid #1a1a2e;
+  color: #ffffff;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.journal-toolbar-separator {
+  width: 1px;
+  height: 24px;
+  background: #1a1a2e;
+}
+
+.action-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: #e0e0ff;
+  color: #ffffff;
+}
+
+.danger-btn:hover {
+  background: rgba(255, 68, 68, 0.15);
+  border-color: #FF4444;
+  color: #FF4444;
+}
+
+.success-btn:hover {
+  background: rgba(114, 255, 79, 0.15);
+  border-color: #72FF4F;
+  color: #72FF4F;
+}
+
+.journal-back-btn {
+  border: 1px solid #1a1a2e;
+  color: #ffffff;
+  border-radius: 6px;
+}
+
+.journal-back-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: #72FF4F;
+  color: #72FF4F;
+}
+
+
+
+
 
 

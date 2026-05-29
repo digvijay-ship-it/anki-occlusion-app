@@ -384,6 +384,37 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, e):
         key = e.key()
         mods = e.modifiers()
+        if key == Qt.Key_Escape:
+            home = self.centralWidget()
+            if home is not None:
+                # 1. Classic Settings Panel
+                if getattr(home, "_classic_settings_panel", None) is not None and home._classic_settings_panel.isVisible():
+                    home._classic_settings_panel.hide()
+                    e.accept()
+                    return
+                # 2. TMNT Settings/More Panels
+                if getattr(home, "_tmnt_layout", None) is not None and home._tmnt_layout.isVisible():
+                    tmnt = home._tmnt_layout
+                    panels_closed = False
+                    if getattr(tmnt, "_settings_panel", None) is not None and tmnt._settings_panel.isVisible():
+                        tmnt._hide_panel(tmnt._settings_panel)
+                        panels_closed = True
+                    if getattr(tmnt, "_more_panel", None) is not None and tmnt._more_panel.isVisible():
+                        tmnt._hide_panel(tmnt._more_panel)
+                        panels_closed = True
+                    if panels_closed:
+                        e.accept()
+                        return
+                # 3. Active Review Screen
+                if getattr(home, "_active_review", None) is not None:
+                    home._active_review.cancelled.emit()
+                    e.accept()
+                    return
+                # 4. Math Trainer Page
+                if getattr(home, "_math_trainer", None) is not None:
+                    home._math_trainer.go_back()
+                    e.accept()
+                    return
         if key == Qt.Key_F11:
             if self.isFullScreen():
                 self.showMaximized()

@@ -105,4 +105,20 @@ export async function loadCostSnapshot() {
   return getJson("/api/metrics/cost");
 }
 
+export async function loadJournal() {
+  return getJson("/api/journal");
+}
+
+export async function saveJournal(data) {
+  return requestJson("/api/journal", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function loadRawData() {
+  return getJson("/api/data/raw");
+}
+
+
 export { API_BASE, requestJson };

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from time import perf_counter
 
@@ -15,7 +17,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from storage_paths import resolve_asset_path
+from storage_paths import resolve_asset_path, current_journal_file, initialize_mission_archive
+
+try:
+    initialize_mission_archive()
+except Exception as e:
+    print(f"[AnkiWeb] Failed to initialize mission archive: {e}")
 
 from .commercial_store import CommercialWebStore, estimate_request_db_units
 from .schemas import (
@@ -201,6 +208,41 @@ def create_app() -> FastAPI:
         user: dict = Depends(get_current_user),
     ) -> dict:
         return store.cost_snapshot(user["user_id"])
+
+    @app.get("/api/data/raw")
+    def get_raw_data(store: AnkiWebStore = Depends(get_store)) -> dict:
+        return store.load()
+
+    @app.get("/api/journal")
+    def get_journal() -> dict:
+        path = current_journal_file()
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=str(exc))
+        return {}
+
+    @app.post("/api/journal")
+    async def save_journal(request: Request) -> dict:
+        path = current_journal_file()
+        tmp = None
+        try:
+            data = await request.json()
+            dir_ = os.path.dirname(path) or "."
+            fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception as exc:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=500, detail=str(exc))
+        return {"saved": True}
 
     return app
 
