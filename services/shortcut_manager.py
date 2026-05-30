@@ -48,6 +48,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.pen_toggle", "Review", "Toggle pen", "`"),
     ShortcutAction("review.pen_color", "Review", "Cycle pen color", "X"),
     ShortcutAction("review.pen_clear", "Review", "Clear pen marks", "Del"),
+    ShortcutAction("review.pdf_contrast", "Review", "Toggle PDF Contrast", "I"),
 )
 
 

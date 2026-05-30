@@ -241,7 +241,7 @@ def card_id(card: dict[str, Any]) -> str:
 
 
 def due_check(item: dict[str, Any]) -> bool:
-    return is_due_today(copy.deepcopy(item))
+    return is_due_today(item)
 
 
 def item_state(item: dict[str, Any]) -> str:
@@ -263,7 +263,7 @@ def schedule_payload(item: dict[str, Any]) -> dict[str, Any]:
 
 def rating_previews(item: dict[str, Any]) -> dict[str, str]:
     try:
-        return {str(quality): label for quality, label in _fmt_due_interval(copy.deepcopy(item)).items()}
+        return {str(quality): label for quality, label in _fmt_due_interval(item).items()}
     except Exception:
         return {}
 

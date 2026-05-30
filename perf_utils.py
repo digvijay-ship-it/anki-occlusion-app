@@ -171,12 +171,10 @@ def _deck_stats_fingerprint(decks):
 def card_has_due_today(card):
     boxes = card.get("boxes", [])
     if not boxes:
-        sm2_init(card)
         return is_due_today(card)
 
     seen_groups = set()
     for box in boxes:
-        sm2_init(box)
         gid = box.get("group_id", "")
         if gid:
             if gid in seen_groups:
@@ -190,13 +188,11 @@ def card_has_due_today(card):
 def count_due_units_in_card(card):
     boxes = card.get("boxes", [])
     if not boxes:
-        sm2_init(card)
         return 1 if is_due_today(card) else 0
 
     seen_groups = set()
     due_units = 0
     for box in boxes:
-        sm2_init(box)
         gid = box.get("group_id", "")
         if gid:
             if gid in seen_groups:

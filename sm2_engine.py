@@ -312,7 +312,6 @@ def sm2_update(c, quality):
 #  DUE CHECKS
 # ─────────────────────────────────────────────────────────────────────────────
 def is_due_now(c):
-    sched_init(c)
     if c.get("sm2_last_quality", -1) == -1:
         return True
     due_str = c.get("sm2_due", "")
@@ -325,7 +324,6 @@ def is_due_now(c):
 
 
 def is_due_today(c):
-    sched_init(c)
     state = c.get("sched_state", "new")
 
     if state == "new":

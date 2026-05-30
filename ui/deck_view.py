@@ -696,13 +696,15 @@ class DeckView(QWidget):
     def _push_undo(self):
         if not self._data:
             return
-        self._undo_stack.append((copy.deepcopy(self._data), self._deck_id))
+        import json
+        self._undo_stack.append((json.dumps(self._data), self._deck_id))
 
     def undo(self):
         if not self._undo_stack:
             return
-        data_snapshot, deck_id = self._undo_stack.pop()
-        self._data = data_snapshot
+        import json
+        data_json, deck_id = self._undo_stack.pop()
+        self._data = json.loads(data_json)
         self._deck_id = deck_id
         fresh = (
             find_deck_by_id(deck_id, self._data.get("decks", [])) if deck_id else None

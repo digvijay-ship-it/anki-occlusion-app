@@ -531,13 +531,17 @@ def pdf_page_to_image(page, mat, clip=None, show_annots: bool = True) -> QImage:
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False, annots=show_annots)
     # Same idea as temp.py: avoid PNG compression/decompression while rendering.
     # copy() detaches the QImage from MuPDF's temporary sample buffer safely.
-    return QImage(
+    qimg = QImage(
         pix.samples,
         pix.width,
         pix.height,
         pix.stride,
         QImage.Format_RGB888,
     ).copy()
+    from cache_manager import get_pdf_invert_setting
+    if get_pdf_invert_setting():
+        qimg.invertPixels(QImage.InvertRgb)
+    return qimg
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

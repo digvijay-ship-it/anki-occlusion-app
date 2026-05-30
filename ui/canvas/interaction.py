@@ -297,6 +297,8 @@ class CanvasInteractionMixin:
     def ink_clear(self):
         self._ink_strokes.clear()
         self._ink_current.clear()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         self._clear_pending_ink_mask_action()
         self.update()
         self._show_toast("🧹 Ink cleared")
@@ -305,6 +307,8 @@ class CanvasInteractionMixin:
         had_ink = bool(self._ink_strokes or self._ink_current)
         self._ink_strokes.clear()
         self._ink_current.clear()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         self._ink_input_kind = None
         self._clear_pending_ink_mask_action()
         if had_ink:
@@ -312,7 +316,9 @@ class CanvasInteractionMixin:
 
     def ink_undo_stroke(self):
         if self._ink_strokes:
-            self._ink_strokes.pop()
+            stroke = self._ink_strokes.pop()
+            if hasattr(self, "_ink_path_cache"):
+                self._ink_path_cache.pop(id(stroke), None)
             self.update()
 
     @property

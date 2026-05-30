@@ -55,6 +55,27 @@ class DirtyStore:
 
     # ── Load / Get / Set ──────────────────────────────────────────────────────
 
+    def _initialize_sm2_states(self, data):
+        if not isinstance(data, dict):
+            return
+        try:
+            from sm2_engine import sched_init
+            def _walk(decks):
+                for deck in decks or []:
+                    if not isinstance(deck, dict):
+                        continue
+                    for card in deck.get("cards", []) or []:
+                        if isinstance(card, dict):
+                            sched_init(card)
+                            for box in card.get("boxes", []) or []:
+                                if isinstance(box, dict):
+                                    sched_init(box)
+                    children = deck.get("children", []) or deck.get("subdecks", []) or []
+                    _walk(children)
+            _walk(data.get("decks", []))
+        except Exception as e:
+            print(f"[DEBUG][data_manager] SM2 state initialization failed: {e}")
+
     def load(self):
         """Load from disk. Clears dirty flag."""
         if os.path.exists(DATA_FILE):
@@ -64,6 +85,7 @@ class DirtyStore:
             except Exception:
                 print("[DEBUG][data_safety] load_failed using_empty_default")
                 self._data = {"decks": []}
+        self._initialize_sm2_states(self._data)
         with self._lock:
             self._dirty = False
             self.revision += 1
@@ -75,6 +97,7 @@ class DirtyStore:
 
     def set(self, data):
         """Replace entire data dict and mark dirty."""
+        self._initialize_sm2_states(data)
         with self._lock:
             self._data = data
             self._dirty = True
@@ -507,14 +530,14 @@ class _DeckHistory:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _snapshot(data: dict) -> dict:
-        import copy
-        return copy.deepcopy(data)
+    def _snapshot(data: dict) -> str:
+        import json
+        return json.dumps(data)
 
     @staticmethod
-    def _restore(snapshot: dict) -> dict:
-        import copy
-        return copy.deepcopy(snapshot)
+    def _restore(snapshot: str) -> dict:
+        import json
+        return json.loads(snapshot)
 
     def push(self, data: dict):
         """Mutate se PEHLE call karo."""

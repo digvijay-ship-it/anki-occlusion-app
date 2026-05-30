@@ -2931,6 +2931,56 @@ class TMNTTopBar(QFrame):
         scale_l.addWidget(self._font_button("A+", +1))
         panel_l.addWidget(scale_box)
 
+        contrast_lbl = QLabel("PDF CONTRAST")
+        contrast_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(contrast_lbl)
+
+        contrast_box = QFrame()
+        contrast_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        contrast_l = QHBoxLayout(contrast_box)
+        contrast_l.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        contrast_l.setSpacing(_px(6, self._scale))
+        contrast_mode_lbl = QLabel("DARK COLORS / INVERTED")
+        contrast_mode_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        contrast_l.addWidget(contrast_mode_lbl)
+        contrast_l.addStretch()
+
+        from PyQt5.QtWidgets import QCheckBox
+        self._cb_invert_pdf = QCheckBox()
+        self._cb_invert_pdf.setCursor(Qt.PointingHandCursor)
+        self._cb_invert_pdf.setStyleSheet(
+            _scale_ss(
+                f"QCheckBox::indicator {{ width: 14px; height: 14px; }}"
+                f"QCheckBox::indicator:unchecked {{ border: 1px solid {T_BORDER}; background: {T_BG}; }}"
+                f"QCheckBox::indicator:checked {{ border: 1px solid {T_NEON}; background: {T_NEON}; }}"
+                , self._scale
+            )
+        )
+        self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
+        self._cb_invert_pdf.stateChanged.connect(self._on_tmnt_contrast_changed)
+        contrast_l.addWidget(self._cb_invert_pdf)
+        panel_l.addWidget(contrast_box)
+
         archive_lbl = QLabel("MISSION ARCHIVE")
         archive_lbl.setStyleSheet(
             _scale_ss(
@@ -3178,6 +3228,11 @@ class TMNTTopBar(QFrame):
             and self._more_panel.isVisible()
         ):
             self._hide_panel(self._more_panel)
+        if panel is self._settings_panel:
+            if hasattr(self, "_cb_invert_pdf") and self._cb_invert_pdf:
+                self._cb_invert_pdf.blockSignals(True)
+                self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
+                self._cb_invert_pdf.blockSignals(False)
         panel.adjustSize()
         x = 0 if align == "left" else anchor.width() - panel.width()
         y = anchor.height() + _px(6, self._scale)
@@ -3231,6 +3286,11 @@ class TMNTTopBar(QFrame):
     def _emit_font(self, delta):
         self._hide_panel(self._settings_panel)
         self.font_change.emit(delta)
+
+    def _on_tmnt_contrast_changed(self, state):
+        invert = (state == Qt.Checked)
+        store.get()["_invert_pdf"] = invert
+        store.mark_dirty()
 
     def _reset_brand_glitch(self):
         self.brand_name.setText("ANKI OCCLUSION")

@@ -1898,6 +1898,31 @@ class HomeScreen(QWidget):
         scale_layout.addWidget(self._classic_font_button("A+", +1))
         layout.addWidget(scale_box)
 
+        contrast_title = QLabel("PDF CONTRAST")
+        contrast_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(contrast_title)
+
+        contrast_box = QFrame()
+        contrast_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        contrast_layout = QHBoxLayout(contrast_box)
+        contrast_layout.setContentsMargins(10, 8, 10, 8)
+        contrast_layout.setSpacing(8)
+        contrast_label = QLabel("Dark Colors / Inverted PDF")
+        contrast_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        contrast_layout.addWidget(contrast_label, 1)
+
+        from PyQt5.QtWidgets import QCheckBox
+        self._cb_invert_pdf = QCheckBox()
+        self._cb_invert_pdf.setCursor(Qt.PointingHandCursor)
+        self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
+        self._cb_invert_pdf.stateChanged.connect(self._on_classic_contrast_changed)
+        contrast_layout.addWidget(self._cb_invert_pdf, 0, Qt.AlignRight)
+        layout.addWidget(contrast_box)
+
         archive_title = QLabel("MISSION ARCHIVE")
         archive_title.setStyleSheet(
             f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
@@ -1968,6 +1993,11 @@ class HomeScreen(QWidget):
     def _on_classic_font_clicked(self, direction):
         self._emit_font(direction)
 
+    def _on_classic_contrast_changed(self, state):
+        invert = (state == Qt.Checked)
+        store.get()["_invert_pdf"] = invert
+        store.mark_dirty()
+
     def _refresh_classic_archive_display(self):
         if self._classic_archive_value is None:
             return
@@ -1987,6 +2017,10 @@ class HomeScreen(QWidget):
         if panel.isVisible():
             panel.hide()
             return
+        if hasattr(self, "_cb_invert_pdf") and self._cb_invert_pdf:
+            self._cb_invert_pdf.blockSignals(True)
+            self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
+            self._cb_invert_pdf.blockSignals(False)
         self._refresh_classic_archive_display()
         panel.adjustSize()
         pos = self._btn_settings.mapToGlobal(QPoint(0, self._btn_settings.height() + 6))

@@ -106,6 +106,26 @@ DEFAULT_PDF_IDLE_MINUTES = 5
 DEFAULT_RAM_PAGE_LIMIT = 48
 
 
+def get_pdf_invert_setting() -> bool:
+    # 1. Check user override in the store (if it exists)
+    from data_manager import store
+    try:
+        user_override = store.get().get("_invert_pdf")
+        if user_override is not None:
+            return bool(user_override)
+    except Exception:
+        pass
+
+    # 2. Check active theme
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is not None:
+        active_theme = getattr(app, "_active_theme", "classic")
+        if active_theme in ("tmnt", "dojo"):
+            return True
+    return False
+
+
 class LRUPageCache:
     """
     In-RAM page cache with per-PDF inactivity expiry.
@@ -162,7 +182,11 @@ class LRUPageCache:
         return self._disk_page_path_variant(path, page_num, None)
 
     def _variant_name(self, variant: str | None) -> str:
-        return (variant or "default").strip() or "default"
+        name = (variant or "default").strip() or "default"
+        if name == "default":
+            if get_pdf_invert_setting():
+                return "inverted"
+        return name
 
     def _variant_suffix(self, variant: str | None) -> str:
         name = self._variant_name(variant)

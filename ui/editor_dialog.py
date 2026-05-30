@@ -35,7 +35,7 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
 from sm2_engine import sm2_init
 from data_manager import new_box_id
-from services import recovery_manager
+from services import recovery_manager, shortcut_manager
 from pdf_engine import (
     PDF_SUPPORT,
     PAGE_CACHE,
@@ -402,6 +402,10 @@ class CardEditorDialog(QDialog):
         self.lbl_pg.setStyleSheet(
             f"color:{p.get('C_SUBTEXT', '#555')};font-size:11px;background:transparent;font-family:{self._bf};"
         )
+        self.btn_invert_pdf = _tbtn("◑", "Toggle PDF Inversion (Dark Mode / High Contrast)", w=32)
+        self.btn_invert_pdf.setFocusPolicy(Qt.NoFocus)
+        self.btn_invert_pdf.clicked.connect(self._toggle_pdf_contrast)
+
         pb.addWidget(self.btn_prev_page)
         pb.addWidget(self.btn_next_page)
         pb.addSpacing(6)
@@ -409,6 +413,8 @@ class CardEditorDialog(QDialog):
         pb.addWidget(self.lbl_page_total)
         pb.addSpacing(12)
         pb.addWidget(self.lbl_pg)
+        pb.addSpacing(12)
+        pb.addWidget(self.btn_invert_pdf)
         pb.addStretch()
         self.pdf_bar.setFixedHeight(38)
         self.pdf_bar.hide()
@@ -861,6 +867,58 @@ class CardEditorDialog(QDialog):
     def _update_pdf_nav_ui(self, *_):
         self._pdf_viewer.refresh_page_ui()
         self._ui_page_zero = self._pdf_viewer._ui_page_zero
+        has_pages = self._pdf_viewer.page_count() > 0
+        if hasattr(self, "btn_invert_pdf"):
+            self.btn_invert_pdf.setVisible(has_pages)
+            self._update_invert_pdf_button_style()
+
+    def _update_invert_pdf_button_style(self):
+        if not hasattr(self, "btn_invert_pdf"):
+            return
+        from data_manager import store
+        invert = store.get().get("_invert_pdf", False)
+        p = self._p
+        card = p.get("C_CARD", "#F8F9FA")
+        accent = p.get("C_ACCENT", "#4C6EF5")
+        border = p.get("C_BORDER", "#DEE2E6")
+        text = p.get("C_TEXT", "#212529")
+        surface = p.get("C_SURFACE", "#FFFFFF")
+        if invert:
+            self.btn_invert_pdf.setStyleSheet(
+                f"QPushButton{{background:{accent};color:white;"
+                f"border:1px solid {accent};border-radius:5px;font-size:13px;}}"
+            )
+        else:
+            self.btn_invert_pdf.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:5px;font-size:13px;}}"
+                f"QPushButton:hover{{background:{surface};}}"
+            )
+
+    def _toggle_pdf_contrast(self):
+        from data_manager import store
+        invert = not store.get().get("_invert_pdf", False)
+        store.get()["_invert_pdf"] = invert
+        store.mark_dirty()
+        
+        self._update_invert_pdf_button_style()
+        self._reload_pdf_contrast()
+
+    def _reload_pdf_contrast(self):
+        path = getattr(self.canvas, "_current_pdf_path", None)
+        if not path or not os.path.exists(path):
+            return
+        self._stop_pdf_threads()
+        self._editor_canvas_real_pages = set()
+        
+        skeleton = load_pdf_skeleton(path, zoom=self._pdf_render_zoom)
+        if skeleton and not getattr(skeleton, "error", None):
+            pages = list(
+                getattr(skeleton, "placeholders", None)
+                or build_skeleton_placeholders(getattr(skeleton, "page_dims", []))
+            )
+            self.canvas.load_pages(pages)
+            QTimer.singleShot(50, self._sc._emit_visible_pages)
 
     def _on_scroll_pdf_page_changed(self, value: int):
         page_zero = self._current_visible_page()
@@ -933,6 +991,8 @@ class CardEditorDialog(QDialog):
             self._go_prev_page()
         elif key == Qt.Key_Right and not mods and not e.isAutoRepeat():
             self._go_next_page()
+        elif shortcut_manager.event_matches(e, "review.pdf_contrast") and not e.isAutoRepeat():
+            self._toggle_pdf_contrast()
         elif key == Qt.Key_V:
             self.toolbar.select_tool("select")
         elif key == Qt.Key_R:

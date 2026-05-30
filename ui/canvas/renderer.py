@@ -149,15 +149,12 @@ class CanvasRendererMixin:
         p = QPainter(self)
         clip = event.rect()
 
-        # Viewport check: Rebuild mask cache if shifted, size changed, or dirty
-        viewport = self._get_viewport_rect()
+        # Viewport check: Rebuild mask cache only when dirty or uninitialized.
+        # We do not force-rebuild on viewport offset shifts, which eliminates scroll lag.
         if (
             self._mask_cache_dirty
             or self._mask_cache_layer is None
             or self._mask_cache_layer.isNull()
-            or self._mask_cache_offset != viewport.topLeft()
-            or self._mask_cache_layer.width() != viewport.width()
-            or self._mask_cache_layer.height() != viewport.height()
         ):
             self._rebuild_mask_cache()
 
@@ -213,7 +210,10 @@ class CanvasRendererMixin:
                     p.setPen(sep_pen)
                     p.drawLine(0, sep_y, self.width(), sep_y)
 
-        if self._mask_cache_layer and not self._mask_cache_layer.isNull():
+        # ⚡ OPTIMIZATION: Render boxes/masks directly to the screen painter.
+        # Allocating and copying QPixmaps on the fly is extremely slow and causes scroll lag.
+        # Direct QPainter calls are extremely fast and automatically clipped.
+        if False and self._mask_cache_layer and not self._mask_cache_layer.isNull():
             mask_t0 = time.perf_counter()
             mask_clip = self._draw_mask_cache_layer(p, clip)
             phases["mask_ms"] += (time.perf_counter() - mask_t0) * 1000.0
@@ -277,6 +277,35 @@ class CanvasRendererMixin:
         sr = self._sr(rect)
         self._draw_box_impl(p, i, b, sr)
 
+    def _get_canvas_colors(self):
+        from cache_manager import get_pdf_invert_setting
+        if get_pdf_invert_setting():
+            return {
+                "C_MASK": "#8E4A35",        # Dark muted brick orange/rust
+                "C_GREEN": "#2E7D32",       # Medium-dark forest green (visible but soft)
+                "C_RED": "#8B0000",         # Dark red
+                "C_ACCENT": "#512DA8",      # Dark purple
+                "C_GROUP": "#5c3f91",       # Dark muted group purple
+                "C_BLUE": "#1565C0",        # Dark muted group blue
+                "C_BORDER": "#555555",      # Muted dark grey border for non-target masks
+                "C_TARGET_BORDER": "#FFFFFF", # Clear white border for target mask
+                "C_TEXT": "#E0E0E0",
+                "C_YELLOW": "#9E9D24"
+            }
+        else:
+            return {
+                "C_MASK": "#8E4A35",        # Dark muted brick orange/rust
+                "C_GREEN": "#2E7D32",       # Medium-dark forest green
+                "C_RED": "#8B0000",         # Dark red
+                "C_ACCENT": "#512DA8",      # Dark purple
+                "C_GROUP": "#5c3f91",       # Dark muted group purple
+                "C_BLUE": "#1565C0",        # Dark muted blue
+                "C_BORDER": "#555555",      # Muted dark grey border
+                "C_TARGET_BORDER": "#1E1E2E",  # Dark border for target mask
+                "C_TEXT": "#E0E0E0",
+                "C_YELLOW": "#9E9D24"
+            }
+
     def _draw_box_impl(self, p: QPainter, i: int, b: dict, sr: QRectF):
         cx, cy = sr.center().x(), sr.center().y()
         ang = b.get("angle", 0.0)
@@ -289,6 +318,7 @@ class CanvasRendererMixin:
         p.rotate(ang)
         local = QRectF(-sr.width() / 2, -sr.height() / 2, sr.width(), sr.height())
 
+        cc = self._get_canvas_colors()
         if self._mode == "review":
             revealed = b.get("revealed", False)
             is_target = self._is_current_target(i, b)
@@ -297,7 +327,7 @@ class CanvasRendererMixin:
 
             if hide_one and not is_target and not is_peek_target:
                 if not revealed:
-                    p.setPen(QPen(QColor(C_GREEN), 1, Qt.DotLine))
+                    p.setPen(QPen(QColor(cc["C_GREEN"]), 1, Qt.DotLine))
                     p.setBrush(Qt.NoBrush)
                     (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
                 p.restore()
@@ -305,23 +335,25 @@ class CanvasRendererMixin:
 
             if not revealed:
                 color = QColor(
-                    "#D64545" if is_peek_target else (C_GREEN if is_target else C_MASK)
+                    cc["C_RED"] if is_peek_target else (cc["C_GREEN"] if is_target else cc["C_MASK"])
                 )
-                text_col = "#1E1E2E" if (is_target or is_peek_target) else "#FFF"
+                border_col = QColor(
+                    cc["C_TARGET_BORDER"] if (is_target or is_peek_target) else cc["C_BORDER"]
+                )
                 p.setBrush(QBrush(color))
-                p.setPen(QPen(QColor(text_col), 2))
+                p.setPen(QPen(border_col, 2))
                 (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
             else:
-                p.setPen(QPen(QColor("#D64545" if is_peek_target else C_GREEN), 2))
+                p.setPen(QPen(QColor(cc["C_RED"] if is_peek_target else cc["C_GREEN"]), 2))
                 p.setBrush(Qt.NoBrush)
                 (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
         else:
             gid = b.get("group_id", "")
             grouped = bool(gid)
-            fill = QColor("#50FA7B" if sel else "#6EB5FF" if grouped else C_MASK)
+            fill = QColor(cc["C_GREEN"] if sel else cc["C_BLUE"] if grouped else cc["C_MASK"])
             fill.setAlpha(155)
             p.setBrush(QBrush(fill))
-            border_col = QColor(C_GREEN if sel else "#2288FF" if grouped else "#FFF")
+            border_col = QColor(cc["C_GREEN"] if sel else cc["C_BLUE"] if grouped else cc["C_BORDER"])
             p.setPen(QPen(border_col, 2, Qt.DashLine if not grouped else Qt.SolidLine))
             (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
             p.setPen(QPen(border_col, 1))
@@ -339,16 +371,17 @@ class CanvasRendererMixin:
         hps = self._handle_positions(idx)
         if not hps:
             return
-        p.setPen(QPen(QColor(C_GREEN), 1))
+        cc = self._get_canvas_colors()
+        p.setPen(QPen(QColor(cc["C_GREEN"]), 1))
         p.setBrush(QBrush(QColor("#1E1E2E")))
         hr = self._HANDLE_R
         for hpt in hps["resize"]:
             p.drawEllipse(hpt, hr, hr)
         rpt = hps["rotate"]
         top_c = hps["resize"][1]
-        p.setPen(QPen(QColor(C_ACCENT), 1))
+        p.setPen(QPen(QColor(cc["C_ACCENT"]), 1))
         p.drawLine(top_c, rpt)
-        p.setBrush(QBrush(QColor(C_ACCENT)))
+        p.setBrush(QBrush(QColor(cc["C_ACCENT"])))
         p.setPen(QPen(QColor("#FFF"), 1))
         p.drawEllipse(rpt, hr + 1, hr + 1)
         p.setFont(self._SMALL_FONT)
@@ -356,11 +389,41 @@ class CanvasRendererMixin:
 
     def _draw_live(self, p: QPainter):
         sr = self._sr(self._live_rect)
-        c = QColor(C_ACCENT)
+        cc = self._get_canvas_colors()
+        c = QColor(cc["C_ACCENT"])
         c.setAlpha(110)
         p.setBrush(QBrush(c))
-        p.setPen(QPen(QColor(C_ACCENT), 2))
+        p.setPen(QPen(QColor(cc["C_ACCENT"]), 2))
         (p.drawEllipse if self._tool == "ellipse" else p.drawRect)(sr)
+
+    def _smooth_points_to_path(self, pts, sc) -> QPainterPath:
+        path = QPainterPath()
+        if not pts:
+            return path
+        
+        # Scale points to screen space
+        spts = [QPointF(pt.x() * sc, pt.y() * sc) for pt in pts]
+        
+        path.moveTo(spts[0])
+        if len(spts) == 1:
+            return path
+        if len(spts) == 2:
+            path.lineTo(spts[1])
+            return path
+            
+        p0 = spts[0]
+        p1 = spts[1]
+        first_mid = QPointF((p0.x() + p1.x()) / 2.0, (p0.y() + p1.y()) / 2.0)
+        path.lineTo(first_mid)
+        
+        for i in range(1, len(spts) - 1):
+            curr = spts[i]
+            nxt = spts[i + 1]
+            mid = QPointF((curr.x() + nxt.x()) / 2.0, (curr.y() + nxt.y()) / 2.0)
+            path.quadTo(curr, mid)
+            
+        path.lineTo(spts[-1])
+        return path
 
     def _draw_ink_layer(self, p: QPainter):
         if not self._ink_strokes and not self._ink_current:
@@ -369,25 +432,41 @@ class CanvasRendererMixin:
         p.setRenderHint(QPainter.Antialiasing)
         pen_w = max(1.0, self._ink_width * self._scale)
         sc = self._scale
-        for stroke in list(self._ink_strokes) + (
-            [self._ink_current] if self._ink_current else []
-        ):
+        
+        # Initialize the path cache if not present
+        if not hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache = {}
+
+        # Draw completed strokes using cached QPainterPath
+        for stroke in self._ink_strokes:
             if len(stroke) < 2:
                 continue
             color = stroke[0]
             pts = stroke[1:]
             if not pts:
                 continue
+            
+            # Cache check by object id and scale
+            stroke_id = id(stroke)
+            cached_scale, path = self._ink_path_cache.get(stroke_id, (None, None))
+            if cached_scale != sc or path is None:
+                path = self._smooth_points_to_path(pts, sc)
+                self._ink_path_cache[stroke_id] = (sc, path)
+                
             p.setPen(QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            if len(pts) == 1:
-                p.drawPoint(QPointF(pts[0].x() * sc, pts[0].y() * sc))
-            else:
-                # ⚡ FIX: Use drawPolyline instead of N individual drawLine calls.
-                # drawLine in a loop = N separate QPainter state flushes.
-                # drawPolyline = 1 GPU call for the entire stroke. For a 200-point
-                # stroke this is ~200x fewer GPU round-trips.
-                poly = QPolygonF([QPointF(pt.x() * sc, pt.y() * sc) for pt in pts])
-                p.drawPolyline(poly)
+            p.drawPath(path)
+            
+        # Draw current stroke (live drawing)
+        if self._ink_current and len(self._ink_current) >= 2:
+            color = self._ink_current[0]
+            pts = self._ink_current[1:]
+            if pts:
+                p.setPen(QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                if len(pts) == 1:
+                    p.drawPoint(QPointF(pts[0].x() * sc, pts[0].y() * sc))
+                else:
+                    path = self._smooth_points_to_path(pts, sc)
+                    p.drawPath(path)
         p.restore()
 
     def _redraw(self):

@@ -1378,6 +1378,10 @@ class ReviewScreen(QWidget):
         self.lbl_prog.setText(f"Card {self._idx + 1}/{len(self._items)}")
         self.lbl_sm2.setText(sm2_badge(sm2_obj))
         self.lbl_title.setText(card.get("title", "Untitled"))
+        # ── update filename label in header ────────────────────────────────
+        _fn = os.path.basename(card.get("pdf_path", "") or card.get("image_path", "") or "")
+        if hasattr(self, "lbl_filename"):
+            self.lbl_filename.setText(_fn if _fn else "")
 
         # 🚀 SM-2 SIMULATION UPDATE
         previews = _fmt_due_interval(sm2_obj)
@@ -1534,6 +1538,8 @@ class ReviewScreen(QWidget):
             self._go_prev_review_page()
         elif shortcut_manager.event_matches(e, "review.next_page") and not e.isAutoRepeat():
             self._go_next_review_page()
+        elif shortcut_manager.event_matches(e, "review.pdf_contrast") and not e.isAutoRepeat():
+            self._toggle_pdf_contrast()
         elif (
             key == Qt.Key_Alt
             or shortcut_manager.event_matches(e, "review.pen_toggle")
@@ -1671,9 +1677,16 @@ class ReviewScreen(QWidget):
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
 
-        # ── Header bar ────────────────────────────────────────────────────────
+        # ── Icon imports ───────────────────────────────────────────────────────
+        from ui.review_icons import (
+            icon_zoom_in, icon_zoom_out, icon_zoom_fit, icon_crosshair,
+            icon_chevron_left, icon_chevron_right, icon_contrast,
+        )
+        _icon_fg = accent if dojo else text
+        _icon_sz = 22  # rendered icon bitmap size
+
+        # ── Header container (two rows) ────────────────────────────────────────
         hdr_w = QFrame()
-        hdr_w.setFixedHeight(52 if dojo else 46)
         if dojo:
             hdr_w.setStyleSheet(
                 f"QFrame{{background:{surface};"
@@ -1684,105 +1697,32 @@ class ReviewScreen(QWidget):
                 f"QFrame{{background:{surface};"
                 f"border-bottom:1px solid {border};border-radius:0;}}"
             )
-        hdr = QHBoxLayout(hdr_w)
-        hdr.setContentsMargins(14, 0, 14, 0)
-        hdr.setSpacing(10)
+        hdr_vbox = QVBoxLayout(hdr_w)
+        hdr_vbox.setContentsMargins(0, 0, 0, 0)
+        hdr_vbox.setSpacing(0)
 
-        self.lbl_prog = QLabel("Card 1/1")
+        # ══════════════════════════════════════════════════════════════════════
+        #  ROW 1 — Session info  +  Primary actions
+        # ══════════════════════════════════════════════════════════════════════
+        row1_w = QWidget()
+        row1_w.setStyleSheet("background:transparent;")
+        row1 = QHBoxLayout(row1_w)
+        row1.setContentsMargins(14, 4, 14, 2)
+        row1.setSpacing(10)
+
+        self.lbl_filename = QLabel("")
         if dojo:
-            self.lbl_prog.setFont(QFont(font, 9, QFont.Bold))
-            self.lbl_prog.setStyleSheet(
-                f"color:{accent};letter-spacing:2px;font-family:{font};"
+            self.lbl_filename.setFont(QFont(font, 8))
+            self.lbl_filename.setStyleSheet(
+                f"color:{subtext};letter-spacing:1px;font-family:{font};"
             )
         else:
-            self.lbl_prog.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        hdr.addWidget(self.lbl_prog)
-
-        self.prog = QProgressBar()
-        self.prog.setFixedHeight(6 if dojo else 8)
-        self.prog.setTextVisible(False)
-        if dojo:
-            self.prog.setStyleSheet(
-                f"QProgressBar{{background:{card};border-radius:3px;"
-                f"border:1px solid {border};}}"
-                f"QProgressBar::chunk{{background:{accent};border-radius:3px;}}"
+            self.lbl_filename.setFont(QFont("Segoe UI", 10))
+            self.lbl_filename.setStyleSheet(
+                f"color:{subtext};"
             )
-        else:
-            self.prog.setStyleSheet(
-                f"QProgressBar{{background:{card};border-radius:4px;}}"
-                f"QProgressBar::chunk{{background:{accent};border-radius:4px;}}"
-            )
-        hdr.addWidget(self.prog, stretch=1)
+        row1.addWidget(self.lbl_filename)
 
-        self.lbl_sm2 = QLabel("")
-        if dojo:
-            self.lbl_sm2.setStyleSheet(
-                f"background:{card};color:{accent2};"
-                f"border:1px solid {accent2};border-radius:2px;"
-                f"padding:2px 8px;font-size:9px;font-family:{font};"
-                f"letter-spacing:1px;"
-            )
-        else:
-            self.lbl_sm2.setStyleSheet(
-                f"background:{card};color:{subtext};"
-                f"border-radius:6px;padding:3px 10px;font-size:11px;"
-            )
-        hdr.addWidget(self.lbl_sm2)
-
-        def _zb(txt, tip):
-            b = QPushButton(txt)
-            b.setToolTip(tip)
-            b.setFixedSize(28, 28)
-            if dojo:
-                b.setStyleSheet(
-                    f"QPushButton{{background:{card};color:{accent};"
-                    f"border:1px solid {border};border-radius:2px;font-size:13px;}}"
-                    f"QPushButton:hover{{background:rgba(114,255,79,0.12);"
-                    f"border:1px solid {accent};}}"
-                )
-            else:
-                b.setStyleSheet(
-                    f"QPushButton{{background:{card};color:{text};"
-                    f"border:1px solid {border};border-radius:5px;font-size:13px;}}"
-                    f"QPushButton:hover{{background:{surface};}}"
-                )
-            return b
-
-        b_zin = _zb("+", "Zoom In  Ctrl++")
-        b_zout = _zb("−", "Zoom Out  Ctrl+−")
-        b_zfit = _zb("⊡", "Zoom Fit  Ctrl+0")
-        b_center = _zb("⊕", "Center on active mask")
-        self._btn_prev_page = _zb("←", "Previous PDF page")
-        self._btn_next_page = _zb("→", "Next PDF page")
-        self._btn_prev_page.setFocusPolicy(Qt.NoFocus)
-        self._btn_next_page.setFocusPolicy(Qt.NoFocus)
-        self._page_jump = QLineEdit()
-        self._page_jump.setFixedWidth(46)
-        self._page_jump.setAlignment(Qt.AlignCenter)
-        self._page_jump.returnPressed.connect(self._jump_to_review_page_from_input)
-        self._page_total = QLabel("/ 0")
-        self._page_total.setStyleSheet(f"color:{subtext};background:transparent;")
-        def _manual_zoom(direction: int):
-            if direction > 0:
-                self.canvas.zoom_in()
-            else:
-                self.canvas.zoom_out()
-            self._user_zoom_scale = self.canvas._scale
-
-        b_zin.clicked.connect(lambda: _manual_zoom(+1))
-        b_zout.clicked.connect(lambda: _manual_zoom(-1))
-        b_zfit.clicked.connect(self._zoom_fit)
-        b_center.clicked.connect(self._center_on_target)
-        self._btn_prev_page.clicked.connect(self._go_prev_review_page)
-        self._btn_next_page.clicked.connect(self._go_next_review_page)
-        hdr.addWidget(b_zin)
-        hdr.addWidget(b_zout)
-        hdr.addWidget(b_zfit)
-        hdr.addWidget(b_center)
-        hdr.addWidget(self._btn_prev_page)
-        hdr.addWidget(self._btn_next_page)
-        hdr.addWidget(self._page_jump)
-        hdr.addWidget(self._page_total)
 
         def _hdr_btn(label, primary=False):
             b = QPushButton(label)
@@ -1823,13 +1763,13 @@ class ReviewScreen(QWidget):
 
         b_edit = _hdr_btn("✏ Edit Card", primary=True)
         b_edit.clicked.connect(self._edit_current_card)
-        b_annot = _hdr_btn("🖊 Anotate Scroll")
+        b_annot = _hdr_btn("🖊 Annotate Scroll")
         b_annot.clicked.connect(self._open_annotation_beta)
         b_cache = _hdr_btn("💾 Cache")
         b_cache.clicked.connect(self._toggle_cache_panel)
-        hdr.addWidget(b_edit)
-        hdr.addWidget(b_annot)
-        hdr.addWidget(b_cache)
+        row1.addWidget(b_edit)
+        row1.addWidget(b_annot)
+        row1.addWidget(b_cache)
 
         self._btn_mode = _hdr_btn("🟧 Hide All, Guess One")
         self._btn_mode.setCheckable(True)
@@ -1850,11 +1790,225 @@ class ReviewScreen(QWidget):
                 f"QPushButton:hover{{background:{surface};}}"
             )
         self._btn_mode.clicked.connect(self._toggle_review_mode)
-        hdr.addWidget(self._btn_mode)
+        row1.addWidget(self._btn_mode)
 
         b_exit = _hdr_btn("✕ Exit")
         b_exit.clicked.connect(self.cancelled.emit)
-        hdr.addWidget(b_exit)
+        row1.addWidget(b_exit)
+
+        hdr_vbox.addWidget(row1_w)
+
+        # ── thin divider between rows ──────────────────────────────────────────
+        _row_div = QFrame()
+        _row_div.setFixedHeight(1)
+        _row_div.setStyleSheet(
+            f"background:{accent if dojo else border};"
+        )
+        hdr_vbox.addWidget(_row_div)
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  ROW 2 — View controls:  Page Nav  |  Zoom  |  Invert
+        # ══════════════════════════════════════════════════════════════════════
+        row2_w = QWidget()
+        row2_w.setStyleSheet("background:transparent;")
+        row2 = QHBoxLayout(row2_w)
+        row2.setContentsMargins(14, 3, 14, 4)
+        row2.setSpacing(6)
+
+        # ── helper: icon button (bigger, with proper icons) ────────────────
+        _ib_size = 32  # button size
+        def _icon_btn(icon: QIcon, tip: str, sz: int = _ib_size):
+            b = QPushButton()
+            b.setToolTip(tip)
+            b.setIcon(icon)
+            b.setIconSize(QSize(_icon_sz, _icon_sz))
+            b.setFixedSize(sz, sz)
+            b.setFocusPolicy(Qt.NoFocus)
+            if dojo:
+                b.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{accent};"
+                    f"border:1px solid {border};border-radius:2px;}}"
+                    f"QPushButton:hover{{background:rgba(114,255,79,0.15);"
+                    f"border:1px solid {accent};}}"
+                )
+            else:
+                b.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{text};"
+                    f"border:1px solid {border};border-radius:6px;}}"
+                    f"QPushButton:hover{{background:{surface};"
+                    f"border:1px solid {accent};}}"
+                )
+            return b
+
+        # ── helper: vertical separator ─────────────────────────────────────
+        def _vsep():
+            sep = QFrame()
+            sep.setFixedWidth(1)
+            sep.setFixedHeight(22)
+            sep.setStyleSheet(f"background:{border};")
+            return sep
+
+        # ── Card progress (moved from Row 1) ─────────────────────────────
+        self.lbl_prog = QLabel("Card 1/1")
+        if dojo:
+            self.lbl_prog.setFont(QFont(font, 9, QFont.Bold))
+            self.lbl_prog.setStyleSheet(
+                f"color:{accent};letter-spacing:2px;font-family:{font};"
+            )
+        else:
+            self.lbl_prog.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        row2.addWidget(self.lbl_prog)
+
+        self.lbl_sm2 = QLabel("")
+        if dojo:
+            self.lbl_sm2.setStyleSheet(
+                f"background:{card};color:{accent2};"
+                f"border:1px solid {accent2};border-radius:2px;"
+                f"padding:2px 8px;font-size:9px;font-family:{font};"
+                f"letter-spacing:1px;"
+            )
+        else:
+            self.lbl_sm2.setStyleSheet(
+                f"background:{card};color:{subtext};"
+                f"border-radius:6px;padding:3px 10px;font-size:11px;"
+            )
+        row2.addWidget(self.lbl_sm2)
+
+        self.prog = QProgressBar()
+        self.prog.setFixedHeight(6 if dojo else 8)
+        self.prog.setTextVisible(False)
+        if dojo:
+            self.prog.setStyleSheet(
+                f"QProgressBar{{background:{card};border-radius:3px;"
+                f"border:1px solid {border};}}"
+                f"QProgressBar::chunk{{background:{accent};border-radius:3px;}}"
+            )
+        else:
+            self.prog.setStyleSheet(
+                f"QProgressBar{{background:{card};border-radius:4px;}}"
+                f"QProgressBar::chunk{{background:{accent};border-radius:4px;}}"
+            )
+        row2.addWidget(self.prog, stretch=1)
+
+        row2.addWidget(_vsep())
+
+        # ── Group 1: Page Navigation ──────────────────────────────────────
+        _lbl_page = QLabel("PAGE")
+        _lbl_page.setStyleSheet(
+            f"color:{subtext};background:transparent;"
+            f"font-size:{'7px' if dojo else '9px'};"
+            f"font-weight:bold;letter-spacing:1px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        row2.addWidget(_lbl_page)
+
+        self._btn_prev_page = _icon_btn(
+            icon_chevron_left(_icon_sz, _icon_fg), "Previous PDF page  PgUp", 34
+        )
+        self._btn_next_page = _icon_btn(
+            icon_chevron_right(_icon_sz, _icon_fg), "Next PDF page  PgDn", 34
+        )
+        self._btn_prev_page.clicked.connect(self._go_prev_review_page)
+        self._btn_next_page.clicked.connect(self._go_next_review_page)
+        row2.addWidget(self._btn_prev_page)
+
+        self._page_jump = QLineEdit()
+        self._page_jump.setFixedWidth(46)
+        self._page_jump.setFixedHeight(28)
+        self._page_jump.setAlignment(Qt.AlignCenter)
+        if dojo:
+            self._page_jump.setStyleSheet(
+                f"QLineEdit{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:2px;"
+                f"font-size:10px;font-family:{font};}}"
+            )
+        else:
+            self._page_jump.setStyleSheet(
+                f"QLineEdit{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:4px;"
+                f"font-size:11px;}}"
+            )
+        self._page_jump.returnPressed.connect(self._jump_to_review_page_from_input)
+        row2.addWidget(self._page_jump)
+
+        self._page_total = QLabel("/ 0")
+        self._page_total.setStyleSheet(
+            f"color:{subtext};background:transparent;"
+            f"font-size:{'9px' if dojo else '11px'};"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        row2.addWidget(self._page_total)
+        row2.addWidget(self._btn_next_page)
+
+        row2.addWidget(_vsep())
+
+        # ── Group 2: Zoom Controls ────────────────────────────────────────
+        _lbl_zoom = QLabel("ZOOM")
+        _lbl_zoom.setStyleSheet(
+            f"color:{subtext};background:transparent;"
+            f"font-size:{'7px' if dojo else '9px'};"
+            f"font-weight:bold;letter-spacing:1px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        row2.addWidget(_lbl_zoom)
+
+        b_zin = _icon_btn(icon_zoom_in(_icon_sz, _icon_fg), "Zoom In  Ctrl++")
+        b_zout = _icon_btn(icon_zoom_out(_icon_sz, _icon_fg), "Zoom Out  Ctrl+−")
+        b_zfit = _icon_btn(icon_zoom_fit(_icon_sz, _icon_fg), "Zoom Fit  Ctrl+0")
+        b_center = _icon_btn(icon_crosshair(_icon_sz, _icon_fg), "Center on active mask  C")
+
+        def _manual_zoom(direction: int):
+            if direction > 0:
+                self.canvas.zoom_in()
+            else:
+                self.canvas.zoom_out()
+            self._user_zoom_scale = self.canvas._scale
+
+        b_zin.clicked.connect(lambda: _manual_zoom(+1))
+        b_zout.clicked.connect(lambda: _manual_zoom(-1))
+        b_zfit.clicked.connect(self._zoom_fit)
+        b_center.clicked.connect(self._center_on_target)
+        row2.addWidget(b_zin)
+        row2.addWidget(b_zout)
+        row2.addWidget(b_zfit)
+        row2.addWidget(b_center)
+
+        row2.addWidget(_vsep())
+
+        # ── Group 3: View Toggles ─────────────────────────────────────────
+        _lbl_view = QLabel("VIEW")
+        _lbl_view.setStyleSheet(
+            f"color:{subtext};background:transparent;"
+            f"font-size:{'7px' if dojo else '9px'};"
+            f"font-weight:bold;letter-spacing:1px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        row2.addWidget(_lbl_view)
+
+        self._btn_invert_pdf = _icon_btn(
+            icon_contrast(_icon_sz, _icon_fg),
+            "Toggle PDF Inversion (Dark / High Contrast)  I"
+        )
+        # make the invert button slightly more prominent
+        if dojo:
+            self._btn_invert_pdf.setStyleSheet(
+                f"QPushButton{{background:{card};color:{accent};"
+                f"border:1px solid {accent};border-radius:2px;}}"
+                f"QPushButton:hover{{background:rgba(114,255,79,0.20);"
+                f"border:1px solid {accent};}}"
+            )
+        else:
+            self._btn_invert_pdf.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {accent};border-radius:6px;}}"
+                f"QPushButton:hover{{background:{surface};"
+                f"border:1px solid {accent};}}"
+            )
+        self._btn_invert_pdf.clicked.connect(self._toggle_pdf_contrast)
+        row2.addWidget(self._btn_invert_pdf)
+
+        row2.addStretch()
+        hdr_vbox.addWidget(row2_w)
 
         L.addWidget(hdr_w)
         self._hdr_widget = hdr_w
@@ -2424,6 +2578,87 @@ class ReviewScreen(QWidget):
     def _update_review_page_nav_ui(self, *_):
         self._pdf_viewer.refresh_page_ui()
         self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
+        has_pages = self._pdf_viewer.page_count() > 0
+        if hasattr(self, "_btn_invert_pdf"):
+            self._btn_invert_pdf.setVisible(has_pages)
+            self._update_invert_pdf_button_style()
+
+    def _update_invert_pdf_button_style(self):
+        if not hasattr(self, "_btn_invert_pdf"):
+            return
+        from data_manager import store
+        invert = store.get().get("_invert_pdf", False)
+        dojo = (getattr(self, "_theme", "classic") == "dojo")
+        p = _get_palette(getattr(self, "_theme", "classic"))
+        card = p["C_CARD"]
+        accent = p["C_ACCENT"]
+        border = p["C_BORDER"]
+        text = p["C_TEXT"]
+        surface = p["C_SURFACE"]
+        if invert:
+            if dojo:
+                self._btn_invert_pdf.setStyleSheet(
+                    f"QPushButton{{background:{accent};color:{p['C_BG']};"
+                    f"border:1px solid {accent};border-radius:2px;font-size:13px;}}"
+                )
+            else:
+                self._btn_invert_pdf.setStyleSheet(
+                    f"QPushButton{{background:{accent};color:white;"
+                    f"border:1px solid {accent};border-radius:5px;font-size:13px;}}"
+                )
+        else:
+            if dojo:
+                self._btn_invert_pdf.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{accent};"
+                    f"border:1px solid {border};border-radius:2px;font-size:13px;}}"
+                    f"QPushButton:hover{{background:rgba(114,255,79,0.12);"
+                    f"border:1px solid {accent};}}"
+                )
+            else:
+                self._btn_invert_pdf.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{text};"
+                    f"border:1px solid {border};border-radius:5px;font-size:13px;}}"
+                    f"QPushButton:hover{{background:{surface};}}"
+                )
+
+    def _toggle_pdf_contrast(self):
+        from data_manager import store
+        invert = not store.get().get("_invert_pdf", False)
+        store.get()["_invert_pdf"] = invert
+        store.mark_dirty()
+        
+        self._update_invert_pdf_button_style()
+        self._reload_pdf_contrast()
+
+    def _reload_pdf_contrast(self):
+        path = getattr(self.canvas, "_current_pdf_path", None)
+        if not path or not os.path.exists(path):
+            return
+        
+        # Stop loading threads
+        if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
+            self._pdf_loader_thread.stop()
+            self._pdf_loader_thread.quit()
+            self._pdf_loader_thread.wait(300)
+            self._pdf_loader_thread = None
+
+        if hasattr(self, "_pdf_ondemand_thread") and self._pdf_ondemand_thread and self._pdf_ondemand_thread.isRunning():
+            self._pdf_ondemand_thread.stop()
+            self._pdf_ondemand_thread.quit()
+            self._pdf_ondemand_thread.wait(300)
+            self._pdf_ondemand_thread = None
+            
+        self._review_canvas_real_pages = set()
+        
+        from pdf_engine import load_pdf_skeleton, build_skeleton_placeholders
+        skeleton = load_pdf_skeleton(path, zoom=self._pdf_render_zoom)
+        if skeleton and not getattr(skeleton, "error", None):
+            pages = list(
+                getattr(skeleton, "placeholders", None)
+                or build_skeleton_placeholders(getattr(skeleton, "page_dims", []))
+            )
+            self.canvas.load_pages(pages)
+            QTimer.singleShot(50, self._canvas_scroll._emit_visible_pages)
 
     def _review_nav_debug(self, action: str, **data):
         return
