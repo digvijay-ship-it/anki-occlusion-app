@@ -98,6 +98,9 @@ from pdf_engine import (
 from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
 from ui.pdf_annotation_dialog import PdfAnnotationDialog
+from ui.canvas.retro_effects import CRTOverlay, ParticleBurstOverlay
+from PyQt5.QtMultimedia import QSoundEffect
+from PyQt5.QtCore import QUrl
 from ui.pdf_viewer_controller import PdfViewerController
 from services import shortcut_manager
 
@@ -151,6 +154,7 @@ from PyQt5.QtWidgets import (
     QStyle,
     QHeaderView,
     QShortcut,
+    QColorDialog,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -276,7 +280,7 @@ DOJO = {
 def _is_dojo() -> bool:
     """Return True if the Ninja Dojo theme is currently active."""
     app = QApplication.instance()
-    return getattr(app, "_active_theme", "classic") in ["dojo", "tmnt"]
+    return getattr(app, "_active_theme", "classic") in ["dojo", "tmnt", "manhattan"]
 
 
 def _tc(classic_val: str, dojo_val: str) -> str:
@@ -293,87 +297,13 @@ QUEUE_INDEX_ROLE = Qt.UserRole + 11
 CARD_DRAG_MIME = "application/x-anki-card"
 
 
-class QueueDelegate(QStyledItemDelegate):
-    # Classic colors
-    COLORS = {
-        "current": {"bg": QColor(C_GREEN), "fg": QColor("#1E1E2E")},
-        "done": {"bg": QColor("#2A3A2A"), "fg": QColor("#6A8A6A")},
-        "pending": {"bg": QColor(C_SURFACE), "fg": QColor(C_TEXT)},
-        "relearn": {"bg": QColor("#3A2A1A"), "fg": QColor("#E08030")},
-        "peek": {"bg": QColor("#B83B3B"), "fg": QColor("#FFF1F1")},
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._cached_theme = None
-        self._cached_cols = None
-
-    def _get_cols(self, theme: str, state: str) -> dict:
-        # Rebuild color map only when theme changes — not every paint call
-        if theme != self._cached_theme:
-            from theme_manager import get_palette
-
-            self._cached_theme = theme
-            if theme in ("dojo", "tmnt"):
-                p = get_palette(theme)
-                self._cached_cols = {
-                    "current": {"bg": QColor(p["C_ACCENT"]), "fg": QColor(p["C_BG"])},
-                    "done": {
-                        "bg": QColor("#0A0A12" if theme == "dojo" else p["C_CARD"]),
-                        "fg": QColor("#3A3A5A" if theme == "dojo" else p["C_SUBTEXT"]),
-                    },
-                    "pending": {
-                        "bg": QColor(p["C_SURFACE"]),
-                        "fg": QColor(p["C_TEXT"]),
-                    },
-                    "relearn": {
-                        "bg": QColor(
-                            "#1A0A05"
-                            if theme == "dojo"
-                            else p.get("C_ORANGE", "#FF8040")
-                        ),
-                        "fg": QColor(
-                            "#FF8040" if theme == "dojo" else p.get("C_BG", "#000")
-                        ),
-                    },
-                    "peek": {
-                        "bg": QColor("#2A0505" if theme == "dojo" else p["C_RED"]),
-                        "fg": QColor("#FF6060" if theme == "dojo" else p["C_BG"]),
-                    },
-                }
-            else:
-                self._cached_cols = self.COLORS
-        return self._cached_cols[state]
-
-    def paint(self, painter, option, index):
-        app = QApplication.instance()
-        theme = getattr(app, "_active_theme", "classic")
-        state = index.data(QUEUE_ROLE) or "pending"
-        cols = self._get_cols(theme, state)
-
-        painter.save()
-        r = option.rect.adjusted(2, 2, -2, -2)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(cols["bg"]))
-        painter.drawRoundedRect(r, 5, 5)
-        if state == "current":
-            painter.setBrush(QBrush(QColor("#1E1E2E")))
-            painter.drawRect(r.left(), r.top() + 4, 4, r.height() - 8)
-        painter.setPen(cols["fg"])
-        font = painter.font()
-        font.setBold(state == "current")
-        painter.setFont(font)
-        painter.drawText(r.adjusted(10, 0, -4, 0), Qt.AlignVCenter, index.data())
-        painter.restore()
-
-    def sizeHint(self, option, index):
-        return QSize(0, 34)
+from ui.review.queue_delegate import QueueDelegate
 
 
 class ReviewScreen(QWidget):
     finished = pyqtSignal()
     cancelled = pyqtSignal()
+    undo_requested_when_empty = pyqtSignal()
     QUEUE_AUTO_HIDE_MS = 2000
     PRIORITY_PAGE_LIMIT = 16
     FLOATING_TIMER_SESSION_FONT_PX = 36
@@ -427,14 +357,22 @@ class ReviewScreen(QWidget):
             "rating_spacing": cls._scaled_px(8, cls.RATING_BUTTON_SCALE),
         }
 
-    @classmethod
-    def _review_verbose_debug_enabled(cls):
-        raw = os.environ.get(cls.REVIEW_VERBOSE_ENV, "").strip().lower()
+    def _review_verbose_debug_enabled(self) -> bool:
+        try:
+            if not isinstance(self, type):
+                return getattr(self, "_verbose_debug_enabled", False)
+        except RuntimeError:
+            pass
+        raw = os.environ.get(self.REVIEW_VERBOSE_ENV, "").strip().lower()
         return raw in {"1", "true", "yes", "on"}
 
-    @classmethod
-    def _review_scroll_profile_enabled(cls):
-        raw = os.environ.get(cls.REVIEW_SCROLL_PROFILE_ENV, "").strip().lower()
+    def _review_scroll_profile_enabled(self) -> bool:
+        try:
+            if not isinstance(self, type):
+                return getattr(self, "_scroll_profile_enabled", False)
+        except RuntimeError:
+            pass
+        raw = os.environ.get(self.REVIEW_SCROLL_PROFILE_ENV, "").strip().lower()
         return raw in {"1", "true", "yes", "on"}
 
     @property
@@ -494,6 +432,26 @@ class ReviewScreen(QWidget):
         self.mgr._review_redo_stack = val
 
     def _rate(self, quality):
+        # 1. Play low-latency 8-bit sound effects
+        try:
+            from data_manager import store
+            vol = store.get().get("_volume", 40) / 100.0
+            if quality in (4, 5, 6): # Good, Easy, Perfect
+                if hasattr(self, "_snd_coin"):
+                    self._snd_coin.setVolume(vol)
+                    self._snd_coin.play()
+            elif quality == 1: # Again
+                if hasattr(self, "_snd_hit"):
+                    self._snd_hit.setVolume(vol)
+                    self._snd_hit.play()
+        except Exception:
+            pass
+
+        # 2. Spawn retro particle burst
+        if getattr(self, "burst", None) is not None:
+            tone = "green" if quality in (4, 5, 6) else ("red" if quality in (1, 3) else "cyan")
+            self.burst.spawn_burst(self.rect().center().x(), self.rect().center().y(), tone, count=30)
+
         self.mgr._rate(quality)
 
     def _review_undo(self):
@@ -501,6 +459,12 @@ class ReviewScreen(QWidget):
 
     def _review_redo(self):
         self.mgr._review_redo()
+
+    def _skip_session(self):
+        self.mgr.skip_session()
+
+    def _super_skip(self):
+        self.mgr.super_skip()
 
     def _close_bg_prefetch_dialog(self):
         self._bg_accept_mode = False
@@ -572,105 +536,53 @@ class ReviewScreen(QWidget):
         queue_label.setText(f"TO REVIEW: {max(0, count)}")
 
     def _init_review_profile(self, cards):
-        raw = os.environ.get("ANKI_REVIEW_PROFILE", "").strip().lower()
-        pdf_filter = os.environ.get("ANKI_REVIEW_PROFILE_PDF", "").strip().lower()
-        enabled = raw in {"1", "true", "yes", "on"}
-        if enabled and pdf_filter:
-            enabled = any(
-                pdf_filter
-                in " ".join(
-                    (
-                        str((card or {}).get("title", "")),
-                        os.path.basename(str((card or {}).get("pdf_path", ""))),
-                        str((card or {}).get("pdf_path", "")),
-                    )
-                ).lower()
-                for card in cards or []
-            )
-        self._review_profile_enabled = enabled
-        self._review_profile_filter = pdf_filter
-        self._review_profile_t0 = time.perf_counter()
-        self._review_profile_last = self._review_profile_t0
-        self._review_profile_counts = {}
-        if enabled:
-            self._review_profile_log(
-                "session_start",
-                cards=len(cards or []),
-                filter=pdf_filter or "all",
-            )
+        from ui.review.profiler import init_review_profile
+        init_review_profile(self, cards)
 
     def _review_profile_active(self):
-        return bool(self.__dict__.get("_review_profile_enabled", False))
+        from ui.review.profiler import review_profile_active
+        return review_profile_active(self)
 
     def _review_profile_rss_mb(self):
-        try:
-            if os.name == "nt":
-                import ctypes
-
-                class ProcessMemoryCounters(ctypes.Structure):
-                    _fields_ = [
-                        ("cb", ctypes.c_ulong),
-                        ("PageFaultCount", ctypes.c_ulong),
-                        ("PeakWorkingSetSize", ctypes.c_size_t),
-                        ("WorkingSetSize", ctypes.c_size_t),
-                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                        ("PagefileUsage", ctypes.c_size_t),
-                        ("PeakPagefileUsage", ctypes.c_size_t),
-                    ]
-
-                counters = ProcessMemoryCounters()
-                counters.cb = ctypes.sizeof(counters)
-                handle = ctypes.windll.kernel32.GetCurrentProcess()
-                ok = ctypes.windll.psapi.GetProcessMemoryInfo(
-                    handle, ctypes.byref(counters), counters.cb
-                )
-                if ok:
-                    return counters.WorkingSetSize / (1024 * 1024)
-            else:
-                import resource
-
-                rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                return rss / 1024 if rss > 1024 * 1024 else rss / (1024 * 1024)
-        except Exception:
-            return None
-        return None
+        from ui.review.profiler import review_profile_rss_mb
+        return review_profile_rss_mb(self)
 
     def _review_profile_log(self, event, **fields):
-        if not self._review_profile_active():
-            return
-        now = time.perf_counter()
-        last = float(self.__dict__.get("_review_profile_last", now) or now)
-        start = float(self.__dict__.get("_review_profile_t0", now) or now)
-        self._review_profile_last = now
-        parts = [
-            f"+{(now - last) * 1000:.1f}ms",
-            f"total={(now - start) * 1000:.1f}ms",
-        ]
-        rss_mb = self._review_profile_rss_mb()
-        if rss_mb is not None:
-            peak = max(float(self.__dict__.get("_review_profile_peak_rss_mb", 0.0)), rss_mb)
-            self._review_profile_peak_rss_mb = peak
-            parts.append(f"rss={rss_mb:.1f}MB")
-            parts.append(f"peak_rss={peak:.1f}MB")
-        for key, value in fields.items():
-            parts.append(f"{key}={value}")
-        print(f"[PROFILE][review] {event} " + " ".join(parts))
+        from ui.review.profiler import review_profile_log
+        review_profile_log(self, event, **fields)
 
     def _review_profile_count(self, name, amount=1):
-        counts = self.__dict__.setdefault("_review_profile_counts", {})
-        counts[name] = int(counts.get(name, 0)) + int(amount)
-        return counts[name]
+        from ui.review.profiler import review_profile_count
+        return review_profile_count(self, name, amount)
 
-    def __init__(self, cards, data=None, parent=None):
+    def __init__(self, cards, data=None, parent=None, state_to_restore=None):
         super().__init__(parent)
         self._init_review_profile(cards)
         from services.review_manager import ReviewSessionManager
 
         self.mgr = ReviewSessionManager(self)
         self._data = data
+        
+        # Load low-latency retro sounds
+        import os
+        try:
+            self._snd_coin = QSoundEffect(self)
+            self._snd_coin.setSource(QUrl.fromLocalFile(os.path.join("assets", "music", "pickupCoin.wav")))
+            self._snd_hit = QSoundEffect(self)
+            self._snd_hit.setSource(QUrl.fromLocalFile(os.path.join("assets", "music", "hitHurt.wav")))
+            self._snd_power = QSoundEffect(self)
+            self._snd_power.setSource(QUrl.fromLocalFile(os.path.join("assets", "music", "powerUp.wav")))
+            
+            # Play a short powerUp entry sound if in retro theme
+            theme = getattr(QApplication.instance(), "_active_theme", "classic")
+            if theme in ("tmnt", "manhattan") and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}:
+                from data_manager import store
+                vol = store.get().get("_volume", 40) / 100.0
+                self._snd_power.setVolume(vol)
+                QTimer.singleShot(150, self._snd_power.play)
+        except Exception as ex:
+            print(f"[DEBUG][review_screen] sound load error: {ex}")
+
         self._cache_panel = None
         self._items = []
         self._pdf_cache = {}
@@ -739,73 +651,89 @@ class ReviewScreen(QWidget):
         # ── User zoom tracking — None = no manual zoom set yet ────────────────
         self._user_zoom_scale = None
         self._review_ink_width = self._load_review_ink_width()
+        self._review_ink_colors, self._review_ink_color_idx = self._load_review_ink_color()
+
+        # Cache environment variables to avoid expensive os.environ.get calls during hot scroll/paint paths
+        self._scroll_profile_enabled = (
+            os.environ.get(self.REVIEW_SCROLL_PROFILE_ENV, "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        self._verbose_debug_enabled = (
+            os.environ.get(self.REVIEW_VERBOSE_ENV, "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
         # ── O(1) box tracking ─────────────────────────────────────────────────
-        # All box_ids/group_ids that entered the queue (ever seen this session)
-        self._queued_ids = set()
-        # Tombstone set — deleted boxes, skip in _load_item
-        self._deleted_ids = set()
+        if state_to_restore:
+            self._items = state_to_restore["items"]
+            self._idx = state_to_restore["idx"]
+            self._done = state_to_restore["done"]
+            self._review_undo_stack = state_to_restore["undo_stack"]
+            self._review_redo_stack = state_to_restore["redo_stack"]
+            self._queued_ids = state_to_restore["queued_ids"]
+            self._deleted_ids = state_to_restore["deleted_ids"]
+        else:
+            self._items = []
+            self._queued_ids = set()
+            self._deleted_ids = set()
 
-        seen_item_keys = set()
+            seen_item_keys = set()
 
-        # ── SM-2 Debug Logger removed ─────────────────────────────────────────
+            # ── SM-2 Debug Logger removed ─────────────────────────────────────────
 
-        queue_t0 = time.perf_counter()
-        total_boxes_seen = 0
-        for card in cards:
-            boxes = card.get("boxes", [])
-            total_boxes_seen += len(boxes)
-            card_key = id(card)
+            queue_t0 = time.perf_counter()
+            total_boxes_seen = 0
+            for card in cards:
+                boxes = card.get("boxes", [])
+                total_boxes_seen += len(boxes)
+                card_key = id(card)
 
-            if len(boxes) == 0:
-                item_key = (card_key, None)
-                if item_key not in seen_item_keys:
-                    seen_item_keys.add(item_key)
-                    sm2_init(card)
-                    self._items.append((card, None, card))
-                continue
+                if len(boxes) == 0:
+                    item_key = (card_key, None)
+                    if item_key not in seen_item_keys:
+                        seen_item_keys.add(item_key)
+                        sm2_init(card)
+                        self._items.append((card, None, card))
+                    continue
 
-            seen_groups = set()
+                seen_groups = set()
 
-            for i, box in enumerate(boxes):
-                sm2_init(box)
-                gid = box.get("group_id", "")
+                for i, box in enumerate(boxes):
+                    sm2_init(box)
+                    gid = box.get("group_id", "")
 
-                if gid:
-                    if gid not in seen_groups:
-                        seen_groups.add(gid)
-                        item_key = (card_key, ("group", gid))
+                    if gid:
+                        if gid not in seen_groups:
+                            seen_groups.add(gid)
+                            item_key = (card_key, ("group", gid))
+                            if item_key not in seen_item_keys:
+                                seen_item_keys.add(item_key)
+                                _due_result = is_due_today(box)
+                                if _due_result:
+                                    self._items.append((card, ("group", gid), box))
+                                    self._queued_ids.add(gid)  # O(1) track
+                    else:
+                        box_id = box.get("box_id", f"__idx_{i}")
+                        item_key = (card_key, box_id)
                         if item_key not in seen_item_keys:
                             seen_item_keys.add(item_key)
                             _due_result = is_due_today(box)
                             if _due_result:
-                                self._items.append((card, ("group", gid), box))
-                                self._queued_ids.add(gid)  # O(1) track
-                else:
-                    box_id = box.get("box_id", f"__idx_{i}")
-                    item_key = (card_key, box_id)
-                    if item_key not in seen_item_keys:
-                        seen_item_keys.add(item_key)
-                        _due_result = is_due_today(box)
-                        if _due_result:
-                            self._items.append((card, i, box))
-                            self._queued_ids.add(box_id)  # O(1) track
+                                self._items.append((card, i, box))
+                                self._queued_ids.add(box_id)  # O(1) track
 
-        self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
-        self._review_profile_log(
-            "queue_built",
-            elapsed=f"{(time.perf_counter() - queue_t0) * 1000:.1f}ms",
-            source_cards=len(cards or []),
-            boxes=total_boxes_seen,
-            due_items=len(self._items),
-            queued_ids=len(self._queued_ids),
-        )
-        self._idx = 0
-        self._done = 0
-        # ── Review undo/redo stacks ───────────────────────────────────────────
-        # Each entry saves full state before a rating so Ctrl+Z can reverse it.
-        # "Reset" = restore SM-2 fields to pre-rating values, not full history wipe.
-        self._review_undo_stack = []  # list of state snapshots
-        self._review_redo_stack = []  # cleared on new rating, filled on undo
+            self._items.sort(key=lambda x: x[2].get("sm2_due", ""))
+            self._review_profile_log(
+                "queue_built",
+                elapsed=f"{(time.perf_counter() - queue_t0) * 1000:.1f}ms",
+                source_cards=len(cards or []),
+                boxes=total_boxes_seen,
+                due_items=len(self._items),
+                queued_ids=len(self._queued_ids),
+            )
+            self._idx = 0
+            self._done = 0
+            self._review_undo_stack = []  # list of state snapshots
+            self._review_redo_stack = []  # cleared on new rating, filled on undo
 
         # ── Session Timer ─────────────────────────────────────────────────────
         if _TIMER_AVAILABLE:
@@ -834,7 +762,10 @@ class ReviewScreen(QWidget):
                 w.installEventFilter(self)
             except Exception:
                 pass
-        self._load_item()
+        if state_to_restore:
+            self._review_undo()
+        else:
+            self._load_item()
         self._review_profile_log("init_complete", items=len(self._items))
 
     def _toggle_cache_panel(self):
@@ -850,6 +781,12 @@ class ReviewScreen(QWidget):
 
     def closeEvent(self, e):
         from cache_manager import MASK_REGISTRY
+
+        # Disconnect all signals originating from this ReviewScreen
+        try:
+            self.disconnect()
+        except Exception:
+            pass
 
         MASK_REGISTRY.unregister(self.canvas)
 
@@ -896,6 +833,60 @@ class ReviewScreen(QWidget):
         if self._stimer:
             self._stimer.stop()
             self._stimer.flush_to_journal()
+
+        # Timers cleanup
+        for attr in ("_queue_auto_hide_timer", "_ui_idle_timer", "_prog_timer", "_floating_timer_sync_timer"):
+            if hasattr(self, attr):
+                t = getattr(self, attr)
+                if t is not None:
+                    try:
+                        t.stop()
+                        t.disconnect()
+                    except Exception:
+                        pass
+                    setattr(self, attr, None)
+
+        # Threads signals cleanup
+        for attr in ("_pdf_loader_thread", "_ondemand_thread", "_skeleton_thread"):
+            if hasattr(self, attr):
+                t = getattr(self, attr)
+                if t is not None:
+                    try:
+                        t.disconnect()
+                    except Exception:
+                        pass
+                    setattr(self, attr, None)
+
+        # Break reference cycles in managers and controllers
+        if hasattr(self, "mgr") and self.mgr is not None:
+            try:
+                self.mgr.rs = None
+            except Exception:
+                pass
+            self.mgr = None
+
+        if self._stimer is not None:
+            try:
+                self._stimer._activity_parent = None
+                if hasattr(self._stimer, "_activity_filter") and self._stimer._activity_filter is not None:
+                    self._stimer._activity_filter._timer = None
+            except Exception:
+                pass
+            self._stimer = None
+
+        if hasattr(self, "_pdf_viewer") and self._pdf_viewer is not None:
+            try:
+                self._pdf_viewer.canvas = None
+                self._pdf_viewer.scroll_area = None
+                self._pdf_viewer.page_input = None
+                self._pdf_viewer.page_total_label = None
+                self._pdf_viewer.prev_button = None
+                self._pdf_viewer.next_button = None
+                self._pdf_viewer.total_pages_getter = None
+                self._pdf_viewer.debug_hook = None
+            except Exception:
+                pass
+            self._pdf_viewer = None
 
         super().closeEvent(e)
 
@@ -970,6 +961,16 @@ class ReviewScreen(QWidget):
         self._reposition_queue_edge_handle()
         self._reposition_queue_overlay()
         self._reposition_floating_timer()
+        
+        # Synchronize retro overlays
+        if getattr(self, "crt", None) is not None:
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
+        if getattr(self, "burst", None) is not None:
+            self.burst.setGeometry(self.rect())
+            self.burst.raise_()
+            if self.crt is not None:
+                self.crt.raise_()
 
     def _reposition_overlays(self):
         """Pin overlays to bottom-center of canvas scroll area."""
@@ -1033,112 +1034,16 @@ class ReviewScreen(QWidget):
         self._apply_queue_drawer_state()
 
     def _apply_queue_drawer_state(self, recenter: bool = True):
-        queue_panel = self.__dict__.get("_queue_panel")
-        queue_list = self.__dict__.get("_queue_list")
-        edge_button = self.__dict__.get("_queue_edge_button")
-        lock_button = self.__dict__.get("_queue_lock_button")
-        hide_button = self.__dict__.get("_queue_hide_button")
-        if queue_panel is None:
-            return
-
-        locked = bool(self.__dict__.get("_queue_locked", True))
-        open_now = locked or bool(self.__dict__.get("_queue_drawer_open", True))
-        self._set_queue_panel_docked(locked)
-        if not locked:
-            queue_panel.hide()
-        if queue_list is not None:
-            queue_list.setVisible(open_now)
-
-        if lock_button is not None:
-            lock_button.setText("🔒" if locked else "🔓")
-            lock_button.setToolTip(
-                "Queue locked open" if locked else "Queue unlocked"
-            )
-        if hide_button is not None:
-            hide_button.setVisible(not locked)
-            hide_button.setText("›" if open_now else "‹")
-            hide_button.setToolTip(
-                "Hide queue items" if open_now else "Show queue items"
-            )
-        if edge_button is not None:
-            edge_button.setVisible(False)
-            self._queue_edge_handle_visible = False
-
-        self._reposition_queue_overlay()
-        queue_panel.setVisible(open_now)
-        self._update_floating_timer_visibility()
-
-        if locked or not open_now:
-            self._cancel_queue_auto_hide()
-
-        if recenter:
-            QTimer.singleShot(0, self._trigger_center_fit)
+        from ui.review.queue_panel import apply_queue_drawer_state
+        apply_queue_drawer_state(self, recenter)
 
     def _set_queue_panel_docked(self, docked: bool):
-        queue_panel = self.__dict__.get("_queue_panel")
-        canvas_stage = self.__dict__.get("_canvas_stage")
-        mid_layout = self.__dict__.get("_mid_layout")
-        mid_widget = self.__dict__.get("_mid_widget")
-        if (
-            queue_panel is None
-            or canvas_stage is None
-            or mid_layout is None
-            or mid_widget is None
-        ):
-            return
-
-        if docked:
-            if self.__dict__.get("_queue_panel_docked", True):
-                queue_panel.setFixedWidth(200)
-                queue_panel.setMinimumHeight(0)
-                queue_panel.setMaximumHeight(16777215)
-                return
-            queue_panel.hide()
-            queue_panel.setParent(mid_widget)
-            mid_layout.addWidget(queue_panel)
-            self._queue_panel_docked = True
-            queue_panel.setFixedWidth(200)
-            queue_panel.setMinimumHeight(0)
-            queue_panel.setMaximumHeight(16777215)
-            queue_panel.show()
-            return
-
-        if not self.__dict__.get("_queue_panel_docked", True):
-            return
-        queue_panel.hide()
-        mid_layout.removeWidget(queue_panel)
-        queue_panel.setParent(canvas_stage)
-        self._queue_panel_docked = False
-        queue_panel.setFixedWidth(200)
+        from ui.review.queue_panel import set_queue_panel_docked
+        set_queue_panel_docked(self, docked)
 
     def _reposition_queue_overlay(self):
-        queue_panel = self.__dict__.get("_queue_panel")
-        canvas_stage = self.__dict__.get("_canvas_stage")
-        if (
-            queue_panel is None
-            or canvas_stage is None
-            or self.__dict__.get("_queue_panel_docked", True)
-        ):
-            return
-
-        width = 200
-        locked = bool(self.__dict__.get("_queue_locked", True))
-        open_now = locked or bool(self.__dict__.get("_queue_drawer_open", True))
-        queue_panel.setFixedWidth(width)
-        if open_now:
-            queue_panel.setMinimumHeight(0)
-            queue_panel.setMaximumHeight(16777215)
-            queue_panel.setFixedHeight(max(1, canvas_stage.height()))
-        else:
-            queue_panel.adjustSize()
-            compact_height = min(
-                max(queue_panel.sizeHint().height(), queue_panel.minimumSizeHint().height()),
-                max(1, canvas_stage.height()),
-            )
-            queue_panel.setFixedHeight(compact_height)
-
-        queue_panel.move(max(0, canvas_stage.width() - width - 8), 0)
-        queue_panel.raise_()
+        from ui.review.queue_panel import reposition_queue_overlay
+        reposition_queue_overlay(self)
 
     def _sync_floating_timer(self):
         if not self.__dict__.get("_stimer"):
@@ -1232,124 +1137,48 @@ class ReviewScreen(QWidget):
             self._set_floating_timer_sync_enabled(False)
 
     def _reposition_queue_edge_handle(self):
-        edge_button = self.__dict__.get("_queue_edge_button")
-        if edge_button is None:
-            return
-        width = max(edge_button.sizeHint().width(), 28)
-        height = max(edge_button.sizeHint().height(), 58)
-        edge_button.setFixedSize(width, height)
-        edge_button.move(
-            max(0, self.width() - width),
-            max(0, (self.height() - height) // 2),
-        )
+        from ui.review.queue_panel import reposition_queue_edge_handle
+        reposition_queue_edge_handle(self)
 
     def _event_pos_in_self(self, event, source=None):
-        try:
-            global_pos = event.globalPos()
-            if global_pos is not None:
-                return self.mapFromGlobal(global_pos)
-        except Exception:
-            pass
-        if isinstance(source, QWidget):
-            try:
-                return source.mapTo(self, event.pos())
-            except Exception:
-                pass
-        try:
-            return event.pos()
-        except Exception:
-            return None
+        from ui.review.queue_panel import event_pos_in_self
+        return event_pos_in_self(self, event, source)
 
     def _queue_edge_handle_hot(self, pos) -> bool:
-        if pos is None:
-            return False
-        edge_button = self.__dict__.get("_queue_edge_button")
-        if isinstance(edge_button, QWidget) and not edge_button.isHidden():
-            grace = int(self.QUEUE_EDGE_HANDLE_GRACE_PX)
-            if edge_button.geometry().adjusted(-grace, -grace, grace, grace).contains(pos):
-                return True
-        try:
-            return pos.x() >= self.width() - int(self.QUEUE_EDGE_HANDLE_HOT_ZONE_PX)
-        except Exception:
-            return False
+        from ui.review.queue_panel import queue_edge_handle_hot
+        return queue_edge_handle_hot(self, pos)
 
     def _hide_queue_edge_handle(self, reason: str = "left_edge"):
-        edge_button = self.__dict__.get("_queue_edge_button")
-        if edge_button is None:
-            return
-        self._queue_edge_handle_visible = False
-        edge_button.hide()
+        from ui.review.queue_panel import hide_queue_edge_handle
+        hide_queue_edge_handle(self, reason)
 
     def _maybe_show_queue_edge_handle(self, event, source=None):
-        queue_panel = self.__dict__.get("_queue_panel")
-        if queue_panel is not None and queue_panel.isVisible():
-            self._hide_queue_edge_handle("queue_visible")
-            return
-        if self.__dict__.get("_queue_locked", True):
-            self._hide_queue_edge_handle("locked")
-            return
-        if self.__dict__.get("_queue_drawer_open", True):
-            self._hide_queue_edge_handle("queue_open")
-            return
-        edge_button = self.__dict__.get("_queue_edge_button")
-        if edge_button is None:
-            return
-        if not self._queue_edge_handle_hot(self._event_pos_in_self(event, source)):
-            self._hide_queue_edge_handle("left_edge")
-            return
-        self._reposition_queue_edge_handle()
-        self._queue_edge_handle_visible = True
-        edge_button.show()
-        edge_button.raise_()
+        from ui.review.queue_panel import maybe_show_queue_edge_handle
+        maybe_show_queue_edge_handle(self, event, source)
 
     def _event_global_pos(self, event):
-        try:
-            return event.globalPos()
-        except Exception:
-            return QCursor.pos()
+        from ui.review.queue_panel import event_global_pos
+        return event_global_pos(self, event)
 
     def _queue_contains_global_pos(self, global_pos) -> bool:
-        queue_panel = self.__dict__.get("_queue_panel")
-        if queue_panel is None or not queue_panel.isVisible():
-            return False
-        return queue_panel.rect().contains(queue_panel.mapFromGlobal(global_pos))
+        from ui.review.queue_panel import queue_contains_global_pos
+        return queue_contains_global_pos(self, global_pos)
 
     def _cancel_queue_auto_hide(self):
-        timer = self.__dict__.get("_queue_auto_hide_timer")
-        if timer is not None:
-            timer.stop()
+        from ui.review.queue_panel import cancel_queue_auto_hide
+        cancel_queue_auto_hide(self)
 
     def _schedule_queue_auto_hide(self):
-        timer = self.__dict__.get("_queue_auto_hide_timer")
-        if timer is not None:
-            if not timer.isActive():
-                timer.start(self.QUEUE_AUTO_HIDE_MS)
+        from ui.review.queue_panel import schedule_queue_auto_hide
+        schedule_queue_auto_hide(self)
 
     def _update_queue_auto_hide_from_event(self, event):
-        if self.__dict__.get("_queue_locked", True):
-            self._cancel_queue_auto_hide()
-            return
-        if not self.__dict__.get("_queue_drawer_open", True):
-            self._cancel_queue_auto_hide()
-            return
-        queue_panel = self.__dict__.get("_queue_panel")
-        if queue_panel is None or not queue_panel.isVisible():
-            self._cancel_queue_auto_hide()
-            return
-        if self._queue_contains_global_pos(self._event_global_pos(event)):
-            self._cancel_queue_auto_hide()
-        else:
-            self._schedule_queue_auto_hide()
+        from ui.review.queue_panel import update_queue_auto_hide_from_event
+        update_queue_auto_hide_from_event(self, event)
 
     def _hide_queue_drawer_after_delay(self):
-        if self.__dict__.get("_queue_locked", True):
-            return
-        if not self.__dict__.get("_queue_drawer_open", True):
-            return
-        if self._queue_contains_global_pos(QCursor.pos()):
-            self._cancel_queue_auto_hide()
-            return
-        self._hide_queue_drawer()
+        from ui.review.queue_panel import hide_queue_drawer_after_delay
+        hide_queue_drawer_after_delay(self)
 
     def _load_item(self):
         load_t0 = time.perf_counter()
@@ -1411,7 +1240,9 @@ class ReviewScreen(QWidget):
                 self.canvas.clear_peek_target()
             boxes = card.get("boxes", [])
             if new_path and boxes:
-                source_box_zoom = card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
+                source_box_zoom = card.get("_pdf_box_render_zoom")
+                if source_box_zoom is None:
+                    source_box_zoom = PDF_LEGACY_BOX_ZOOM
                 boxes = self._adapt_review_boxes(card, new_path)
                 self._pdf_quality_debug(
                     "same_pdf_box_remap",
@@ -1524,6 +1355,10 @@ class ReviewScreen(QWidget):
             self._review_undo()
         elif shortcut_manager.event_matches(e, "review.redo"):
             self._review_redo()
+        elif shortcut_manager.event_matches(e, "review.skip_session"):
+            self._skip_session()
+        elif shortcut_manager.event_matches(e, "review.super_skip"):
+            self._super_skip()
         elif shortcut_manager.event_matches(e, "review.open_pdf"):
             self._open_current_pdf_in_reader()
         elif shortcut_manager.event_matches(e, "review.open_folder"):
@@ -1551,6 +1386,7 @@ class ReviewScreen(QWidget):
                 f"✏ Pen {'ON' if active else 'OFF'}  {color if active else ''}"
             )
             self._update_ink_hint()
+            self._update_pen_button_states()
         elif (
             key in (Qt.Key_Equal, Qt.Key_Plus)
             and not (mods & Qt.ControlModifier)
@@ -1567,7 +1403,13 @@ class ReviewScreen(QWidget):
             self._capture_review_ink_width("width_minus")
         elif shortcut_manager.event_matches(e, "review.pen_color") and not e.isAutoRepeat():
             if self.canvas._ink_active:
-                self.canvas.ink_cycle_color()
+                if bool(mods & Qt.ShiftModifier):
+                    self._choose_pen_color_picker()
+                else:
+                    self.canvas.ink_cycle_color()
+                    self._review_ink_color_idx = int(self.canvas._ink_color_idx)
+                    self._save_review_ink_color()
+                    self._update_pen_button_states()
         elif shortcut_manager.event_matches(e, "review.pen_clear") and not e.isAutoRepeat():
             self.canvas.ink_clear()
         elif key == Qt.Key_Control and not e.isAutoRepeat():
@@ -1609,6 +1451,11 @@ class ReviewScreen(QWidget):
             if 0 <= box_idx < len(self.canvas._boxes):
                 self.canvas._boxes[box_idx]["revealed"] = True
                 self.canvas._redraw()
+                
+        # Spawn retro burst
+        if getattr(self, "burst", None) is not None:
+            self.burst.spawn_burst(self.rect().center().x(), self.rect().center().y(), "cyan", count=25)
+            
         self._reveal_bar.hide()
         self._show_overlay(self._rating_frame)
 
@@ -1883,6 +1730,27 @@ class ReviewScreen(QWidget):
                 f"border:1px solid {border};}}"
                 f"QProgressBar::chunk{{background:{accent};border-radius:3px;}}"
             )
+            
+            # Shifting laser sweep timer
+            self._prog_glow_step = 0
+            self._prog_timer = QTimer(self)
+            def _animate_prog():
+                import os
+                if os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() in {"0", "false", "no", "off"}:
+                    return
+                self._prog_glow_step = (self._prog_glow_step + 3) % 100
+                s1 = max(0, self._prog_glow_step - 15) / 100.0
+                s2 = self._prog_glow_step / 100.0
+                s3 = min(100, self._prog_glow_step + 15) / 100.0
+                self.prog.setStyleSheet(
+                    f"QProgressBar{{background:{card};border-radius:3px;border:1px solid {border};}}"
+                    f"QProgressBar::chunk{{background:qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+                    f"stop:0 {accent}, stop:{s1} {accent}, stop:{s2} #ffffff, stop:{s3} {accent}, stop:1 {accent});"
+                    f"border-radius:3px;}}"
+                )
+            self._prog_timer.timeout.connect(_animate_prog)
+            if theme in ("tmnt", "manhattan") and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}:
+                self._prog_timer.start(40)
         else:
             self.prog.setStyleSheet(
                 f"QProgressBar{{background:{card};border-radius:4px;}}"
@@ -2007,6 +1875,36 @@ class ReviewScreen(QWidget):
         self._btn_invert_pdf.clicked.connect(self._toggle_pdf_contrast)
         row2.addWidget(self._btn_invert_pdf)
 
+        row2.addWidget(_vsep())
+
+        # ── Group 4: Pen / Ink Tools ──────────────────────────────────────
+        _lbl_pen = QLabel("PEN")
+        _lbl_pen.setStyleSheet(
+            f"color:{subtext};background:transparent;"
+            f"font-size:{'7px' if dojo else '9px'};"
+            f"font-weight:bold;letter-spacing:1px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        row2.addWidget(_lbl_pen)
+
+        self._btn_toggle_pen = _icon_btn(QIcon(), "Toggle Pen Drawing  Alt / P", 28)
+        self._btn_toggle_pen.setText("🖊")
+        self._btn_toggle_pen.clicked.connect(self._toggle_pen_drawing)
+        row2.addWidget(self._btn_toggle_pen)
+
+        self._btn_pen_color = _icon_btn(QIcon(), "Choose Custom Pen Color (Click to pick, Shift+X to open dialog)", 28)
+        self._btn_pen_color.setText("🎨")
+        self._btn_pen_color.clicked.connect(self._choose_pen_color_picker)
+        row2.addWidget(self._btn_pen_color)
+
+        self._btn_pen_clear = _icon_btn(QIcon(), "Clear All Pen Strokes  Delete", 28)
+        self._btn_pen_clear.setText("🗑")
+        self._btn_pen_clear.clicked.connect(self._clear_pen_strokes)
+        row2.addWidget(self._btn_pen_clear)
+
+        # Initialize the dynamic states of these buttons
+        self._update_pen_button_states()
+
         row2.addStretch()
         hdr_vbox.addWidget(row2_w)
 
@@ -2047,7 +1945,10 @@ class ReviewScreen(QWidget):
         self.canvas = OcclusionCanvas()
         self.canvas.set_mode("review")
         self.canvas._ink_width = float(self._review_ink_width)
+        self.canvas._ink_colors = list(self._review_ink_colors)
+        self.canvas._ink_color_idx = int(self._review_ink_color_idx)
         self._activate_default_review_pen()
+        self._update_pen_button_states()
         self.canvas.right_clicked.connect(self._toggle_chrome)
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
@@ -2124,19 +2025,22 @@ class ReviewScreen(QWidget):
                 f"QUEUE ({self._active_queue_count()})"
             )
             if dojo:
+                is_ps = (font == "Press Start 2P")
+                fw = "normal" if is_ps else "bold"
+                q_sz = "8px" if is_ps else "10px"
                 self._floating_timer_session.setStyleSheet(
                     f"color:{accent};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_SESSION_FONT_PX}px;"
-                    f"font-weight:bold;font-family:{font};"
+                    f"font-weight:{fw};font-family:{font};"
                 )
                 self._floating_timer_today.setStyleSheet(
                     f"color:{accent2};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_TODAY_FONT_PX}px;"
-                    f"font-weight:bold;font-family:{font};"
+                    f"font-weight:{fw};font-family:{font};"
                 )
                 self._floating_timer_queue.setStyleSheet(
                     f"color:{subtext};background:transparent;border:none;"
-                    f"font-size:10px;font-weight:bold;font-family:{font};"
+                    f"font-size:{q_sz};font-weight:{fw};font-family:{font};"
                 )
             else:
                 self._floating_timer_session.setStyleSheet(
@@ -2445,6 +2349,49 @@ class ReviewScreen(QWidget):
             )
         b_rev.clicked.connect(self._reveal_current)
         rb_l.addWidget(b_rev)
+
+        # Add Skip Session button to reveal bar
+        b_skip = QPushButton("⏭️ Skip  [S]")
+        b_skip.setMinimumHeight(control_metrics["reveal_min_height"])
+        if dojo:
+            b_skip.setStyleSheet(
+                f"background:rgba(7,7,11,210);color:{subtext};"
+                f"border:1px solid {border};border-radius:2px;"
+                f"padding:{control_metrics['reveal_padding_y']}px 20px;"
+                f"font-size:{control_metrics['reveal_font']}px;font-weight:900;"
+                f"font-family:{font};letter-spacing:1px;"
+            )
+        else:
+            b_skip.setStyleSheet(
+                f"background:rgba(42,42,62,220);color:{text};"
+                f"border:1px solid {border};border-radius:8px;"
+                f"padding:{control_metrics['reveal_padding_y']}px 20px;"
+                f"font-size:{control_metrics['reveal_font']}px;font-weight:bold;"
+            )
+        b_skip.clicked.connect(self._skip_session)
+        rb_l.addWidget(b_skip)
+
+        # Add Super Skip button to reveal bar
+        b_super = QPushButton("🌀 Super Skip  [Alt+S]")
+        b_super.setMinimumHeight(control_metrics["reveal_min_height"])
+        if dojo:
+            b_super.setStyleSheet(
+                f"background:rgba(7,7,11,210);color:{accent2};"
+                f"border:1px solid {accent2};border-radius:2px;"
+                f"padding:{control_metrics['reveal_padding_y']}px 20px;"
+                f"font-size:{control_metrics['reveal_font']}px;font-weight:900;"
+                f"font-family:{font};letter-spacing:1px;"
+            )
+        else:
+            b_super.setStyleSheet(
+                f"background:rgba(42,42,62,220);color:{accent2};"
+                f"border:1px solid {border};border-radius:8px;"
+                f"padding:{control_metrics['reveal_padding_y']}px 20px;"
+                f"font-size:{control_metrics['reveal_font']}px;font-weight:bold;"
+            )
+        b_super.clicked.connect(self._super_skip)
+        rb_l.addWidget(b_super)
+
         self._reveal_button = b_rev
         self._reveal_bar.hide()
 
@@ -2503,18 +2450,75 @@ class ReviewScreen(QWidget):
             self._rating_btns.append(btn)
             self._prev_lbls.append((btn, q))
 
+        # Add Skip Session button to rating frame
+        b_skip_rate = QPushButton("⏭️ Skip  [S]")
+        b_skip_rate.setFixedHeight(control_metrics["rating_height"])
+        if dojo:
+            b_skip_rate.setStyleSheet(
+                f"QPushButton{{background:rgba(7,7,11,200);color:{subtext};"
+                f"border:1px solid {border};border-radius:2px;"
+                f"font-size:{control_metrics['rating_font']}px;font-weight:900;"
+                f"padding:0 16px;"
+                f"font-family:{font};letter-spacing:0.5px;}}"
+                f"QPushButton:hover{{background:{border};color:{bg};}}"
+            )
+        else:
+            b_skip_rate.setStyleSheet(
+                f"QPushButton{{background:{surface};color:{text};"
+                f"border:1px solid {border};border-radius:8px;"
+                f"font-size:{control_metrics['rating_font']}px;font-weight:bold;"
+                f"padding:0 16px;}}"
+                f"QPushButton:hover{{background:{border};color:{text};}}"
+            )
+        b_skip_rate.clicked.connect(self._skip_session)
+        rfl.addWidget(b_skip_rate)
+
+        # Add Super Skip button to rating frame
+        b_super_rate = QPushButton("🌀 Super Skip  [Alt+S]")
+        b_super_rate.setFixedHeight(control_metrics["rating_height"])
+        if dojo:
+            b_super_rate.setStyleSheet(
+                f"QPushButton{{background:rgba(7,7,11,200);color:{accent2};"
+                f"border:1px solid {accent2};border-radius:2px;"
+                f"font-size:{control_metrics['rating_font']}px;font-weight:900;"
+                f"padding:0 16px;"
+                f"font-family:{font};letter-spacing:0.5px;}}"
+                f"QPushButton:hover{{background:{accent2};color:{bg};}}"
+            )
+        else:
+            b_super_rate.setStyleSheet(
+                f"QPushButton{{background:{surface};color:{accent2};"
+                f"border:1.5px solid {accent2};border-radius:8px;"
+                f"font-size:{control_metrics['rating_font']}px;font-weight:bold;"
+                f"padding:0 16px;}}"
+                f"QPushButton:hover{{background:{accent2};color:white;}}"
+            )
+        b_super_rate.clicked.connect(self._super_skip)
+        rfl.addWidget(b_super_rate)
+
         self._rating_frame.hide()
         self._mid_row_widget = self._reveal_bar
+
+        # CRT and Particle Burst overlays
+        self.crt = None
+        self.burst = None
+        if theme in ("tmnt", "manhattan"):
+            self.crt = CRTOverlay(self)
+            self.burst = ParticleBurstOverlay(self)
 
     def _update_ink_hint(self):
         """Canvas toasts handle the visible pen status in review mode."""
         pass
 
     def _activate_default_review_pen(self):
-        canvas = getattr(self, "canvas", None)
+        canvas = self.__dict__.get("canvas", None)
         if canvas is None:
             return
-        canvas._ink_width = float(getattr(self, "_review_ink_width", 1.2))
+        canvas._ink_width = float(self.__dict__.get("_review_ink_width", 1.2))
+        if "_review_ink_colors" in self.__dict__:
+            canvas._ink_colors = list(self.__dict__["_review_ink_colors"])
+        if "_review_ink_color_idx" in self.__dict__:
+            canvas._ink_color_idx = int(self.__dict__["_review_ink_color_idx"])
         if hasattr(canvas, "ink_set_active"):
             canvas.ink_set_active(True)
         else:
@@ -2544,6 +2548,41 @@ class ReviewScreen(QWidget):
             getattr(canvas, "_ink_width", self._review_ink_width)
         )
         self._save_review_ink_width()
+
+    def _load_review_ink_color(self):
+        settings = QSettings("AnkiOcclusion", "App")
+        colors = settings.value("review/ink_colors", ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF"])
+        if isinstance(colors, str):
+            import json
+            try:
+                colors = json.loads(colors)
+            except Exception:
+                colors = ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF"]
+        elif not isinstance(colors, list):
+            colors = ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF"]
+        colors = [str(c).upper() for c in colors if c]
+        if not colors:
+            colors = ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF"]
+
+        idx = settings.value("review/ink_color_idx", 0)
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            idx = 0
+        if idx < 0 or idx >= len(colors):
+            idx = 0
+        return colors, idx
+
+    def _save_review_ink_color(self):
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+        colors = list(canvas._ink_colors)
+        idx = int(canvas._ink_color_idx)
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("review/ink_colors", colors)
+        settings.setValue("review/ink_color_idx", idx)
+        settings.sync()
 
     def _toggle_review_mode(self):
         if self._btn_mode.isChecked():
@@ -2628,7 +2667,79 @@ class ReviewScreen(QWidget):
         store.mark_dirty()
         
         self._update_invert_pdf_button_style()
-        self._reload_pdf_contrast()
+        if self.canvas._px is not None and not self.canvas._px.isNull():
+            from PyQt5.QtGui import QImage
+            img = self.canvas._px.toImage()
+            img.invertPixels(QImage.InvertRgb)
+            self.canvas.load_pixmap(QPixmap.fromImage(img))
+        else:
+            self._reload_pdf_contrast()
+
+    def _toggle_pen_drawing(self):
+        self.canvas.ink_toggle()
+        active = self.canvas._ink_active
+        color = self.canvas._ink_colors[self.canvas._ink_color_idx]
+        self.canvas._show_toast(
+            f"✏ Pen {'ON' if active else 'OFF'}  {color if active else ''}"
+        )
+        self._update_ink_hint()
+        self._update_pen_button_states()
+
+    def _choose_pen_color_picker(self):
+        from PyQt5.QtWidgets import QColorDialog
+        from PyQt5.QtGui import QColor
+        current_color = QColor(self.canvas._ink_colors[self.canvas._ink_color_idx])
+        chosen = QColorDialog.getColor(current_color, self, "Choose Pen Color")
+        if chosen.isValid():
+            chosen_hex = chosen.name().upper()
+            if chosen_hex in self.canvas._ink_colors:
+                self.canvas._ink_color_idx = self.canvas._ink_colors.index(chosen_hex)
+            else:
+                self.canvas._ink_colors.append(chosen_hex)
+                self.canvas._ink_color_idx = len(self.canvas._ink_colors) - 1
+            self._review_ink_colors = list(self.canvas._ink_colors)
+            self._review_ink_color_idx = int(self.canvas._ink_color_idx)
+            self._save_review_ink_color()
+            self.canvas._show_toast(f"✏ Ink Color: {chosen_hex}")
+            self._update_pen_button_states()
+
+    def _clear_pen_strokes(self):
+        self.canvas.ink_clear()
+
+    def _update_pen_button_states(self):
+        if not hasattr(self, "_btn_toggle_pen") or self._btn_toggle_pen is None:
+            return
+        if not hasattr(self, "canvas") or self.canvas is None:
+            return
+        active = getattr(self.canvas, "_ink_active", False)
+        color = self.canvas._ink_colors[self.canvas._ink_color_idx]
+        dojo = _is_dojo()
+        
+        if active:
+            bg_color = "rgba(114,255,79,0.18)" if dojo else "rgba(124,106,247,0.15)"
+            self._btn_toggle_pen.setStyleSheet(
+                f"QPushButton{{background:{bg_color};border:1.5px solid {color};"
+                f"border-radius:4px;font-size:12px;font-weight:bold;"
+                f"padding:0px;letter-spacing:0px;text-transform:none;}}"
+            )
+        else:
+            self._btn_toggle_pen.setStyleSheet(
+                f"QPushButton{{background:transparent;border:1px solid {_tc('#45475A', '#1A1A26')};"
+                f"border-radius:4px;font-size:12px;"
+                f"padding:0px;letter-spacing:0px;text-transform:none;}}"
+            )
+
+        self._btn_pen_color.setStyleSheet(
+            f"QPushButton{{border:1.5px solid {color};border-radius:4px;"
+            f"background:rgba(255,255,255,0.06);font-size:12px;"
+            f"padding:0px;letter-spacing:0px;text-transform:none;}}"
+        )
+
+        self._btn_pen_clear.setStyleSheet(
+            f"QPushButton{{border:1px solid {_tc('#45475A', '#1A1A26')};border-radius:4px;"
+            f"background:transparent;font-size:12px;"
+            f"padding:0px;letter-spacing:0px;text-transform:none;}}"
+        )
 
     def _reload_pdf_contrast(self):
         path = getattr(self.canvas, "_current_pdf_path", None)
@@ -2679,27 +2790,16 @@ class ReviewScreen(QWidget):
     ):
         if not self._review_scroll_profile_enabled():
             return
-        now = time.perf_counter()
-        prev_ts = self.__dict__.get("_review_scroll_profile_last_event_ts")
-        dt_ms = 0.0 if prev_ts is None else (now - float(prev_ts)) * 1000.0
-        self._review_scroll_profile_last_event_ts = now
-        last_log = float(self.__dict__.get("_review_scroll_profile_last_log_ts", 0.0) or 0.0)
-        should_log = page_changed or total_ms >= 8.0 or (now - last_log) >= 1.0
-        if not should_log:
-            return
-        self._review_scroll_profile_last_log_ts = now
-        rate = 1000.0 / dt_ms if dt_ms > 0 else 0.0
-        print(
-            "[PROFILE][review_scroll] "
-            f"value={int(value)} "
-            f"page=p.{int(page_zero) + 1} "
-            f"changed={'yes' if page_changed else 'no'} "
-            f"dt={dt_ms:.1f}ms "
-            f"rate={rate:.1f}/s "
-            f"total={total_ms:.1f}ms "
-            f"page_calc={page_calc_ms:.1f}ms "
-            f"page_ui={page_ui_ms:.1f}ms "
-            f"overlay={overlay_ms:.1f}ms"
+        from ui.review.profiler import log_review_scroll_profile
+        log_review_scroll_profile(
+            self,
+            value=value,
+            page_zero=page_zero,
+            page_changed=page_changed,
+            page_calc_ms=page_calc_ms,
+            page_ui_ms=page_ui_ms,
+            overlay_ms=overlay_ms,
+            total_ms=total_ms,
         )
 
     def _set_review_page_ui(self, current_zero: int):
@@ -2719,16 +2819,13 @@ class ReviewScreen(QWidget):
             self._pdf_viewer.set_page_ui(page_zero)
             self._review_ui_page_zero = self._pdf_viewer._ui_page_zero
             page_ui_ms = (time.perf_counter() - ui_t0) * 1000.0
-        overlay_t0 = time.perf_counter()
-        self._keep_floating_timer_on_top()
-        overlay_ms = (time.perf_counter() - overlay_t0) * 1000.0
         self._log_review_scroll_profile(
             value=value,
             page_zero=page_zero,
             page_changed=page_changed,
             page_calc_ms=page_calc_ms,
             page_ui_ms=page_ui_ms,
-            overlay_ms=overlay_ms,
+            overlay_ms=0.0,
             total_ms=(time.perf_counter() - handler_t0) * 1000.0,
         )
 
@@ -2852,11 +2949,7 @@ class ReviewScreen(QWidget):
             ]
             pdf_path = resolve_asset_path(card.get("pdf_path", ""))
             if pdf_path:
-                cached_pages = 0
-                for i in range(10000):
-                    if PAGE_CACHE.get(pdf_path, i) is None:
-                        break
-                    cached_pages += 1
+                cached_pages = PAGE_CACHE.cached_page_count(pdf_path, variant=self._pdf_render_zoom)
                 lines.append(f"  PDF path        : {os.path.basename(pdf_path)}")
                 lines.append(f"  Cached pages    : {cached_pages}")
             lines.append(f"  Canvas pages    : {len(self.canvas._pages)}")
@@ -3010,374 +3103,78 @@ class ReviewScreen(QWidget):
         self._reload_current_canvas()
 
     def _open_current_pdf_in_reader(self):
-        path = self._current_pdf_path_for_shortcuts()
-        if not path:
-            self.canvas._show_toast("No PDF loaded for this card")
-            return
-        idx = self._idx
-        if idx >= len(self._items):
-            idx = len(self._items) - 1
-        if not (0 <= idx < len(self._items)):
-            return
-
-        scroll_pos = self._canvas_scroll.verticalScrollBar().value()
-        current_page_zero = self.canvas.get_current_page(scroll_pos)
-        current_page = current_page_zero + 1
-        self._external_pdf_path_hint = path
-        self._external_pdf_page_hint = current_page_zero
-
-        try:
-            import subprocess
-
-            if sys.platform == "win32":
-                xchange_paths = [
-                    r"C:\Program Files\Tracker Software\PDF Editor\PDFXEdit.exe",
-                    r"C:\Program Files (x86)\Tracker Software\PDF Editor\PDFXEdit.exe",
-                    r"C:\Program Files\PDF-XChange\PDF-XChange Editor\PDFXEdit.exe",
-                    r"C:\Program Files (x86)\PDF-XChange\PDF-XChange Editor\PDFXEdit.exe",
-                ]
-                for exe in xchange_paths:
-                    if os.path.exists(exe):
-                        subprocess.Popen([exe, "/A", f"page={current_page}", path])
-                        self.canvas._show_toast(
-                            f"📄 Opened p.{current_page} in PDF-XChange"
-                        )
-                        return
-
-                try:
-                    import winreg
-
-                    key = winreg.OpenKey(
-                        winreg.HKEY_LOCAL_MACHINE,
-                        r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\PDFXEdit.exe",
-                    )
-                    exe = winreg.QueryValue(key, None)
-                    winreg.CloseKey(key)
-                    if exe and os.path.exists(exe):
-                        subprocess.Popen([exe, "/A", f"page={current_page}", path])
-                        self.canvas._show_toast(
-                            f"📄 Opened p.{current_page} in PDF-XChange"
-                        )
-                        return
-                except Exception:
-                    pass
-
-                os.startfile(path)
-                self.canvas._show_toast(
-                    "📄 Opened PDF (page jump not supported by this reader)"
-                )
-
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
-                self.canvas._show_toast(f"📄 Opened PDF p.{current_page}")
-            else:
-                subprocess.Popen(["xdg-open", path])
-                self.canvas._show_toast(f"📄 Opened PDF p.{current_page}")
-
-        except Exception as ex:
-            QMessageBox.warning(
-                self, "Could not open PDF", f"Could not open PDF:\n{ex}"
-            )
+        from ui.review.external_reader import open_current_pdf_in_reader
+        open_current_pdf_in_reader(self)
 
     def _current_pdf_path_for_shortcuts(self):
-        idx = self._idx
-        if idx >= len(self._items):
-            idx = len(self._items) - 1
-        if not (0 <= idx < len(self._items)):
-            return ""
-        card, _, _ = self._items[idx]
-        path = resolve_asset_path(card.get("pdf_path", ""))
-        if not path or not os.path.exists(path):
-            return ""
-        return path
+        from ui.review.external_reader import current_pdf_path_for_shortcuts
+        return current_pdf_path_for_shortcuts(self)
 
     def _copy_current_pdf_file_to_clipboard(self):
-        path = self._current_pdf_path_for_shortcuts()
-        if not path:
-            self.canvas._show_toast("No PDF loaded for this card")
-            return
-        mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(path)])
-        QApplication.clipboard().setMimeData(mime)
-        print(f"[DEBUG][review_pdf_shortcut] copied_file {path}")
-        self.canvas._show_toast("Copied PDF file")
+        from ui.review.external_reader import copy_current_pdf_file_to_clipboard
+        copy_current_pdf_file_to_clipboard(self)
 
     def _reveal_current_pdf_in_folder(self):
-        path = self._current_pdf_path_for_shortcuts()
-        if not path:
-            self.canvas._show_toast("No PDF loaded for this card")
-            return
-        try:
-            import subprocess
-
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", path])
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
-            print(f"[DEBUG][review_pdf_shortcut] reveal_path {path}")
-            self.canvas._show_toast("Opened PDF folder")
-        except Exception as ex:
-            QMessageBox.warning(
-                self, "Could not open location", f"Could not open PDF location:\n{ex}"
-            )
+        from ui.review.external_reader import reveal_current_pdf_in_folder
+        reveal_current_pdf_in_folder(self)
 
     def _open_annotation_beta(self):
-        idx = self._idx
-        if idx >= len(self._items):
-            idx = len(self._items) - 1
-        if not (0 <= idx < len(self._items)):
-            return
-        card, _box_idx, _ = self._items[idx]
-        path = resolve_asset_path(card.get("pdf_path", ""))
-        if not path or not os.path.exists(path):
-            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
-            return
-        page_zero = self.canvas.get_current_page(
-            self._canvas_scroll.verticalScrollBar().value()
-        )
-        scroll_y = self._canvas_scroll.verticalScrollBar().value()
-        review_scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
-        img_y = float(scroll_y) / review_scale
-        print(
-            f"[DEBUG][review_annotation] handoff "
-            f"page={page_zero + 1} scroll_y={scroll_y} scale={review_scale:.4f} img_y={img_y:.2f}"
-        )
-        active_dialog = self.__dict__.get("_active_annotation_dialog")
-        if active_dialog is not None and active_dialog.isVisible():
-            if hasattr(active_dialog, "retarget_from_review"):
-                active_dialog.retarget_from_review(page_zero, img_y)
-            if hasattr(active_dialog, "showFullScreen"):
-                active_dialog.showFullScreen()
-            active_dialog.raise_()
-            active_dialog.activateWindow()
-            return
-        dialog = PdfAnnotationDialog(
-            path,
-            parent=None,
-            initial_page=page_zero,
-            initial_anchor_y=img_y,
-        )
-        self._active_annotation_dialog = dialog
-        dialog.finished.connect(
-            lambda result, d=dialog, p=path: self._finish_annotation_beta(
-                d, p, result
-            )
-        )
-        self._pause_review_lazy_activity_for_annotation()
-        self._prepare_annotation_window(dialog)
-        dialog.showFullScreen()
-        dialog.raise_()
-        dialog.activateWindow()
+        from ui.review.annotation_handler import open_annotation_beta
+        open_annotation_beta(self)
 
     def _annotation_window_flags(self):
-        return Qt.Window | Qt.FramelessWindowHint
+        from ui.review.annotation_handler import annotation_window_flags
+        return annotation_window_flags(self)
 
     def _prepare_annotation_window(self, dialog):
-        dialog.setParent(None, Qt.Window)
-        dialog.setWindowFlags(self._annotation_window_flags())
-        dialog.setWindowModality(Qt.NonModal)
-        dialog.setAttribute(Qt.WA_DeleteOnClose, False)
-        try:
-            dialog.setWindowIcon(self.window().windowIcon())
-        except Exception:
-            pass
-        self._install_annotation_switch_shortcuts(dialog)
+        from ui.review.annotation_handler import prepare_annotation_window
+        prepare_annotation_window(self, dialog)
 
     def _install_annotation_switch_shortcuts(self, dialog):
-        try:
-            review_shortcut = QShortcut(QKeySequence("Ctrl+Tab"), self)
-            review_shortcut.setContext(Qt.WindowShortcut)
-            review_shortcut.activated.connect(self._focus_active_annotation_window)
-            self._annotation_focus_shortcut = review_shortcut
-
-            dialog_shortcut = QShortcut(QKeySequence("Ctrl+Tab"), dialog)
-            dialog_shortcut.setContext(Qt.WindowShortcut)
-            dialog_shortcut.activated.connect(self._focus_review_window)
-            dialog._review_focus_shortcut = dialog_shortcut
-        except Exception:
-            pass
+        from ui.review.annotation_handler import install_annotation_switch_shortcuts
+        install_annotation_switch_shortcuts(self, dialog)
 
     def _focus_active_annotation_window(self):
-        dialog = self.__dict__.get("_active_annotation_dialog")
-        if dialog is None or not dialog.isVisible():
-            return
-        if dialog.isMinimized():
-            dialog.showNormal()
-        dialog.raise_()
-        dialog.activateWindow()
+        from ui.review.annotation_handler import focus_active_annotation_window
+        focus_active_annotation_window(self)
 
     def _focus_review_window(self):
-        win = self.window()
-        if win.isMinimized():
-            win.showNormal()
-        win.raise_()
-        win.activateWindow()
+        from ui.review.annotation_handler import focus_review_window
+        focus_review_window(self)
 
     def _finish_annotation_beta(self, dialog, path: str, result):
-        if self.__dict__.get("_active_annotation_dialog") is dialog:
-            self._active_annotation_dialog = None
-            self._annotation_focus_shortcut = None
-        self._resume_review_lazy_activity_after_annotation(path)
-        self._apply_annotation_beta_refresh(
-            path,
-            getattr(dialog, "_saved_pages", []),
-            getattr(dialog, "return_page", None),
-        )
+        from ui.review.annotation_handler import finish_annotation_beta
+        finish_annotation_beta(self, dialog, path, result)
 
     def _pause_review_lazy_activity_for_annotation(self):
-        self._review_lazy_trace_suspended = True
-        reveal_bar = getattr(self, "_reveal_bar", None)
-        rating_frame = getattr(self, "_rating_frame", None)
-        self._annotation_prev_reveal_visible = bool(
-            reveal_bar is not None and reveal_bar.isVisible()
-        )
-        self._annotation_prev_rating_visible = bool(
-            rating_frame is not None and rating_frame.isVisible()
-        )
-        if reveal_bar is not None:
-            reveal_bar.hide()
-        if rating_frame is not None:
-            rating_frame.hide()
-        timer = getattr(self, "_ui_idle_timer", None)
-        if timer is not None:
-            timer.stop()
-        self._background_fill_state = None
-        self._bg_pending_inserts.clear()
-        self._pending_visible_request = False
-        self._stop_ondemand_thread()
-        watcher = self.__dict__.get("_pdf_watcher")
-        if watcher is not None:
-            watcher.stop_watch()
+        from ui.review.annotation_handler import pause_review_lazy_activity_for_annotation
+        pause_review_lazy_activity_for_annotation(self)
 
     def _resume_review_lazy_activity_after_annotation(self, path: str | None = None):
-        self._review_lazy_trace_suspended = False
-        reveal_bar = getattr(self, "_reveal_bar", None)
-        rating_frame = getattr(self, "_rating_frame", None)
-        if bool(self.__dict__.pop("_annotation_prev_rating_visible", False)):
-            if rating_frame is not None:
-                self._show_overlay(rating_frame)
-        elif bool(self.__dict__.pop("_annotation_prev_reveal_visible", False)):
-            if reveal_bar is not None:
-                self._show_overlay(reveal_bar)
-        if path:
-            watcher = self.__dict__.get("_pdf_watcher")
-            if watcher is not None:
-                watcher.watch_pdf(path)
+        from ui.review.annotation_handler import resume_review_lazy_activity_after_annotation
+        resume_review_lazy_activity_after_annotation(self, path)
 
     def _clear_review_loading_caches(self):
-        self.__dict__.setdefault("_review_priority_pages_cache", {}).clear()
-        self.__dict__.setdefault("_review_adapted_boxes_cache", {}).clear()
+        from ui.review.annotation_handler import clear_review_loading_caches
+        clear_review_loading_caches(self)
 
     def _review_box_signature(self, boxes):
-        sig = []
-        for box in boxes or []:
-            rect = box.get("rect", ())
-            if isinstance(rect, (list, tuple)):
-                rect_sig = tuple(rect[:4])
-            else:
-                rect_sig = repr(rect)
-            sig.append(
-                (
-                    box.get("box_id", ""),
-                    box.get("group_id", ""),
-                    rect_sig,
-                    box.get("shape", "rect"),
-                    box.get("angle", 0.0),
-                    box.get("page_num"),
-                )
-            )
-        return tuple(sig)
+        from ui.review.annotation_handler import review_box_signature
+        return review_box_signature(self, boxes)
 
     def _adapt_review_boxes(self, card, path):
-        boxes = card.get("boxes", []) or []
-        if not path or not boxes:
-            return boxes
-
-        adapt_t0 = time.perf_counter()
-        source_zoom = card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
-        try:
-            source_zoom_key = float(source_zoom)
-        except (TypeError, ValueError):
-            source_zoom_key = float(PDF_LEGACY_BOX_ZOOM)
-        try:
-            target_zoom_key = float(self._pdf_render_zoom)
-        except (TypeError, ValueError):
-            target_zoom_key = 0.0
-        cache = self.__dict__.setdefault("_review_adapted_boxes_cache", {})
-        key = (
-            id(card),
-            os.path.abspath(path),
-            source_zoom_key,
-            target_zoom_key,
-            self._review_box_signature(boxes),
-        )
-        cached = cache.get(key)
-        if cached is None:
-            cached = adapt_pdf_boxes_to_render_zoom(
-                path,
-                boxes,
-                source_zoom,
-                self._pdf_render_zoom,
-            )
-            cache[key] = cached
-            while len(cache) > 32:
-                cache.pop(next(iter(cache)))
-            self._review_profile_count("adapt_boxes_miss")
-            self._review_profile_log(
-                "adapt_boxes",
-                result="miss",
-                boxes=len(boxes),
-                elapsed=f"{(time.perf_counter() - adapt_t0) * 1000:.1f}ms",
-            )
-        else:
-            self._review_profile_count("adapt_boxes_hit")
-            self._review_profile_log(
-                "adapt_boxes",
-                result="hit",
-                boxes=len(boxes),
-                elapsed=f"{(time.perf_counter() - adapt_t0) * 1000:.1f}ms",
-            )
-        return copy.deepcopy(cached)
+        from ui.review.annotation_handler import adapt_review_boxes
+        return adapt_review_boxes(self, card, path)
 
     def _start_review_lazy_trace(self, page_nums, ttl_seconds: float = 8.0):
-        pages = {int(page_num) for page_num in (page_nums or [])}
-        if not pages:
-            self._review_lazy_trace_pages = set()
-            self._review_lazy_trace_seen_pages = set()
-            self._review_lazy_trace_until = 0.0
-            return
-        self._review_lazy_trace_pages = pages
-        self._review_lazy_trace_seen_pages = set()
-        self._review_lazy_trace_until = time.monotonic() + max(0.5, float(ttl_seconds))
+        from ui.review.annotation_handler import start_review_lazy_trace
+        start_review_lazy_trace(self, page_nums, ttl_seconds)
 
     def _apply_annotation_beta_refresh(
         self, path: str, changed_pages, return_page: int | None
     ):
-        if not changed_pages:
-            self._trigger_center_fit()
-            return
-        refreshed_pages = sorted(set(int(pn) for pn in changed_pages))
-        self._start_review_lazy_trace(refreshed_pages)
-        key = os.path.abspath(path)
-        if "_suppress_pdf_reload_until" not in self.__dict__:
-            self._suppress_pdf_reload_until = {}
-        self._suppress_pdf_reload_until[key] = time.monotonic() + 2.5
-        self._pdf_watcher.ignore_next_change(path, count=3)
-        print(
-            "[DEBUG][review_after_edit] "
-            + ", ".join(f"p.{page_num + 1}" for page_num in refreshed_pages)
-        )
-        for page_num in refreshed_pages:
-            px = PAGE_CACHE.get(path, page_num)
-            if px is not None and not px.isNull():
-                self._debug_review_lazy_page_loaded(
-                    source="render", page_num=page_num, pixmap=px
-                )
-                self.canvas.inject_page(page_num, px)
-        self._update_review_page_nav_ui()
-        self._trigger_center_fit()
+        from ui.review.annotation_handler import apply_annotation_beta_refresh
+        apply_annotation_beta_refresh(self, path, changed_pages, return_page)
 
     def _reload_current_canvas(self, view_idx=None):
         """
@@ -3969,10 +3766,8 @@ class ReviewScreen(QWidget):
             print("[DEBUG][review_bg] start_skip reason=canvas_deleted")
             return
         scan_t0 = time.perf_counter()
-        cached_pages = 0
-        for page_num in range(total_pages):
-            if PAGE_CACHE.get(path, page_num) is not None:
-                cached_pages += 1
+        cached_indices = set(PAGE_CACHE.cached_page_indices(path, total_pages, variant=self._pdf_render_zoom))
+        cached_pages = len(cached_indices)
         perf_log(
             "review_bg_fill_count_scan",
             file=os.path.basename(path),
@@ -4010,9 +3805,7 @@ class ReviewScreen(QWidget):
         canvas_real = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
         pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
         skip_scan_t0 = time.perf_counter()
-        cached_skip_pages = {
-            p for p in all_pages if PAGE_CACHE.get(path, p) is not None
-        }
+        cached_skip_pages = cached_indices
         perf_log(
             "review_bg_fill_remaining_scan",
             file=os.path.basename(path),
@@ -4110,12 +3903,13 @@ class ReviewScreen(QWidget):
         canvas_real = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
         pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
         scan_t0 = time.perf_counter()
+        cached_indices = set(PAGE_CACHE.cached_page_indices(path, total_pages, variant=self._pdf_render_zoom))
         cache_probes = 0
         cache_hits = 0
         remaining = []
         for pn in range(total_pages):
             cache_probes += 1
-            if PAGE_CACHE.get(path, pn) is not None:
+            if pn in cached_indices:
                 cache_hits += 1
                 continue
             if pn in combined or pn in canvas_real or pn in pending_bg:
@@ -4217,7 +4011,7 @@ class ReviewScreen(QWidget):
                 skipped["pending_visible"] += 1
                 continue
             cache_checks += 1
-            cached = PAGE_CACHE.get(path, pn)
+            cached = PAGE_CACHE.get(path, pn, ram_only=True)
             if cached is not None and not cached.isNull():
                 cache_hits += 1
                 skipped["cache_hot"] += 1
@@ -4330,7 +4124,7 @@ class ReviewScreen(QWidget):
             if pn in real_pages or pn in pending_bg or pn in inflight:
                 continue
             cache_checks += 1
-            cached = PAGE_CACHE.get(path, pn)
+            cached = PAGE_CACHE.get(path, pn, ram_only=True)
             if cached is None or cached.isNull():
                 continue
             cache_hits += 1
@@ -4570,7 +4364,7 @@ class ReviewScreen(QWidget):
             self.__dict__.get("_review_render_inflight_pages", set()) or set()
         ):
             return "rendering"
-        cached = PAGE_CACHE.get(path, page_num)
+        cached = PAGE_CACHE.get(path, page_num, ram_only=True)
         if cached is not None and not cached.isNull():
             return "cache_hot_canvas_gray"
         pages = getattr(getattr(self, "canvas", None), "_pages", None) or []
@@ -4649,7 +4443,16 @@ class ReviewScreen(QWidget):
         )
         self.canvas._current_pdf_path = _pdf_path
         boxes = card.get("boxes", [])
-        self.canvas.load_pixmap(px)
+        from data_manager import store
+        invert = store.get().get("_invert_pdf", False)
+        if invert and px and not px.isNull():
+            from PyQt5.QtGui import QImage
+            img = px.toImage()
+            img.invertPixels(QImage.InvertRgb)
+            px_to_load = QPixmap.fromImage(img)
+        else:
+            px_to_load = px
+        self.canvas.load_pixmap(px_to_load)
         if isinstance(box_idx, tuple) and box_idx[0] == "group":
             gid = box_idx[1]
             display_boxes = [
@@ -4731,8 +4534,10 @@ class ReviewScreen(QWidget):
         self.canvas.set_mode("review")
 
         # 4. Setup boxes state (must come AFTER set_mode)
-        boxes = card.get("boxes", [])
-        source_box_zoom = card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
+        boxes = card.get("boxes", []) or []
+        source_box_zoom = card.get("_pdf_box_render_zoom")
+        if source_box_zoom is None:
+            source_box_zoom = PDF_LEGACY_BOX_ZOOM
         if path and boxes:
             boxes = self._adapt_review_boxes(card, path)
             self._pdf_quality_debug(
@@ -4914,207 +4719,9 @@ class ReviewScreen(QWidget):
 
     def _show_session_summary(self):
         """Session khatam — stats dialog dikhao."""
-        dojo = _is_dojo()
-        D = DOJO
-
-        bg = D["bg"] if dojo else C_BG
-        surface = D["surface"] if dojo else C_SURFACE
-        card = D["card"] if dojo else C_CARD
-        accent = D["accent"] if dojo else C_ACCENT
-        green = D["green"] if dojo else C_GREEN
-        red = D["red"] if dojo else C_RED
-        yellow = D["yellow"] if dojo else C_YELLOW
-        text = D["text"] if dojo else C_TEXT
-        subtext = D["subtext"] if dojo else C_SUBTEXT
-        border = D["border"] if dojo else C_BORDER
-        font = D["font"] if dojo else "'Segoe UI'"
-
-        again = hard = good = easy = perfect = 0
-        for _, _, sm2_obj in self._items:
-            q = sm2_obj.get("sm2_last_quality", -1)
-            if q == 1:
-                again += 1
-            elif q == 3:
-                hard += 1
-            elif q == 4:
-                good += 1
-            elif q == 5:
-                easy += 1
-            elif q == 6:
-                perfect += 1
-
-        total = again + hard + good + easy + perfect
-        retention = round((good + easy + perfect) / total * 100) if total else 0
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Mission Complete" if dojo else "Session Complete")
-        dlg.setFixedSize(360, 380 if dojo else 345)
-        if dojo:
-            dlg.setStyleSheet(
-                f"QDialog{{background:{bg};border:1px solid {accent};}}"
-                f"QWidget{{background:{bg};}}"
-                f"QLabel{{background:transparent;}}"
-            )
-        else:
-            dlg.setStyleSheet(f"QDialog{{background:{bg};}}")
-        L = QVBoxLayout(dlg)
-        L.setContentsMargins(24, 24, 24, 24)
-        L.setSpacing(12)
-
-        # Title
-        if dojo:
-            title = QLabel("🥷  MISSION COMPLETE")
-            title.setFont(QFont(font, 12, QFont.Bold))
-            title.setAlignment(Qt.AlignCenter)
-            title.setStyleSheet(
-                f"color:{accent};background:transparent;"
-                f"letter-spacing:3px;font-family:{font};"
-                f"border-bottom:1px solid {border};padding-bottom:8px;"
-            )
-        else:
-            title = QLabel("🎉  Session Complete")
-            title.setFont(QFont("Segoe UI", 15, QFont.Bold))
-            title.setAlignment(Qt.AlignCenter)
-            title.setStyleSheet(f"color:{accent};background:transparent;")
-        L.addWidget(title)
-
-        # Retention bar
-        bar_w = QWidget()
-        bar_l = QHBoxLayout(bar_w)
-        bar_l.setContentsMargins(0, 0, 0, 0)
-        bar_l.setSpacing(0)
-        ret_colors = [
-            (again, D["red"] if dojo else C_RED),
-            (hard, "#FF8C00" if dojo else "#E08030"),
-            (good, D["green"] if dojo else C_GREEN),
-            (easy, D["yellow"] if dojo else C_YELLOW),
-            (perfect, D["accent2"] if dojo else C_GROUP),
-        ]
-        for count, color in ret_colors:
-            if count and total:
-                seg = QFrame()
-                seg.setFixedHeight(6 if dojo else 10)
-                seg.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                seg.setStyleSheet(f"background:{color};border-radius:0px;")
-                bar_l.addWidget(seg, stretch=count)
-        L.addWidget(bar_w)
-
-        # Stats rows
-        def _stat_row(label, value, color):
-            row = QWidget()
-            row.setStyleSheet("background:transparent;")
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            lbl = QLabel(label)
-            if dojo:
-                lbl.setStyleSheet(
-                    f"color:{subtext};font-size:8px;background:transparent;"
-                    f"font-family:{font};letter-spacing:1px;"
-                )
-            else:
-                lbl.setStyleSheet(
-                    f"color:{subtext};font-size:12px;background:transparent;"
-                )
-            val = QLabel(str(value))
-            if dojo:
-                val.setStyleSheet(
-                    f"color:{color};font-size:13px;font-weight:bold;"
-                    f"background:transparent;font-family:{font};"
-                )
-            else:
-                val.setStyleSheet(
-                    f"color:{color};font-size:13px;font-weight:bold;background:transparent;"
-                )
-            val.setAlignment(Qt.AlignRight)
-            rl.addWidget(lbl)
-            rl.addWidget(val)
-            return row
-
-        L.addWidget(
-            _stat_row(
-                "🔁  AGAIN" if dojo else "🔁  Again", again, D["red"] if dojo else C_RED
-            )
-        )
-        L.addWidget(
-            _stat_row(
-                "😓  HARD" if dojo else "😓  Hard",
-                hard,
-                "#FF8C00" if dojo else "#E08030",
-            )
-        )
-        L.addWidget(
-            _stat_row(
-                "✅  GOOD" if dojo else "✅  Good",
-                good,
-                D["green"] if dojo else C_GREEN,
-            )
-        )
-        L.addWidget(
-            _stat_row(
-                "⚡  EASY" if dojo else "⚡  Easy",
-                easy,
-                D["yellow"] if dojo else C_YELLOW,
-            )
-        )
-        L.addWidget(
-            _stat_row(
-                "⭐  PERFECT" if dojo else "⭐  Perfect",
-                perfect,
-                D["accent2"] if dojo else C_GROUP,
-            )
-        )
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"background:{border};")
-        sep.setFixedHeight(1)
-        L.addWidget(sep)
-
-        ret_color = green if retention >= 80 else yellow if retention >= 60 else red
-        L.addWidget(
-            _stat_row("RETENTION" if dojo else "Retention", f"{retention}%", ret_color)
-        )
-        L.addWidget(
-            _stat_row("TOTAL REVIEWED" if dojo else "Total reviewed", self._done, text)
-        )
-
-        if self._stimer:
-            L.addWidget(
-                _stat_row(
-                    "⏱  TIME SPENT" if dojo else "⏱  Time spent",
-                    self._stimer.elapsed_str(),
-                    subtext,
-                )
-            )
-
-        # Ninja motivational quote for dojo
-        if dojo and retention >= 80:
-            q_lbl = QLabel('"COWABUNGA! EXCELLENT WORK, NINJA."')
-            q_lbl.setAlignment(Qt.AlignCenter)
-            q_lbl.setWordWrap(True)
-            q_lbl.setStyleSheet(
-                f"color:{accent};font-size:7px;font-family:{font};"
-                f"letter-spacing:1px;background:transparent;"
-            )
-            L.addWidget(q_lbl)
-
-        # Close button
-        btn = QPushButton("✕  CLOSE" if dojo else "Close  ✓")
-        if dojo:
-            btn.setStyleSheet(
-                f"background:{accent};color:{bg};border:none;border-radius:2px;"
-                f"padding:8px 24px;font-size:9px;font-weight:900;"
-                f"font-family:{font};letter-spacing:1px;"
-            )
-        else:
-            btn.setStyleSheet(
-                f"background:{accent};color:white;border:none;border-radius:8px;"
-                f"padding:8px 24px;font-size:13px;font-weight:bold;"
-            )
-        btn.clicked.connect(dlg.accept)
-        L.addWidget(btn, alignment=Qt.AlignCenter)
-
-        dlg.exec_()
+        from ui.review.summary_dialog import ReviewSessionSummaryDialog
+        dialog = ReviewSessionSummaryDialog(self)
+        dialog.exec_()
         self.finished.emit()
 
     def _show_waiting_state(self, wait_ms: int, pending_count: int):

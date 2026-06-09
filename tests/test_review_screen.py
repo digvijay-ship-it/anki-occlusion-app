@@ -477,7 +477,7 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
             screen._on_review_scroll_page_changed(1200)
 
         screen._pdf_viewer.set_page_ui.assert_not_called()
-        screen._keep_floating_timer_on_top.assert_called_once_with()
+        screen._keep_floating_timer_on_top.assert_not_called()
 
     def test_review_scroll_profile_logs_compact_timing(self):
         screen = ReviewScreen.__new__(ReviewScreen)
@@ -732,6 +732,119 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
         self.assertEqual(first, adapted)
         self.assertEqual(second, adapted)
         self.assertIsNot(first, second)
+
+
+class ReviewScreenSequentialTests(unittest.TestCase):
+    def test_state_to_restore_restores_all_fields_and_calls_undo(self):
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_review_undo") as mock_undo, \
+             patch.object(ReviewScreen, "_init_review_profile"):
+            
+            cards = []
+            state = {
+                "items": [("card", None, "box")],
+                "idx": 1,
+                "done": 1,
+                "undo_stack": ["snap"],
+                "redo_stack": [],
+                "queued_ids": {"box_id"},
+                "deleted_ids": set(),
+            }
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            
+            screen.__init__(cards, state_to_restore=state)
+            
+            self.assertEqual(screen._items, state["items"])
+            self.assertEqual(screen._idx, 1)
+            self.assertEqual(screen._done, 1)
+            self.assertEqual(screen._review_undo_stack, ["snap"])
+            self.assertEqual(screen._review_redo_stack, [])
+            self.assertEqual(screen._queued_ids, {"box_id"})
+            self.assertEqual(screen._deleted_ids, set())
+            mock_undo.assert_called_once()
+
+    def test_undo_requested_when_empty_signal_emitted(self):
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"):
+            
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            
+            screen.__init__([])
+            self.assertEqual(screen._review_undo_stack, [])
+            
+            # Setup signal listener
+            listener = MagicMock()
+            screen.undo_requested_when_empty.connect(listener)
+            
+            # Run undo when empty
+            screen._review_undo()
+            
+            listener.assert_called_once()
+
+    def test_undo_handled_flag_prevents_toast_on_empty_stack(self):
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"):
+            
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            
+            screen.__init__([])
+            
+            def handle_undo():
+                screen._undo_handled = True
+            
+            screen.undo_requested_when_empty.connect(handle_undo)
+            
+            screen._review_undo()
+            
+            screen.canvas._show_toast.assert_not_called()
+
+    def test_undo_handled_when_rs_becomes_none_during_emit(self):
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"):
+            
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            
+            screen.__init__([])
+            
+            def handle_undo():
+                screen.mgr.rs = None
+            
+            screen.undo_requested_when_empty.connect(handle_undo)
+            
+            screen._review_undo()
+            
+            self.assertIsNone(screen.mgr.rs)
 
 
 if __name__ == "__main__":

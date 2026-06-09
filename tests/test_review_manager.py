@@ -278,6 +278,90 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
 
         self.assertEqual([item[0]["title"] for item in manager._items], ["M1", "M2", "M3"])
 
+    def test_skip_session_pops_item_and_can_be_undone(self):
+        rs = MagicMock()
+        card1 = {"title": "C1", "sched_state": "review", "sm2_due": "2026-05-23T00:00:00"}
+        card2 = {"title": "C2", "sched_state": "review", "sm2_due": "2026-05-23T00:00:00"}
+        manager = ReviewSessionManager(rs)
+        manager._items = [
+            (card1, None, card1),
+            (card2, None, card2),
+        ]
+        manager._idx = 0
+
+        # Skip first card
+        manager.skip_session()
+
+        # Should pop the first card from items
+        self.assertEqual(len(manager._items), 1)
+        self.assertEqual(manager._items[0][0]["title"], "C2")
+        rs._load_item.assert_called_once_with()
+
+        # Undo the skip
+        rs._load_item.reset_mock()
+        manager._review_undo()
+
+        # Items should be restored
+        self.assertEqual(len(manager._items), 2)
+        self.assertEqual(manager._items[0][0]["title"], "C1")
+        self.assertEqual(manager._items[1][0]["title"], "C2")
+        self.assertEqual(manager._idx, 0)
+        rs._load_item.assert_called_once_with()
+
+    def test_super_skip_updates_due_date_and_pops_item_and_can_be_undone(self):
+        rs = MagicMock()
+        card = {"title": "C1", "sched_state": "review", "sm2_due": "2026-05-23T00:00:00"}
+        manager = ReviewSessionManager(rs)
+        manager._items = [(card, None, card)]
+        manager._idx = 0
+
+        with patch("services.review_manager.store.mark_dirty") as mark_dirty, patch(
+            "services.review_manager.store.save_soon"
+        ) as save_soon:
+            manager.super_skip()
+
+        # Card should be popped
+        self.assertEqual(len(manager._items), 0)
+        # Check that its due date is updated to tomorrow at 00:00:00
+        from datetime import date, datetime, timedelta
+        expected_due = datetime.combine(date.today() + timedelta(days=1), datetime.min.time()).isoformat(timespec="seconds")
+        self.assertEqual(card["sm2_due"], expected_due)
+        mark_dirty.assert_called_once()
+        save_soon.assert_called_once()
+
+        # Undo the super skip
+        manager._review_undo()
+        self.assertEqual(len(manager._items), 1)
+        self.assertEqual(card["sm2_due"], "2026-05-23T00:00:00")
+
+    def test_super_skip_reschedules_group_siblings(self):
+        rs = MagicMock()
+        card = {
+            "title": "Grouped",
+            "boxes": [
+                {"box_id": "b1", "group_id": "g1", "sm2_due": "2026-05-23T00:00:00"},
+                {"box_id": "b2", "group_id": "g1", "sm2_due": "2026-05-23T00:00:00"},
+            ]
+        }
+        manager = ReviewSessionManager(rs)
+        manager._items = [(card, ("group", "g1"), card["boxes"][0])]
+        manager._idx = 0
+
+        with patch("services.review_manager.store.mark_dirty"), patch(
+            "services.review_manager.store.save_soon"
+        ):
+            manager.super_skip()
+
+        from datetime import date, datetime, timedelta
+        expected_due = datetime.combine(date.today() + timedelta(days=1), datetime.min.time()).isoformat(timespec="seconds")
+        self.assertEqual(card["boxes"][0]["sm2_due"], expected_due)
+        self.assertEqual(card["boxes"][1]["sm2_due"], expected_due)
+
+        # Undo and verify restoration of both
+        manager._review_undo()
+        self.assertEqual(card["boxes"][0]["sm2_due"], "2026-05-23T00:00:00")
+        self.assertEqual(card["boxes"][1]["sm2_due"], "2026-05-23T00:00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -171,7 +171,12 @@ class ReviewSessionManager:
         Does NOT hard-reset the card — only reverses the last sched_update() call.
         """
         if not self._review_undo_stack:
-            self.rs.canvas._show_toast("⚠ Nothing to undo")
+            self.rs._undo_handled = False
+            self.rs.undo_requested_when_empty.emit()
+            if self.rs is None:
+                return
+            if not getattr(self.rs, "_undo_handled", False):
+                self.rs.canvas._show_toast("⚠ Nothing to undo")
             return
 
         snap = self._review_undo_stack.pop()
@@ -296,6 +301,86 @@ class ReviewSessionManager:
         store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
 
         self.rs.canvas._show_toast(f"↪ Redo — card {self._idx + 1}")
+        self.rs._load_item()
+
+    def skip_session(self):
+        """Skip current card for the current review session only."""
+        if not (0 <= self._idx < len(self._items)):
+            return
+
+        card, box_idx, sm2_obj = self._items[self._idx]
+        sibling_snapshots = _sibling_snapshots_for_item(card, box_idx, sm2_obj)
+
+        snapshot = {
+            "idx": self._idx,
+            "done": self._done,
+            "items_order": list(self._items),
+            "card": card,
+            "box_idx": box_idx,
+            "quality": None,  # no quality for skip
+            "sm2_obj": sm2_obj,
+            "sm2_state": _sm2_snapshot(sm2_obj),
+            "sibling_snapshots": sibling_snapshots,
+            "card_reviewed_at": card.get("last_reviewed_at"),
+            "recovery_event": None,
+        }
+        self._review_undo_stack.append(snapshot)
+        self._review_redo_stack.clear()
+
+        # Pop from session queue
+        self._items.pop(self._idx)
+        self._queue_needs_full_rebuild = True
+
+        self.rs.canvas._show_toast("Card skipped for this session")
+        self.rs._load_item()
+
+    def super_skip(self):
+        """Skip current card for today (reschedule to tomorrow)."""
+        if not (0 <= self._idx < len(self._items)):
+            return
+
+        card, box_idx, sm2_obj = self._items[self._idx]
+        sibling_snapshots = _sibling_snapshots_for_item(card, box_idx, sm2_obj)
+
+        snapshot = {
+            "idx": self._idx,
+            "done": self._done,
+            "items_order": list(self._items),
+            "card": card,
+            "box_idx": box_idx,
+            "quality": None,
+            "sm2_obj": sm2_obj,
+            "sm2_state": _sm2_snapshot(sm2_obj),
+            "sibling_snapshots": sibling_snapshots,
+            "card_reviewed_at": card.get("last_reviewed_at"),
+            "recovery_event": None,
+        }
+        self._review_undo_stack.append(snapshot)
+        self._review_redo_stack.clear()
+
+        # Reschedule to tomorrow (00:00:00)
+        from datetime import date, timedelta, datetime
+        due_date = date.today() + timedelta(days=1)
+        due_str = datetime.combine(due_date, datetime.min.time()).isoformat(timespec="seconds")
+
+        sm2_obj["sm2_due"] = due_str
+        # If grouped, reschedule sibling boxes too
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            for box in card.get("boxes", []):
+                if box.get("group_id") == gid and box is not sm2_obj:
+                    box["sm2_due"] = due_str
+
+        # Mark database as dirty so the new due date is saved
+        store.mark_dirty()
+        self.rs._review_data_dirty = True
+        store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
+
+        # Pop from session queue
+        self._items.pop(self._idx)
+        self._queue_needs_full_rebuild = True
+
+        self.rs.canvas._show_toast("Card skipped until tomorrow")
         self.rs._load_item()
 
     def _promote_expired_learning(self, insert_pos):
