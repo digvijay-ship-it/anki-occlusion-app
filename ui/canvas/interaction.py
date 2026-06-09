@@ -463,7 +463,7 @@ class CanvasInteractionMixin:
                 self._drag_op = op
                 self._drag_handle = hi
                 self._drag_start_pos = sp
-                self._drag_orig_box = copy.deepcopy(self._boxes[self._selected_idx])
+                self._drag_orig_box = self._clone_box(self._boxes[self._selected_idx])
                 self._push_undo()
                 return
 
@@ -487,8 +487,8 @@ class CanvasInteractionMixin:
             selected = self._get_all_selected()
             if not selected:
                 selected = [hit]
-            self._drag_orig_boxes = {i: copy.deepcopy(self._boxes[i]) for i in selected}
-            self._drag_orig_box = copy.deepcopy(self._boxes[hit])
+            self._drag_orig_boxes = {i: self._clone_box(self._boxes[i]) for i in selected}
+            self._drag_orig_box = self._clone_box(self._boxes[hit])
             self._push_undo()
             return
 

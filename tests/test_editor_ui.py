@@ -685,6 +685,38 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertGreaterEqual(vval, 0)
         self.assertLessEqual(vval, int(self.canvas._total_h * self.canvas._scale) - 80)
 
+    def test_inject_page_layout_shift_updates_box_coordinates(self):
+        # 1. Load initial skeleton placeholders (two 100x100 pages)
+        self.canvas.load_pages([self._pixmap(100, 100), self._pixmap(100, 100)])
+
+        # 2. Add box A on page 0 (rect: [10, 50, 20, 20])
+        # Add box B on page 1 (rect: [10, 120, 20, 20]) -> Y-center is 130, which is >= page 1 top (112)
+        self.canvas._debug_page_num = False
+        self.canvas.set_boxes([
+            {"rect": [10, 50, 20, 20], "label": "A", "shape": "rect", "angle": 0, "group_id": "", "box_id": "a"},
+            {"rect": [10, 120, 20, 20], "label": "B", "shape": "rect", "angle": 0, "group_id": "", "box_id": "b"},
+        ])
+
+        # 3. Inject a new pixmap for page 0 with size 100x120 (height shifted from 100 to 120)
+        new_page_0 = self._pixmap(100, 120)
+        self.canvas.inject_page(0, new_page_0)
+
+        boxes = self.canvas.get_boxes()
+        self.assertEqual(len(boxes), 2)
+
+        # Box A: on page 0. Height scaled by 120/100 = 1.2
+        # Y should be 50 * 1.2 = 60.0
+        # Height should be 20 * 1.2 = 24.0
+        self.assertAlmostEqual(boxes[0]["rect"][1], 60.0)
+        self.assertAlmostEqual(boxes[0]["rect"][3], 24.0)
+
+        # Box B: on page 1. Page 1 top shifted from 112 to 132 (+20px).
+        # Box local Y was 120 - 112 = 8. It should remain 8.
+        # New Y should be 132 + 8 = 140.0. Width and height should be unchanged.
+        self.assertAlmostEqual(boxes[1]["rect"][1], 140.0)
+        self.assertAlmostEqual(boxes[1]["rect"][3], 20.0)
+
+
 
 class ZoomableScrollAreaTests(unittest.TestCase):
     class _DummyEvent:
@@ -973,7 +1005,7 @@ class CardEditorDialogTests(unittest.TestCase):
         self.dialog._editor_pending_visible_request = (self.pdf_path, [3])
         cached = self._pixmap(40, 50)
 
-        def fake_cache_get(_path, page_num):
+        def fake_cache_get(_path, page_num, *args, **kwargs):
             return cached if page_num == 4 else None
 
         with patch.dict(os.environ, {"ANKI_EDITOR_VERBOSE": "1"}, clear=False), \
@@ -1055,7 +1087,7 @@ class CardEditorDialogTests(unittest.TestCase):
         self.dialog.canvas.load_pages([placeholder for _ in range(5)])
         cached = self._pixmap(40, 50)
 
-        with patch("ui.editor_dialog.PAGE_CACHE.get", side_effect=lambda path, pn: cached if pn == 2 else None):
+        with patch("ui.editor_dialog.PAGE_CACHE.get", side_effect=lambda path, pn, *args, **kwargs: cached if pn == 2 else None):
             self.dialog._start_editor_visible_page_request = MagicMock()
             self.dialog._on_editor_visible_pages_changed(2, 2)
 

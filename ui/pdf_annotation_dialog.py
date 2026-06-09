@@ -38,6 +38,7 @@ from pdf_engine import (
 )
 from perf_utils import perf_log
 from services.pdf_annotation_service import PdfAnnotationSession
+from ui.canvas.retro_effects import CRTOverlay
 from ui.pdf_viewer_controller import PdfViewerController
 
 ANNOTATION_VERBOSE_ENV = "ANKI_ANNOTATION_VERBOSE"
@@ -231,8 +232,12 @@ class PdfAnnotationCanvas(QWidget):
         return None, None
 
     def paintEvent(self, event):
+        from theme_manager import get_palette
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        palette_colors = get_palette(theme)
+        bg_color = palette_colors.get("C_BG", "#1E1E2E")
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#1E1E2E"))
+        p.fillRect(self.rect(), QColor(bg_color))
         p.setRenderHint(QPainter.Antialiasing)
         clip = event.rect()
         for idx, px in enumerate(self._pages):
@@ -745,6 +750,14 @@ class PdfAnnotationDialog(QDialog):
         self.return_page = self.initial_page
         self.return_anchor_y = initial_anchor_y
         self._setup_ui()
+        
+        # Instantiate CRT overlay if theme is retro
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        self.crt = None
+        if theme in ("tmnt", "manhattan"):
+            self.crt = CRTOverlay(self)
+            self.crt.trigger_boot_flicker()
+
         self._load_pages()
 
     def _debug(self, action: str, **data):
@@ -792,7 +805,7 @@ class PdfAnnotationDialog(QDialog):
         cache_checks = 0
         for page_num in targets:
             cache_checks += 1
-            cached = PAGE_CACHE.get(self.pdf_path, page_num)
+            cached = PAGE_CACHE.get(self.pdf_path, page_num, ram_only=True)
             if cached is not None and not cached.isNull():
                 cache_hits += 1
                 self.canvas.replace_page(page_num, cached)
@@ -863,13 +876,25 @@ class PdfAnnotationDialog(QDialog):
     def _setup_ui(self):
         self.setWindowTitle("Anotate Scroll")
         self.setMinimumSize(1200, 800)
+        from theme_manager import get_palette
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        p = get_palette(theme)
+        bg = p.get("C_BG", "#1E1E2E")
+        surface = p.get("C_SURFACE", "#2A2A3E")
+        card = p.get("C_CARD", "#313145")
+        border = p.get("C_BORDER", "#45475A")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        text = p.get("C_TEXT", "#CDD6F4")
+        font_name = p.get("body_font", "'Segoe UI'")
+        radius = "0px" if theme in ("dojo", "tmnt", "manhattan") else "6px"
+
         self.setStyleSheet(
-            "QDialog{background:#1E1E2E;color:#CDD6F4;}"
-            "QWidget{background:#1E1E2E;color:#CDD6F4;font-family:'Segoe UI';font-size:12px;}"
-            "QPushButton{background:#2A2A3E;color:#CDD6F4;border:1px solid #45475A;border-radius:6px;padding:6px 10px;font-weight:bold;}"
-            "QPushButton:hover{background:#313145;}"
-            "QPushButton:checked{background:#7C6AF7;color:white;}"
-            "QLineEdit{background:#2A2A3E;color:#CDD6F4;border:1px solid #45475A;border-radius:6px;padding:4px;}"
+            f"QDialog{{background:{bg};color:{text};}}"
+            f"QWidget{{background:{bg};color:{text};font-family:{font_name};font-size:12px;}}"
+            f"QPushButton{{background:{surface};color:{accent};border:1px solid {border};border-radius:{radius};padding:6px 10px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{card};}}"
+            f"QPushButton:checked{{background:{accent};color:{bg};}}"
+            f"QLineEdit{{background:{card};color:{text};border:1px solid {border};border-radius:{radius};padding:4px;}}"
         )
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -991,6 +1016,7 @@ class PdfAnnotationDialog(QDialog):
         QShortcut(Qt.Key_Plus, self, activated=lambda: self._adjust_pen_width(0.4))
         QShortcut(Qt.Key_0, self, activated=self._reset_pen_style)
         QShortcut(Qt.Key_C, self, activated=self._viewer.reset_fit)
+        QShortcut(Qt.Key_X, self, activated=self._choose_pen_color)
         self._update_pen_controls()
 
     def exec_(self):
@@ -1436,6 +1462,9 @@ class PdfAnnotationDialog(QDialog):
             QTimer.singleShot(0, self._viewer.on_resize)
         if self.initial_anchor_y is not None:
             self._schedule_initial_anchor_restore("resize", delays_ms=(0, 35))
+        if getattr(self, "crt", None) is not None:
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
 
     def closeEvent(self, event):
         self._stop_loader_thread()

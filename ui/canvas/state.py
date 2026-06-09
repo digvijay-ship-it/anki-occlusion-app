@@ -207,7 +207,8 @@ class CanvasStateMixin:
             return cached_spx
         sw = max(int(page_px.width() * self._scale), 1)
         sh = max(int(page_px.height() * self._scale), 1)
-        cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, Qt.FastTransformation)
+        transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
+        cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, transform_type)
         self._spx_cache[idx] = (self._scale, cached_spx)
         self._spx_cache_pdf_path = getattr(self, "_current_pdf_path", "") or ""
         return cached_spx
@@ -249,15 +250,60 @@ class CanvasStateMixin:
         if had_scaled_cache and dims_match and cached_scale == self._scale:
             sw = max(int(new_w * self._scale), 1)
             sh = max(int(new_h * self._scale), 1)
+            transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
             self._spx_cache[page_num] = (
                 self._scale,
-                qpx.scaled(sw, sh, Qt.KeepAspectRatio, Qt.FastTransformation),
+                qpx.scaled(sw, sh, Qt.KeepAspectRatio, transform_type),
             )
             self._spx_cache_pdf_path = getattr(self, "_current_pdf_path", "") or ""
         else:
             self._spx_cache.pop(page_num, None)
         if not dims_match:
+            # 1. Capture old layout properties
+            old_page_tops = list(self._page_tops)
+
+            # 2. Map boxes to their pages using old tops
+            box_pages = []
+            for b in self._boxes:
+                r = b["rect"]
+                cy = r.y() + r.height() / 2
+                p_num = 0
+                if old_page_tops:
+                    for pi, top in enumerate(old_page_tops):
+                        if cy >= top:
+                            p_num = pi
+                        else:
+                            break
+                box_pages.append(p_num)
+
+            # 3. Update layout
             self._compute_layout()
+
+            # 4. Map box coordinates to new page tops and scale if on the changed page
+            for i, b in enumerate(self._boxes):
+                p_num = box_pages[i]
+                r = b["rect"]
+
+                old_top = old_page_tops[p_num] if p_num < len(old_page_tops) else 0
+                local_y = r.y() - old_top
+                new_top = self._page_tops[p_num] if p_num < len(self._page_tops) else 0
+
+                if p_num == page_num:
+                    sy = new_h / max(old_h, 1.0)
+                    sx = new_w / max(old_w, 1.0)
+                    new_local_y = local_y * sy
+                    new_x = r.x() * sx
+                    new_w_val = r.width() * sx
+                    new_h_val = r.height() * sy
+                else:
+                    new_local_y = local_y
+                    new_x = r.x()
+                    new_w_val = r.width()
+                    new_h_val = r.height()
+
+                from PyQt5.QtCore import QRectF
+                b["rect"] = QRectF(new_x, new_top + new_local_y, new_w_val, new_h_val)
+
             self._resize_canvas()
             self._invalidate_mask_cache()
 
@@ -583,13 +629,9 @@ class CanvasStateMixin:
         # Convert screen scroll_y → image-space y
         img_y = scroll_y / max(self._scale, 0.01)
         epsilon = 0.75
-        page = 0
-        for i, top in enumerate(self._page_tops):
-            if img_y + epsilon >= top:
-                page = i
-            else:
-                break
-        return page
+        import bisect
+        idx = bisect.bisect_right(self._page_tops, img_y + epsilon)
+        return max(0, idx - 1)
 
     def scroll_to_page(self, page: int, scroll_area) -> None:
         """Scroll the given QScrollArea so that page `page` is at the top."""
@@ -740,14 +782,27 @@ class CanvasStateMixin:
         self.boxes_changed.emit(self.get_boxes())
         self._show_toast(f"✂ {len(indices)} masks ungrouped")
 
+    def _clone_box(self, b):
+        if b is None:
+            return None
+        cb = b.copy()
+        if "rect" in cb:
+            cb["rect"] = QRectF(cb["rect"])
+        return cb
+
+    def _clone_boxes(self, boxes):
+        if boxes is None:
+            return None
+        return [self._clone_box(b) for b in boxes]
+
     def _push_undo(self):
-        self._undo_stack.append(copy.deepcopy(self._boxes))
+        self._undo_stack.append(self._clone_boxes(self._boxes))
         self._redo_stack.clear()
 
     def undo(self):
         if not self._undo_stack:
             return
-        self._redo_stack.append(copy.deepcopy(self._boxes))
+        self._redo_stack.append(self._clone_boxes(self._boxes))
         self._boxes = self._undo_stack.pop()
         self._selected_idx = -1
         self._selected_indices = set()
@@ -759,7 +814,7 @@ class CanvasStateMixin:
     def redo(self):
         if not self._redo_stack:
             return
-        self._undo_stack.append(copy.deepcopy(self._boxes))
+        self._undo_stack.append(self._clone_boxes(self._boxes))
         self._boxes = self._redo_stack.pop()
         self._selected_idx = -1
         self._selected_indices = set()

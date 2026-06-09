@@ -274,6 +274,58 @@ class PdfEngineTests(unittest.TestCase):
         self.assertEqual(chunks, [(1, 1, 2, True), (2, 2, 2, True)])
         self.assertEqual(done, [(2, None, True)])
 
+    def test_adapt_pdf_boxes_to_render_zoom_fallback_scaling_corrects_page_gap(self):
+        # Using a non-existent path ensures fallback linear scaling is triggered
+        boxes = [{
+            "rect": [10.0, 100.0, 50.0, 30.0],
+            "label": "Mask 1",
+            "page_num": 1,
+        }]
+
+        adapted = pdf_engine.adapt_pdf_boxes_to_render_zoom(
+            str(self.pdf_path) + ".nonexistent",
+            boxes,
+            source_zoom=1.5,
+            target_zoom=3.0,
+            page_gap=12,
+        )
+
+        self.assertEqual(len(adapted), 1)
+        self.assertAlmostEqual(adapted[0]["rect"][0], 20.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][1], 188.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][2], 100.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][3], 60.0, places=1)
+
+    def test_adapt_pdf_boxes_to_render_zoom_auto_heals_mismatched_source_zoom(self):
+        # Page 0 is 200x300, page 1 is 320x180 at 1.0 zoom.
+        # At 3.0 zoom:
+        # page 0 height = 300 * 3.0 = 900
+        # page 1 top = 900 + 12 = 912
+        # page 1 height = 180 * 3.0 = 540
+        # Let's put a box on page 1 with Y = 1000 (which is inside 912 to 1452).
+        boxes = [{
+            "rect": [20.0, 1000.0, 50.0, 30.0],
+            "label": "Mask on Page 1",
+            "page_num": 1,
+        }]
+
+        # Call with incorrect source_zoom=1.5 and target_zoom=3.0.
+        # Without auto-healing, Y would be incorrectly scaled.
+        # With auto-healing, it will infer the source zoom as 3.0, matching target_zoom.
+        adapted = pdf_engine.adapt_pdf_boxes_to_render_zoom(
+            str(self.pdf_path),
+            boxes,
+            source_zoom=1.5,
+            target_zoom=3.0,
+            page_gap=12,
+        )
+
+        self.assertEqual(len(adapted), 1)
+        self.assertAlmostEqual(adapted[0]["rect"][0], 20.0, places=1)
+        self.assertAlmostEqual(adapted[0]["rect"][1], 1000.0, places=1)
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

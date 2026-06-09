@@ -59,7 +59,7 @@ class RecoveryDialog(QDialog):
         self.selected_drafts = []
         self.setWindowTitle("Recovery Center")
         self.setMinimumWidth(560)
-        self.setModal(bool(startup))
+        self.setModal(True)
         self.setStyleSheet(
             """
             QDialog {

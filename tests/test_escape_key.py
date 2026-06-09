@@ -4,6 +4,12 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import tempfile
+_TEMP_DIR = tempfile.TemporaryDirectory()
+import data_manager
+data_manager.DATA_FILE = os.path.join(_TEMP_DIR.name, "anki_occlusion_data_test.db")
+
+
 from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import QApplication, QWidget

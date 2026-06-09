@@ -73,20 +73,36 @@ PALETTES = {
         "body_font": "'Segoe UI', sans-serif",
     },
     "tmnt": {
-        "C_BG": "#0A0B11",
-        "C_SURFACE": "#10131A",
-        "C_CARD": "#1D212C",
-        "C_ACCENT": "#45A247",
-        "C_PURPLE": "#B084FF",
+        "C_BG": "#0F150E",       # Dojo Dark Green-Black background
+        "C_SURFACE": "#181D16",  # Dojo Panel background
+        "C_CARD": "#353B33",     # Dojo Card background
+        "C_ACCENT": "#66FCF1",   # Dojo Neon Cyan
+        "C_PURPLE": "#B088F9",   # Dojo Purple
         "C_ORANGE": "#FFB86C",
-        "C_GREEN": "#45A247",
-        "C_RED": "#FF5A66",
-        "C_TEXT": "#F5F1E8",
-        "C_SUBTEXT": "#7A86A8",
-        "C_BORDER": "#333B4D",
+        "C_GREEN": "#45A247",    # Dojo Accent Green
+        "C_RED": "#FF4D4D",      # Dojo Red
+        "C_TEXT": "#FFFFFF",     # Pure White for excellent contrast!
+        "C_SUBTEXT": "#A0AEC0",  # Bright slate gray for clean readability!
+        "C_BORDER": "#2D332B",   # Dojo Border
         "C_YELLOW": "#F4D35E",
         "header_font": "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif",
         "body_font": "'Roboto Mono', 'Courier New', monospace",
+    },
+    "manhattan": {
+        "C_BG": "#080c10",
+        "C_SURFACE": "#121622",
+        "C_CARD": "#192030",
+        "C_ACCENT": "#00f0ff",
+        "C_PURPLE": "#a86cff",
+        "C_ORANGE": "#ffa200",
+        "C_GREEN": "#39ff14",
+        "C_RED": "#ff0055",
+        "C_TEXT": "#f5f1e8",
+        "C_SUBTEXT": "#7a8ca3",
+        "C_BORDER": "#212a3b",
+        "C_YELLOW": "#ffcc00",
+        "header_font": "'Press Start 2P', 'Courier New', monospace",
+        "body_font": "'Courier New', monospace",
     },
 }
 
@@ -142,6 +158,31 @@ LABELS = {
         "DASH_MISS": "DUE CARDS",
         "DASH_NEW": "NEW CARDS",
         "DASH_BATTLES": "TOTAL REVIEWS",
+    },
+    "manhattan": {
+        "APP_TITLE": "MANHATTAN PROJECT",
+        "SUBTITLE": "RETRO NES OCCLUSION SYSTEM • STAGE 3",
+        "SIDEBAR_HDR": "Sewer Caves",
+        "BTN_NEW_TOP": "＋ STAGE",
+        "BTN_NEW_SUB": "＋ SUBSTAGE",
+        "BTN_ADD": "🍕 ADD PIZZA CARD",
+        "BTN_DUE": "🐢 FIGHT FOOT CLAN",
+        "BTN_ALL": "🎮 RUN MANHATTAN",
+        "BTN_EDIT": "✏ Modify Scroll",
+        "BTN_SELECTED": "▶ Clear Area",
+        "BTN_JOURNAL": "📓 Ooze Journal",
+        "BTN_SHORTCUTS": "⌨ Combo Keys",
+        "STAT_SCROLLS": "Pizzas",
+        "STAT_DUE": "Fighters",
+        "STAT_REVIEWS": "Combats",
+        "VAULT_TITLE": "🧪 BANGA LAB",
+        "BTN_CLEAR_VAULT": "🧹 Clear Vault",
+        "STATUS_READY": "8-bit NES Engine Loaded",
+        "DASH_TITLE": "SELECT SEWER LEVEL",
+        "DASH_SUB": "Cowabunga! Stop Shredder's project.",
+        "DASH_MISS": "DUE COMBATS",
+        "DASH_NEW": "NEW TRAINING",
+        "DASH_BATTLES": "STAGES CLEARED",
     },
 }
 
@@ -260,16 +301,23 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
     if mode == "dojo":
         hf = "'Orbitron', " + hf
         bf = "'Orbitron', " + bf
+    elif mode == "manhattan":
+        hf = "'Press Start 2P', " + hf
+        bf = "'Courier New', " + bf
 
     # UI Constants
-    btn_radius = "0px" if mode == "dojo" else "6px"
-    btn_border = "2px" if mode == "dojo" else "1px"
-    btn_padding = "10px 20px" if mode == "dojo" else "6px 14px"
+    btn_radius = "0px" if mode in ("dojo", "manhattan") else "6px"
+    btn_border = "3px" if mode == "manhattan" else ("2px" if mode == "dojo" else "1px")
+    btn_padding = "0px 20px" if mode == "manhattan" else ("10px 20px" if mode == "dojo" else "6px 14px")
 
     raised = (
-        f"border-bottom: 3px solid rgba(0,0,0,0.5);"
-        if mode == "dojo"
-        else "border-bottom: 2px solid rgba(0,0,0,0.15);"
+        f"border-bottom: 4px solid rgba(0,0,0,0.6);"
+        if mode == "manhattan"
+        else (
+            f"border-bottom: 3px solid rgba(0,0,0,0.5);"
+            if mode == "dojo"
+            else "border-bottom: 2px solid rgba(0,0,0,0.15);"
+        )
     )
 
     return f"""
@@ -324,12 +372,12 @@ QPushButton {{
     border-radius: {btn_radius};
     padding: {btn_padding};
     font-family: {hf};
-    font-weight: bold;
-    text-transform: {'uppercase' if mode=='dojo' else 'none'};
-    letter-spacing: {'2px' if mode=='dojo' else '0px'};
+    font-weight: {'normal' if mode == 'manhattan' else 'bold'};
+    text-transform: {'uppercase' if mode in ('dojo', 'manhattan') else 'none'};
+    letter-spacing: {'2px' if mode in ('dojo', 'manhattan') else '0px'};
 }}
 QPushButton:hover {{
-    background: rgba(114, 255, 79, 0.1);
+    background: { 'rgba(0, 240, 255, 0.15)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.1)' };
 }}
 
 /* Dominant CTA - START TRAINING */
@@ -340,7 +388,7 @@ QPushButton#cta_primary {{
     border-radius: {btn_radius};
     padding: 12px 24px;
     font-family: {hf};
-    font-weight: 900;
+    font-weight: {'normal' if mode == 'manhattan' else '900'};
     font-size: 16px;
     text-transform: uppercase;
     letter-spacing: 2px;
@@ -669,13 +717,13 @@ QTreeWidget::item {{
     color: {p['C_SUBTEXT']};
 }}
 QTreeWidget::item:selected {{
-    background: rgba(168, 108, 255, 0.15);
-    border-left: 2px solid #A86CFF;
+    background: { 'rgba(168, 108, 255, 0.15)' if mode == 'dojo' else 'rgba(0, 240, 255, 0.15)' };
+    border-left: 2px solid {p['C_PURPLE']};
     color: {p['C_TEXT']};
 }}
 QTreeWidget::item:hover:!selected {{
-    background: rgba(114, 255, 79, 0.05);
-    border-left: 2px solid rgba(114, 255, 79, 0.2);
+    background: { 'rgba(0, 240, 255, 0.05)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.05)' };
+    border-left: 2px solid { 'rgba(0, 240, 255, 0.2)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.2)' };
     color: #9090C0;
 }}
 
@@ -698,11 +746,11 @@ QScrollBar:vertical {{
     border-left: 1px solid {p['C_BORDER']};
 }}
 QScrollBar::handle:vertical {{
-    background: {p['C_BORDER'] if mode == 'classic' else 'rgba(114, 255, 79, 0.3)'};
-    border-radius: 4px;
+    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)')};
+    border-radius: {'0px' if mode == 'manhattan' else '4px'};
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {p['C_SUBTEXT'] if mode == 'classic' else 'rgba(114, 255, 79, 0.6)'};
+    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)')};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
@@ -717,11 +765,11 @@ QScrollBar:horizontal {{
     border-top: 1px solid {p['C_BORDER']};
 }}
 QScrollBar::handle:horizontal {{
-    background: {p['C_BORDER'] if mode == 'classic' else 'rgba(114, 255, 79, 0.3)'};
-    border-radius: 4px;
+    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)')};
+    border-radius: {'0px' if mode == 'manhattan' else '4px'};
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {p['C_SUBTEXT'] if mode == 'classic' else 'rgba(114, 255, 79, 0.6)'};
+    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)')};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0px;

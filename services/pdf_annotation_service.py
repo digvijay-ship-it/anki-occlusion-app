@@ -186,6 +186,10 @@ class PdfAnnotationSession:
         if getattr(self, "doc", None) is not None:
             self.doc.close()
             self.doc = None
+        try:
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
 
     def _debug(self, action: str, **data):
         return
@@ -815,6 +819,10 @@ class PdfAnnotationSession:
         finally:
             if temp_doc is not None:
                 temp_doc.close()
+            try:
+                fitz.TOOLS.store_shrink(100)
+            except Exception:
+                pass
 
     def save(self):
         dirty_pages = sorted(self.dirty_pages)

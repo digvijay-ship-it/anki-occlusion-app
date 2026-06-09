@@ -519,7 +519,7 @@ class ReviewScreenZoomTests(unittest.TestCase):
         cached = MagicMock()
         cached.isNull.return_value = False
 
-        def fake_cache_get(path, page_num):
+        def fake_cache_get(path, page_num, *args, **kwargs):
             return cached if page_num == 2 else None
 
         with patch.dict(os.environ, {"ANKI_REVIEW_VERBOSE": "1"}, clear=False), \
@@ -888,6 +888,48 @@ class ReviewScreenZoomTests(unittest.TestCase):
         fake_dialog.setWindowModality.assert_called_once_with(Qt.ApplicationModal)
         fake_dialog.showFullScreen.assert_called_once_with()
         fake_dialog.show.assert_called_once_with()
+
+    def test_review_pen_color_persists_successfully(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen.canvas._ink_colors = ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF", "#00FF00"]
+        screen.canvas._ink_color_idx = 4
+
+        fake_settings = MagicMock()
+        fake_settings.value.side_effect = lambda key, default=None: {
+            "review/ink_colors": ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF", "#00FF00"],
+            "review/ink_color_idx": 4
+        }.get(key, default)
+
+        with patch("ui.review_screen.QSettings", return_value=fake_settings):
+            screen._save_review_ink_color()
+            colors, idx = screen._load_review_ink_color()
+
+        fake_settings.setValue.assert_any_call("review/ink_colors", ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF", "#00FF00"])
+        fake_settings.setValue.assert_any_call("review/ink_color_idx", 4)
+        self.assertEqual(colors, ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF", "#00FF00"])
+        self.assertEqual(idx, 4)
+
+    def test_choose_pen_color_picker_saves_color(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen.canvas._ink_colors = ["#FF4444", "#FFD700"]
+        screen.canvas._ink_color_idx = 0
+        screen._update_pen_button_states = MagicMock()
+        screen._save_review_ink_color = MagicMock()
+
+        fake_color = MagicMock()
+        fake_color.isValid.return_value = True
+        fake_color.name.return_value = "#00ff00"
+
+        with patch("PyQt5.QtWidgets.QColorDialog.getColor", return_value=fake_color):
+            screen._choose_pen_color_picker()
+
+        self.assertIn("#00FF00", screen.canvas._ink_colors)
+        self.assertEqual(screen.canvas._ink_color_idx, 2)
+        screen._save_review_ink_color.assert_called_once()
+        self.assertEqual(screen._review_ink_color_idx, 2)
+        self.assertEqual(screen._review_ink_colors, ["#FF4444", "#FFD700", "#00FF00"])
 
 if __name__ == "__main__":
     unittest.main()

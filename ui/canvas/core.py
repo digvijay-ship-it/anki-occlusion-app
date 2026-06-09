@@ -15,6 +15,7 @@ import uuid
 import time
 import math
 import copy
+import os
 
 from cache_manager import MASK_REGISTRY, PIXMAP_REGISTRY
 
@@ -153,6 +154,12 @@ class OcclusionCanvas(
         # ── per-page scaled pixmap cache ──────────────────────────────────────
         # dict: page_idx → (scale_at_cache_time, QPixmap)
         self._spx_cache = {}
+
+        # Cache paint profile environment variable to avoid os.environ lookups during hot paintEvent calls
+        self._paint_profile_enabled = (
+            os.environ.get("ANKI_CANVAS_PAINT_PROFILE", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)

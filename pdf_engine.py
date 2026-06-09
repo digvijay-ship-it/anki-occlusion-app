@@ -33,7 +33,7 @@ import hashlib
 import copy
 from collections import OrderedDict
 
-from PyQt5.QtCore import QThread, pyqtSignal, Qt
+from PyQt5.QtCore import QThread, pyqtSignal, Qt, QRunnable, QThreadPool, QObject
 from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter
 
 from cache_manager import PAGE_CACHE
@@ -177,6 +177,108 @@ def _infer_page_num_from_rect(rect, page_tops: list[int], page_dims: list[tuple[
     return max(0, min(page_num, len(page_dims) - 1))
 
 
+def infer_source_zoom(page_dims_1_0, boxes, nominal_source_zoom, page_gap=12) -> float:
+    candidates = [3.0, 2.0, 1.5]
+    if nominal_source_zoom not in candidates:
+        candidates.append(nominal_source_zoom)
+
+    zoom_validity = {}
+    zoom_page_matches = {}
+
+    accumulated_height = []
+    current_h = 0.0
+    for w, h in page_dims_1_0:
+        accumulated_height.append(current_h)
+        current_h += h
+
+    for z in candidates:
+        page_tops_z = [z * h_cum + idx * page_gap for idx, h_cum in enumerate(accumulated_height)]
+        page_dims_z = [(z * w, z * h) for w, h in page_dims_1_0]
+
+        valid_count = 0
+        match_count = 0
+        for box in boxes:
+            rect = box.get("rect")
+            if not isinstance(rect, (list, tuple)) or len(rect) < 4:
+                continue
+
+            page_num = _infer_page_num_from_rect(rect, page_tops_z, page_dims_z)
+            if page_num >= len(page_dims_1_0):
+                continue
+
+            saved_page_num = box.get("page_num")
+            if saved_page_num is not None:
+                try:
+                    if int(saved_page_num) == page_num:
+                        match_count += 1
+                except (TypeError, ValueError):
+                    pass
+
+            page_w, page_h = page_dims_z[page_num]
+            page_top = page_tops_z[page_num]
+            page_bottom = page_top + page_h
+
+            x = float(rect[0])
+            y = float(rect[1])
+            w = float(rect[2])
+            h = float(rect[3])
+
+            x_ok = (-5.0 <= x) and (x + w <= page_w + 5.0)
+            y_ok = (page_top - 5.0 <= y) and (y + h <= page_bottom + 5.0)
+
+            if x_ok and y_ok:
+                valid_count += 1
+
+        zoom_validity[z] = valid_count
+        zoom_page_matches[z] = match_count
+
+    nominal_validity = zoom_validity.get(nominal_source_zoom, 0)
+    nominal_matches = zoom_page_matches.get(nominal_source_zoom, 0)
+
+    # Check if database page numbers are reliable. If all page numbers are 0 but some
+    # boxes have Y coordinates pointing to page > 0 at nominal zoom, they are unreliable.
+    db_page_nums_reliable = True
+    if boxes:
+        all_zero = all(int(box.get("page_num", 0)) == 0 for box in boxes)
+        if all_zero:
+            nominal_tops = [nominal_source_zoom * h_cum + idx * page_gap for idx, h_cum in enumerate(accumulated_height)]
+            nominal_dims = [(nominal_source_zoom * w, nominal_source_zoom * h) for w, h in page_dims_1_0]
+            for box in boxes:
+                rect = box.get("rect")
+                if isinstance(rect, (list, tuple)) and len(rect) >= 4:
+                    p_num = _infer_page_num_from_rect(rect, nominal_tops, nominal_dims)
+                    if p_num > 0:
+                        db_page_nums_reliable = False
+                        break
+
+    best_zoom = nominal_source_zoom
+    total_boxes = len(boxes)
+    nominal_valid_ratio = nominal_validity / max(total_boxes, 1)
+
+    if db_page_nums_reliable and total_boxes >= 3:
+        # Primary metric is match count
+        max_matches = nominal_matches
+        for z in [3.0, 2.0, 1.5]:
+            z_matches = zoom_page_matches.get(z, 0)
+            if z_matches > max_matches:
+                max_matches = z_matches
+                best_zoom = z
+    else:
+        # Primary metric is validity count. Only heal if nominal validity is low (< 90%)
+        # and another candidate has strictly higher validity.
+        if nominal_valid_ratio < 0.90:
+            max_validity = nominal_validity
+            for z in [3.0, 2.0, 1.5]:
+                z_valid = zoom_validity.get(z, 0)
+                if z_valid > max_validity:
+                    max_validity = z_valid
+                    best_zoom = z
+
+    if best_zoom != nominal_source_zoom:
+        return best_zoom
+    return None
+
+
 def adapt_pdf_boxes_to_render_zoom(
     path: str,
     boxes: list,
@@ -192,11 +294,24 @@ def adapt_pdf_boxes_to_render_zoom(
     those rects must be reprojected page-by-page or they drift badly.
     """
     cloned = copy.deepcopy(list(boxes or []))
+    if source_zoom is None:
+        source_zoom = 1.5
+    if target_zoom is None:
+        target_zoom = 1.5
     try:
         source_zoom = float(source_zoom)
         target_zoom = float(target_zoom)
     except (TypeError, ValueError):
         return cloned
+
+    # Auto-healing heuristic for zoom mismatch (legacy cards missing box render zoom)
+    dims_1_0 = load_pdf_page_dims(path, zoom=1.0)
+    if not dims_1_0.error and dims_1_0.page_dims:
+        inferred_zoom = infer_source_zoom(dims_1_0.page_dims, cloned, source_zoom, page_gap=page_gap)
+        if inferred_zoom is not None and abs(inferred_zoom - source_zoom) > 0.01:
+            print(f"[DEBUG][pdf_engine] Auto-healed source_zoom from {source_zoom} to {inferred_zoom} for {os.path.basename(path)}")
+            source_zoom = inferred_zoom
+
     if not cloned or abs(source_zoom - target_zoom) <= 0.01:
         return cloned
 
@@ -212,9 +327,12 @@ def adapt_pdf_boxes_to_render_zoom(
             rect = box.get("rect")
             if not isinstance(rect, (list, tuple)) or len(rect) < 4:
                 continue
+            page_num = int(box.get("page_num", 0))
+            gap_offset = float(page_num) * float(page_gap)
+            rect_y_scaled = (float(rect[1]) - gap_offset) * scale + gap_offset
             box["rect"] = [
                 float(rect[0]) * scale,
-                float(rect[1]) * scale,
+                rect_y_scaled,
                 float(rect[2]) * scale,
                 float(rect[3]) * scale,
             ]
@@ -372,10 +490,10 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
     if not os.path.exists(path):
         return PdfSkeletonResult([], [], 0, f"File not found: {path}")
 
+    doc = None
     try:
         doc = fitz.open(path)
         if doc.is_encrypted:
-            doc.close()
             return PdfSkeletonResult([], [], 0, "PDF is password-protected")
 
         total = len(doc)
@@ -385,11 +503,19 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
             w_px, h_px = _page_rect_pixel_dims(doc[i], zoom)
             page_dims.append((max(1, w_px), max(1, h_px)))
 
-        doc.close()
-
         return PdfSkeletonResult([], page_dims, total, None)
     except Exception as ex:
         return PdfSkeletonResult([], [], 0, str(ex))
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+        try:
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
 
 
 def load_pdf_page_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
@@ -456,6 +582,7 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
     if not os.path.exists(path):
         return PdfSkeletonResult([], [], 0, f"File not found: {path}")
 
+    doc = None
     try:
         cache_key = _skeleton_cache_key(path, zoom)
         cached = _SKELETON_CACHE.get(cache_key)
@@ -466,7 +593,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         doc = fitz.open(path)
 
         if doc.is_encrypted:
-            doc.close()
             return PdfSkeletonResult([], [], 0, "PDF is password-protected")
 
         total        = len(doc)
@@ -485,8 +611,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 
             placeholders.append(qpx)
 
-        doc.close()
-
         # ─────────────────────────────────────────────────────────────────────
 
         result = PdfSkeletonResult(placeholders, page_dims, total, None)
@@ -499,6 +623,16 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 
     except Exception as ex:
         return PdfSkeletonResult([], [], 0, str(ex))
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+        try:
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -558,24 +692,18 @@ def _render_debug(message: str):
         print(message)
 
 
-class PdfOnDemandThread(QThread):
+class PdfOnDemandThread(QObject):
     """
     Render only the pages we actually need - not all 100.
-
-    Signals:
-        page_ready(page_num, QPixmap) - one page rendered and ready to inject.
-        batch_done(list[int])          - all requested pages rendered.
-        error(str)                     - something went wrong.
-
-    Usage:
-        t = PdfOnDemandThread(path, page_nums=[0, 3, 7, 12])
-        t.page_ready.connect(canvas.inject_page)
-        t.start()
+    Uses QThreadPool for high performance and thread recycling,
+    but implements the exact same API as QThread.
     """
 
     page_ready = pyqtSignal(int, object)   # (page_num, QImage) — QImage is thread-safe
     batch_done = pyqtSignal(list)          # list[int] - rendered page nums
     error      = pyqtSignal(str)
+    finished   = pyqtSignal()
+    started    = pyqtSignal()
 
     def __init__(
         self,
@@ -597,10 +725,48 @@ class PdfOnDemandThread(QThread):
         self._store_cache = bool(store_cache)
         self._cache_variant = cache_variant
         self._show_annots = bool(show_annots)
+        self._is_running = False
+        self._runnable = None
+
+    def isRunning(self):
+        return self._is_running
+
+    def start(self):
+        if self._is_running:
+            return
+        self._is_running = True
+        self._stop_flag = False
+        self.started.emit()
+
+        class RenderRunnable(QRunnable):
+            def __init__(self, outer):
+                super().__init__()
+                self.outer = outer
+
+            def run(self):
+                try:
+                    self.outer.run()
+                finally:
+                    self.outer._is_running = False
+                    self.outer.finished.emit()
+
+        self._runnable = RenderRunnable(self)
+        QThreadPool.globalInstance().start(self._runnable)
 
     def stop(self):
         self._stop_flag = True
         _render_debug("[DEBUG][on_demand] stop() called - will exit after current page")
+
+    def quit(self):
+        self.stop()
+
+    def wait(self, timeout_ms=500):
+        start_time = time.monotonic()
+        while self._is_running:
+            if (time.monotonic() - start_time) * 1000 > timeout_ms:
+                return False
+            time.sleep(0.01)
+        return True
 
     def run(self):
         t_thread_start = time.perf_counter()
@@ -636,13 +802,13 @@ class PdfOnDemandThread(QThread):
             self.batch_done.emit([])
             return
 
+        doc = None
         try:
             doc = fitz.open(self._path)
 
             if doc.is_encrypted:
                 msg = "PDF is password-protected"
                 self.error.emit(msg)
-                doc.close()
                 return
 
             total_in_doc = len(doc)
@@ -662,7 +828,6 @@ class PdfOnDemandThread(QThread):
                         requested=len(self._page_nums),
                         elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
                     )
-                    doc.close()
                     return
 
                 if page_num < 0 or page_num >= total_in_doc:
@@ -714,8 +879,6 @@ class PdfOnDemandThread(QThread):
                     print(f"[pdf_render] page {page_num+1} failed: {ex}")
                     continue
 
-            doc.close()
-
             t_total_ms = (time.perf_counter() - t_thread_start) * 1000
             _render_debug("[DEBUG][on_demand] ------------------------------------------------")
             _render_debug(f"[DEBUG][on_demand] batch_done  rendered={len(rendered)}/{len(self._page_nums)}  total_time={t_total_ms:.1f}ms")
@@ -732,6 +895,16 @@ class PdfOnDemandThread(QThread):
         except Exception as ex:
             print(f"[pdf_render] fatal render error: {ex}")
             self.error.emit(str(ex))
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+            try:
+                fitz.TOOLS.store_shrink(100)
+            except Exception:
+                pass
 
 
 def render_pdf_pages(path: str, page_nums, zoom: float = PDF_RENDER_ZOOM, cache_variant: str | None = None, show_annots: bool = True) -> dict:
@@ -759,7 +932,14 @@ def render_pdf_pages(path: str, page_nums, zoom: float = PDF_RENDER_ZOOM, cache_
         return {}
     finally:
         if doc is not None:
-            doc.close()
+            try:
+                doc.close()
+            except Exception:
+                pass
+        try:
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
 
 
 def render_pdf_pages_from_doc(doc, path: str, page_nums, zoom: float = PDF_RENDER_ZOOM, cache_variant: str | None = None, show_annots: bool = True) -> dict:
@@ -798,13 +978,21 @@ def update_page_hashes(path: str, page_nums=None, zoom: float = PDF_HASH_ZOOM):
         print(f"[update_page_hashes] error: {ex}")
     finally:
         if doc is not None:
-            doc.close()
+            try:
+                doc.close()
+            except Exception:
+                pass
+        try:
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
 
 def get_changed_pages(path: str):
     if not PDF_SUPPORT or not os.path.exists(path):
         return None
     t0 = time.perf_counter()
     total = 0
+    doc = None
     try:
         doc = fitz.open(path)
         changed = []
@@ -817,7 +1005,6 @@ def get_changed_pages(path: str):
             if old_hash is None or old_hash != new_hash:
                 changed.append(i)
             PAGE_CACHE.set_page_hash(path, i, new_hash)
-        doc.close()
         perf_log(
             "pdf_changed_pages_scan",
             file=os.path.basename(path),
@@ -837,14 +1024,26 @@ def get_changed_pages(path: str):
             elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
         )
         return None
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+        try:
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
     
-class PdfLoaderThread(QThread):
+class PdfLoaderThread(QObject):
     # Emitted every CHUNK_SIZE pages:  (pages_so_far, loaded_count, total_count)
     pages_ready = pyqtSignal(object, int, int)   # object = list[QImage]
 
     # Emitted once at the end:  (all_pages, error_str_or_None)
     done  = pyqtSignal(object, object)           # object = list[QImage]
     error = pyqtSignal(str)
+    finished = pyqtSignal()
+    started = pyqtSignal()
 
     def __init__(self, path: str, zoom: float = PDF_RENDER_ZOOM,
                  chunk_size: int = CHUNK_SIZE, use_cache: bool = True,
@@ -859,9 +1058,47 @@ class PdfLoaderThread(QThread):
         self._stop_flag  = False
         self._cache_variant = cache_variant
         self._show_annots = bool(show_annots)
+        self._is_running = False
+        self._runnable = None
+
+    def isRunning(self):
+        return self._is_running
+
+    def start(self):
+        if self._is_running:
+            return
+        self._is_running = True
+        self._stop_flag = False
+        self.started.emit()
+
+        class LoaderRunnable(QRunnable):
+            def __init__(self, outer):
+                super().__init__()
+                self.outer = outer
+
+            def run(self):
+                try:
+                    self.outer.run()
+                finally:
+                    self.outer._is_running = False
+                    self.outer.finished.emit()
+
+        self._runnable = LoaderRunnable(self)
+        QThreadPool.globalInstance().start(self._runnable)
 
     def stop(self):
         self._stop_flag = True
+
+    def quit(self):
+        self.stop()
+
+    def wait(self, timeout_ms=500):
+        start_time = time.monotonic()
+        while self._is_running:
+            if (time.monotonic() - start_time) * 1000 > timeout_ms:
+                return False
+            time.sleep(0.01)
+        return True
 
     def run(self):
         t_thread_start = time.perf_counter()
@@ -869,6 +1106,7 @@ class PdfLoaderThread(QThread):
         if not PDF_SUPPORT:
             self.done.emit([], "PyMuPDF not installed — run: pip install pymupdf")
             return
+        doc = None
         try:
             doc = fitz.open(self._path)
             if doc.is_encrypted:
@@ -900,7 +1138,6 @@ class PdfLoaderThread(QThread):
 
             for page_num in range(total):
                 if self._stop_flag:
-                    doc.close()
                     return
 
                 # Cache hit?
@@ -939,12 +1176,10 @@ class PdfLoaderThread(QThread):
                         pages=total,
                         cache_hits=cache_hits,
                         rendered=rendered_pages,
-                        elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
+                        elapsed_ms=round((time.perf_counter() - t0 if 't0' in locals() else time.perf_counter() - t_thread_start) * 1000.0, 3),
                     )
                     self.pages_ready.emit(list(pages), loaded, total)
                     last_emitted = loaded
-
-            doc.close()
 
             if self._stop_flag:
                 return
@@ -974,6 +1209,16 @@ class PdfLoaderThread(QThread):
                 elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
             )
             self.done.emit([], str(ex))
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+            try:
+                fitz.TOOLS.store_shrink(100)
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

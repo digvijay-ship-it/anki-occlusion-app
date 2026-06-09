@@ -71,7 +71,7 @@ class CanvasRendererMixin:
     _SMALL_FONT = QFont("Segoe UI", 7)
 
     def _canvas_paint_profile_enabled(self):
-        raw = os.environ.get(self.CANVAS_PAINT_PROFILE_ENV, "").strip().lower()
+        raw = os.environ.get("ANKI_CANVAS_PAINT_PROFILE", "").strip().lower()
         return raw in {"1", "true", "yes", "on"}
 
     def _mask_cache_source_rect(self, clip, pixmap):
@@ -165,11 +165,12 @@ class CanvasRendererMixin:
             if cached_scale != self._scale or cached_spx is None:
                 phases["scale_miss"] += 1
                 scale_t0 = time.perf_counter()
+                transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
                 cached_spx = self._px.scaled(
                     max(int(self._px.width() * self._scale), 1),
                     max(int(self._px.height() * self._scale), 1),
                     Qt.KeepAspectRatio,
-                    Qt.FastTransformation,
+                    transform_type,
                 )
                 self._spx_cache["_px"] = (self._scale, cached_spx)
                 phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0

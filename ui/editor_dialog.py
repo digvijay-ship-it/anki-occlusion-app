@@ -36,6 +36,7 @@ from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
 from sm2_engine import sm2_init
 from data_manager import new_box_id
 from services import recovery_manager, shortcut_manager
+from ui.canvas.retro_effects import CRTOverlay
 from pdf_engine import (
     PDF_SUPPORT,
     PAGE_CACHE,
@@ -162,6 +163,14 @@ class CardEditorDialog(QDialog):
         self._recovery_timer.setInterval(2000)
         self._recovery_timer.timeout.connect(self._write_recovery_draft)
         self._setup_ui()
+        
+        # Instantiate CRT overlay if theme is retro
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        self.crt = None
+        if theme in ("tmnt", "manhattan"):
+            self.crt = CRTOverlay(self)
+            self.crt.trigger_boot_flicker()
+
         if self._opened_from_recovery:
             self._apply_recovery_restore_notice(recovery_draft)
         if card:
@@ -191,6 +200,9 @@ class CardEditorDialog(QDialog):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._schedule_zoom_fit()
+        if getattr(self, "crt", None) is not None:
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
 
     def _setup_ui(self):
         from theme_manager import get_palette
@@ -294,14 +306,14 @@ class CardEditorDialog(QDialog):
         btn_grp = _tbtn("⛓ Group", "Group selected masks  [G]")
         btn_ungrp = _tbtn("⛓ Ungroup", "Ungroup  [Shift+G]")
         btn_grp.setStyleSheet(
-            "QPushButton{background:transparent;border:none;border-radius:4px;"
-            "padding:4px 10px;font-size:13px;color:#1a5ca8;min-height:32px;}"
-            "QPushButton:hover{background:#D0E4FF;}"
+            f"QPushButton{{background:transparent;border:none;border-radius:4px;"
+            f"padding:4px 10px;font-size:13px;color:{p.get('C_ACCENT', '#1a5ca8')};min-height:32px;}}"
+            f"QPushButton:hover{{background:{p.get('C_SURFACE', '#D0E4FF')};}}"
         )
         btn_ungrp.setStyleSheet(
-            "QPushButton{background:transparent;border:none;border-radius:4px;"
-            "padding:4px 10px;font-size:13px;color:#888;min-height:32px;}"
-            "QPushButton:hover{background:#EEE;}"
+            f"QPushButton{{background:transparent;border:none;border-radius:4px;"
+            f"padding:4px 10px;font-size:13px;color:{p.get('C_SUBTEXT', '#888')};min-height:32px;}}"
+            f"QPushButton:hover{{background:{p.get('C_SURFACE', '#EEE')};}}"
         )
         btn_grp.clicked.connect(lambda: self.canvas.group_selected())
         btn_ungrp.clicked.connect(lambda: self.canvas.ungroup_selected())
@@ -323,9 +335,9 @@ class CardEditorDialog(QDialog):
         self.btn_relink.clicked.connect(self._relink_pdf)
         self.btn_relink.setVisible(False)
         self.btn_relink.setStyleSheet(
-            "QPushButton{background:transparent;border:none;border-radius:4px;"
-            "padding:4px 10px;font-size:13px;color:#8B4513;min-height:32px;}"
-            "QPushButton:hover{background:#FFE4C4;}"
+            f"QPushButton{{background:transparent;border:none;border-radius:4px;"
+            f"padding:4px 10px;font-size:13px;color:{p.get('C_ORANGE', '#8B4513')};min-height:32px;}}"
+            f"QPushButton:hover{{background:{p.get('C_SURFACE', '#FFE4C4')};}}"
         )
 
         self.lbl_sync = QLabel("")
@@ -825,7 +837,7 @@ class CardEditorDialog(QDialog):
                 skipped["pending_visible"] += 1
                 continue
             cache_checks += 1
-            cached = PAGE_CACHE.get(path, pn)
+            cached = PAGE_CACHE.get(path, pn, ram_only=True)
             if cached is not None and not cached.isNull():
                 cache_hits += 1
                 skipped["cache_hot"] += 1
@@ -902,7 +914,13 @@ class CardEditorDialog(QDialog):
         store.mark_dirty()
         
         self._update_invert_pdf_button_style()
-        self._reload_pdf_contrast()
+        if self.canvas._px is not None and not self.canvas._px.isNull():
+            from PyQt5.QtGui import QImage
+            img = self.canvas._px.toImage()
+            img.invertPixels(QImage.InvertRgb)
+            self.canvas.load_pixmap(QPixmap.fromImage(img))
+        else:
+            self._reload_pdf_contrast()
 
     def _reload_pdf_contrast(self):
         path = getattr(self.canvas, "_current_pdf_path", None)
@@ -1079,7 +1097,16 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext.setVisible(False)
         self.lbl_sync.setVisible(False)
         self._stop_watch()
-        self.canvas.load_pixmap(px)
+        from data_manager import store
+        invert = store.get().get("_invert_pdf", False)
+        if invert and px and not px.isNull():
+            from PyQt5.QtGui import QImage
+            img = px.toImage()
+            img.invertPixels(QImage.InvertRgb)
+            px_to_load = QPixmap.fromImage(img)
+        else:
+            px_to_load = px
+        self.canvas.load_pixmap(px_to_load)
         self._update_pdf_nav_ui()
         if not self.inp_title.text():
             self.inp_title.setText(os.path.splitext(os.path.basename(path))[0])
@@ -1108,7 +1135,16 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext.setVisible(False)
         self.lbl_sync.setVisible(False)
         self._stop_watch()
-        self.canvas.load_pixmap(px)
+        from data_manager import store
+        invert = store.get().get("_invert_pdf", False)
+        if invert and px and not px.isNull():
+            from PyQt5.QtGui import QImage
+            img = px.toImage()
+            img.invertPixels(QImage.InvertRgb)
+            px_to_load = QPixmap.fromImage(img)
+        else:
+            px_to_load = px
+        self.canvas.load_pixmap(px_to_load)
         self._update_pdf_nav_ui()
         if not self.inp_title.text():
             self.inp_title.setText("Pasted Image")
@@ -1314,7 +1350,9 @@ class CardEditorDialog(QDialog):
         adapted_boxes = False
         if boxes_to_restore:
             if self._pending_boxes_need_pdf_adapt:
-                source_zoom = self.card.get("_pdf_box_render_zoom", PDF_LEGACY_BOX_ZOOM)
+                source_zoom = self.card.get("_pdf_box_render_zoom")
+                if source_zoom is None:
+                    source_zoom = PDF_LEGACY_BOX_ZOOM
                 boxes_to_restore = adapt_pdf_boxes_to_render_zoom(
                     path,
                     boxes_to_restore,
@@ -1452,7 +1490,7 @@ class CardEditorDialog(QDialog):
             if pn in real_pages or pn in inflight:
                 continue
             cache_checks += 1
-            cached = PAGE_CACHE.get(path, pn)
+            cached = PAGE_CACHE.get(path, pn, ram_only=True)
             if cached is None or cached.isNull():
                 continue
             cache_hits += 1
@@ -1606,7 +1644,7 @@ class CardEditorDialog(QDialog):
             self.__dict__.get("_editor_render_inflight_pages", set()) or set()
         ):
             return "rendering"
-        cached = PAGE_CACHE.get(path, page_num)
+        cached = PAGE_CACHE.get(path, page_num, ram_only=True)
         if cached is not None and not cached.isNull():
             return "cache_hot_canvas_gray"
         pages = getattr(self.canvas, "_pages", None) or []
@@ -1745,6 +1783,13 @@ class CardEditorDialog(QDialog):
             )
             px = QPixmap(image_path)
             if px and not px.isNull():
+                from data_manager import store
+                invert = store.get().get("_invert_pdf", False)
+                if invert:
+                    from PyQt5.QtGui import QImage
+                    img = px.toImage()
+                    img.invertPixels(QImage.InvertRgb)
+                    px = QPixmap.fromImage(img)
                 self.canvas.load_pixmap(px)
             if current_boxes:
                 self.canvas.set_boxes(current_boxes)
@@ -1917,8 +1962,37 @@ class CardEditorDialog(QDialog):
             self.card.get("pdf_path") or self._watched_path
         )
         if not path or not os.path.exists(path):
-            QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
-            return
+            image_path = self._resolve_source_path(self.card.get("image_path", ""))
+            if image_path and os.path.exists(image_path):
+                try:
+                    import fitz
+                    from storage_paths import build_archive_asset_path
+                    import data_manager
+                    
+                    stem = os.path.splitext(os.path.basename(image_path))[0]
+                    pdf_abs_path, pdf_rel_path = build_archive_asset_path("pdfs", f"{stem}.pdf")
+                    
+                    doc = fitz.open()
+                    img_doc = fitz.open(image_path)
+                    pdf_bytes = img_doc.convert_to_pdf()
+                    img_doc.close()
+                    
+                    pdf_mem = fitz.open("pdf", pdf_bytes)
+                    doc.insert_pdf(pdf_mem)
+                    doc.save(pdf_abs_path)
+                    doc.close()
+                    
+                    self.card["pdf_path"] = pdf_rel_path
+                    data_manager.store.mark_dirty()
+                    data_manager.store.save_force()
+                    path = pdf_abs_path
+                except Exception as e:
+                    print(f"[ERROR][editor_dialog] Failed to convert image to PDF: {e}")
+                    QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
+                    return
+            else:
+                QMessageBox.warning(self, "No PDF", "No PDF is currently loaded.")
+                return
         page_zero = self._current_visible_page()
         scroll_y = self._sc.verticalScrollBar().value()
         editor_scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
@@ -2039,7 +2113,7 @@ class CardEditorDialog(QDialog):
 
         # _pending_boxes makes _on_pdf_done restore masks after load
         self._pending_boxes = saved_boxes
-        self._pending_boxes_need_pdf_adapt = False
+        self._pending_boxes_need_pdf_adapt = True
 
         self.lbl_sync.setVisible(True)
         self.lbl_sync.setText("🔄 Relinking…")
