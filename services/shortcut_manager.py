@@ -38,6 +38,8 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.center", "Review", "Center current mask", "C"),
     ShortcutAction("review.undo", "Review", "Undo rating", "Ctrl+Z"),
     ShortcutAction("review.redo", "Review", "Redo rating", "Ctrl+Y"),
+    ShortcutAction("review.skip_session", "Review", "Skip for session", "S"),
+    ShortcutAction("review.super_skip", "Review", "Super skip for today", "Alt+S"),
     ShortcutAction("review.open_pdf", "Review", "Open current PDF", "Ctrl+E"),
     ShortcutAction("review.open_folder", "Review", "Open PDF folder", "Ctrl+L"),
     ShortcutAction("review.copy_pdf", "Review", "Copy PDF path", "L"),

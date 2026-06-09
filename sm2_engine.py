@@ -234,6 +234,9 @@ def sched_update(c, quality):
         if state == "review":
             easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef * EASY_BONUS)))
 
+            # Clamp Easy interval to at most 1.8x of Good interval to prevent massive leaps
+            easy_iv_raw = min(easy_iv_raw, round(good_iv_raw * 1.8))
+
             # ⚡ ALGORITHMIC ENFORCEMENT: Easy > Good
             easy_iv_raw = max(easy_iv_raw, good_iv_raw + 1)
 
@@ -253,10 +256,18 @@ def sched_update(c, quality):
         new_step = 0
         if state == "review":
             easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef * EASY_BONUS)))
+            
+            # Clamp Easy interval to at most 1.8x of Good interval
+            easy_iv_raw = min(easy_iv_raw, round(good_iv_raw * 1.8))
+            
             easy_iv_raw = max(easy_iv_raw, good_iv_raw + 1)
             perfect_iv_raw = min(
                 MAX_INTERVAL, max(PERFECT_IV, round(iv * ef * PERFECT_BONUS))
             )
+            
+            # Clamp Perfect interval to at most 2.5x of Good interval
+            perfect_iv_raw = min(perfect_iv_raw, round(good_iv_raw * 2.5))
+            
             perfect_iv_raw = max(perfect_iv_raw, easy_iv_raw + 1)
 
             perfect_iv = _fuzz_interval(perfect_iv_raw, seed_val)
@@ -324,6 +335,15 @@ def is_due_now(c):
 
 
 def is_due_today(c):
+    due_str = c.get("sm2_due", "")
+    if due_str:
+        try:
+            due_date = datetime.fromisoformat(due_str).date()
+            if due_date > date.today():
+                return False
+        except Exception:
+            pass
+
     state = c.get("sched_state", "new")
 
     if state == "new":

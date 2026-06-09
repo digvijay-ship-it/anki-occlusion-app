@@ -297,6 +297,10 @@ def get_pdf_page_count(path):
             page_count = len(doc)
         finally:
             doc.close()
+            try:
+                fitz.TOOLS.store_shrink(100)
+            except Exception:
+                pass
     except Exception:
         page_count = 0
 

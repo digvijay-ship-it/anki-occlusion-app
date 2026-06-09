@@ -47,6 +47,16 @@ v15 Bug Fixes:
   [LAG-FIX] Native Hardware Painting & Caching applied to OcclusionCanvas
             to eliminate mouseMoveEvent lag completely.
 """
+import time
+APP_START_TIME = time.perf_counter()
+
+import sys
+import os
+
+# Ensure script directory is in sys.path for robust local imports
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 from debug_output import install_debug_output_filter
 
@@ -475,6 +485,18 @@ class MainWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    import os
+    os.environ["ANKI_ALLOW_DEBUG_LOGS"] = "0"
+    os.environ["ANKI_PERF_DEBUG"] = "0"
+    os.environ["ANKI_CANVAS_PAINT_PROFILE"] = "0"
+    os.environ["ANKI_REVIEW_PROFILE"] = "0"
+    os.environ["ANKI_REVIEW_SCROLL_PROFILE"] = "0"
+    os.environ["ANKI_REVIEW_VERBOSE"] = "0"
+    os.environ["ANKI_ANNOTATION_VERBOSE"] = "0"
+    os.environ["ANKI_EDITOR_VERBOSE"] = "0"
+    os.environ["ANKI_EDITOR_SCROLL_PROFILE"] = "0"
+    os.environ["QT_LOGGING_RULES"] = "qt.multimedia*=false;qt.audio*=false"
+
     lock = QLockFile(LOCK_FILE)
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):
@@ -501,6 +523,7 @@ if __name__ == "__main__":
     app.setWindowIcon(_icon)
     win = MainWindow()
     win.show()
+    print(f"[PROFILE][app_startup] App loaded and ready in {(time.perf_counter() - APP_START_TIME) * 1000:.1f}ms")
     ret = app.exec_()
     lock.unlock()
     sys.exit(ret)

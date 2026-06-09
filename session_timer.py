@@ -91,22 +91,22 @@ def _fmt_human(secs: int) -> str:
     return f"{s}s"
 
 
-def _load_journal():
-    journal = {}
-    if os.path.exists(_JOURNAL_FILE):
-        try:
-            with open(_JOURNAL_FILE, "r", encoding="utf-8") as f:
-                journal = json.load(f)
-        except Exception:
-            journal = {}
-    return journal
-
-
 def _write_focus_to_journal_for_date(day: str, seconds: int):
     if seconds <= 0 or not day:
         return
 
-    journal = _load_journal()
+    try:
+        from services.journal_manager import _load_journal, _save_journal
+        import services.journal_manager as jm
+        old_path = jm.JOURNAL_FILE
+        jm.JOURNAL_FILE = _JOURNAL_FILE
+        try:
+            journal = _load_journal()
+        finally:
+            jm.JOURNAL_FILE = old_path
+    except Exception as e:
+        print(f"[ERROR][session_timer] Aborting write to journal to prevent data loss: {e}")
+        return
 
     # Normalise entry
     entry = journal.get(day, {})
@@ -145,7 +145,16 @@ def _write_focus_to_journal_for_date(day: str, seconds: int):
 
     entry["texts"] = texts
     journal[day] = entry
-    _atomic_write(_JOURNAL_FILE, journal)
+    
+    try:
+        old_path = jm.JOURNAL_FILE
+        jm.JOURNAL_FILE = _JOURNAL_FILE
+        try:
+            _save_journal(journal)
+        finally:
+            jm.JOURNAL_FILE = old_path
+    except Exception as e:
+        print(f"[ERROR][session_timer] Failed to save journal: {e}")
 
 
 def _write_focus_to_journal(seconds: int):
@@ -203,7 +212,7 @@ class SessionTimer:
         self._elapsed = _load_state()
         self._session_elapsed = 0
         self._idle_seconds = 0
-        self._idle_limit_seconds = 60
+        self._idle_limit_seconds = 180
         self._running = False
         self._activity_parent = parent
         self._activity_filter = _ActivityEventFilter(self)
@@ -211,7 +220,7 @@ class SessionTimer:
 
         self.label = QLabel(self._make_text())
         self.label.setToolTip(
-            "Time studied today  \u2022  pauses after 1 minute without app activity"
+            "Time studied today  \u2022  pauses after 3 minutes without app activity"
         )
 
         self.label_session = QLabel(self._fmt(self._session_elapsed))
@@ -314,12 +323,14 @@ class SessionTimer:
         self._rollover_if_needed()
 
         # Check if application has focus (active window)
-        if not QApplication.activeWindow():
+        # Relax this check to ensure the timer ticks if the application is still receiving user interaction.
+        # If activeWindow is None but the user recently interacted (idle_seconds is very low), keep ticking.
+        if not QApplication.activeWindow() and self._idle_seconds >= self._idle_limit_seconds:
             return
 
         self._idle_seconds += 1
 
-        if self._idle_seconds == 120:
+        if self._idle_seconds == 240:
             QApplication.beep()
 
         if self._idle_seconds > self._idle_limit_seconds:

@@ -14,6 +14,12 @@ class ThemeDisableTests(unittest.TestCase):
         self.assertNotIn("assets/themes/dojo", stylesheet)
         self.assertEqual(normalize_theme("dojo"), "classic")
 
+    def test_manhattan_theme_passes_cleanly(self):
+        self.assertEqual(normalize_theme("manhattan"), "manhattan")
+        stylesheet = build_stylesheet("manhattan", 12)
+        self.assertIn("#080c10", stylesheet)  # deep background
+        self.assertIn("Press Start 2P", stylesheet)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -339,7 +339,7 @@ class LRUPageCache:
 
     # ── Main API ──────────────────────────────────────────────────────────────
 
-    def get(self, path: str, page_num: int, variant: str | None = None):
+    def get(self, path: str, page_num: int, variant: str | None = None, ram_only: bool = False):
         trace = perf_debug_enabled()
         t0 = time.perf_counter() if trace else None
         path = _canonical_pdf_path(path)
@@ -381,6 +381,9 @@ class LRUPageCache:
                             ram_entries=len(self._cache),
                         )
                     return px
+
+        if ram_only:
+            return None
 
         # 2. Disk hit — load PNG → put back in RAM
         px = self._load_from_disk(path, page_num, variant=variant)

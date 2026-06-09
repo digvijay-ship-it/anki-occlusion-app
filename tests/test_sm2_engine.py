@@ -116,6 +116,15 @@ class DueLogicTests(unittest.TestCase):
 
         self.assertFalse(sm2_engine.is_due_today(card))
 
+    def test_new_card_due_tomorrow_is_not_due_today(self):
+        card = {
+            "sched_state": "new",
+            "sm2_last_quality": -1,
+            "sm2_due": datetime.combine(date.today() + timedelta(days=1), time.min).isoformat(timespec="seconds"),
+        }
+
+        self.assertFalse(sm2_engine.is_due_today(card))
+
     def test_days_left_uses_due_date(self):
         card = {
             "sm2_due": datetime.combine(date.today() + timedelta(days=3), time.min).isoformat(timespec="seconds")

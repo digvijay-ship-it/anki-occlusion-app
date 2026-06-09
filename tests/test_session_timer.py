@@ -127,19 +127,19 @@ class SessionTimerTests(unittest.TestCase):
 
     @patch('session_timer._load_state', return_value=0)
     @patch('session_timer.QApplication.activeWindow', return_value=True)
-    def test_SessionTimer_pauses_after_one_minute_without_activity(self, mock_active_window, mock_load):
+    def test_SessionTimer_pauses_after_three_minutes_without_activity(self, mock_active_window, mock_load):
         timer = SessionTimer()
 
-        for _ in range(60):
+        for _ in range(180):
             timer._tick()
-        self.assertEqual(timer.elapsed_seconds, 60)
+        self.assertEqual(timer.elapsed_seconds, 180)
 
         timer._tick()
-        self.assertEqual(timer.elapsed_seconds, 60)
+        self.assertEqual(timer.elapsed_seconds, 180)
 
         timer.note_activity()
         timer._tick()
-        self.assertEqual(timer.elapsed_seconds, 61)
+        self.assertEqual(timer.elapsed_seconds, 181)
 
     @patch('session_timer._load_state', return_value=0)
     def test_activity_filter_resets_idle_for_child_widget_mouse_activity(self, mock_load):

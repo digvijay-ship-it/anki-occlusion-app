@@ -26,6 +26,8 @@ def install_debug_output_filter():
         return
 
     def filtered_print(*args, **kwargs):
+        if _debug_logs_enabled():
+            return _ORIGINAL_PRINT(*args, **kwargs)
         if _is_debug_message(args):
             return
         return _ORIGINAL_PRINT(*args, **kwargs)

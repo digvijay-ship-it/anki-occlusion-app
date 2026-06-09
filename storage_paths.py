@@ -26,9 +26,39 @@ TIMER_STATE_FILE_NAME = "anki_timer_state.json"
 JOURNAL_FILE_NAME = "anki_journal.json"
 
 
+def is_running_tests() -> bool:
+    if os.environ.get("ANKI_TESTING") == "1":
+        return True
+    if not sys.argv:
+        return False
+    main_script = sys.argv[0].replace("\\", "/").lower()
+    main_basename = os.path.basename(main_script)
+    parts = main_script.split("/")
+    if "unittest" in main_script or "pytest" in main_script:
+        return True
+    if "tests" in parts or "test" in parts:
+        if main_basename.startswith("test_") or main_basename.endswith("_test.py") or "tests" in parts:
+            return True
+    return False
+
+
+_TEST_TEMP_DIR = None
+
+
+def _get_test_temp_dir() -> str:
+    global _TEST_TEMP_DIR
+    if _TEST_TEMP_DIR is None:
+        import tempfile
+
+        _TEST_TEMP_DIR = tempfile.TemporaryDirectory()
+    return _TEST_TEMP_DIR.name
+
+
 def _settings():
     from PyQt5.QtCore import QSettings
 
+    if is_running_tests():
+        return QSettings("AnkiOcclusionTest", "AppTest")
     return QSettings(APP_SETTINGS_ORG, APP_SETTINGS_APP)
 
 
@@ -47,6 +77,8 @@ def _current_archive_root(root: str | None = None) -> str:
 
 
 def _home_file(name: str) -> str:
+    if is_running_tests():
+        return os.path.join(_get_test_temp_dir(), name)
     return os.path.join(os.path.expanduser("~"), name)
 
 
@@ -73,6 +105,8 @@ def app_resource_url(*parts: str) -> str:
 
 
 def get_mission_archive_root() -> str:
+    if is_running_tests():
+        return ""
     try:
         raw = _settings().value(MISSION_ARCHIVE_KEY, "", type=str)
     except TypeError:
@@ -178,6 +212,8 @@ def current_cache_dir(root: str | None = None) -> str:
     root = _current_archive_root(root)
     if root:
         return archive_cache_dir(root)
+    if is_running_tests():
+        return os.path.join(_get_test_temp_dir(), ".cache", "anki_occlusion")
     try:
         raw = _settings().value(CACHE_DIR_KEY, "", type=str)
     except TypeError:
