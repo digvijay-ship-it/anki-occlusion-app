@@ -65,7 +65,7 @@ class JournalDialogFocusTimeTests(unittest.TestCase):
 
         self.assertEqual(dialog.minimumWidth(), JOURNAL_WINDOW_SIZE[0])
         self.assertEqual(dialog.minimumHeight(), JOURNAL_WINDOW_SIZE[1])
-        self.assertEqual(dialog._ninja_topbar.height(), _journal_font_size(84))
+        self.assertEqual(dialog._ninja_topbar.height(), _journal_font_size(104))
         self.assertEqual(dialog._ninja_topbar.layout().count(), 2)
         self.assertEqual(dialog._btn_date.minimumWidth(), _journal_font_size(230))
         self.assertEqual(_journal_font_size(10), 14)

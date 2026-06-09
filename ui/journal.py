@@ -36,11 +36,12 @@ from PyQt5.QtWidgets import (
     QCalendarWidget,
     QScrollArea,
 )
-from PyQt5.QtCore import Qt, QPointF, QRect, QSize, QDate, pyqtSignal
+from PyQt5.QtCore import Qt, QPointF, QRect, QRectF, QSize, QDate, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QColor, QPixmap, QFont, QPolygonF, QIcon
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtCore import QByteArray
 
+from ui.canvas.retro_effects import CRTOverlay, RetroParticlePanel, OozeDripWidget
 # ── Classic Theme ─────────────────────────────────────────────────────────────
 # ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
 from theme_manager import get_palette as _get_palette
@@ -77,7 +78,7 @@ def _is_ninja() -> bool:
         from PyQt5.QtWidgets import QApplication
 
         app = QApplication.instance()
-        return getattr(app, "_active_theme", "classic") in ("dojo", "tmnt")
+        return getattr(app, "_active_theme", "classic") in ("dojo", "tmnt", "manhattan")
     except Exception:
         return False
 
@@ -194,7 +195,7 @@ class JournalCanvas(QWidget):
         self._p = _get_palette(theme)
 
         self._page_h = PAGE_HEIGHT
-        self.setFixedWidth(PAGE_WIDTH)
+        self.setMinimumWidth(PAGE_WIDTH)
         self.setFixedHeight(self._page_h)
         bg = self._p.get("C_BG", N_CANVAS if _is_ninja() else C_BG)
         self.setStyleSheet(f"background:{bg};")
@@ -217,6 +218,7 @@ class JournalCanvas(QWidget):
         # Eraser cursor — tracked in mouseMoveEvent, not from global cursor()
         self._eraser_pos = None
         self.setMouseTracking(True)
+        self._stroke_bboxes = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -225,6 +227,7 @@ class JournalCanvas(QWidget):
         self._texts = texts
         self._current = []
         self._commit_text()
+        self._stroke_bboxes = {}
         # Expand canvas if saved content goes beyond current height
         all_y = [p.y() for s in strokes for p in s[1:]]
         all_y += [t["y"] for t in texts]
@@ -257,6 +260,7 @@ class JournalCanvas(QWidget):
         self._texts = []
         self._current = []
         self._commit_text()
+        self._stroke_bboxes = {}
         self._page_h = PAGE_HEIGHT
         self.setFixedHeight(self._page_h)
         self.update()
@@ -271,8 +275,23 @@ class JournalCanvas(QWidget):
             self.update()
             return
         if self._strokes:
-            self._strokes.pop()
+            popped = self._strokes.pop()
+            self._stroke_bboxes.pop(id(popped), None)
             self.update()
+
+    def _get_stroke_bbox(self, stroke):
+        stroke_id = id(stroke)
+        if stroke_id not in self._stroke_bboxes:
+            pts = stroke[1:]
+            if not pts:
+                self._stroke_bboxes[stroke_id] = QRectF()
+            else:
+                xs = [p.x() for p in pts]
+                ys = [p.y() for p in pts]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                self._stroke_bboxes[stroke_id] = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+        return self._stroke_bboxes[stroke_id]
 
     def _colors(self):
         return NINJA_INK_COLORS if _is_ninja() else INK_COLORS
@@ -329,33 +348,60 @@ class JournalCanvas(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        self._paint(p)
+        self._paint(p, e.rect())
 
-    def _paint(self, p):
+    def _paint(self, p, rect=None):
         w, h = self.width(), self.height()
         ninja = _is_ninja()
         bg = self._p.get("C_BG", N_CANVAS if ninja else C_BG)
-        p.fillRect(0, 0, w, h, QColor(bg))
+        
+        if rect is not None and not rect.isEmpty():
+            p.fillRect(rect, QColor(bg))
+        else:
+            p.fillRect(0, 0, w, h, QColor(bg))
 
         if self._show_lines:
             if ninja:
                 # Ninja: subtle teal grid lines
                 p.setPen(QPen(QColor("#0D1220"), 1))
-                for y in range(40, h, 32):
+                y_start = 40
+                if rect is not None and not rect.isEmpty():
+                    y_start = max(40, ((rect.top() - 40) // 32) * 32 + 40)
+                    y_end = min(h, rect.bottom() + 32)
+                else:
+                    y_end = h
+                for y in range(y_start, y_end, 32):
                     p.drawLine(0, y, w, y)
-                p.setPen(QPen(QColor("#0F1A10"), 1))
-                p.drawLine(60, 0, 60, h)
+                if rect is None or rect.left() <= 60 <= rect.right():
+                    p.setPen(QPen(QColor("#0F1A10"), 1))
+                    p.drawLine(60, 0, 60, h)
             else:
                 p.setPen(QPen(QColor("#2A2A4A"), 1))
-                for y in range(40, h, 32):
+                y_start = 40
+                if rect is not None and not rect.isEmpty():
+                    y_start = max(40, ((rect.top() - 40) // 32) * 32 + 40)
+                    y_end = min(h, rect.bottom() + 32)
+                else:
+                    y_end = h
+                for y in range(y_start, y_end, 32):
                     p.drawLine(0, y, w, y)
-                p.setPen(QPen(QColor("#3A2A3A"), 1))
-                p.drawLine(48, 0, 48, h)
+                if rect is None or rect.left() <= 48 <= rect.right():
+                    p.setPen(QPen(QColor("#3A2A3A"), 1))
+                    p.drawLine(48, 0, 48, h)
 
         # Committed strokes
+        has_dirty = (rect is not None and not rect.isEmpty())
+        dirty_rect = QRectF(rect) if has_dirty else None
+
         for stroke in self._strokes:
             if len(stroke) < 2:
                 continue
+            
+            if dirty_rect is not None:
+                bbox = self._get_stroke_bbox(stroke)
+                if not bbox.adjusted(-6, -6, 6, 6).intersects(dirty_rect):
+                    continue
+
             color = stroke[0]
             pts = stroke[1:]
             p.setPen(QPen(color, INK_WIDTH, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
@@ -368,11 +414,23 @@ class JournalCanvas(QWidget):
         if len(self._current) >= 2:
             color = self._current[0]
             pts = self._current[1:]
-            p.setPen(QPen(color, INK_WIDTH, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            p.drawPolyline(QPolygonF(pts))
+            should_draw = True
+            if dirty_rect is not None:
+                xs = [pt.x() for pt in pts]
+                ys = [pt.y() for pt in pts]
+                c_bbox = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+                if not c_bbox.adjusted(-6, -6, 6, 6).intersects(dirty_rect):
+                    should_draw = False
+            if should_draw:
+                p.setPen(QPen(color, INK_WIDTH, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                p.drawPolyline(QPolygonF(pts))
 
         # Text items
         for t in self._texts:
+            if dirty_rect is not None:
+                text_rect = QRectF(t["x"], t["y"] - t.get("size", 14), 400, t.get("size", 14) * 1.5)
+                if not text_rect.intersects(dirty_rect):
+                    continue
             font = QFont("Segoe UI", _journal_font_size(t.get("size", 14)))
             p.setFont(font)
             p.setPen(QColor(t.get("color", "#CDD6F4")))
@@ -380,27 +438,40 @@ class JournalCanvas(QWidget):
 
         # Active text being typed
         if self._mode == MODE_TEXT and self._text_pos:
-            font = QFont("Segoe UI", _journal_font_size(self._text_size))
-            p.setFont(font)
-            p.setPen(QColor(INK_COLORS[self._color_idx]))
             display = self._text_buf + "|"
-            p.drawText(self._text_pos, display)
-            fm = p.fontMetrics()
-            tw = fm.horizontalAdvance(display)
-            iy = int(self._text_pos.y()) + 3
-            ix = int(self._text_pos.x())
-            accent = self._p.get("C_ACCENT", N_ACCENT if ninja else C_ACCENT)
-            p.setPen(QPen(QColor(accent), 1))
-            p.drawLine(ix, iy, ix + tw, iy)
+            should_draw = True
+            if dirty_rect is not None:
+                text_rect = QRectF(self._text_pos.x(), self._text_pos.y() - self._text_size, 400, self._text_size * 1.5)
+                if not text_rect.intersects(dirty_rect):
+                    should_draw = False
+            if should_draw:
+                font = QFont("Segoe UI", _journal_font_size(self._text_size))
+                p.setFont(font)
+                p.setPen(QColor(INK_COLORS[self._color_idx]))
+                p.drawText(self._text_pos, display)
+                fm = p.fontMetrics()
+                tw = fm.horizontalAdvance(display)
+                iy = int(self._text_pos.y()) + 3
+                ix = int(self._text_pos.x())
+                accent = self._p.get("C_ACCENT", N_ACCENT if ninja else C_ACCENT)
+                p.setPen(QPen(QColor(accent), 1))
+                p.drawLine(ix, iy, ix + tw, iy)
 
         # Eraser cursor — use tracked position for accuracy
         if self._mode == MODE_ERASER and self._eraser_pos is not None:
             ep = self._eraser_pos
-            cursor_col = self._p.get("C_ACCENT", N_ACCENT if ninja else C_SUBTEXT)
-            p.setPen(QPen(QColor(cursor_col), 1, Qt.DashLine))
-            p.setBrush(Qt.NoBrush)
-            r = int(ERASER_WIDTH)
-            p.drawEllipse(int(ep.x()) - r // 2, int(ep.y()) - r // 2, r, r)
+            should_draw = True
+            if dirty_rect is not None:
+                r = int(ERASER_WIDTH)
+                cursor_rect = QRectF(ep.x() - r, ep.y() - r, r * 2, r * 2)
+                if not cursor_rect.intersects(dirty_rect):
+                    should_draw = False
+            if should_draw:
+                cursor_col = self._p.get("C_ACCENT", N_ACCENT if ninja else C_SUBTEXT)
+                p.setPen(QPen(QColor(cursor_col), 1, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+                r = int(ERASER_WIDTH)
+                p.drawEllipse(int(ep.x()) - r // 2, int(ep.y()) - r // 2, r, r)
 
     # ── Mouse ─────────────────────────────────────────────────────────────────
 
@@ -429,8 +500,16 @@ class JournalCanvas(QWidget):
     def mouseMoveEvent(self, e):
         pos = QPointF(e.pos())
         if self._mode == MODE_ERASER:
+            old_pos = self._eraser_pos
             self._eraser_pos = pos  # always track for cursor display
-            self.update()
+
+            r = int(ERASER_WIDTH) + 4
+            dirty_rect = QRect()
+            if old_pos is not None:
+                dirty_rect = dirty_rect.united(QRect(int(old_pos.x()) - r // 2, int(old_pos.y()) - r // 2, r, r))
+            dirty_rect = dirty_rect.united(QRect(int(pos.x()) - r // 2, int(pos.y()) - r // 2, r, r))
+            self.update(dirty_rect)
+
             if self._drawing:
                 self._erase_at(pos)
 
@@ -454,8 +533,13 @@ class JournalCanvas(QWidget):
         e.accept()
 
     def leaveEvent(self, e):
+        old_pos = self._eraser_pos
         self._eraser_pos = None
-        self.update()
+        if old_pos is not None:
+            r = int(ERASER_WIDTH) + 4
+            self.update(QRect(int(old_pos.x()) - r // 2, int(old_pos.y()) - r // 2, r, r))
+        else:
+            self.update()
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -503,21 +587,35 @@ class JournalCanvas(QWidget):
     # ── Eraser ────────────────────────────────────────────────────────────────
 
     def _erase_at(self, pos):
-        r2 = (ERASER_WIDTH / 2) ** 2
+        r = ERASER_WIDTH / 2
+        r2 = r ** 2
         kept = []
         changed = False
+        erased_bboxes = []
+        eraser_rect = QRectF(pos.x() - r, pos.y() - r, ERASER_WIDTH, ERASER_WIDTH)
+
         for stroke in self._strokes:
+            bbox = self._get_stroke_bbox(stroke)
+            if not bbox.intersects(eraser_rect):
+                kept.append(stroke)
+                continue
+
             hit = any(
                 (pt.x() - pos.x()) ** 2 + (pt.y() - pos.y()) ** 2 <= r2
                 for pt in stroke[1:]
             )
             if hit:
                 changed = True
+                erased_bboxes.append(bbox)
+                self._stroke_bboxes.pop(id(stroke), None)
             else:
                 kept.append(stroke)
+
         if changed:
             self._strokes = kept
-            self.update()
+            for bbox in erased_bboxes:
+                dirty = bbox.toRect().adjusted(-6, -6, 6, 6)
+                self.update(dirty)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -625,6 +723,7 @@ _ICONS = {
 
 
 class JournalDialog(QDialog):
+    closed = pyqtSignal()
 
     # ── Stylesheet builders ───────────────────────────────────────────────────
 
@@ -685,6 +784,12 @@ class JournalDialog(QDialog):
         hf = p.get("header_font", "{hf}").split(",")[0].strip("'")
         bf = p.get("body_font", "'Share Tech Mono'").split(",")[0].strip("'")
 
+        is_ps = (hf == "Press Start 2P")
+        btn_padding = "2px 8px" if is_ps else "4px 10px"
+        btn_fsize = "8px" if is_ps else "11px"
+        btn_fweight = "normal" if is_ps else "700"
+        btn_letter_spacing = "0px" if is_ps else "1px"
+
         return f"""
             @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
             QDialog  {{ background:{N_BG}; color:{N_TEXT}; }}
@@ -695,9 +800,9 @@ class JournalDialog(QDialog):
             QPushButton {{
                 background:{N_CARD}; color:{N_ACCENT};
                 border:1px solid {N_ACCENT}; border-radius:2px;
-                padding:4px 10px; font-size:11px;
-                font-family:{hf}, 'Segoe UI'; font-weight:700;
-                letter-spacing:1px;
+                padding:{btn_padding}; font-size:{btn_fsize};
+                font-family:{hf}, 'Segoe UI'; font-weight:{btn_fweight};
+                letter-spacing:{btn_letter_spacing};
             }}
             QPushButton:hover {{
                 background:rgba(114,255,79,0.1); color:{N_TEXT};
@@ -725,7 +830,6 @@ class JournalDialog(QDialog):
                 border-radius:4px; padding:2px;
                 font-family:{bf}, 'Consolas';
                 font-size:10px;
-                scrollbar-width:thin;
             }}
             QListWidget::item {{ padding:5px 6px; border-radius:3px;
                 border-left:2px solid transparent; }}
@@ -756,6 +860,8 @@ class JournalDialog(QDialog):
         """
 
     def __init__(self, parent=None):
+        import time
+        t0 = time.perf_counter()
         super().__init__(parent)
         self._ninja = _is_ninja()
         title = "⛩ SHINOBI LOGBOOK" if self._ninja else "📓 Daily Journal"
@@ -764,7 +870,19 @@ class JournalDialog(QDialog):
         self.resize(*JOURNAL_WINDOW_SIZE)
         self._apply_theme_ss()
 
-        self._journal = _load_journal()
+        try:
+            self._journal = _load_journal()
+            self._journal_load_error = None
+        except Exception as e:
+            self._journal = {}
+            self._journal_load_error = e
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "Journal Load Error",
+                f"Failed to load daily journal data:\n{e}\n\nSaving has been disabled to prevent data loss. Please restore a backup.",
+            )
+
         self._current_date = date.today().isoformat()
         self._mode = MODE_PEN
 
@@ -772,6 +890,29 @@ class JournalDialog(QDialog):
         self._scale_journal_ui()
         self._refresh_sidebar()
         self._load_date(self._current_date)
+        print(f"[PROFILE][journal_init] Daily Journal loaded in {(time.perf_counter() - t0) * 1000:.1f}ms")
+
+        # Retro Visual Overlays
+        self.crt = None
+        self.particles = None
+        self.drips = None
+        if self._ninja:
+            self.particles = RetroParticlePanel(self, is_ooze=True)
+            self.particles.lower()
+            self.drips = OozeDripWidget(self)
+            self.crt = CRTOverlay(self)
+            self.crt.trigger_boot_flicker()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "particles", None) is not None:
+            self.particles.setGeometry(self.rect())
+        if getattr(self, "drips", None) is not None:
+            self.drips.setGeometry(0, 0, self.width(), 30)
+            self.drips.raise_()
+        if getattr(self, "crt", None) is not None:
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
 
     def _apply_theme_ss(self):
         """Apply correct stylesheet for current theme."""
@@ -981,7 +1122,7 @@ class JournalDialog(QDialog):
 
         # Scroll area wrapping the canvas
         self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(False)
+        self._scroll.setWidgetResizable(True)
         self._scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._scroll.setStyleSheet(f"QScrollArea{{border:none;background:{C_BG};}}")
 
@@ -1028,13 +1169,13 @@ class JournalDialog(QDialog):
         top = QFrame()
         self._ninja_topbar = top
         top.setObjectName("ninja_journal_topbar")
-        top.setFixedHeight(84)
+        top.setFixedHeight(104 if self._ninja else 84)
         top.setStyleSheet(
             f"QFrame{{background:{N_SURFACE};border-radius:0px;"
             f"border-bottom:1px solid {N_BORDER};}}"
         )
         top_l = QVBoxLayout(top)
-        top_l.setContentsMargins(10, 6, 10, 6)
+        top_l.setContentsMargins(10, 32 if self._ninja else 6, 10, 6)
         top_l.setSpacing(4)
         tl = QHBoxLayout()
         tl.setContentsMargins(0, 0, 0, 0)
@@ -1299,7 +1440,7 @@ class JournalDialog(QDialog):
 
         # Canvas scroll area
         self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(False)
+        self._scroll.setWidgetResizable(True)
         self._scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._scroll.setStyleSheet(f"QScrollArea{{border:none;background:{N_BG};}}")
         self._canvas = JournalCanvas()
@@ -1535,7 +1676,29 @@ class JournalDialog(QDialog):
 
         # Override with live timer state if viewing today
         if date_str == date.today().isoformat():
-            state_file = os.path.join(os.path.expanduser("~"), "anki_timer_state.json")
+            import session_timer
+            
+            # Try to query the active running timer in memory first for real-time progress
+            active_seconds = None
+            try:
+                from PyQt5.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app:
+                    seen = set()
+                    for widget in app.allWidgets():
+                        st = getattr(widget, "_stimer", None)
+                        if st is not None and id(st) not in seen:
+                            seen.add(id(st))
+                            if hasattr(st, "elapsed_seconds"):
+                                active_seconds = st.elapsed_seconds
+                                break
+            except Exception:
+                pass
+
+            if active_seconds is not None:
+                focus_secs = max(focus_secs, active_seconds)
+            
+            state_file = getattr(session_timer, "_STATE_FILE", os.path.join(os.path.expanduser("~"), "anki_timer_state.json"))
             if os.path.exists(state_file):
                 try:
                     with open(state_file, "r", encoding="utf-8") as f:
@@ -1571,6 +1734,10 @@ class JournalDialog(QDialog):
                 break
 
     def _save_current(self):
+        if getattr(self, "_journal_load_error", None) is not None:
+            print("[Journal] Save aborted because loading failed previously.")
+            return
+
         self._canvas._commit_text()
         strokes = self._canvas.get_strokes()
         texts = self._canvas.get_texts()
@@ -1697,10 +1864,12 @@ class JournalDialog(QDialog):
 
     def _on_close(self):
         self._save_current()
+        self.closed.emit()
         self.accept()
 
     def reject(self):
         self._save_current()
+        self.closed.emit()
         super().reject()
 
     def closeEvent(self, e):
