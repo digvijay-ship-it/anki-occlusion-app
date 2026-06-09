@@ -33,9 +33,12 @@ from PyQt5.QtGui import (
     QPolygonF,
     QCursor,
     QKeySequence,
+    QPixmap,
+    QImage,
 )
 from PyQt5.QtMultimedia import QSoundEffect
 
+from ui.canvas.retro_effects import CRTOverlay, ParticleBurstOverlay, _home_animations_enabled
 import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -75,6 +78,7 @@ class MathScratchpad(QWidget):
         self.setCursor(Qt.CrossCursor)
         self._strokes = []
         self._current = []
+        self._backing_store = None
         self._pen_color = GREEN
         self._pen_width = 4.5
 
@@ -83,10 +87,44 @@ class MathScratchpad(QWidget):
         self._idle_timer.setInterval(800)
         self._idle_timer.timeout.connect(self._trigger_ocr)
 
+    def _init_backing_store(self):
+        w, h = max(10, self.width()), max(10, self.height())
+        if self._backing_store is None or self._backing_store.width() != w or self._backing_store.height() != h:
+            old = self._backing_store
+            self._backing_store = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+            self._backing_store.fill(Qt.transparent)
+            if old and not old.isNull():
+                p = QPainter(self._backing_store)
+                p.drawImage(0, 0, old)
+                p.end()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._init_backing_store()
+
     def clear(self):
         self._strokes = []
         self._current = []
+        if self._backing_store:
+            self._backing_store.fill(Qt.transparent)
         self.update()
+
+    def _draw_segment_to_backing_store(self, p0, p1):
+        if self._backing_store is None or self._backing_store.isNull():
+            self._init_backing_store()
+        p = QPainter(self._backing_store)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(
+            QPen(
+                self._pen_color,
+                self._pen_width,
+                Qt.SolidLine,
+                Qt.RoundCap,
+                Qt.RoundJoin,
+            )
+        )
+        p.drawLine(QPointF(p0), QPointF(p1))
+        p.end()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -100,30 +138,8 @@ class MathScratchpad(QWidget):
         label_col.setAlphaF(0.7)
         p.setPen(QPen(label_col))
         p.drawText(12, 22, "✏  DRAW HERE")
-        for stroke in self._strokes:
-            if len(stroke) < 2:
-                continue
-            p.setPen(
-                QPen(
-                    self._pen_color,
-                    self._pen_width,
-                    Qt.SolidLine,
-                    Qt.RoundCap,
-                    Qt.RoundJoin,
-                )
-            )
-            p.drawPolyline(QPolygonF(stroke))
-        if len(self._current) >= 2:
-            p.setPen(
-                QPen(
-                    self._pen_color,
-                    self._pen_width,
-                    Qt.SolidLine,
-                    Qt.RoundCap,
-                    Qt.RoundJoin,
-                )
-            )
-            p.drawPolyline(QPolygonF(self._current))
+        if self._backing_store and not self._backing_store.isNull():
+            p.drawImage(0, 0, self._backing_store)
         p.end()
 
     def mousePressEvent(self, e):
@@ -139,7 +155,16 @@ class MathScratchpad(QWidget):
         if e.buttons() & Qt.LeftButton:
             self._idle_timer.stop()
             self._current.append(e.localPos())
-            self.update()
+            if len(self._current) >= 2:
+                p0, p1 = self._current[-2], self._current[-1]
+                self._draw_segment_to_backing_store(p0, p1)
+                
+                pen_w = self._pen_width + 10
+                x0 = int(math.floor(min(p0.x(), p1.x()) - pen_w))
+                y0 = int(math.floor(min(p0.y(), p1.y()) - pen_w))
+                x1 = int(math.ceil(max(p0.x(), p1.x()) + pen_w))
+                y1 = int(math.ceil(max(p0.y(), p1.y()) + pen_w))
+                self.update(QRect(x0, y0, x1 - x0, y1 - y0))
             e.accept()
         else:
             super().mouseMoveEvent(e)
@@ -149,8 +174,8 @@ class MathScratchpad(QWidget):
             if len(self._current) >= 2:
                 self._strokes.append(list(self._current))
             self._current = []
-            self.update()
             self._idle_timer.start()
+            self.update()
             e.accept()
         else:
             super().mouseReleaseEvent(e)
@@ -380,6 +405,15 @@ class MathTrainerPage(QWidget):
         self._build()
         self._show(0)
 
+        # Retro effects overlays
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        self.crt = None
+        self.burst = None
+        if theme in ("tmnt", "manhattan"):
+            self.crt = CRTOverlay(self)
+            self.burst = ParticleBurstOverlay(self)
+
     # ── Config ────────────────────────────────────────────────────────────────
     def _load_config(self):
         self._config = {"tables": {}, "squares": {}, "cubes": {}}
@@ -536,11 +570,42 @@ class MathTrainerPage(QWidget):
     def resizeEvent(self, e):
         self._particles.setGeometry(0, 52, self.width(), self.height() - 78)
         super().resizeEvent(e)
+        if getattr(self, "crt", None) is not None:
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
+        if getattr(self, "burst", None) is not None:
+            self.burst.setGeometry(self.rect())
+            self.burst.raise_()
+            if self.crt is not None:
+                self.crt.raise_()
 
     def showEvent(self, e):
         self._particles.setGeometry(0, 52, self.width(), self.height() - 78)
         self._particles.raise_()
         super().showEvent(e)
+        if getattr(self, "crt", None) is not None:
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
+            self.crt.trigger_boot_flicker()
+        if getattr(self, "burst", None) is not None:
+            self.burst.setGeometry(self.rect())
+            self.burst.raise_()
+            if self.crt is not None:
+                self.crt.raise_()
+
+    def _shake_widget(self, w):
+        if not _home_animations_enabled():
+            return
+        from PyQt5.QtCore import QSequentialAnimationGroup, QPropertyAnimation, QPoint
+        pos = w.pos()
+        seq = QSequentialAnimationGroup(self)
+        for dx in [12, -12, 9, -9, 6, -6, 0]:
+            anim = QPropertyAnimation(w, b"pos", self)
+            anim.setDuration(40)
+            anim.setStartValue(w.pos())
+            anim.setEndValue(QPoint(pos.x() + dx, pos.y()))
+            seq.addAnimation(anim)
+        seq.start()
 
     def go_back(self):
         if not self._p2.isHidden():
@@ -1044,6 +1109,8 @@ class MathTrainerPage(QWidget):
             print(f"[DEBUG][ocr_async] skip source={source} reason=busy")
             self._sb_status.setText("OCR BUSY")
             return False
+        import time
+        self._ocr_t0 = time.perf_counter()
         print(f"[DEBUG][ocr_async] queue source={source}")
         self._sb_status.setText("PREDICTING...")
         thread = OcrNumberThread(img, parent=self)
@@ -1055,7 +1122,9 @@ class MathTrainerPage(QWidget):
         return True
 
     def _on_ocr_result(self, predicted: str):
-        print(f"[MathTrainer] OCR predicted: '{predicted}'")
+        import time
+        elapsed = (time.perf_counter() - getattr(self, "_ocr_t0", time.perf_counter())) * 1000.0
+        print(f"[PROFILE][math_ocr] OCR prediction succeeded in {elapsed:.1f}ms, result: '{predicted}'")
         if predicted:
             self._ans_in.setText(predicted)
             self._sb_status.setText("READY")
@@ -1063,7 +1132,9 @@ class MathTrainerPage(QWidget):
             self._sb_status.setText("NO OCR")
 
     def _on_ocr_failed(self, error: str):
-        print(f"[DEBUG][ocr_async] ui_failed error={error}")
+        import time
+        elapsed = (time.perf_counter() - getattr(self, "_ocr_t0", time.perf_counter())) * 1000.0
+        print(f"[PROFILE][math_ocr] OCR prediction failed in {elapsed:.1f}ms, error: '{error}'")
         self._sb_status.setText("OCR ERROR")
 
     def _on_ocr_finished(self, thread):
@@ -1337,12 +1408,19 @@ class MathTrainerPage(QWidget):
             return
         try:
             if int(v) == self._ans:
+                if getattr(self, "burst", None) is not None:
+                    c = self._ans_in.mapTo(self, self._ans_in.rect().center())
+                    self.burst.spawn_burst(c.x(), c.y(), "green", count=25)
                 if not getattr(self, "_q_attempted", False):
                     self._correct_count += 1
                 self._streak += 1
+                from data_manager import store
+                vol = store.get().get("_volume", 40) / 100.0
                 if self._streak > 0 and self._streak % 5 == 0:
+                    self._snd_power.setVolume(vol)
                     self._snd_power.play()
                 else:
+                    self._snd_pick.setVolume(vol)
                     self._snd_pick.play()
                 cv = self._streak
                 self._combo_val.setText(str(cv))
@@ -1372,6 +1450,13 @@ class MathTrainerPage(QWidget):
                 self._show_ans_btn.hide()
                 QTimer.singleShot(650, self._gen_q)
             else:
+                if getattr(self, "burst", None) is not None:
+                    c = self._ans_in.mapTo(self, self._ans_in.rect().center())
+                    self.burst.spawn_burst(c.x(), c.y(), "red", count=20)
+                self._shake_widget(self._ans_in)
+                from data_manager import store
+                vol = store.get().get("_volume", 40) / 100.0
+                self._snd_hit.setVolume(vol)
                 self._snd_hit.play()
                 if not getattr(self, "_q_attempted", False):
                     self._wrong_count += 1
