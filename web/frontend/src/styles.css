@@ -2,20 +2,20 @@
 
 :root {
   color-scheme: dark;
-  --bg: #070b0d;
-  --shell: #11161e;
-  --panel: #161b25;
-  --panel-2: #232833;
-  --panel-3: #0b0f14;
-  --border: #344052;
-  --border-hot: #9f7cff;
-  --green: #4bb34f;
-  --neon: #66fcf1;
-  --text: #d8dde4;
-  --muted: #8b94a5;
-  --red: #ff4d5a;
-  --orange: #ff9f43;
-  --purple: #a77dff;
+  --bg: #0f150e;         /* Dojo Dark Green-Black background */
+  --shell: #0f150e;      /* Dojo Dark Green-Black background */
+  --panel: #181d16;      /* Dojo Panel background */
+  --panel-2: #353b33;    /* Dojo Card background */
+  --panel-3: #0f150e;    /* Dojo Dark background */
+  --border: #2d332b;     /* Dojo Border */
+  --border-hot: #b088f9; /* Dojo Purple */
+  --green: #45a247;      /* Dojo Accent Green */
+  --neon: #66fcf1;       /* Dojo Neon Cyan */
+  --text: #ffffff;       /* Pure White for excellent contrast! */
+  --muted: #a0aec0;      /* Bright slate-gray for clean readability! */
+  --red: #ff4d4d;        /* Dojo Red */
+  --orange: #ffb86c;     /* Dojo Orange */
+  --purple: #b088f9;     /* Dojo Purple */
 }
 
 @keyframes panel-scan {

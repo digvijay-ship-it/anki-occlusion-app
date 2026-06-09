@@ -115,9 +115,9 @@ test("review screen follows the desktop session controls", () => {
   assert.match(appSource, /redoReviewRating\(\)/);
   assert.match(appSource, /reviewUndoStack/);
   assert.match(appSource, /reviewRedoStack/);
-  assert.match(appSource, /event\.key\.toLowerCase\(\) === "f"[\s\S]*toggleReviewFocusMode\("shortcut"\)/);
+  assert.match(appSource, /matchesShortcut\(event,\s*shortcuts\["review\.focus_toggle"\]\)[\s\S]*toggleReviewFocusMode\("shortcut"\)/);
   assert.match(appSource, /if \(reviewFocusMode\) \{[\s\S]*setReviewFocusMode\(false\)/);
-  assert.match(appSource, /event\.key\.toLowerCase\(\) === "c"[\s\S]*fitAndCenterReviewSurface\("shortcut"\)/);
+  assert.match(appSource, /matchesShortcut\(event,\s*shortcuts\["review\.center"\]\)[\s\S]*fitAndCenterReviewSurface\("shortcut"\)/);
   assert.match(appSource, /event\.key\.toLowerCase\(\) === "z"[\s\S]*handleReviewUndo\(\)/);
   assert.match(appSource, /event\.key\.toLowerCase\(\) === "y"[\s\S]*handleReviewRedo\(\)/);
   assert.match(appSource, /event\.key\.toLowerCase\(\) === "l"[\s\S]*revealCurrentPdfFolder\(\)/);

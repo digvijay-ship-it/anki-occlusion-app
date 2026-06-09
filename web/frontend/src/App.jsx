@@ -578,6 +578,40 @@ function formatTimer(secs) {
   return `${h ? h + ":" : ""}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function matchesShortcut(event, shortcut) {
+  if (!shortcut) return false;
+  const parts = shortcut.split("+").map(p => p.trim().toLowerCase());
+  const needsCtrl = parts.includes("ctrl") || parts.includes("control");
+  const needsAlt = parts.includes("alt");
+  const needsShift = parts.includes("shift");
+  const needsMeta = parts.includes("meta") || parts.includes("cmd") || parts.includes("win");
+  
+  const hasCtrl = event.ctrlKey;
+  const hasAlt = event.altKey;
+  const hasShift = event.shiftKey;
+  const hasMeta = event.metaKey;
+  
+  if (needsCtrl !== hasCtrl) return false;
+  if (needsAlt !== hasAlt) return false;
+  if (needsShift !== hasShift) return false;
+  if (needsMeta !== hasMeta) return false;
+  
+  const keyPart = parts.find(p => !["ctrl", "control", "alt", "shift", "meta", "cmd", "win"].includes(p));
+  if (!keyPart) return false;
+  
+  let eventKey = event.key.toLowerCase();
+  
+  if (eventKey === " ") eventKey = "space";
+  let targetKey = keyPart;
+  if (targetKey === "space") targetKey = " ";
+  
+  if (targetKey === "+") {
+    return eventKey === "+" || eventKey === "=";
+  }
+  
+  return eventKey === targetKey;
+}
+
 function App() {
   const searchInputRef = useRef(null);
   const maskStageRef = useRef(null);
@@ -654,6 +688,64 @@ function App() {
   const [answerRevealed, setAnswerRevealed] = useState(false);
   const [dismissedKeys, setDismissedKeys] = useState(() => new Set());
   const [collapsedDeckIds, setCollapsedDeckIds] = useState(() => new Set());
+
+  const defaultShortcuts = {
+    "review.cancel": "Escape",
+    "review.reveal": "Space",
+    "review.rate_again": "1",
+    "review.rate_hard": "2",
+    "review.rate_good": "3",
+    "review.rate_easy": "4",
+    "review.rate_perfect": "5",
+    "review.zoom_in": "Ctrl+=",
+    "review.zoom_out": "Ctrl+-",
+    "review.zoom_reset": "Ctrl+0",
+    "review.center": "c",
+    "review.focus_toggle": "f",
+    "review.edit_card": "e",
+    "review.copy_pdf": "l",
+    "review.pen_toggle": "p",
+    "review.pen_color": "x",
+    "review.pen_clear": "Delete",
+    "review.prev_page": "ArrowLeft",
+    "review.next_page": "ArrowRight"
+  };
+
+  const shortcutLabels = {
+    "review.cancel": "Leave Review",
+    "review.reveal": "Reveal Answer",
+    "review.rate_again": "Rate Again (Quality 1)",
+    "review.rate_hard": "Rate Hard (Quality 3)",
+    "review.rate_good": "Rate Good (Quality 4)",
+    "review.rate_easy": "Rate Easy (Quality 5)",
+    "review.rate_perfect": "Rate Perfect (Quality 6)",
+    "review.zoom_in": "Zoom In",
+    "review.zoom_out": "Zoom Out",
+    "review.zoom_reset": "Reset Zoom",
+    "review.center": "Center Current Mask",
+    "review.focus_toggle": "Toggle Focus Mode",
+    "review.edit_card": "Edit Active Card",
+    "review.copy_pdf": "Copy PDF Path",
+    "review.pen_toggle": "Toggle Drawing Pen",
+    "review.pen_color": "Cycle Pen Color",
+    "review.pen_clear": "Clear Pen Drawings",
+    "review.prev_page": "Navigate Prev PDF Page",
+    "review.next_page": "Navigate Next PDF Page"
+  };
+
+  const [shortcuts, setShortcuts] = useState(() => {
+    try {
+      const saved = localStorage.getItem("anki_shortcuts");
+      if (saved) {
+        return { ...defaultShortcuts, ...JSON.parse(saved) };
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return defaultShortcuts;
+  });
+
+  const [activeRecordingId, setActiveRecordingId] = useState(null);
 
   function toggleDeckCollapse(deckId) {
     setCollapsedDeckIds((prev) => {
@@ -1296,12 +1388,56 @@ function App() {
   }
 
   useEffect(() => {
+    if (!activeRecordingId) return;
+
+    function handleRecordKeyDown(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      
+      const key = event.key;
+      if (key === "Escape") {
+        setActiveRecordingId(null);
+        return;
+      }
+      
+      if (["Control", "Shift", "Alt", "Meta"].includes(key)) {
+        return;
+      }
+      
+      const parts = [];
+      if (event.ctrlKey) parts.push("Ctrl");
+      if (event.altKey) parts.push("Alt");
+      if (event.shiftKey) parts.push("Shift");
+      if (event.metaKey) parts.push("Meta");
+      
+      let keyName = key;
+      if (keyName === " ") keyName = "Space";
+      
+      parts.push(keyName);
+      const sequence = parts.join("+");
+      
+      setShortcuts(current => {
+        const next = { ...current, [activeRecordingId]: sequence };
+        localStorage.setItem("anki_shortcuts", JSON.stringify(next));
+        return next;
+      });
+      
+      setActiveRecordingId(null);
+      recordAction(`Shortcut for ${shortcutLabels[activeRecordingId]} updated to ${sequence}`);
+    }
+
+    window.addEventListener("keydown", handleRecordKeyDown, true);
+    return () => window.removeEventListener("keydown", handleRecordKeyDown, true);
+  }, [activeRecordingId]);
+
+  useEffect(() => {
     function handleReviewShortcut(event) {
       const target = event.target;
       const isTyping =
         target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
-      if (isTyping || screen !== "review") return;
-      if (event.key === "Escape") {
+      if (isTyping || screen !== "review" || activeRecordingId) return;
+
+      if (matchesShortcut(event, shortcuts["review.cancel"])) {
         event.preventDefault();
         if (reviewFocusMode) {
           setReviewFocusMode(false);
@@ -1321,7 +1457,7 @@ function App() {
         recordAction("Returned to dojo home.");
         return;
       }
-      if (event.key === " ") {
+      if (matchesShortcut(event, shortcuts["review.reveal"])) {
         event.preventDefault();
         setAnswerRevealed((current) => !current);
         setReviewRevealedBoxes(new Set());
@@ -1341,17 +1477,17 @@ function App() {
         handleReviewRedo();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && (event.key === "+" || event.key === "=")) {
+      if (matchesShortcut(event, shortcuts["review.zoom_in"])) {
         event.preventDefault();
         zoomReviewSurface(1);
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && event.key === "-") {
+      if (matchesShortcut(event, shortcuts["review.zoom_out"])) {
         event.preventDefault();
         zoomReviewSurface(-1);
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && event.key === "0") {
+      if (matchesShortcut(event, shortcuts["review.zoom_reset"])) {
         event.preventDefault();
         fitReviewSurface("shortcut");
         return;
@@ -1366,77 +1502,47 @@ function App() {
         revealCurrentPdfFolder();
         return;
       }
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key === "ArrowLeft") {
+      if (matchesShortcut(event, shortcuts["review.prev_page"])) {
         event.preventDefault();
         sendReviewPageCommand("prev");
         return;
       }
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key === "ArrowRight") {
+      if (matchesShortcut(event, shortcuts["review.next_page"])) {
         event.preventDefault();
         sendReviewPageCommand("next");
         return;
       }
-      if (
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        event.key.toLowerCase() === "c"
-      ) {
+      if (matchesShortcut(event, shortcuts["review.center"])) {
         event.preventDefault();
         fitAndCenterReviewSurface("shortcut");
         return;
       }
-      if (
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        event.key.toLowerCase() === "f"
-      ) {
+      if (matchesShortcut(event, shortcuts["review.focus_toggle"])) {
         event.preventDefault();
         toggleReviewFocusMode("shortcut");
         return;
       }
-      if (
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        event.key.toLowerCase() === "e"
-      ) {
+      if (matchesShortcut(event, shortcuts["review.edit_card"])) {
         event.preventDefault();
         openEditorMode("review");
         return;
       }
-      if (
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        event.key.toLowerCase() === "l"
-      ) {
+      if (matchesShortcut(event, shortcuts["review.copy_pdf"])) {
         event.preventDefault();
         copyCurrentPdfPath();
         return;
       }
-      if (
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey &&
-        event.key.toLowerCase() === "t"
-      ) {
-        event.preventDefault();
-        recordAction("Use Pen or Edit Card for web annotation.");
-        return;
-      }
-      if (event.key === "`" || event.key.toLowerCase() === "p") {
+      if (matchesShortcut(event, shortcuts["review.pen_toggle"])) {
         event.preventDefault();
         setReviewPenActive((current) => !current);
         return;
       }
-      if (event.key.toLowerCase() === "x") {
+      if (matchesShortcut(event, shortcuts["review.pen_color"])) {
         event.preventDefault();
         setReviewPenColorIndex((current) => (current + 1) % reviewPenColors.length);
         return;
       }
-      if (event.key === "Delete") {
+      if (matchesShortcut(event, shortcuts["review.pen_clear"])) {
         event.preventDefault();
         clearActiveInk();
         return;
@@ -1451,16 +1557,32 @@ function App() {
         setReviewPenWidth((current) => Math.max(1, Number((current - 0.4).toFixed(1))));
         return;
       }
-      const shortcutQuality = {
-        1: 1,
-        2: 3,
-        3: 4,
-        4: 5,
-        5: 6,
-      }[event.key];
-      if (answerRevealed && shortcutQuality && activeItem && busyQuality === null) {
-        event.preventDefault();
-        handleRate(shortcutQuality);
+      if (answerRevealed && activeItem && busyQuality === null) {
+        if (matchesShortcut(event, shortcuts["review.rate_again"])) {
+          event.preventDefault();
+          handleRate(1);
+          return;
+        }
+        if (matchesShortcut(event, shortcuts["review.rate_hard"])) {
+          event.preventDefault();
+          handleRate(3);
+          return;
+        }
+        if (matchesShortcut(event, shortcuts["review.rate_good"])) {
+          event.preventDefault();
+          handleRate(4);
+          return;
+        }
+        if (matchesShortcut(event, shortcuts["review.rate_easy"])) {
+          event.preventDefault();
+          handleRate(5);
+          return;
+        }
+        if (matchesShortcut(event, shortcuts["review.rate_perfect"])) {
+          event.preventDefault();
+          handleRate(6);
+          return;
+        }
       }
     }
 
@@ -1479,6 +1601,8 @@ function App() {
     reviewRedoStack,
     selectedDeck,
     selectedDeckId,
+    shortcuts,
+    activeRecordingId
   ]);
 
   useEffect(() => {
@@ -5187,6 +5311,53 @@ function App() {
               <span>Reset Local Cache</span>
               <strong>RELOAD FROM SERVER</strong>
             </button>
+          </div>
+
+          <div style={{ marginTop: "2rem", borderTop: "1px solid var(--border)", paddingTop: "1.5rem" }}>
+            <span className="mode-kicker" style={{ color: "var(--purple)", display: "block", marginBottom: "0.5rem" }}>Keybinds</span>
+            <h4 style={{ marginBottom: "1rem", color: "var(--text)" }}>Keyboard Shortcuts</h4>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "10px", maxHeight: "280px", overflowY: "auto", paddingRight: "8px" }}>
+              {Object.entries(shortcuts).map(([actionId, sequence]) => (
+                <div key={actionId} style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  background: "rgba(22, 27, 37, 0.6)",
+                  padding: "10px 14px",
+                  borderRadius: "4px",
+                  border: "1px solid var(--border)"
+                }}>
+                  <span style={{ fontSize: "11px", color: "var(--muted)" }}>{shortcutLabels[actionId] || actionId}</span>
+                  <button
+                    className="ghost-button"
+                    style={{
+                      minWidth: "120px",
+                      minHeight: "32px",
+                      padding: "4px 8px",
+                      fontSize: "10px",
+                      borderColor: activeRecordingId === actionId ? "var(--neon)" : "var(--border)",
+                      color: activeRecordingId === actionId ? "var(--neon)" : "var(--text)"
+                    }}
+                    onClick={() => setActiveRecordingId(actionId)}
+                  >
+                    {activeRecordingId === actionId ? "Press keys..." : sequence || "None"}
+                  </button>
+                </div>
+              ))}
+            </div>
+            {Object.keys(shortcuts).length > 0 && (
+              <button 
+                className="ghost-button"
+                onClick={() => {
+                  setShortcuts(defaultShortcuts);
+                  localStorage.removeItem("anki_shortcuts");
+                  recordAction("All keyboard shortcuts reset to defaults.");
+                }}
+                style={{ marginTop: "1rem", color: "var(--red)", borderColor: "var(--red)" }}
+              >
+                Reset to Defaults
+              </button>
+            )}
           </div>
         </section>
       );
