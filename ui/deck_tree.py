@@ -195,6 +195,14 @@ DEPTH_COLORS = {
         "#FF4444",  # 4: Bright Red
         "#FFD700",  # 5: Gold
     ],
+    "manhattan": [
+        "#00f0ff",  # 0: Cyber Mutant Cyan
+        "#ffa200",  # 1: Pizza Orange
+        "#39ff14",  # 2: Sewer Slime Green
+        "#ff0055",  # 3: Foot Clan Red
+        "#ffcc00",  # 4: Arcade Coin Yellow
+        "#a86cff",  # 5: Arcade Purple
+    ],
 }
 
 
@@ -271,6 +279,12 @@ class _DeckTreeWidget(QTreeWidget):
         super().__init__(parent)
         self._drop_line_y = -1  # screen-y of indicator line, -1 = hidden
         self._drop_line_indent = 0
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def scrollTo(self, index, hint=QAbstractItemView.EnsureVisible):
+        # Override to prevent horizontal scrolling on item selection/focus
+        super().scrollTo(index, hint)
+        self.horizontalScrollBar().setValue(0)
 
     def set_drop_line(self, y: int, indent: int = 0):
         self._drop_line_y = y
@@ -369,7 +383,11 @@ class DeckItemDelegate(QStyledItemDelegate):
             rect.width() - icon_rect.width() - 60,
             rect.height(),
         )
-        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, name.upper())
+        bookmarked = index.data(Qt.UserRole + 5)
+        display_name = name.upper()
+        if bookmarked:
+            display_name = "🔖 " + display_name
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, display_name)
 
         # Draw Badge
         badge_w = 24
@@ -401,11 +419,15 @@ class DeckItemDelegate(QStyledItemDelegate):
         if self.theme != "dojo":
             return super().sizeHint(option, index)
         name = index.data(Qt.UserRole + 2) or "Unknown"
+        bookmarked = index.data(Qt.UserRole + 5)
+        display_name = name.upper()
+        if bookmarked:
+            display_name = "🔖 " + display_name
         font = QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold)
         from PyQt5.QtGui import QFontMetrics
 
         fm = QFontMetrics(font)
-        w = fm.horizontalAdvance(name.upper())
+        w = fm.horizontalAdvance(display_name)
         return QSize(w + 100, 48)
 
 
@@ -459,7 +481,9 @@ class DeckTree(QWidget):
                 due = int(due_str)
                 badge = f"🔴{due}" if self._blink_state else f"⭕{due}"
                 if getattr(self, "_theme", "classic") == "classic":
-                    item.setText(0, f"  📂  {name}  {badge}")
+                    bookmarked = item.data(0, Qt.UserRole + 5)
+                    bookmark_str = " 🔖" if bookmarked else ""
+                    item.setText(0, f"  📂  {name}{bookmark_str}  {badge}")
                     # Preserve depth-based text color
                     d = item.data(0, Qt.UserRole + 4) or 0
                     item.setForeground(0, QBrush(QColor(depth_color(d, "classic"))))
@@ -498,6 +522,8 @@ class DeckTree(QWidget):
             item.setHidden(not match and bool(query))
             if query and match:
                 item.setExpanded(True)
+            elif not query:
+                item.setExpanded(False)
             return match
 
         for i in range(self.tree.topLevelItemCount()):
@@ -562,6 +588,7 @@ class DeckTree(QWidget):
         sh_l.addWidget(search_icon)
         self.search_in = QLineEdit()
         self.search_in.setPlaceholderText("Search scrolls...")
+        self.search_in.setClearButtonEnabled(True)
         self.search_in.setStyleSheet(
             f"background:transparent;border:none;color:{C_TEXT};"
         )
@@ -590,8 +617,8 @@ class DeckTree(QWidget):
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.tree.header().setStretchLastSection(False)
-        self.tree.header().setSectionResizeMode(0, self.tree.header().ResizeToContents)
+        self.tree.header().setStretchLastSection(True)
+        self.tree.header().setSectionResizeMode(0, self.tree.header().Stretch)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._ctx_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
@@ -677,8 +704,10 @@ class DeckTree(QWidget):
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         badge = f"🔴{due}" if due else "✅"
         theme = getattr(self, "_theme", "classic")
+        bookmarked = deck.get("bookmarked", False)
+        bookmark_str = " 🔖" if bookmarked else ""
         text = (
-            f"  📂  {deck['name']}  {badge}"
+            f"  📂  {deck['name']}{bookmark_str}  {badge}"
             if theme == "classic"
             else ""
         )
@@ -687,6 +716,7 @@ class DeckTree(QWidget):
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
         item.setData(0, Qt.UserRole + 4, depth)
+        item.setData(0, Qt.UserRole + 5, bookmarked)
         # Apply depth-based text color for classic theme
         if theme == "classic":
             item.setForeground(0, QBrush(QColor(depth_color(depth, "classic"))))
@@ -740,11 +770,38 @@ class DeckTree(QWidget):
             menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
             menu.addAction("＋ Sub-deck", lambda: self._new_deck(did))
             menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
+            deck = self._get_deck_from_item(item)
+            if deck:
+                bookmarked = deck.get("bookmarked", False)
+                action_text = "🔖 Remove Bookmark" if bookmarked else "🔖 Bookmark (Unmasked)"
+                menu.addAction(action_text, lambda: self._toggle_bookmark_by_id(did))
             menu.addSeparator()
             menu.addAction("🗑 Delete", lambda: self._delete_by_id(did))
         else:
             menu.addAction("＋ New Top-level Deck", lambda: self._new_deck(None))
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _find_home(self):
+        w = self.parent()
+        while w is not None:
+            if type(w).__name__ == "HomeScreen":
+                return w
+            w = w.parent()
+        return None
+
+    def _toggle_bookmark_by_id(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        deck_history.push(self._data)  # undo snapshot
+        deck["bookmarked"] = not deck.get("bookmarked", False)
+        store.mark_dirty()
+        store.save_soon(min_interval=0.0)
+        home = self._find_home()
+        if home:
+            home.refresh()
+        else:
+            self.refresh()
 
     def _new_deck(self, parent_id):
         name, ok = QInputDialog.getText(self, "New Deck", "Deck name:")

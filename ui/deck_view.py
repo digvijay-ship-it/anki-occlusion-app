@@ -500,6 +500,13 @@ class DeckView(QWidget):
         title_l.addWidget(self.lbl_deck_sub)
         hdr.addLayout(title_l)
 
+        self.btn_bookmark = QPushButton()
+        self.btn_bookmark.setObjectName("bookmark_btn")
+        self.btn_bookmark.setCursor(Qt.PointingHandCursor)
+        self.btn_bookmark.clicked.connect(self._toggle_bookmark)
+        self.btn_bookmark.hide()
+        hdr.addWidget(self.btn_bookmark)
+
         hdr.addStretch()
         self.btn_add = QPushButton("＋ Add Card")
         self.btn_add.clicked.connect(self._add_card)
@@ -576,6 +583,80 @@ class DeckView(QWidget):
         bot.addWidget(bd)
         bot.addStretch()
         L.addLayout(bot)
+
+    def _update_bookmark_button(self):
+        if not hasattr(self, "btn_bookmark"):
+            return
+        if not self.deck:
+            self.btn_bookmark.hide()
+            return
+        self.btn_bookmark.show()
+        bookmarked = self.deck.get("bookmarked", False)
+        theme = getattr(self, "_theme", "classic")
+        scale = getattr(self, "_font_size_val", 11) / 11.0
+
+        if theme in ("dojo", "tmnt", "manhattan"):
+            text = "🔖 UNMASKED QUESTIONS" if bookmarked else "🔖 BOOKMARK DECK"
+            self.btn_bookmark.setText(text)
+            self.btn_bookmark.setToolTip("Remove bookmark (unmasked signal)" if bookmarked else "Add bookmark (mark as having unmasked questions)")
+            
+            color = "#BD93F9" if bookmarked else "#50FA7B"
+            hover_bg = "rgba(189,147,249,0.1)" if bookmarked else "rgba(80,250,123,0.1)"
+            
+            self.btn_bookmark.setStyleSheet(f"""
+                QPushButton#bookmark_btn {{
+                    background: transparent;
+                    border: 2px solid {color};
+                    color: {color};
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                    font-family: 'Segoe UI';
+                    font-weight: bold;
+                    font-size: {max(10, int(11 * scale))}px;
+                    letter-spacing: 1px;
+                }}
+                QPushButton#bookmark_btn:hover {{
+                    background: {hover_bg};
+                }}
+            """)
+        else:
+            text = "🔖 Bookmarked" if bookmarked else "🔖 Bookmark"
+            self.btn_bookmark.setText(text)
+            self.btn_bookmark.setToolTip("Remove bookmark" if bookmarked else "Bookmark this deck (indicates unmasked questions)")
+            
+            bg = "#534AB7" if bookmarked else C_CARD
+            color = "white" if bookmarked else C_TEXT
+            border_color = "#534AB7" if bookmarked else C_BORDER
+            hover_bg = "#6A58E0" if bookmarked else C_SURFACE
+            
+            self.btn_bookmark.setStyleSheet(f"""
+                QPushButton#bookmark_btn {{
+                    background: {bg};
+                    color: {color};
+                    border: 1px solid {border_color};
+                    border-radius: 8px;
+                    padding: 6px 12px;
+                    font-weight: bold;
+                    font-size: {max(9, int(11 * scale))}px;
+                }}
+                QPushButton#bookmark_btn:hover {{
+                    background: {hover_bg};
+                }}
+            """)
+
+    def _toggle_bookmark(self):
+        if not self.deck:
+            return
+        deck_history.push(self._data)  # undo snapshot
+        self.deck["bookmarked"] = not self.deck.get("bookmarked", False)
+        store.mark_dirty()
+        store.save_soon(min_interval=0.0)
+        
+        home = self._find_home()
+        if home:
+            home.refresh()
+        else:
+            self._refresh()
 
     def update_font_size(self, size: int):
         self._font_size_val = size
@@ -755,7 +836,10 @@ class DeckView(QWidget):
             if fresh:
                 self.deck = fresh
         if not self.deck:
+            if hasattr(self, "btn_bookmark"):
+                self.btn_bookmark.hide()
             return
+        self._update_bookmark_button()
         self.card_list.clear()
 
         scale = getattr(self, "_font_size_val", 11) / 11.0

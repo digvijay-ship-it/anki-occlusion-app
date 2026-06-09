@@ -4,6 +4,12 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import tempfile
+_TEMP_DIR = tempfile.TemporaryDirectory()
+import data_manager
+data_manager.DATA_FILE = os.path.join(_TEMP_DIR.name, "anki_occlusion_data_test.db")
+
+
 from PyQt5.QtCore import QAbstractAnimation, QEvent, QRect, Qt
 from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import (
@@ -94,6 +100,51 @@ class TMNTDeckTreeTests(unittest.TestCase):
             self.sidebar._delete_selected()
 
         self.assertIsNone(find_deck_by_id(3, self.data["decks"]))
+
+    def test_deck_bookmarking_load_save_toggle_and_undo(self):
+        # Initialize store
+        store.set(self.data)
+        
+        # Initial state: not bookmarked
+        deck = find_deck_by_id(1, self.data["decks"])
+        self.assertFalse(deck.get("bookmarked", False))
+
+        # Check item data role 5 is False
+        item = self._top_item_by_id(1)
+        self.assertIsNotNone(item)
+        self.assertFalse(item.data(0, Qt.UserRole + 5))
+
+        # Toggle bookmark
+        engine = self.sidebar._engine
+        deck_history._undo_stack.clear()
+        
+        with patch("ui.deck_tree.store.mark_dirty"), \
+             patch("ui.deck_tree.store.save_soon"):
+            engine._toggle_bookmark_by_id(1)
+
+        # Verify bookmarked
+        self.data = store.get()
+        deck = find_deck_by_id(1, self.data["decks"])
+        self.assertTrue(deck.get("bookmarked", False))
+        
+        # Verify tree item is updated
+        item = self._top_item_by_id(1)
+        self.assertTrue(item.data(0, Qt.UserRole + 5))
+
+        # Test Undo
+        self.assertEqual(len(deck_history._undo_stack), 1)
+        with patch("ui.deck_tree.store.mark_dirty"):
+            deck_history.undo(store)
+            # Sync local test data with store
+            self.data = store.get()
+            engine._data = self.data
+            engine.refresh()
+
+        # Verify undo works
+        deck = find_deck_by_id(1, self.data["decks"])
+        self.assertFalse(deck.get("bookmarked", False))
+        item = self._top_item_by_id(1)
+        self.assertFalse(item.data(0, Qt.UserRole + 5))
 
     def test_due_badge_row_rect_extends_to_viewport_right_edge(self):
         tree = QTreeWidget()
@@ -205,6 +256,26 @@ class TMNTTopBarTests(unittest.TestCase):
         layout.keyPressEvent(redo_event)
 
         self.assertIsNotNone(find_deck_by_id(2, store.get()["decks"]))
+
+    def test_tmnt_main_content_bookmark_button_exists_and_loads(self):
+        initial = {
+            "decks": [_deck(1, "Math")],
+            "_font_size": 11,
+        }
+        store.set(initial)
+        layout = TMNTHomeLayout(store.get())
+        self.addCleanup(layout.close)
+
+        # Select the deck
+        layout.select_deck_by_id(1)
+        self.assertFalse(layout.main.btn_bookmark.isHidden())
+        
+        # Verify initial button text
+        self.assertEqual(layout.main.btn_bookmark.text(), "🔖 BOOKMARK DECK")
+
+        # Toggle it and verify text updates
+        layout.main._toggle_bookmark()
+        self.assertEqual(layout.main.btn_bookmark.text(), "🔖 UNMASKED QUESTIONS")
 
 
 class TMNTMissionBannerTests(unittest.TestCase):
