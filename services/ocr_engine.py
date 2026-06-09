@@ -5,6 +5,13 @@ from PIL import Image, ImageOps
 import threading
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
 
+try:
+    from storage_paths import app_resource_path
+except ImportError:
+    def app_resource_path(*parts):
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.normpath(os.path.join(current_dir, "..", *parts))
+
 class OcrSignals(QObject):
     ready = pyqtSignal()
 
@@ -41,10 +48,12 @@ def warm_up():
     global _net
     with _net_lock:
         if _net is None:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            onnx_path = os.path.normpath(os.path.join(current_dir, "..", "web", "frontend", "public", "model", "mnist_math_cnn.onnx"))
+            onnx_path = app_resource_path("assets", "model", "mnist_math_cnn.onnx")
             if not os.path.exists(onnx_path):
-                onnx_path = os.path.normpath(os.path.join(current_dir, "web", "frontend", "public", "model", "mnist_math_cnn.onnx"))
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                onnx_path = os.path.normpath(os.path.join(current_dir, "..", "web", "frontend", "public", "model", "mnist_math_cnn.onnx"))
+                if not os.path.exists(onnx_path):
+                    onnx_path = os.path.normpath(os.path.join(current_dir, "web", "frontend", "public", "model", "mnist_math_cnn.onnx"))
             
             if os.path.exists(onnx_path):
                 try:
