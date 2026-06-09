@@ -121,6 +121,7 @@ from PyQt5.QtWidgets import (
     QStyle,
     QHeaderView,
     QStackedWidget,
+    QSlider,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -646,56 +647,6 @@ class OnboardingDialog(QDialog):
             self._step -= 1
             self._show_step(self._step)
 
-
-class _PreloadThread(QThread):
-    """
-    Silent background thread — PDF ko disk cache mein silently save karo.
-    Koi UI signal nahi, koi canvas update nahi. Sirf disk par PNG save hota hai.
-    Deck switch hone par stop() call karo — thread cleanly exit ho jaayega.
-    """
-
-    def __init__(self, pdf_path: str, parent=None):
-        super().__init__(parent)
-        self._path = pdf_path
-        self._stop_flag = False
-
-    def stop(self):
-        self._stop_flag = True
-
-    def run(self):
-        from pdf_engine import PDF_SUPPORT, PAGE_CACHE, pdf_page_to_image
-
-        if not PDF_SUPPORT:
-            return
-        import fitz
-
-        try:
-            doc = fitz.open(self._path)
-            if doc.is_encrypted:
-                return
-            total = len(doc)
-            mat = fitz.Matrix(1.5, 1.5)
-
-            for i in range(total):
-                if self._stop_flag:
-                    doc.close()
-                    return
-
-                # Check if page is already in cache
-                cached = PAGE_CACHE.get_image(self._path, i)
-                if not cached:
-                    # If not, render as QImage; QPixmap is GUI-thread only.
-                    img = pdf_page_to_image(doc.load_page(i), mat)
-                    if not img.isNull():
-                        if hasattr(PAGE_CACHE, "put_image"):
-                            PAGE_CACHE.put_image(self._path, i, img, render_zoom=1.5)
-                        print(f"[DEBUG][pdf_preload] cached p.{i + 1}/{total}")
-
-            doc.close()
-        except Exception:
-            pass
-
-
 class MentorWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -815,8 +766,9 @@ class MusicWidget(QFrame):
     MUSIC_DIR = app_resource_path("assets", "music")
     BGM_EXTENSIONS = {".mp3", ".ogg"}
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, data=None):
         super().__init__(parent)
+        self._data = data
         self.setObjectName("music_widget")
         self.setFixedSize(110, 38)
         self.setCursor(Qt.PointingHandCursor)
@@ -963,13 +915,14 @@ class MusicWidget(QFrame):
 
     def _load_and_play(self, idx):
         try:
+            vol = self._data.get("_volume", 40) if self._data else 40
             if self._pygame_ok:
                 self._pygame.mixer.music.load(self._tracks[idx])
-                self._pygame.mixer.music.set_volume(0.4)
+                self._pygame.mixer.music.set_volume(vol / 100.0)
                 self._pygame.mixer.music.play(-1)  # -1 = loop
             elif self._player:
                 self._playlist.setCurrentIndex(idx)
-                self._player.setVolume(40)
+                self._player.setVolume(vol)
                 self._player.play()
         except Exception as e:
             print(f"[MusicWidget] play error: {e}")
@@ -1024,6 +977,25 @@ class MusicWidget(QFrame):
     def set_theme(self, theme: str):
         theme = normalize_theme(theme)
         self._refresh_style(dojo=(theme == "dojo"))
+
+    def _set_volume_internal(self, value):
+        if self._pygame_ok:
+            try:
+                self._pygame.mixer.music.set_volume(value / 100.0)
+            except Exception:
+                pass
+        elif self._player:
+            try:
+                self._player.setVolume(value)
+            except Exception:
+                pass
+        if self._data:
+            self._data["_volume"] = value
+            from data_manager import store
+            store.mark_dirty()
+
+    def set_volume(self, value):
+        self._set_volume_internal(value)
 
     # click = toggle
     def mousePressEvent(self, e):
@@ -1239,7 +1211,7 @@ class HomeScreen(QWidget):
         # Theme Toggle Button
         saved_theme = self._data.get("_theme", "classic")
         self._current_theme = normalize_theme(saved_theme)
-        _next_lbl = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
+        _next_lbl = {"classic": "🐢 TMNT MODE", "tmnt": "🎮 MANHATTAN", "manhattan": "📚 CLASSIC MODE"}
         btn_text = _next_lbl.get(self._current_theme, "🐢 TMNT MODE")
         self._btn_theme = _topbtn(btn_text, "Switch Theme")
         self._btn_theme.clicked.connect(self._toggle_theme)
@@ -1272,7 +1244,7 @@ class HomeScreen(QWidget):
         tl.addWidget(btn_fr)
         tl.addWidget(btn_fi)
 
-        self.music_widget = MusicWidget()
+        self.music_widget = MusicWidget(data=self._data)
         tl.addSpacing(4)
         tl.addWidget(self.music_widget)
 
@@ -1292,7 +1264,7 @@ class HomeScreen(QWidget):
         L.addWidget(self._body_stack, stretch=1)
 
         # Activate correct body for saved theme
-        if self._current_theme == "tmnt" and self._ensure_tmnt_layout():
+        if self._current_theme in ("tmnt", "manhattan") and self._ensure_tmnt_layout():
             self.top_frame.hide()
             self._body_stack.setCurrentWidget(self._tmnt_layout)
             QTimer.singleShot(
@@ -1363,6 +1335,7 @@ class HomeScreen(QWidget):
         ):
             return
 
+        t0 = time.perf_counter()
         from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
         import gc
 
@@ -1427,7 +1400,6 @@ class HomeScreen(QWidget):
             tmnt_main._thumb_cache.clear()
 
         gc.collect()
-        gc.collect()
 
         # Debug: Check if any ReviewScreen or OcclusionCanvas is leaked
         try:
@@ -1445,20 +1417,21 @@ class HomeScreen(QWidget):
         if tmnt_banga is not None and hasattr(tmnt_banga, "refresh"):
             tmnt_banga.refresh()
 
+        elapsed = (time.perf_counter() - t0) * 1000.0
         print(
-            f"[HomeScreen][Auto-Clean] 🧹 RAM cache cleared — "
+            f"[PROFILE][home_clear_caches] 🧹 RAM cache cleared in {elapsed:.1f}ms — "
             f"{before} pages evicted, mask layers invalidated, disk untouched"
         )
 
         win = self.window()
         if win is not None and hasattr(win, "statusBar") and win.statusBar():
-            win.statusBar().showMessage(f"🧹 RAM cache cleared — {before} pages freed", 3000)
+            win.statusBar().showMessage(f"🧹 RAM cache cleared — {before} pages freed in {elapsed:.1f}ms", 3000)
 
-    def show_review(self, cards, data, _on_batch_done=None):
+    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
 
-        rev = _load_review_screen()(cards, data=data, parent=self)
+        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore)
         self._active_review = rev
 
         def _schedule_review_save():
@@ -1472,6 +1445,21 @@ class HomeScreen(QWidget):
             if not _save_done[0]:
                 _save_done[0] = True
                 _schedule_review_save()
+
+            # Save the session state for sequential review undo if active
+            if getattr(self, "_current_sequential_group", None) is not None:
+                state = {
+                    "items": list(rev._items),
+                    "idx": rev._idx,
+                    "done": rev._done,
+                    "undo_stack": list(rev._review_undo_stack),
+                    "redo_stack": list(rev._review_redo_stack),
+                    "queued_ids": set(rev._queued_ids),
+                    "deleted_ids": set(rev._deleted_ids),
+                    "batch": self._current_sequential_group,
+                }
+                self._past_sequential_sessions.append(state)
+
             self.hide_review()
             if _on_batch_done:
                 _on_batch_done()
@@ -1480,12 +1468,16 @@ class HomeScreen(QWidget):
             if not _save_done[0]:
                 _save_done[0] = True
                 _schedule_review_save()
+            self._current_sequential_group = None
+            self._sequential_groups = []
+            self._past_sequential_sessions = []
             self.hide_review()
 
         rev.finished.connect(_on_finished)
         rev.cancelled.connect(_on_cancelled)
+        rev.undo_requested_when_empty.connect(self._handle_sequential_undo)
 
-        if self._current_theme == "tmnt" and self._ensure_tmnt_layout():
+        if self._current_theme in ("tmnt", "manhattan") and self._ensure_tmnt_layout():
             # TMNT: push review into body stack slot 2
             self._pre_review_tmnt = True
             self.top_frame.hide()
@@ -1510,7 +1502,10 @@ class HomeScreen(QWidget):
     def show_review_sequential(self, groups, data):
         """Review card groups one PDF at a time.
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
-        groups = list(groups)
+        self._sequential_groups = list(groups)
+        self._past_sequential_sessions = []
+        self._current_sequential_group = None
+        self._sequential_data = data
 
         def _clear_ram():
             from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
@@ -1522,16 +1517,49 @@ class HomeScreen(QWidget):
 
         def _on_done():
             _clear_ram()
-            if groups:
+            if self._sequential_groups:
                 QTimer.singleShot(0, _launch_next)
+            else:
+                self._current_sequential_group = None
+                self._past_sequential_sessions = []
 
         def _launch_next():
-            if not groups:
+            if not self._sequential_groups:
                 return
-            batch = groups.pop(0)
+            batch = self._sequential_groups.pop(0)
+            self._current_sequential_group = batch
             self.show_review(batch, data, _on_batch_done=_on_done)
 
+        self._sequential_on_done = _on_done
         _launch_next()
+
+    def _handle_sequential_undo(self):
+        if not getattr(self, "_past_sequential_sessions", None):
+            return
+
+        current_rev = getattr(self, "_active_review", None)
+        if current_rev:
+            current_rev._undo_handled = True
+
+        prev_state = self._past_sequential_sessions.pop()
+
+        # Put the current group back to the remaining groups list
+        if getattr(self, "_current_sequential_group", None) is not None:
+            self._sequential_groups.insert(0, self._current_sequential_group)
+
+        # Hide current review screen (deletes current widget, restores home view)
+        self.hide_review()
+
+        # Restore the previous session
+        batch = prev_state["batch"]
+        self._current_sequential_group = batch
+
+        self.show_review(
+            batch,
+            self._sequential_data,
+            _on_batch_done=self._sequential_on_done,
+            state_to_restore=prev_state,
+        )
 
     def hide_review(self):
         """Restore layout after review ends."""
@@ -1610,61 +1638,17 @@ class HomeScreen(QWidget):
         return None
 
     def _on_deck_selected(self, deck):
+        t0 = time.perf_counter()
         self.deck_view.load_deck(deck, self._data)
+        print(f"[PROFILE][home_deck_selected] Loaded deck '{deck.get('name', 'Unknown')}' in {(time.perf_counter() - t0) * 1000:.1f}ms")
         # [FIX] Removed _preload_deck_pdf here — PDF should only load
         # when the user explicitly opens/reviews a card, not on deck click.
-
-    def _preload_deck_pdf(self, deck):
-        """
-        Background mein deck ke pehle PDF card ko preload karo.
-        Agar koi aur preload chal raha tha toh usse cancel karo pehle.
-        Sirf ek PDF at a time preload hoti hai.
-        """
-        # Cancel any running preload
-        if hasattr(self, "_preload_thread") and self._preload_thread is not None:
-            if self._preload_thread.isRunning():
-                self._preload_thread.stop()
-                self._preload_thread.quit()
-                self._preload_thread.wait(300)
-            self._preload_thread = None
-
-        from pdf_engine import PDF_SUPPORT, PAGE_CACHE
-
-        if not PDF_SUPPORT:
-            return
-
-        # Find first card in this deck (or any child deck) with a pdf_path
-        pdf_path = self._find_first_pdf(deck)
-        if not pdf_path or not os.path.exists(pdf_path):
-            return
-
-        # Already cached? No need to preload
-        # In v20, we check if page 0 exists in the PAGE_CACHE instead
-        if PAGE_CACHE.get(pdf_path, 0) is not None:
-            return
-
-        # Start silent background thread — no signals connected to UI
-        self._preload_thread = _PreloadThread(pdf_path, parent=self)
-        self._preload_thread.start()
-
-    def _find_first_pdf(self, deck):
-        """DFS: deck aur uske children mein pehla pdf_path dhundho."""
-        for card in deck.get("cards", []):
-            p = resolve_asset_path(card.get("pdf_path", ""))
-            if p and os.path.exists(p):
-                return p
-        for child in deck.get("children", []):
-            p = self._find_first_pdf(child)
-            if p:
-                return p
-        return None
-
     def _show_journal(self):
-        dialog_cls = _load_journal_dialog()
-        if dialog_cls is not None:
-            dialog_cls(self).exec_()
-            self._clear_home_ram_caches()
-        else:
+        if self.__dict__.get("_journal_widget") is not None:
+            return
+        t0 = time.perf_counter()
+        page_cls = _load_journal_dialog()
+        if page_cls is None:
             from PyQt5.QtWidgets import QMessageBox
 
             QMessageBox.warning(
@@ -1672,10 +1656,56 @@ class HomeScreen(QWidget):
                 "Journal",
                 "journal.py not found!\nPlace journal.py next to anki_occlusion_v19.py",
             )
+            return
+
+        jw = page_cls(parent=self)
+        jw.closed.connect(self._hide_journal)
+        self._journal_widget = jw
+
+        if self.__dict__.get("_current_theme") in ("tmnt", "manhattan") and self.__dict__.get("_tmnt_layout"):
+            self._pre_journal_tmnt = True
+            self.top_frame.hide()
+            self._body_stack.addWidget(jw)
+            self._body_stack.setCurrentWidget(jw)
+        else:
+            self._pre_journal_tmnt = False
+            self._ensure_classic_layout()
+            split = self._get_splitter()
+            if split is None:
+                return
+            self._pre_journal_sizes = split.sizes()
+            split.replaceWidget(1, jw)
+            jw.show()
+            split.setSizes([split.sizes()[0], split.width(), 0])
+        print(f"[PROFILE][home_show_journal] Daily Journal initialized and displayed in {(time.perf_counter() - t0) * 1000:.1f}ms")
+
+    def _hide_journal(self):
+        jw = self.__dict__.get("_journal_widget")
+        self._journal_widget = None
+        if not jw:
+            return
+        if self.__dict__.get("_pre_journal_tmnt") and self.__dict__.get("_tmnt_layout"):
+            self._body_stack.removeWidget(jw)
+            jw.setParent(None)
+            jw.deleteLater()
+            self._body_stack.setCurrentWidget(self._tmnt_layout)
+            self.top_frame.hide()
+            self._tmnt_layout.refresh()
+        else:
+            split = self._get_splitter()
+            if split:
+                split.replaceWidget(1, self.deck_view)
+                jw.setParent(None)
+                jw.deleteLater()
+                sizes = self.__dict__.get("_pre_journal_sizes", [340, 760, 220])
+                split.setSizes(sizes)
+        self.refresh()
+        self._clear_home_ram_caches()
 
     def _show_math_trainer(self):
         if getattr(self, "_math_trainer", None) is not None:
             return
+        t0 = time.perf_counter()
         page_cls = _load_math_trainer_page()
         if page_cls is None:
             from PyQt5.QtWidgets import QMessageBox
@@ -1701,10 +1731,11 @@ class HomeScreen(QWidget):
                 QTimer.singleShot(100, self._on_ocr_ready_popup)
             else:
                 SIGNALS.ready.connect(self._on_ocr_ready_popup)
-            ocr_warm_up()
+            import threading
+            threading.Thread(target=ocr_warm_up, daemon=True).start()
         except Exception as e:
             print(f"[MathTrainer] Failed to warm up OCR worker: {e}")
-        if self._current_theme == "tmnt" and self._tmnt_layout:
+        if self._current_theme in ("tmnt", "manhattan") and self._tmnt_layout:
             self._pre_math_tmnt = True
             self.top_frame.hide()
             self._body_stack.addWidget(mt)
@@ -1719,6 +1750,7 @@ class HomeScreen(QWidget):
             split.replaceWidget(1, mt)
             mt.show()
             split.setSizes([split.sizes()[0], split.width(), 0])
+        print(f"[PROFILE][home_show_math_trainer] Math Trainer initialized and displayed in {(time.perf_counter() - t0) * 1000:.1f}ms")
 
     def _hide_math_trainer(self):
         try:
@@ -1766,11 +1798,9 @@ class HomeScreen(QWidget):
 
     def _show_about(self):
         AboutDialog(self).exec_()
-        self._clear_home_ram_caches()
 
     def _show_help(self):
         OnboardingDialog(self).exec_()
-        self._clear_home_ram_caches()
 
     def _create_tmnt_layout(self):
         layout_cls = _load_tmnt_home_layout()
@@ -1786,10 +1816,12 @@ class HomeScreen(QWidget):
         layout.btn_shortcuts_clicked.connect(self._show_shortcuts)
         layout.font_change.connect(self._emit_font)
         layout.bgm_toggle.connect(self._toggle_tmnt_bgm)
+        layout.bgm_volume_changed.connect(self.music_widget.set_volume)
         layout.set_bgm_state(self.music_widget._playing)
         return layout
 
     def _save_current_data_now(self):
+        t0 = time.perf_counter()
         try:
             store.mark_dirty()
             store.save_force(async_save=True)
@@ -1799,6 +1831,7 @@ class HomeScreen(QWidget):
                 self, "Save Failed", f"Could not save current data:\n{ex}"
             )
             return
+        print(f"[PROFILE][home_save] Data save triggered in {(time.perf_counter() - t0) * 1000:.1f}ms")
 
         win = self.window()
         if hasattr(win, "statusBar") and callable(win.statusBar):
@@ -1812,7 +1845,6 @@ class HomeScreen(QWidget):
     def _show_shortcuts(self):
         dlg = _load_shortcut_settings_dialog()(self)
         dlg.exec_()
-        self._clear_home_ram_caches()
 
     def _build_classic_settings_panel(self):
         panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
@@ -1828,7 +1860,7 @@ class HomeScreen(QWidget):
                 background: transparent;
                 border: none;
             }}
-            QPushButton {{
+            QPushButton, QComboBox {{
                 background: {C_CARD};
                 color: {C_SUBTEXT};
                 border: 1px solid {C_BORDER};
@@ -1838,10 +1870,17 @@ class HomeScreen(QWidget):
                 font-size: 12px;
                 font-weight: bold;
             }}
-            QPushButton:hover {{
+            QPushButton:hover, QComboBox:hover {{
                 background: {C_BG};
                 color: {C_TEXT};
                 border-color: {C_ACCENT};
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {C_CARD};
+                color: {C_SUBTEXT};
+                border: 1px solid {C_BORDER};
+                selection-background-color: {C_BG};
+                selection-color: {C_TEXT};
             }}
             """)
         layout = QVBoxLayout(panel)
@@ -1867,14 +1906,83 @@ class HomeScreen(QWidget):
 
         saved_theme = self._data.get("_theme", "classic")
         self._current_theme = normalize_theme(saved_theme)
-        _next_lbl = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
-        btn_text = _next_lbl.get(self._current_theme, "🐢 TMNT MODE")
-        self._btn_theme = QPushButton(btn_text)
+        
+        from PyQt5.QtWidgets import QComboBox
+        self._btn_theme = QComboBox()
+        self._btn_theme.addItems(["📚 CLASSIC MODE", "🐢 TMNT MODE", "🎮 MANHATTAN"])
         self._btn_theme.setCursor(Qt.PointingHandCursor)
         self._btn_theme.setObjectName("font_btn")
-        self._btn_theme.clicked.connect(self._toggle_theme)
+        
+        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2}
+        self._btn_theme.setCurrentIndex(_theme_to_idx.get(self._current_theme, 0))
+        self._btn_theme.currentIndexChanged.connect(self._toggle_theme)
         theme_layout.addWidget(self._btn_theme, 0, Qt.AlignRight)
         layout.addWidget(theme_box)
+
+        audio_title = QLabel("VOLUME CONTROL")
+        audio_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(audio_title)
+
+        audio_box = QFrame()
+        audio_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        audio_layout = QHBoxLayout(audio_box)
+        audio_layout.setContentsMargins(10, 8, 10, 8)
+        audio_layout.setSpacing(8)
+        
+        vol_label = QLabel("Sound Output Volume")
+        vol_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        audio_layout.addWidget(vol_label, 1)
+
+        self._classic_volume_slider = QSlider(Qt.Horizontal)
+        self._classic_volume_slider.setRange(0, 100)
+        self._classic_volume_slider.setValue(self._data.get("_volume", 40))
+        self._classic_volume_slider.setFixedWidth(80)
+        self._classic_volume_slider.setCursor(Qt.PointingHandCursor)
+        self._classic_volume_slider.setStyleSheet(f"""
+            QSlider {{
+                background: transparent;
+            }}
+            QSlider::groove:horizontal {{
+                border: none;
+                height: 4px;
+                background: rgba(124, 106, 247, 0.2);
+                border-radius: 2px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {C_ACCENT};
+                border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                background: #BD93F9;
+                width: 10px;
+                height: 10px;
+                margin-top: -3px;
+                margin-bottom: -3px;
+                border-radius: 5px;
+            }}
+        """)
+        self._classic_volume_slider.valueChanged.connect(self._on_classic_volume_changed)
+
+        btn_dec = QPushButton("−")
+        btn_dec.setFixedWidth(24)
+        btn_dec.setFixedHeight(24)
+        btn_dec.setCursor(Qt.PointingHandCursor)
+        btn_dec.clicked.connect(self._dec_classic_volume)
+
+        btn_inc = QPushButton("＋")
+        btn_inc.setFixedWidth(24)
+        btn_inc.setFixedHeight(24)
+        btn_inc.setCursor(Qt.PointingHandCursor)
+        btn_inc.clicked.connect(self._inc_classic_volume)
+
+        audio_layout.addWidget(btn_dec)
+        audio_layout.addWidget(self._classic_volume_slider)
+        audio_layout.addWidget(btn_inc)
+        layout.addWidget(audio_box)
 
         scale_title = QLabel("VISUAL SCALE")
         scale_title.setStyleSheet(
@@ -1978,7 +2086,41 @@ class HomeScreen(QWidget):
         recovery_layout.addWidget(self._classic_recovery_btn, 0, Qt.AlignRight)
         layout.addWidget(recovery_box)
 
+        # Google Drive Backup Section
+        gdrive_title = QLabel("GOOGLE DRIVE SYNC")
+        gdrive_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(gdrive_title)
+
+        gdrive_box = QFrame()
+        gdrive_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        gdrive_layout = QHBoxLayout(gdrive_box)
+        gdrive_layout.setContentsMargins(10, 8, 10, 8)
+        gdrive_layout.setSpacing(8)
+        
+        self._gdrive_status_lbl = QLabel("Checking status...")
+        self._gdrive_status_lbl.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        gdrive_layout.addWidget(self._gdrive_status_lbl, 1)
+        
+        self._gdrive_sync_btn = QPushButton("SYNC")
+        self._gdrive_sync_btn.setCursor(Qt.PointingHandCursor)
+        self._gdrive_sync_btn.setObjectName("font_btn")
+        self._gdrive_sync_btn.clicked.connect(self._manual_gdrive_sync)
+        gdrive_layout.addWidget(self._gdrive_sync_btn, 0, Qt.AlignRight)
+
+        self._gdrive_link_btn = QPushButton("LINK")
+        self._gdrive_link_btn.setCursor(Qt.PointingHandCursor)
+        self._gdrive_link_btn.setObjectName("font_btn")
+        self._gdrive_link_btn.clicked.connect(self._toggle_gdrive_link)
+        gdrive_layout.addWidget(self._gdrive_link_btn, 0, Qt.AlignRight)
+        
+        layout.addWidget(gdrive_box)
+
         self._refresh_classic_archive_display()
+        self._refresh_gdrive_display()
         panel.adjustSize()
         return panel
 
@@ -2021,7 +2163,12 @@ class HomeScreen(QWidget):
             self._cb_invert_pdf.blockSignals(True)
             self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
             self._cb_invert_pdf.blockSignals(False)
+        if hasattr(self, "_classic_volume_slider") and self._classic_volume_slider:
+            self._classic_volume_slider.blockSignals(True)
+            self._classic_volume_slider.setValue(self._data.get("_volume", 40))
+            self._classic_volume_slider.blockSignals(False)
         self._refresh_classic_archive_display()
+        self._refresh_gdrive_display()
         panel.adjustSize()
         pos = self._btn_settings.mapToGlobal(QPoint(0, self._btn_settings.height() + 6))
         panel.move(pos)
@@ -2029,7 +2176,20 @@ class HomeScreen(QWidget):
         panel.raise_()
         panel.activateWindow()
 
+    def _on_classic_volume_changed(self, value):
+        self.music_widget.set_volume(value)
+
+    def _dec_classic_volume(self):
+        val = max(0, self._data.get("_volume", 40) - 10)
+        self._classic_volume_slider.setValue(val)
+
+    def _inc_classic_volume(self):
+        val = min(100, self._data.get("_volume", 40) + 10)
+        self._classic_volume_slider.setValue(val)
+
     def _choose_classic_mission_archive(self):
+        if self._classic_settings_panel is not None:
+            self._classic_settings_panel.hide()
         start_dir = (
             get_mission_archive_root()
             or os.path.dirname(current_data_file())
@@ -2048,8 +2208,6 @@ class HomeScreen(QWidget):
             )
             return
         self._refresh_classic_archive_display()
-        if self._classic_settings_panel is not None:
-            self._classic_settings_panel.hide()
         self.refresh()
         win = self.window()
         if hasattr(win, "statusBar") and callable(win.statusBar):
@@ -2104,26 +2262,38 @@ class HomeScreen(QWidget):
         if self._tmnt_layout:
             self._tmnt_layout.set_bgm_state(self.music_widget._playing)
 
-    def _toggle_theme(self):
+    def _toggle_theme(self, index=None):
+        t0 = time.perf_counter()
         from theme_manager import build_stylesheet, normalize_theme
         from PyQt5.QtGui import QFont
 
-        _cycle = {"classic": "tmnt", "tmnt": "classic"}
-        _btn_next = {"classic": "🐢 TMNT MODE", "tmnt": "📚 CLASSIC MODE"}
-
-        self._current_theme = normalize_theme(
-            _cycle.get(self._current_theme, "classic")
-        )
-        self._btn_theme.setText(_btn_next.get(self._current_theme, "🐢 TMNT MODE"))
+        if isinstance(index, int) and not isinstance(index, bool):
+            _idx_to_theme = {0: "classic", 1: "tmnt", 2: "manhattan"}
+            self._current_theme = normalize_theme(_idx_to_theme.get(index, "classic"))
+        else:
+            _cycle = {"classic": "tmnt", "tmnt": "manhattan", "manhattan": "classic"}
+            self._current_theme = normalize_theme(
+                _cycle.get(self._current_theme, "classic")
+            )
+        
         self._data["_theme"] = self._current_theme
         store.mark_dirty()
+
+        # Synchronize classic dropdown state if it exists
+        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2}
+        idx = _theme_to_idx.get(self._current_theme, 0)
+        from PyQt5.QtWidgets import QComboBox
+        if hasattr(self, "_btn_theme") and isinstance(self._btn_theme, QComboBox):
+            self._btn_theme.blockSignals(True)
+            self._btn_theme.setCurrentIndex(idx)
+            self._btn_theme.blockSignals(False)
 
         app = QApplication.instance()
         win = self.window()
         current_size = self._data.get("_font_size", BASE_FONT_SIZE)
 
-        if self._current_theme == "tmnt" and self._ensure_tmnt_layout():
-            # ── Swap to TMNT full layout ──────────────────────────────────────
+        if self._current_theme in ("tmnt", "manhattan") and self._ensure_tmnt_layout():
+            # ── Swap to TMNT/Manhattan full layout ────────────────────────────
             if (
                 self._classic_settings_panel is not None
                 and self._classic_settings_panel.isVisible()
@@ -2133,16 +2303,20 @@ class HomeScreen(QWidget):
             win_sb = self.window().statusBar() if self.window() else None
             if win_sb:
                 win_sb.hide()
-            self._tmnt_layout.refresh()
-            self._tmnt_layout.set_bgm_state(self.music_widget._playing)
-            self._body_stack.setCurrentWidget(self._tmnt_layout)
+
             if app:
-                app._active_theme = "tmnt"
-                app.setFont(QFont("Roboto Mono", current_size))
-                ss = build_stylesheet("tmnt", current_size)
+                app._active_theme = self._current_theme
+                font_name = "Courier New" if self._current_theme == "manhattan" else "Roboto Mono"
+                app.setFont(QFont(font_name, current_size))
+                ss = build_stylesheet(self._current_theme, current_size)
                 app.setStyleSheet(ss)
                 if win:
                     win.setStyleSheet(ss)
+
+            # Rebuild the layout to apply updated styles and dynamic palette values instantly!
+            self.rebuild_tmnt_layout(force=True)
+            self._tmnt_layout.set_bgm_state(self.music_widget._playing)
+            self._body_stack.setCurrentWidget(self._tmnt_layout)
         else:
             # ── Swap back to splitter (classic; Ninja/Dojo is disabled) ─────
             self._ensure_classic_layout()
@@ -2166,6 +2340,7 @@ class HomeScreen(QWidget):
                 app.setStyleSheet(_build_ss(current_size))
                 if win:
                     win.setStyleSheet("")
+        print(f"[PROFILE][home_theme_toggle] Switched theme to '{self._current_theme}' in {(time.perf_counter() - t0) * 1000:.1f}ms")
 
     def _emit_font(self, direction: int):
         win = self.window()
@@ -2295,6 +2470,9 @@ class HomeScreen(QWidget):
                     font-family: 'Segoe UI';
                     font-size: 11px;
                     font-weight: bold;
+                    padding: 0px;
+                    letter-spacing: 0px;
+                    text-transform: none;
                 }}
                 QPushButton#font_btn:hover {{
                     background: #1E1E2E;
@@ -2351,6 +2529,9 @@ class HomeScreen(QWidget):
                     font-family: 'Segoe UI';
                     font-size: 12px;
                     font-weight: bold;
+                    padding: 0px;
+                    letter-spacing: 0px;
+                    text-transform: none;
                 }}
                 QPushButton#font_btn:hover {{
                     background: {C_CARD};
@@ -2359,7 +2540,18 @@ class HomeScreen(QWidget):
             """)
 
     def show_recovery_center(self, startup=False):
+        if self._classic_settings_panel is not None:
+            self._classic_settings_panel.hide()
+        if self._tmnt_layout is not None and hasattr(self._tmnt_layout, "topbar"):
+            topbar = self._tmnt_layout.topbar
+            if topbar is not None:
+                if hasattr(topbar, "_settings_panel") and topbar._settings_panel is not None:
+                    topbar._settings_panel.hide()
+                if hasattr(topbar, "_more_panel") and topbar._more_panel is not None:
+                    topbar._more_panel.hide()
+        t0 = time.perf_counter()
         summary = recovery_manager.scan_recovery(store.get(), startup=startup)
+        print(f"[PROFILE][home_recovery_scan] Scanned recovery directory in {(time.perf_counter() - t0) * 1000:.1f}ms (startup={startup})")
         has_drafts = bool(summary.get("drafts"))
         has_events = bool(summary.get("review_events"))
         if startup and has_events and not has_drafts:
@@ -2391,50 +2583,53 @@ class HomeScreen(QWidget):
                 )
             return False
 
-        while True:
-            dlg = _load_recovery_dialog()(summary, self, startup=startup)
-            dlg.exec_()
-            self._clear_home_ram_caches()
-            action = getattr(dlg, "action", "close")
-            if action == "recover_reviews":
-                result = recovery_manager.apply_pending_review_events(store.get())
-                if result.get("applied", 0) > 0:
-                    store.mark_dirty()
-                    store.save_force()
-                    self.refresh()
-                QMessageBox.information(
-                    self,
-                    "Recovery",
-                    "Review recovery complete.\n"
-                    f"Applied: {result.get('applied', 0)}\n"
-                    f"Already safe: {result.get('already_applied', 0)}\n"
-                    f"Needs attention: {len(result.get('blocked', []))}",
-                )
-            elif action == "open_draft":
-                draft = getattr(dlg, "selected_draft", None)
-                if draft:
-                    self._open_recovery_draft(draft)
+        try:
+            while True:
+                dlg = _load_recovery_dialog()(summary, self, startup=startup)
+                dlg.exec_()
+                action = getattr(dlg, "action", "close")
+                if action == "recover_reviews":
+                    result = recovery_manager.apply_pending_review_events(store.get())
+                    if result.get("applied", 0) > 0:
+                        store.mark_dirty()
+                        store.save_force()
+                        self.refresh()
+                    QMessageBox.information(
+                        self,
+                        "Recovery",
+                        "Review recovery complete.\n"
+                        f"Applied: {result.get('applied', 0)}\n"
+                        f"Already safe: {result.get('already_applied', 0)}\n"
+                        f"Needs attention: {len(result.get('blocked', []))}",
+                    )
+                elif action == "open_draft":
+                    draft = getattr(dlg, "selected_draft", None)
+                    if draft:
+                        self._open_recovery_draft(draft)
+                        return True
+                elif action == "delete_draft":
+                    draft = getattr(dlg, "selected_draft", None)
+                    if draft:
+                        recovery_manager.delete_editor_draft(draft.get("draft_id"))
+                elif action == "delete_all_drafts":
+                    deleted = 0
+                    for draft in getattr(dlg, "selected_drafts", []) or []:
+                        if recovery_manager.delete_editor_draft(draft.get("draft_id")):
+                            deleted += 1
+                    QMessageBox.information(
+                        self,
+                        "Recovery",
+                        f"Deleted {deleted} recovery draft(s). Your saved decks were not changed.",
+                    )
+                else:
                     return True
-            elif action == "delete_draft":
-                draft = getattr(dlg, "selected_draft", None)
-                if draft:
-                    recovery_manager.delete_editor_draft(draft.get("draft_id"))
-            elif action == "delete_all_drafts":
-                deleted = 0
-                for draft in getattr(dlg, "selected_drafts", []) or []:
-                    if recovery_manager.delete_editor_draft(draft.get("draft_id")):
-                        deleted += 1
-                QMessageBox.information(
-                    self,
-                    "Recovery",
-                    f"Deleted {deleted} recovery draft(s). Your saved decks were not changed.",
-                )
-            else:
-                return True
 
-            summary = recovery_manager.scan_recovery(store.get(), startup=startup)
-            if not summary.get("drafts") and not summary.get("review_events"):
-                return True
+                summary = recovery_manager.scan_recovery(store.get(), startup=startup)
+                if not summary.get("drafts") and not summary.get("review_events"):
+                    return True
+        finally:
+            if not startup:
+                self._clear_home_ram_caches()
 
     def _find_or_create_recovered_drafts_deck(self):
         for deck in self._data.get("decks", []) or []:
@@ -2527,6 +2722,245 @@ class HomeScreen(QWidget):
             sel = self.deck_tree.get_selected_deck()
             if sel:
                 self.deck_view.load_deck(sel, self._data)
+
+    def _refresh_gdrive_display(self):
+        from services.gdrive_service import gdrive_store
+        
+        # Refresh classic UI if it exists
+        if hasattr(self, "_gdrive_status_lbl") and self._gdrive_status_lbl is not None:
+            if gdrive_store.is_linked():
+                email = gdrive_store.get_email()
+                self._gdrive_status_lbl.setText(f"Linked: {email}")
+                self._gdrive_status_lbl.setToolTip(f"Linked to Google Account: {email}")
+                self._gdrive_link_btn.setText("UNLINK")
+                self._gdrive_sync_btn.setEnabled(True)
+            else:
+                self._gdrive_status_lbl.setText("Not linked to Google Drive")
+                self._gdrive_status_lbl.setToolTip("Google Drive Sync is not connected.")
+                self._gdrive_link_btn.setText("LINK")
+                self._gdrive_sync_btn.setEnabled(False)
+
+        # Refresh TMNT UI if active
+        if hasattr(self, "_tmnt_layout") and self._tmnt_layout is not None:
+            if hasattr(self._tmnt_layout, "topbar") and self._tmnt_layout.topbar is not None:
+                self._tmnt_layout.topbar._refresh_gdrive_display()
+
+    def _toggle_gdrive_link(self):
+        from services.gdrive_service import gdrive_store
+        if gdrive_store.is_linked():
+            gdrive_store.unlink()
+            self._refresh_gdrive_display()
+            QMessageBox.information(self, "Unlinked", "Google Drive account has been unlinked.")
+            return
+
+        if not gdrive_store.is_configured():
+            dialog = GDriveCredentialsDialog(self)
+            if dialog.exec_() == QDialog.Accepted:
+                client_id = dialog.client_id_input.text().strip()
+                client_secret = dialog.client_secret_input.text().strip()
+                if client_id and client_secret:
+                    gdrive_store.save_config(client_id, client_secret)
+                else:
+                    QMessageBox.warning(self, "Error", "Both Client ID and Client Secret are required.")
+                    return
+            else:
+                return
+
+        try:
+            auth_url, server = gdrive_store.start_oauth_flow()
+            from PyQt5.QtGui import QDesktopServices
+            from PyQt5.QtCore import QUrl, QTimer
+            QDesktopServices.openUrl(QUrl(auth_url))
+            
+            progress = QMessageBox(self)
+            progress.setWindowTitle("Linking Google Drive")
+            progress.setText("Please complete authorization in your web browser...")
+            progress.setStandardButtons(QMessageBox.Cancel)
+            
+            timer = QTimer(self)
+            def _check_auth():
+                if server.auth_code:
+                    timer.stop()
+                    progress.accept()
+                    try:
+                        gdrive_store.exchange_code_for_tokens(server.auth_code)
+                        self._refresh_gdrive_display()
+                        QMessageBox.information(self, "Linked", "Google Drive has been linked successfully!")
+                    except Exception as ex:
+                        QMessageBox.warning(self, "Error", f"Failed to link account: {ex}")
+                elif not progress.isVisible():
+                    timer.stop()
+            timer.timeout.connect(_check_auth)
+            timer.start(500)
+            
+            progress.exec_()
+            timer.stop()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not initiate OAuth login: {e}")
+
+    def _manual_gdrive_sync(self):
+        from services.gdrive_service import gdrive_store
+        db_path = store._get_db_path()
+        
+        self._gdrive_status_lbl.setText("Syncing in background...")
+        self._gdrive_sync_btn.setEnabled(False)
+        
+        def _bg():
+            success = False
+            try:
+                success = gdrive_store.upload_file_to_drive(db_path)
+                from data_manager import DATA_FILE
+                if DATA_FILE.endswith(".json") and os.path.exists(DATA_FILE):
+                    gdrive_store.upload_file_to_drive(DATA_FILE)
+            except Exception as e:
+                print(f"[GDrive Manual Sync] Error: {e}")
+            
+            def _done():
+                self._refresh_gdrive_display()
+                if success:
+                    QMessageBox.information(self, "Sync Complete", "Database synced to Google Drive successfully!")
+                else:
+                    QMessageBox.warning(self, "Sync Failed", "Could not sync database. Check your internet connection.")
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, _done)
+            
+        import threading
+        threading.Thread(target=_bg, daemon=True, name="GDrive-ManualSync").start()
+
+
+from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit
+
+class GDriveCredentialsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Google Drive Sync")
+        self.setFixedWidth(480)
+        
+        from PyQt5.QtWidgets import QApplication
+        from theme_manager import get_palette
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        p = get_palette(theme)
+        
+        # Style sheet to apply premium dark/light mode depending on the active theme
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {p.get('C_BG', '#0B0C10')};
+            }}
+            QLabel {{
+                color: {p.get('C_TEXT', '#FFFFFF')};
+                font-family: {p.get('body_font', 'Segoe UI')};
+                font-size: 12px;
+            }}
+            QLineEdit {{
+                background-color: {p.get('C_CARD', '#1F2833')};
+                color: {p.get('C_TEXT', '#FFFFFF')};
+                border: 1px solid {p.get('C_BORDER', '#45A29E')};
+                border-radius: 4px;
+                padding: 8px;
+                font-family: {p.get('body_font', 'Segoe UI')};
+                font-size: 12px;
+            }}
+            QLineEdit:focus {{
+                border: 1.5px solid {p.get('C_ACCENT', '#66FCF1')};
+            }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        
+        desc = QLabel(
+            "To link Google Drive, please configure your Google OAuth credentials.\n"
+            "This ensures your study database is synced directly to your own Google account."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {p.get('C_SUBTEXT', '#BAC2DE')}; font-size: 12px; line-height: 1.4;")
+        layout.addWidget(desc)
+        
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignLeft)
+        
+        client_id_label = QLabel("Client ID:")
+        client_id_label.setStyleSheet("font-weight: bold;")
+        self.client_id_input = QLineEdit()
+        self.client_id_input.setPlaceholderText("Paste Google OAuth Client ID here...")
+        form.addRow(client_id_label, self.client_id_input)
+        
+        client_secret_label = QLabel("Client Secret:")
+        client_secret_label.setStyleSheet("font-weight: bold;")
+        self.client_secret_input = QLineEdit()
+        self.client_secret_input.setPlaceholderText("Paste Client Secret here...")
+        self.client_secret_input.setEchoMode(QLineEdit.Password)
+        form.addRow(client_secret_label, self.client_secret_input)
+        
+        layout.addLayout(form)
+        
+        # Prepopulate with current config if exists
+        from services.gdrive_service import gdrive_store
+        cfg = gdrive_store.get_config()
+        if cfg:
+            self.client_id_input.setText(cfg.get("client_id", ""))
+            self.client_secret_input.setText(cfg.get("client_secret", ""))
+            
+        help_label = QLabel()
+        help_label.setWordWrap(True)
+        help_label.setOpenExternalLinks(True)
+        accent_color = p.get('C_ACCENT', '#66FCF1')
+        subtext_color = p.get('C_SUBTEXT', '#8892B0')
+        help_label.setText(
+            f'<span style="color: {subtext_color};">Need help? </span>'
+            f'<a href="https://developers.google.com/drive/api/quickstart/python" '
+            f'style="color: {accent_color}; text-decoration: underline; font-weight: bold;">'
+            f'Instructions: How to get Client ID & Secret</a>'
+        )
+        help_label.setStyleSheet("font-size: 12px; margin-top: 4px;")
+        layout.addWidget(help_label)
+        
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch()
+        
+        cancel = QPushButton("Cancel")
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {p.get('C_SUBTEXT', '#8892B0')};
+                border: 1px solid {p.get('C_BORDER', '#45A29E')};
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.05);
+                color: {p.get('C_TEXT', '#FFFFFF')};
+            }}
+        """)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        
+        save = QPushButton("Save Config")
+        save.setCursor(Qt.PointingHandCursor)
+        save.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {p.get('C_ACCENT', '#66FCF1')};
+                color: {p.get('C_BG', '#0B0C10')};
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+                color: {p.get('C_BG', '#0B0C10')};
+            }}
+        """)
+        save.clicked.connect(self.accept)
+        buttons.addWidget(save)
+        
+        layout.addLayout(buttons)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

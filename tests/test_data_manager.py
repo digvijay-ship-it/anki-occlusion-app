@@ -358,8 +358,7 @@ class DeckHistoryTests(unittest.TestCase):
         store = data_manager.DirtyStore()
         original = {"decks": [{"_id": 1, "name": "Alpha"}]}
         updated = {"decks": [{"_id": 1, "name": "Beta"}]}
-
-        store.set(original)
+        store.set(original)
         history.push(store.get())
         store.set(updated)
         history.undo(store)
@@ -368,6 +367,129 @@ class DeckHistoryTests(unittest.TestCase):
 
         self.assertTrue(redone)
         self.assertEqual(store.get()["decks"][0]["name"], "Beta")
+
+
+
+
+class SQLiteStorageTests(unittest.TestCase):
+    def setUp(self):
+        tmp_root = Path(__file__).resolve().parent / "_tmp"
+        tmp_root.mkdir(exist_ok=True)
+        self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_root)
+        self.addCleanup(self.tmpdir.cleanup)
+        self.db_file = Path(self.tmpdir.name) / "anki_occlusion_data.db"
+        self.json_file = Path(self.tmpdir.name) / "anki_occlusion_data.json"
+
+    def test_sqlite_tables_created_on_init(self):
+        store = data_manager.DirtyStore()
+        with patch.object(data_manager, "DATA_FILE", str(self.db_file)):
+            store.load()
+            
+        import sqlite3
+        conn = sqlite3.connect(str(self.db_file))
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = {row[0] for row in cursor.fetchall()}
+        conn.close()
+        
+        self.assertTrue({"settings", "decks", "cards", "boxes"}.issubset(tables))
+
+    def test_sqlite_save_and_load(self):
+        store = data_manager.DirtyStore()
+        payload = {
+            "_invert_pdf": True,
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Decks Alpha",
+                    "cards": [
+                        {
+                            "_id": 101,
+                            "pdf_path": "a.pdf",
+                            "image_path": "a.png",
+                            "_pdf_box_render_zoom": 1.5,
+                            "due": "2026-05-31",
+                            "state": 2,
+                            "boxes": [
+                                {
+                                    "box_id": "b1",
+                                    "rect": [10.0, 20.0, 30.0, 40.0],
+                                    "page_num": 0,
+                                    "group_id": "g1",
+                                    "shape": "rect",
+                                    "angle": 0.0,
+                                    "state": 1
+                                }
+                            ]
+                        }
+                    ],
+                    "children": []
+                }
+            ]
+        }
+        
+        with patch.object(data_manager, "DATA_FILE", str(self.db_file)):
+            store.set(payload)
+            store.save_force()
+            
+            # Load in a fresh store instance
+            new_store = data_manager.DirtyStore()
+            loaded = new_store.load()
+            
+        self.assertEqual(loaded["_invert_pdf"], payload["_invert_pdf"])
+        self.assertEqual(loaded["decks"][0]["name"], "Decks Alpha")
+        self.assertEqual(loaded["decks"][0]["cards"][0]["_id"], 101)
+        self.assertEqual(loaded["decks"][0]["cards"][0]["boxes"][0]["box_id"], "b1")
+
+    def test_sqlite_migration_from_json(self):
+        # Create legacy JSON file
+        legacy_data = {
+            "_invert_pdf": True,
+            "decks": [{"_id": 5, "name": "Legacy Deck", "cards": []}]
+        }
+        import json
+        self.json_file.write_text(json.dumps(legacy_data), encoding="utf-8")
+        
+        store = data_manager.DirtyStore()
+        # DATA_FILE ends with .db, so it should trigger migration from the sibling .json file
+        with patch.object(data_manager, "DATA_FILE", str(self.db_file)):
+            loaded = store.load()
+            
+        self.assertEqual(loaded["decks"][0]["name"], "Legacy Deck")
+        self.assertTrue(self.db_file.exists())
+
+    def test_sqlite_save_new_card_without_id(self):
+        store = data_manager.DirtyStore()
+        payload = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Decks Alpha",
+                    "cards": [
+                        {
+                            "pdf_path": "a.pdf",
+                            "image_path": "a.png",
+                            "_pdf_box_render_zoom": 1.5,
+                            "due": "2026-05-31",
+                            "state": 2,
+                            "boxes": []
+                        }
+                    ],
+                    "children": []
+                }
+            ]
+        }
+        
+        with patch.object(data_manager, "DATA_FILE", str(self.db_file)):
+            store.set(payload)
+            store.save_force()
+            
+            # Load in a fresh store instance
+            new_store = data_manager.DirtyStore()
+            loaded = new_store.load()
+            
+        self.assertEqual(loaded["decks"][0]["cards"][0]["pdf_path"], "a.pdf")
+        self.assertIsNotNone(loaded["decks"][0]["cards"][0].get("_id"))
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ from PyQt5.QtWidgets import (
     QStyledItemDelegate,
     QStyle,
     QFileDialog,
+    QSlider,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -84,6 +85,7 @@ from storage_paths import (
 )
 from ui.deck_tree import DeckTree, _DeckTreeWidget, depth_color
 from ui.deck_view import DeckView
+from ui.canvas.retro_effects import CRTOverlay, RetroParticlePanel, ParticleBurstOverlay, OozeDripWidget
 
 
 def _pdf_support_available():
@@ -103,6 +105,33 @@ T_BORDER = "#333b4d"
 T_MONO = "'Roboto Mono', 'Courier New', monospace"
 T_HEADER = "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif"
 T_PIXEL = T_HEADER
+
+def sync_theme_colors():
+    global T_BG, T_PANEL, T_CARD, T_GREEN, T_NEON, T_TEXT, T_SUBTEXT, T_RED, T_PURPLE, T_BORDER, T_MONO, T_HEADER, T_PIXEL
+    try:
+        from PyQt5.QtWidgets import QApplication
+        from theme_manager import get_palette
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "tmnt")
+        if theme not in ("tmnt", "manhattan"):
+            theme = "tmnt"
+        p = get_palette(theme)
+        
+        T_BG = p.get("C_BG", "#0A0B11")
+        T_PANEL = p.get("C_SURFACE", "#141A24")
+        T_CARD = p.get("C_CARD", "#1F2836")
+        T_GREEN = p.get("C_GREEN", "#39FF14")
+        T_NEON = p.get("C_ACCENT", "#39FF14")
+        T_TEXT = p.get("C_TEXT", "#FFFFFF")
+        T_SUBTEXT = p.get("C_SUBTEXT", "#A0AEC0")
+        T_RED = p.get("C_RED", "#FF5A66")
+        T_PURPLE = p.get("C_PURPLE", "#B084FF")
+        T_BORDER = p.get("C_BORDER", "#3E4E68")
+        T_MONO = p.get("body_font", "'Roboto Mono', 'Courier New', monospace")
+        T_HEADER = p.get("header_font", "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif")
+        T_PIXEL = T_HEADER
+    except Exception as e:
+        print(f"[DEBUG][tmnt_home] sync_theme_colors error: {e}")
 TMNT_BASE_SIZE = 11
 TMNT_SIDEBAR_W = int(228 * 1.2)
 TMNT_RIGHTBAR_W = int(218 * 1.2)
@@ -120,11 +149,25 @@ MENTOR_QUOTES = [
 
 def _home_animations_enabled():
     raw = os.environ.get(HOME_ANIMATIONS_ENV, "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    from data_manager import store
+    try:
+        user_override = store.get().get("_home_animations")
+        if user_override is not None:
+            return bool(user_override)
+    except Exception:
+        pass
+    return False
 
 
 # ── Helper: header-font label ────────────────────────────────────────────────
-def _px_lbl(text, color=T_NEON, size=10, weight="900"):
+def _px_lbl(text, color=None, size=10, weight="900"):
+    global T_NEON, T_PIXEL
+    if color is None:
+        color = T_NEON
     l = QLabel(text)
     l.setStyleSheet(
         f"font-family: {T_PIXEL}; font-size: {size}px; font-weight: {weight}; "
@@ -133,7 +176,10 @@ def _px_lbl(text, color=T_NEON, size=10, weight="900"):
     return l
 
 
-def _mono_lbl(text, color=T_TEXT, size=11, weight="normal"):
+def _mono_lbl(text, color=None, size=11, weight="normal"):
+    global T_TEXT, T_MONO
+    if color is None:
+        color = T_TEXT
     l = QLabel(text)
     l.setStyleSheet(
         f"font-family: {T_MONO}; font-size: {size}px; font-weight: {weight}; "
@@ -238,6 +284,9 @@ class TMNTDeckItemDelegate(QStyledItemDelegate):
         name = (
             index.data(Qt.UserRole + 2) or index.data(Qt.DisplayRole) or "?"
         ).upper()
+        bookmarked = index.data(Qt.UserRole + 5)
+        if bookmarked:
+            name = "🔖 " + name
         due_str = index.data(Qt.UserRole + 1)
         total_cards = int(index.data(Qt.UserRole + 3) or 0)
         due = int(due_str) if due_str else 0
@@ -300,6 +349,9 @@ class TMNTDeckItemDelegate(QStyledItemDelegate):
         name = (
             index.data(Qt.UserRole + 2) or index.data(Qt.DisplayRole) or "?"
         ).upper()
+        bookmarked = index.data(Qt.UserRole + 5)
+        if bookmarked:
+            name = "🔖 " + name
         font = QFont("Press Start 2P")
         font.setPixelSize(_px(10, self._scale))
         font.setBold(True)
@@ -327,6 +379,26 @@ class TMNTStatCard(QFrame):
         self._scale = _tmnt_scale(data)
         self._setup(title, subtitle, color)
         _apply_glow(self, color, blur=_px(18, self._scale), alpha=55)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        eff = self.graphicsEffect()
+        if eff and _home_animations_enabled():
+            self._hover_glow = QPropertyAnimation(eff, b"blurRadius", self)
+            self._hover_glow.setDuration(180)
+            self._hover_glow.setStartValue(eff.blurRadius())
+            self._hover_glow.setEndValue(float(_px(28, self._scale)))
+            self._hover_glow.start()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        eff = self.graphicsEffect()
+        if eff and _home_animations_enabled():
+            self._hover_glow = QPropertyAnimation(eff, b"blurRadius", self)
+            self._hover_glow.setDuration(180)
+            self._hover_glow.setStartValue(eff.blurRadius())
+            self._hover_glow.setEndValue(float(_px(18, self._scale)))
+            self._hover_glow.start()
 
     def _setup(self, title, subtitle, color):
         self.setStyleSheet(
@@ -546,34 +618,14 @@ class TMNTMissionBanner(QFrame):
     def _tick_glow(self):
         self._glow_step += 1
         t = (math.sin(self._glow_step * math.pi / 20.0) + 1.0) / 2.0
-        r = int(74 + (92 - 74) * t)
-        g = int(168 + (190 - 168) * t)
-        b = int(79 + (99 - 79) * t)
-        col = f"#{r:02X}{g:02X}{b:02X}"
-        # Only rebuild stylesheet when color actually changes (skip identical frames)
-        if col == getattr(self, "_last_glow_col", None):
-            return
-        self._last_glow_col = col
-        self.btn_train.setStyleSheet(
-            _scale_ss(
-                f"""
-            QPushButton {{
-                background: {col};
-                color: {T_BG};
-                border: none;
-                border-radius: 2px;
-                font-weight: 900;
-                font-family: {T_PIXEL};
-                font-size: 14px;
-                min-height: 52px;
-                padding: 0px 24px;
-                text-align: center;
-            }}
-            QPushButton:hover {{ background: #56b75c; color: {T_BG}; }}
-        """,
-                self._scale,
-            )
-        )
+        eff = self.btn_train.graphicsEffect()
+        if eff and isinstance(eff, QGraphicsDropShadowEffect):
+            blur = _px(12 + 16 * t, self._scale)
+            eff.setBlurRadius(blur)
+            alpha = int(90 + 50 * t)
+            glow_color = QColor("#5bc561")
+            glow_color.setAlpha(alpha)
+            eff.setColor(glow_color)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -605,17 +657,45 @@ class TMNTBangaLab(QFrame):
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self.refresh)
         self._auto_timer.setInterval(self.AUTO_REFRESH_MS)
+        self.particles = RetroParticlePanel(self, is_ooze=False)
         self._build_ui()
         self.refresh()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "particles"):
+            self.particles.setGeometry(self.rect())
+
     def set_auto_refresh_enabled(self, enabled):
         enabled = bool(enabled)
+        if enabled:
+            drawer = self.parent()
+            if drawer is not None:
+                drawer_open = getattr(drawer, "_drawer_open", None)
+                drawer_locked = getattr(drawer, "_drawer_locked", None)
+                if drawer_open is not None and drawer_locked is not None:
+                    if not (drawer_open or drawer_locked):
+                        enabled = False
         if enabled:
             if not self._auto_timer.isActive():
                 self._auto_timer.start()
             return
         if self._auto_timer.isActive():
             self._auto_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        drawer = self.parent()
+        drawer_open = getattr(drawer, "_drawer_open", None)
+        drawer_locked = getattr(drawer, "_drawer_locked", None)
+        if drawer_open is not None and drawer_locked is not None:
+            self.set_auto_refresh_enabled(drawer_open or drawer_locked)
+        else:
+            self.set_auto_refresh_enabled(True)
+
+    def hideEvent(self, event):
+        self.set_auto_refresh_enabled(False)
+        super().hideEvent(event)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -947,9 +1027,12 @@ class TMNTBangaDrawer(QFrame):
         self._edge_w = _px(self.EDGE_W, self._scale)
         self._edge_button_w = _px(self.EDGE_BUTTON_W, self._scale)
         self._edge_button_h = _px(self.EDGE_BUTTON_H, self._scale)
-        self.setMouseTracking(True)
         self.setFixedWidth(self._open_width)
         self.setStyleSheet("QFrame#tmnt_banga_drawer{background:transparent;border:none;}")
+
+        self._slide_anim = QPropertyAnimation(self, b"geometry", self)
+        self._slide_anim.setDuration(240)
+        self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1124,39 +1207,65 @@ class TMNTBangaDrawer(QFrame):
         return super().eventFilter(obj, event)
 
     def open_drawer(self):
-        if self._drawer_open:
-            self.reposition()
-            self._sync_lock_button()
-            return
         self._drawer_open = True
         self._hide_timer.stop()
-        self.show()
-        self.raise_()
-        self._edge_button.setText("›")
-        self._edge_button.setToolTip("Move away to hide cache panel")
         self._sync_floating_triggers()
         self._sync_lock_button()
         self._sync_edge_pulse()
         self._sync_lab_auto_refresh()
         self.refresh()
-        self.reposition()
+
+        host = self._host
+        h = max(1, host.height()) if host else 400
+        w = max(1, host.width()) if host else 600
+
+        self.show()
+        self.raise_()
+
+        if _home_animations_enabled():
+            self._slide_anim.stop()
+            self._slide_anim.setStartValue(QRect(w, 0, self._open_width, h))
+            self._slide_anim.setEndValue(QRect(w - self._open_width, 0, self._open_width, h))
+            self._slide_anim.start()
+        else:
+            self.setGeometry(max(0, w - self._open_width), 0, self._open_width, h)
+            self.reposition()
+
+        self._edge_button.setText("›")
+        self._edge_button.setToolTip("Move away to hide cache panel")
 
     def close_drawer(self):
         if self._drawer_locked:
             self.open_drawer()
             return
         if not self._drawer_open:
-            self.reposition()
             return
         self._drawer_open = False
-        self.hide()
-        self._edge_button.setText("‹")
-        self._edge_button.setToolTip("Show cache panel")
         self._sync_floating_triggers()
         self._sync_lock_button()
         self._sync_edge_pulse()
         self._sync_lab_auto_refresh()
-        self.reposition()
+
+        host = self._host
+        h = max(1, host.height()) if host else 400
+        w = max(1, host.width()) if host else 600
+
+        if _home_animations_enabled():
+            self._slide_anim.stop()
+            self._slide_anim.setStartValue(QRect(self.x(), 0, self._open_width, h))
+            self._slide_anim.setEndValue(QRect(w, 0, self._open_width, h))
+            try:
+                self._slide_anim.finished.disconnect()
+            except Exception:
+                pass
+            self._slide_anim.finished.connect(self.hide)
+            self._slide_anim.start()
+        else:
+            self.hide()
+            self.reposition()
+
+        self._edge_button.setText("‹")
+        self._edge_button.setToolTip("Show cache panel")
 
     def _toggle_lock(self):
         self._drawer_locked = not self._drawer_locked
@@ -1224,7 +1333,13 @@ class TMNTBangaDrawer(QFrame):
             return
         h = max(1, host.height())
         w = max(1, host.width())
-        self.setGeometry(max(0, w - self._open_width), 0, self._open_width, h)
+
+        if not (hasattr(self, "_slide_anim") and self._slide_anim.state() == QAbstractAnimation.Running):
+            if self._drawer_open:
+                self.setGeometry(max(0, w - self._open_width), 0, self._open_width, h)
+            else:
+                self.setGeometry(w, 0, self._open_width, h)
+
         edge_y = max(_px(16, self._scale), (h - self._edge_button_h) // 2)
         self._edge_button.setGeometry(
             max(0, w - self._edge_button_w),
@@ -1272,8 +1387,8 @@ class TMNTDeckEngine(DeckTree):
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.tree.header().setStretchLastSection(False)
-        self.tree.header().setSectionResizeMode(0, self.tree.header().ResizeToContents)
+        self.tree.header().setStretchLastSection(True)
+        self.tree.header().setSectionResizeMode(0, self.tree.header().Stretch)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._ctx_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
@@ -1396,6 +1511,7 @@ class TMNTDeckEngine(DeckTree):
             getattr(self, "_total_cards", {}).get(deck.get("_id"), 0),
         )
         item.setData(0, Qt.UserRole + 4, depth)
+        item.setData(0, Qt.UserRole + 5, deck.get("bookmarked", False))
         for child in deck.get("children", []):
             item.addChild(self._make_item(child, depth + 1))
         return item
@@ -1476,8 +1592,14 @@ class TMNTSidebar(QFrame):
                 self._scale,
             )
         )
+        self.particles = RetroParticlePanel(self, is_ooze=True)
         self._build_ui()
         self.refresh()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "particles"):
+            self.particles.setGeometry(self.rect())
 
     def _build_ui(self):
         L = QVBoxLayout(self)
@@ -1535,6 +1657,7 @@ class TMNTSidebar(QFrame):
         )
         self.search_in = QLineEdit()
         self.search_in.setPlaceholderText("Search scrolls...")
+        self.search_in.setClearButtonEnabled(True)
         self.search_in.setStyleSheet(
             _scale_ss(
                 f"background: transparent; border: none; color: {T_TEXT}; "
@@ -1609,8 +1732,8 @@ class TMNTSidebar(QFrame):
             )
             return b
 
-        btn_new = _foot_btn("⊕ NEW DOJO")
-        btn_sub = _foot_btn("⊕ SUB Dojo")
+        btn_new = _foot_btn("+ NEW DOJO")
+        btn_sub = _foot_btn("+ SUB Dojo")
         from PyQt5.QtGui import QIcon
         from PyQt5.QtCore import QSize
 
@@ -2042,6 +2165,14 @@ class TMNTMainContent(DeckView):
 
         title_row.addWidget(self.lbl_deck_icon)
         title_row.addLayout(title_txt)
+
+        self.btn_bookmark = QPushButton()
+        self.btn_bookmark.setObjectName("bookmark_btn")
+        self.btn_bookmark.setCursor(Qt.PointingHandCursor)
+        self.btn_bookmark.clicked.connect(self._toggle_bookmark)
+        self.btn_bookmark.hide()
+        title_row.addWidget(self.btn_bookmark)
+
         title_row.addStretch()
 
         self.btn_add = QPushButton("🐢  FORGE SCROLL")
@@ -2301,9 +2432,10 @@ class TMNTMainContent(DeckView):
 class TMNTBgmWidget(QFrame):
     clicked = pyqtSignal()
 
-    def __init__(self, data=None, parent=None):
+    def __init__(self, data=None, parent=None, scale=None):
         super().__init__(parent)
-        self._scale = _tmnt_scale(data)
+        self._data = data if isinstance(data, dict) else {}
+        self._scale = scale if scale is not None else _tmnt_scale(data)
         self._playing = False
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(_px(26, self._scale))
@@ -2346,6 +2478,7 @@ class TMNTBgmWidget(QFrame):
                 self._scale,
             )
         )
+
         l.addWidget(self.note_lbl)
         l.addWidget(self.text_lbl)
         l.addWidget(self.badge_lbl)
@@ -2399,13 +2532,14 @@ class TMNTTopBar(QFrame):
     btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
-    btn_theme_clicked = pyqtSignal()
+    btn_theme_clicked = pyqtSignal(object)
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
     btn_shortcuts_clicked = pyqtSignal()
     recovery_clicked = pyqtSignal()
     font_change = pyqtSignal(int)  # -1 / 0 / +1
     bgm_toggle = pyqtSignal()
+    volume_changed = pyqtSignal(int)
 
     def __init__(self, data=None, parent=None):
         super().__init__(parent)
@@ -2605,7 +2739,9 @@ class TMNTTopBar(QFrame):
         right_l.addWidget(self._settings_btn, 0, Qt.AlignVCenter)
 
         self.bgm_widget = TMNTBgmWidget(
-            data={"_font_size": int(round(TMNT_BASE_SIZE * self._scale))}
+            data=self._data,
+            scale=self._scale,
+            parent=self,
         )
         self.bgm_widget.setStyleSheet(
             _scale_ss(
@@ -2763,9 +2899,12 @@ class TMNTTopBar(QFrame):
                     color: {border_color};
                     border: 1px solid {border};
                     border-radius: 4px;
-                    font-family: {T_MONO};
+                    font-family: 'Segoe UI Emoji', 'Segoe UI Symbol', {T_MONO};
                     font-size: 13px;
                     font-weight: bold;
+                    padding: 0px;
+                    letter-spacing: 0px;
+                    text-transform: none;
                 }}
                 QPushButton:hover {{
                     background: {bg};
@@ -2880,14 +3019,38 @@ class TMNTTopBar(QFrame):
         theme_l.addWidget(theme_mode_lbl)
         theme_l.addStretch()
 
-        self._btn_theme = self._menu_button("📚 CLASSIC THEME", T_PURPLE, self.btn_theme_clicked, divider=False)
+        from PyQt5.QtWidgets import QComboBox
+        from theme_manager import normalize_theme
+        self._btn_theme = QComboBox()
+        self._btn_theme.addItems(["📚 CLASSIC THEME", "🐢 TMNT THEME", "🎮 MANHATTAN"])
         self._btn_theme.setCursor(Qt.PointingHandCursor)
         self._btn_theme.setStyleSheet(
             _scale_ss(
-                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px; padding: 2px 6px; color: {T_PURPLE}; font-family: {T_MONO}; font-size: 9px;",
+                f"""
+                QComboBox {{
+                    background: {T_BG};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                    color: {T_PURPLE};
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {T_PANEL};
+                    color: {T_PURPLE};
+                    border: 1px solid {T_BORDER};
+                    selection-background-color: {T_BG};
+                    selection-color: {T_NEON};
+                }}
+                """,
                 self._scale,
             )
         )
+        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2}
+        saved_theme = self._data.get("_theme", "classic")
+        self._btn_theme.setCurrentIndex(_theme_to_idx.get(normalize_theme(saved_theme), 0))
+        self._btn_theme.currentIndexChanged.connect(self.btn_theme_clicked.emit)
         theme_l.addWidget(self._btn_theme)
         panel_l.addWidget(theme_box)
 
@@ -2928,6 +3091,129 @@ class TMNTTopBar(QFrame):
         scale_l.addWidget(self._font_button("A", 0, active=True))
         scale_l.addWidget(self._font_button("A+", +1))
         panel_l.addWidget(scale_box)
+
+        volume_lbl = QLabel("VOLUME")
+        volume_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(volume_lbl)
+
+        volume_box = QFrame()
+        volume_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        volume_layout = QHBoxLayout(volume_box)
+        volume_layout.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        volume_layout.setSpacing(_px(6, self._scale))
+        volume_txt_lbl = QLabel("SOUND OUTPUT")
+        volume_txt_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        volume_layout.addWidget(volume_txt_lbl)
+        volume_layout.addStretch()
+
+        self._volume_slider = QSlider(Qt.Horizontal)
+        self._volume_slider.setRange(0, 100)
+        self._volume_slider.setValue(self._data.get("_volume", 40))
+        self._volume_slider.setFixedWidth(_px(80, self._scale))
+        self._volume_slider.setFixedHeight(_px(16, self._scale))
+        self._volume_slider.setCursor(Qt.PointingHandCursor)
+        self._volume_slider.setStyleSheet(_scale_ss(
+            """
+            QSlider {
+                background: transparent;
+            }
+            QSlider::groove:horizontal {
+                border: none;
+                height: 3px;
+                background: rgba(114, 255, 79, 0.2);
+                border-radius: 1.5px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #72FF4F;
+                border-radius: 1.5px;
+            }
+            QSlider::handle:horizontal {
+                background: #72FF4F;
+                width: 8px;
+                height: 8px;
+                margin-top: -2.5px;
+                margin-bottom: -2.5px;
+                border-radius: 4px;
+            }
+            """,
+            self._scale
+        ))
+        self._volume_slider.valueChanged.connect(self._on_volume_slider_changed)
+
+        btn_dec = QPushButton("−")
+        btn_dec.setCursor(Qt.PointingHandCursor)
+        btn_dec.setFixedSize(_px(20, self._scale), _px(20, self._scale))
+        btn_dec.setStyleSheet(_scale_ss(
+            f"""
+            QPushButton {{
+                background: {T_BG};
+                color: {T_NEON};
+                border: 1px solid {T_BORDER};
+                border-radius: 4px;
+                font-family: {T_MONO};
+                font-size: 10px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background: rgba(102,252,241,0.12);
+                border-color: {T_NEON};
+                color: #FFFFFF;
+            }}
+            """,
+            self._scale
+        ))
+        btn_dec.clicked.connect(self._dec_volume)
+
+        btn_inc = QPushButton("＋")
+        btn_inc.setCursor(Qt.PointingHandCursor)
+        btn_inc.setFixedSize(_px(20, self._scale), _px(20, self._scale))
+        btn_inc.setStyleSheet(_scale_ss(
+            f"""
+            QPushButton {{
+                background: {T_BG};
+                color: {T_NEON};
+                border: 1px solid {T_BORDER};
+                border-radius: 4px;
+                font-family: {T_MONO};
+                font-size: 10px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background: rgba(102,252,241,0.12);
+                border-color: {T_NEON};
+                color: #FFFFFF;
+            }}
+            """,
+            self._scale
+        ))
+        btn_inc.clicked.connect(self._inc_volume)
+
+        volume_layout.addWidget(btn_dec)
+        volume_layout.addWidget(self._volume_slider)
+        volume_layout.addWidget(btn_inc)
+        panel_l.addWidget(volume_box)
 
         contrast_lbl = QLabel("PDF CONTRAST")
         contrast_lbl.setStyleSheet(
@@ -2978,6 +3264,55 @@ class TMNTTopBar(QFrame):
         self._cb_invert_pdf.stateChanged.connect(self._on_tmnt_contrast_changed)
         contrast_l.addWidget(self._cb_invert_pdf)
         panel_l.addWidget(contrast_box)
+
+        fx_lbl = QLabel("VISUAL FX / ANIMATIONS")
+        fx_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(fx_lbl)
+
+        fx_box = QFrame()
+        fx_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        fx_l = QHBoxLayout(fx_box)
+        fx_l.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        fx_l.setSpacing(_px(6, self._scale))
+        fx_mode_lbl = QLabel("ENABLE CRT & DUST PARTICLES")
+        fx_mode_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        fx_l.addWidget(fx_mode_lbl)
+        fx_l.addStretch()
+
+        self._cb_home_animations = QCheckBox()
+        self._cb_home_animations.setCursor(Qt.PointingHandCursor)
+        self._cb_home_animations.setStyleSheet(
+            _scale_ss(
+                f"QCheckBox::indicator {{ width: 14px; height: 14px; }}"
+                f"QCheckBox::indicator:unchecked {{ border: 1px solid {T_BORDER}; background: {T_BG}; }}"
+                f"QCheckBox::indicator:checked {{ border: 1px solid {T_NEON}; background: {T_NEON}; }}"
+                , self._scale
+            )
+        )
+        self._cb_home_animations.setChecked(_home_animations_enabled())
+        self._cb_home_animations.stateChanged.connect(self._on_tmnt_animations_changed)
+        fx_l.addWidget(self._cb_home_animations)
+        panel_l.addWidget(fx_box)
 
         archive_lbl = QLabel("MISSION ARCHIVE")
         archive_lbl.setStyleSheet(
@@ -3046,6 +3381,97 @@ class TMNTTopBar(QFrame):
         panel_l.addWidget(archive_box)
         self._refresh_archive_display()
 
+        # Google Drive Backup Section
+        gdrive_lbl = QLabel("GOOGLE DRIVE SYNC")
+        gdrive_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(gdrive_lbl)
+
+        gdrive_box = QFrame()
+        gdrive_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        gdrive_layout = QHBoxLayout(gdrive_box)
+        gdrive_layout.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        gdrive_layout.setSpacing(_px(6, self._scale))
+        
+        self._gdrive_status_lbl = QLabel("Checking status...")
+        self._gdrive_status_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        gdrive_layout.addWidget(self._gdrive_status_lbl, 1)
+
+        self._gdrive_sync_btn = QPushButton("SYNC")
+        self._gdrive_sync_btn.setCursor(Qt.PointingHandCursor)
+        self._gdrive_sync_btn.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_CARD};
+                    color: {T_NEON};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(102,252,241,0.12);
+                    border-color: {T_NEON};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        self._gdrive_sync_btn.clicked.connect(self._manual_gdrive_sync)
+        gdrive_layout.addWidget(self._gdrive_sync_btn, 0, Qt.AlignRight)
+
+        self._gdrive_link_btn = QPushButton("LINK")
+        self._gdrive_link_btn.setCursor(Qt.PointingHandCursor)
+        self._gdrive_link_btn.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_CARD};
+                    color: {T_NEON};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(102,252,241,0.12);
+                    border-color: {T_NEON};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        self._gdrive_link_btn.clicked.connect(self._toggle_gdrive_link)
+        gdrive_layout.addWidget(self._gdrive_link_btn, 0, Qt.AlignRight)
+        
+        panel_l.addWidget(gdrive_box)
+
         panel_l.addWidget(
             self._menu_button(
                 "RECOVERY CENTER", T_PURPLE, self.recovery_clicked.emit
@@ -3071,7 +3497,7 @@ class TMNTTopBar(QFrame):
                     color: {accent_color};
                     border: none;
                     {line}
-                    font-family: {T_MONO};
+                    font-family: 'Segoe UI Emoji', 'Segoe UI Symbol', {T_MONO};
                     font-size: 11px;
                     font-weight: bold;
                     text-align: left;
@@ -3105,6 +3531,9 @@ class TMNTTopBar(QFrame):
                     font-family: {T_MONO};
                     font-size: 10px;
                     font-weight: bold;
+                    padding: 0px;
+                    letter-spacing: 0px;
+                    text-transform: none;
                 }}
                 QPushButton:hover {{
                     background: rgba(69,162,71,0.25);
@@ -3133,6 +3562,7 @@ class TMNTTopBar(QFrame):
             self._archive_btn.setToolTip(tooltip)
 
     def _choose_mission_archive(self):
+        self._hide_panel(self._settings_panel)
         start_dir = (
             get_mission_archive_root()
             or os.path.dirname(current_data_file())
@@ -3151,7 +3581,6 @@ class TMNTTopBar(QFrame):
             )
             return
         self._refresh_archive_display()
-        self._hide_panel(self._settings_panel)
         win = self.window()
         if hasattr(win, "statusBar") and callable(win.statusBar):
             sb = win.statusBar()
@@ -3231,6 +3660,11 @@ class TMNTTopBar(QFrame):
                 self._cb_invert_pdf.blockSignals(True)
                 self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
                 self._cb_invert_pdf.blockSignals(False)
+            if hasattr(self, "_volume_slider") and self._volume_slider:
+                self._volume_slider.blockSignals(True)
+                self._volume_slider.setValue(self._data.get("_volume", 40))
+                self._volume_slider.blockSignals(False)
+            self._refresh_gdrive_display()
         panel.adjustSize()
         x = 0 if align == "left" else anchor.width() - panel.width()
         y = anchor.height() + _px(6, self._scale)
@@ -3290,6 +3724,16 @@ class TMNTTopBar(QFrame):
         store.get()["_invert_pdf"] = invert
         store.mark_dirty()
 
+    def _on_tmnt_animations_changed(self, state):
+        enabled = (state == Qt.Checked)
+        store.get()["_home_animations"] = enabled
+        store.mark_dirty()
+        try:
+            from ui.canvas.retro_effects import sync_all_retro_widgets
+            sync_all_retro_widgets()
+        except Exception as e:
+            print(f"[DEBUG][tmnt_home] sync_all_retro_widgets error: {e}")
+
     def _reset_brand_glitch(self):
         self.brand_name.setText("ANKI OCCLUSION")
         self.brand_name.setStyleSheet(self._brand_name_ss())
@@ -3341,6 +3785,59 @@ class TMNTTopBar(QFrame):
     def set_bgm_state(self, playing):
         self.bgm_widget.set_playing(playing)
 
+    def _on_volume_slider_changed(self, value):
+        self._data["_volume"] = value
+        from data_manager import store
+        store.mark_dirty()
+        self.volume_changed.emit(value)
+
+    def _dec_volume(self):
+        val = max(0, self._data.get("_volume", 40) - 10)
+        self._volume_slider.setValue(val)
+
+    def _inc_volume(self):
+        val = min(100, self._data.get("_volume", 40) + 10)
+        self._volume_slider.setValue(val)
+
+    def _find_home(self):
+        from ui.home_screen import HomeScreen
+        w = self.parent()
+        while w:
+            if isinstance(w, HomeScreen):
+                return w
+            w = w.parent()
+        return None
+
+    def _refresh_gdrive_display(self):
+        from services.gdrive_service import gdrive_store
+        if not hasattr(self, "_gdrive_status_lbl") or self._gdrive_status_lbl is None:
+            return
+            
+        if gdrive_store.is_linked():
+            email = gdrive_store.get_email()
+            self._gdrive_status_lbl.setText(f"LINKED: {email.upper()}")
+            self._gdrive_status_lbl.setToolTip(f"Linked to Google Account: {email}")
+            self._gdrive_link_btn.setText("UNLINK")
+            self._gdrive_sync_btn.setEnabled(True)
+        else:
+            self._gdrive_status_lbl.setText("NOT LINKED")
+            self._gdrive_status_lbl.setToolTip("Google Drive Sync is not connected.")
+            self._gdrive_link_btn.setText("LINK")
+            self._gdrive_sync_btn.setEnabled(False)
+
+    def _toggle_gdrive_link(self):
+        home = self._find_home()
+        if home and hasattr(home, "_toggle_gdrive_link"):
+            home._toggle_gdrive_link()
+            self._refresh_gdrive_display()
+
+    def _manual_gdrive_sync(self):
+        home = self._find_home()
+        if home and hasattr(home, "_manual_gdrive_sync"):
+            home._manual_gdrive_sync()
+            self._refresh_gdrive_display()
+
+
 
 
 
@@ -3359,12 +3856,13 @@ class TMNTHomeLayout(QWidget):
     btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
-    btn_theme_clicked = pyqtSignal()
+    btn_theme_clicked = pyqtSignal(object)
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
     btn_shortcuts_clicked = pyqtSignal()
     font_change = pyqtSignal(int)
     bgm_toggle = pyqtSignal()
+    bgm_volume_changed = pyqtSignal(int)
     deck_selected = pyqtSignal(object)
     SIDEBAR_STRETCH = 30
     MAIN_STRETCH = 70
@@ -3373,6 +3871,7 @@ class TMNTHomeLayout(QWidget):
         """
         data          — the global app data dict
         """
+        sync_theme_colors()
         super().__init__(parent)
         self._data = data
         self._scale = _tmnt_scale(data)
@@ -3397,7 +3896,7 @@ class TMNTHomeLayout(QWidget):
 
         body_w = QWidget()
         body_w.setLayout(body)
-        body_w.setStyleSheet(f"background: #151821;")
+        body_w.setStyleSheet(f"background: {T_BG};")
         body_w.setMouseTracking(True)
 
         self.sidebar = TMNTSidebar(self._data)
@@ -3418,6 +3917,19 @@ class TMNTHomeLayout(QWidget):
         )
         L.addWidget(body_w, stretch=1)
 
+        self.crt = CRTOverlay(self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "crt"):
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, "crt"):
+            self.crt.trigger_boot_flicker()
+
 
 
     def _wire_signals(self):
@@ -3432,6 +3944,7 @@ class TMNTHomeLayout(QWidget):
         self.topbar.recovery_clicked.connect(self._show_recovery_center)
         self.topbar.font_change.connect(self.font_change)
         self.topbar.bgm_toggle.connect(self.bgm_toggle)
+        self.topbar.volume_changed.connect(self.bgm_volume_changed)
 
         # Sidebar deck selection
         self.sidebar.deck_selected.connect(self._on_deck_selected)
@@ -3600,3 +4113,4 @@ class TMNTHomeLayout(QWidget):
         self.sidebar._selected_deck = deck
         self.sidebar.refresh()
         self._on_deck_selected(deck)
+

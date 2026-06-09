@@ -6,12 +6,40 @@ import uuid
 import threading
 import time
 import shutil
+import sqlite3
 from datetime import datetime
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
-DATA_FILE = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.json")
+def is_running_tests() -> bool:
+    import sys
+    if os.environ.get("ANKI_TESTING") == "1":
+        return True
+    if not sys.argv:
+        return False
+    main_script = sys.argv[0].replace("\\", "/").lower()
+    main_basename = os.path.basename(main_script)
+    parts = main_script.split("/")
+    if "unittest" in main_script or "pytest" in main_script:
+        return True
+    if "tests" in parts or "test" in parts:
+        if main_basename.startswith("test_") or main_basename.endswith("_test.py") or "tests" in parts:
+            return True
+    return False
+
+_TEST_TEMP_DIR = None
+def _get_test_temp_dir() -> str:
+    global _TEST_TEMP_DIR
+    if _TEST_TEMP_DIR is None:
+        import tempfile
+        _TEST_TEMP_DIR = tempfile.TemporaryDirectory()
+    return _TEST_TEMP_DIR.name
+
+if is_running_tests():
+    DATA_FILE = os.path.join(_get_test_temp_dir(), "anki_occlusion_data_test.db")
+else:
+    DATA_FILE = os.path.join(os.path.expanduser("~"), "anki_occlusion_data.db")
 AUTO_SAVE_INTERVAL = 60  # seconds
 BACKUP_DIR_NAME = "anki_occlusion_data.backups"
 MAX_SAVE_BACKUPS = 50
@@ -76,15 +104,447 @@ class DirtyStore:
         except Exception as e:
             print(f"[DEBUG][data_manager] SM2 state initialization failed: {e}")
 
+    def _get_db_path(self):
+        if DATA_FILE.endswith(".json"):
+            return DATA_FILE[:-5] + ".db"
+        return DATA_FILE
+
+    def _get_legacy_json_path(self):
+        if DATA_FILE.endswith(".db"):
+            return DATA_FILE[:-3] + ".json"
+        return DATA_FILE
+
+    def _is_db_empty(self, db_path):
+        if not os.path.exists(db_path):
+            return True
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM decks;")
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count == 0
+        except Exception:
+            return True
+
+    def _init_sqlite(self, db_path):
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON;")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS decks (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            parent_id INTEGER REFERENCES decks(id) ON DELETE CASCADE,
+            meta TEXT
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            deck_id INTEGER REFERENCES decks(id) ON DELETE CASCADE,
+            pdf_path TEXT,
+            image_path TEXT,
+            pdf_box_render_zoom REAL,
+            due TEXT,
+            interval INTEGER,
+            factor REAL,
+            reps INTEGER,
+            lapses INTEGER,
+            state INTEGER,
+            meta TEXT
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS boxes (
+            box_id TEXT PRIMARY KEY,
+            card_id INTEGER REFERENCES cards(id) ON DELETE CASCADE,
+            rect_x REAL,
+            rect_y REAL,
+            rect_w REAL,
+            rect_h REAL,
+            page_num INTEGER,
+            group_id TEXT,
+            shape TEXT,
+            angle REAL,
+            due TEXT,
+            interval INTEGER,
+            factor REAL,
+            reps INTEGER,
+            lapses INTEGER,
+            state INTEGER,
+            meta TEXT
+        );
+        """)
+        conn.commit()
+        conn.close()
+
+    def _save_to_sqlite(self, db_path, data):
+        self._init_sqlite(db_path)
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = OFF;")
+        try:
+            cursor.execute("BEGIN TRANSACTION;")
+            
+            # --- 1. Reconcile Settings ---
+            active_settings_keys = [k for k in data.keys() if k != "decks"]
+            if active_settings_keys:
+                placeholders = ",".join("?" for _ in active_settings_keys)
+                cursor.execute(f"DELETE FROM settings WHERE key NOT IN ({placeholders});", active_settings_keys)
+            else:
+                cursor.execute("DELETE FROM settings;")
+                
+            for key in active_settings_keys:
+                val_str = json.dumps(data[key], ensure_ascii=False)
+                cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?);", (key, val_str))
+                
+            # --- 2. Walk Tree and Gather Active and New Entities ---
+            active_deck_ids = []
+            active_card_ids = []
+            active_box_ids = []
+            
+            decks_to_save = []
+            cards_to_save = []
+            boxes_to_save = []
+            
+            def collect_active(deck, parent_id=None):
+                deck_id = deck.get("_id")
+                if deck_id is not None:
+                    active_deck_ids.append(deck_id)
+                    decks_to_save.append((deck, parent_id))
+                    
+                for card in deck.get("cards", []) or []:
+                    card_id = card.get("_id")
+                    is_valid_id = False
+                    if card_id is not None and card_id != "":
+                        try:
+                            card_id = int(card_id)
+                            is_valid_id = True
+                        except ValueError:
+                            pass
+                    
+                    if is_valid_id:
+                        active_card_ids.append(card_id)
+                        
+                    cards_to_save.append((card, is_valid_id, card_id, deck_id))
+                    
+                    for box in card.get("boxes", []) or []:
+                        box_id = box.get("box_id")
+                        if box_id:
+                            active_box_ids.append(box_id)
+                            boxes_to_save.append((box, box_id, card))
+                            
+                children = deck.get("children", []) or deck.get("subdecks", []) or []
+                for child in children:
+                    collect_active(child, deck_id)
+                    
+            for d in data.get("decks", []) or []:
+                collect_active(d, None)
+                
+            # --- 3. Upsert Active Decks ---
+            for deck, parent_id in decks_to_save:
+                deck_id = deck.get("_id")
+                name = deck.get("name", "")
+                meta_dict = {k: v for k, v in deck.items() if k not in ["_id", "name", "cards", "children", "subdecks"]}
+                meta_str = json.dumps(meta_dict, ensure_ascii=False) if meta_dict else None
+                cursor.execute("INSERT OR REPLACE INTO decks (id, name, parent_id, meta) VALUES (?, ?, ?, ?);",
+                               (deck_id, name, parent_id, meta_str))
+                               
+            # --- 4. Upsert Active and New Cards ---
+            for card, is_valid_id, card_id, deck_id in cards_to_save:
+                pdf_path = card.get("pdf_path")
+                image_path = card.get("image_path")
+                zoom = card.get("_pdf_box_render_zoom")
+                due = card.get("due")
+                interval = card.get("interval")
+                factor = card.get("factor")
+                reps = card.get("reps")
+                lapses = card.get("lapses")
+                state = card.get("state")
+                
+                meta_card = {k: v for k, v in card.items() if k not in [
+                    "pdf_path", "image_path", "_pdf_box_render_zoom", "_id", "boxes",
+                    "due", "interval", "factor", "reps", "lapses", "state"
+                ]}
+                meta_card_str = json.dumps(meta_card, ensure_ascii=False) if meta_card else None
+                
+                if is_valid_id:
+                    cursor.execute("""
+                    INSERT OR REPLACE INTO cards (id, deck_id, pdf_path, image_path, pdf_box_render_zoom,
+                                       due, interval, factor, reps, lapses, state, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """, (card_id, deck_id, pdf_path, image_path, zoom, due, interval, factor, reps, lapses, state, meta_card_str))
+                else:
+                    cursor.execute("""
+                    INSERT INTO cards (deck_id, pdf_path, image_path, pdf_box_render_zoom,
+                                       due, interval, factor, reps, lapses, state, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """, (deck_id, pdf_path, image_path, zoom, due, interval, factor, reps, lapses, state, meta_card_str))
+                    card_id = cursor.lastrowid
+                    card["_id"] = card_id
+                    active_card_ids.append(card_id)
+                    
+            # --- 5. Upsert Active Boxes ---
+            for box, box_id, card in boxes_to_save:
+                # Retrieve the newly generated or resolved card ID
+                card_id = card.get("_id")
+                try:
+                    card_id = int(card_id)
+                except (ValueError, TypeError):
+                    continue
+                    
+                rect = box.get("rect", [0, 0, 0, 0])
+                rect_x, rect_y, rect_w, rect_h = rect[0], rect[1], rect[2], rect[3]
+                page_num = box.get("page_num", 0)
+                group_id = box.get("group_id")
+                shape = box.get("shape", "rect")
+                angle = box.get("angle", 0.0)
+                b_due = box.get("due")
+                b_interval = box.get("interval")
+                b_factor = box.get("factor")
+                b_reps = box.get("reps")
+                b_lapses = box.get("lapses")
+                b_state = box.get("state")
+                
+                meta_box = {k: v for k, v in box.items() if k not in [
+                    "box_id", "rect", "page_num", "group_id", "shape", "angle",
+                    "due", "interval", "factor", "reps", "lapses", "state"
+                ]}
+                meta_box_str = json.dumps(meta_box, ensure_ascii=False) if meta_box else None
+                
+                cursor.execute("""
+                INSERT OR REPLACE INTO boxes (box_id, card_id, rect_x, rect_y, rect_w, rect_h, page_num,
+                                             group_id, shape, angle, due, interval, factor, reps, lapses, state, meta)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """, (box_id, card_id, rect_x, rect_y, rect_w, rect_h, page_num,
+                      group_id, shape, angle, b_due, b_interval, b_factor, b_reps, b_lapses, b_state, meta_box_str))
+                      
+            # --- 6. Bulk Delete Stale Entities ---
+            # Avoid SQLite parameterized NOT IN variable limit crashes (max 999 host parameters)
+            # by fetching current database IDs, calculating stale ones via set difference in Python,
+            # and executing chunked deletes in safe batches of 500.
+            cursor.execute("SELECT box_id FROM boxes;")
+            db_box_ids = {row[0] for row in cursor.fetchall()}
+            cursor.execute("SELECT id FROM cards;")
+            db_card_ids = {row[0] for row in cursor.fetchall()}
+            cursor.execute("SELECT id FROM decks;")
+            db_deck_ids = {row[0] for row in cursor.fetchall()}
+
+            stale_box_ids = list(db_box_ids - set(active_box_ids))
+            stale_card_ids = list(db_card_ids - set(active_card_ids))
+            stale_deck_ids = list(db_deck_ids - set(active_deck_ids))
+
+            if stale_box_ids:
+                for i in range(0, len(stale_box_ids), 500):
+                    chunk = stale_box_ids[i:i+500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    cursor.execute(f"DELETE FROM boxes WHERE box_id IN ({placeholders});", chunk)
+
+            if stale_card_ids:
+                for i in range(0, len(stale_card_ids), 500):
+                    chunk = stale_card_ids[i:i+500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    cursor.execute(f"DELETE FROM cards WHERE id IN ({placeholders});", chunk)
+
+            if stale_deck_ids:
+                for i in range(0, len(stale_deck_ids), 500):
+                    chunk = stale_deck_ids[i:i+500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    cursor.execute(f"DELETE FROM decks WHERE id IN ({placeholders});", chunk)
+                
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+    def _load_from_sqlite(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT key, value FROM settings")
+        settings_dict = {}
+        for row in cursor.fetchall():
+            try:
+                settings_dict[row["key"]] = json.loads(row["value"])
+            except Exception:
+                settings_dict[row["key"]] = row["value"]
+                
+        cursor.execute("SELECT id, name, parent_id, meta FROM decks")
+        decks_rows = cursor.fetchall()
+        decks_by_id = {}
+        for row in decks_rows:
+            meta_val = row["meta"]
+            deck = {
+                "_id": row["id"],
+                "name": row["name"],
+                "cards": [],
+                "children": []
+            }
+            if meta_val:
+                try:
+                    deck.update(json.loads(meta_val))
+                except Exception:
+                    pass
+            decks_by_id[row["id"]] = (deck, row["parent_id"])
+            
+        cursor.execute("""
+        SELECT id, deck_id, pdf_path, image_path, pdf_box_render_zoom,
+               due, interval, factor, reps, lapses, state, meta 
+        FROM cards
+        """)
+        cards_rows = cursor.fetchall()
+        cards_by_id = {}
+        for row in cards_rows:
+            meta_val = row["meta"]
+            card = {
+                "pdf_path": row["pdf_path"],
+                "image_path": row["image_path"],
+                "_pdf_box_render_zoom": row["pdf_box_render_zoom"],
+                "boxes": []
+            }
+            if meta_val:
+                try:
+                    card.update(json.loads(meta_val))
+                except Exception:
+                    pass
+            for field in ["due", "interval", "factor", "reps", "lapses", "state"]:
+                if row[field] is not None:
+                    card[field] = row[field]
+            card["_id"] = row["id"]
+            cards_by_id[row["id"]] = card
+            
+            deck_id = row["deck_id"]
+            if deck_id in decks_by_id:
+                decks_by_id[deck_id][0]["cards"].append(card)
+                
+        cursor.execute("""
+        SELECT box_id, card_id, rect_x, rect_y, rect_w, rect_h, page_num,
+               group_id, shape, angle, due, interval, factor, reps, lapses, state, meta
+        FROM boxes
+        """)
+        boxes_rows = cursor.fetchall()
+        for row in boxes_rows:
+            meta_val = row["meta"]
+            box = {
+                "box_id": row["box_id"],
+                "rect": [row["rect_x"], row["rect_y"], row["rect_w"], row["rect_h"]],
+                "page_num": row["page_num"],
+                "group_id": row["group_id"],
+                "shape": row["shape"],
+                "angle": row["angle"]
+            }
+            if meta_val:
+                try:
+                    box.update(json.loads(meta_val))
+                except Exception:
+                    pass
+            for field in ["due", "interval", "factor", "reps", "lapses", "state"]:
+                if row[field] is not None:
+                    box[field] = row[field]
+            card_id = row["card_id"]
+            if card_id in cards_by_id:
+                cards_by_id[card_id]["boxes"].append(box)
+                
+        conn.close()
+        
+        root_decks = []
+        for deck, parent_id in decks_by_id.values():
+            if parent_id is None or parent_id not in decks_by_id:
+                root_decks.append(deck)
+            else:
+                decks_by_id[parent_id][0]["children"].append(deck)
+                
+        data = {"decks": root_decks}
+        data.update(settings_dict)
+        return data
+
+    def _backup_db_file(self, db_path):
+        if not os.path.exists(db_path):
+            return None
+        key = DirtyStore._backup_throttle_key(db_path)
+        now = time.monotonic()
+        min_interval = DirtyStore._save_backup_min_interval()
+        last_backup_ts = _LAST_SAVE_BACKUP_TS_BY_FILE.get(key)
+        if (
+            min_interval > 0
+            and last_backup_ts is not None
+            and now - last_backup_ts < min_interval
+        ):
+            return None
+        backup_dir = DirtyStore._backup_dir_for(db_path)
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(backup_dir, f"anki_occlusion_data.{stamp}.db")
+        counter = 1
+        while os.path.exists(backup_path):
+            backup_path = os.path.join(
+                backup_dir, f"anki_occlusion_data.{stamp}_{counter}.db"
+            )
+            counter += 1
+        shutil.copy2(db_path, backup_path)
+        _LAST_SAVE_BACKUP_TS_BY_FILE[key] = now
+        DirtyStore._prune_backups_db(backup_dir)
+        return backup_path
+
+    @staticmethod
+    def _prune_backups_db(backup_dir):
+        try:
+            backups = [
+                os.path.join(backup_dir, name)
+                for name in os.listdir(backup_dir)
+                if name.startswith("anki_occlusion_data.") and name.endswith(".db")
+            ]
+            backups.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+            for old_path in backups[MAX_SAVE_BACKUPS:]:
+                try:
+                    os.unlink(old_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def load(self):
         """Load from disk. Clears dirty flag."""
-        if os.path.exists(DATA_FILE):
+        db_path = self._get_db_path()
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+            
+        self._init_sqlite(db_path)
+        
+        # Check if we should migrate legacy JSON
+        legacy_json_path = self._get_legacy_json_path()
+        if self._is_db_empty(db_path) and os.path.exists(legacy_json_path):
             try:
+                print(f"[DEBUG][data_manager] Migrating legacy JSON to SQLite: {legacy_json_path}")
+                with open(legacy_json_path, "r", encoding="utf-8-sig") as f:
+                    legacy_data = json.load(f)
+                if legacy_data and isinstance(legacy_data, dict):
+                    self._save_to_sqlite(db_path, legacy_data)
+                    print("[DEBUG][data_manager] Legacy JSON migration completed successfully.")
+            except Exception as e:
+                print(f"[DEBUG][data_manager] Legacy JSON migration failed: {e}")
+                
+        try:
+            if DATA_FILE.endswith(".json") and os.path.exists(DATA_FILE):
                 with open(DATA_FILE, "r", encoding="utf-8-sig") as f:
                     self._data = json.load(f)
-            except Exception:
-                print("[DEBUG][data_safety] load_failed using_empty_default")
-                self._data = {"decks": []}
+            else:
+                self._data = self._load_from_sqlite(db_path)
+        except Exception as e:
+            print(f"[DEBUG][data_safety] load_failed using_empty_default: {e}")
+            self._data = {"decks": []}
+            
         self._initialize_sm2_states(self._data)
         with self._lock:
             self._dirty = False
@@ -170,7 +630,38 @@ class DirtyStore:
             with self._lock:
                 if save_seq < self._latest_save_request_seq:
                     return False
-            self._write_serialized_to_disk(snapshot_text, snapshot_summary)
+            
+            db_path = self._get_db_path()
+            db_dir = os.path.dirname(db_path)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
+                
+            # Perform SQLite backup if needed
+            self._backup_db_file(db_path)
+            
+            # Save data to SQLite
+            self._save_to_sqlite(db_path, self._data)
+            
+            # JSON Compatibility Mode
+            if DATA_FILE.endswith(".json"):
+                self._write_serialized_to_disk(snapshot_text, snapshot_summary)
+                
+            # Asynchronous Google Drive Sync (Runs in a background thread)
+            try:
+                from services.gdrive_service import gdrive_store
+                if gdrive_store.is_linked():
+                    def _bg_upload():
+                        try:
+                            gdrive_store.upload_file_to_drive(db_path)
+                            if DATA_FILE.endswith(".json") and os.path.exists(DATA_FILE):
+                                gdrive_store.upload_file_to_drive(DATA_FILE)
+                        except Exception as ex:
+                            print(f"[data_manager] GDrive background upload failed: {ex}")
+                    
+                    threading.Thread(target=_bg_upload, daemon=True, name="GDrive-AutoSync").start()
+            except Exception as e:
+                print(f"[data_manager] Failed to initialize GDrive sync: {e}")
+                
             return True
 
     def save_soon(self, min_interval: float = 3.0, delay_from_now: bool = False):
@@ -318,9 +809,12 @@ class DirtyStore:
 
     @staticmethod
     def _write_to_disk(data):
-        serialized_text = json.dumps(data, ensure_ascii=False, indent=2)
-        new_summary = DirtyStore._data_summary(data)
-        DirtyStore._write_serialized_to_disk(serialized_text, new_summary)
+        db_path = DATA_FILE[:-5] + ".db" if DATA_FILE.endswith(".json") else DATA_FILE
+        DirtyStore()._save_to_sqlite(db_path, data)
+        if DATA_FILE.endswith(".json"):
+            serialized_text = json.dumps(data, ensure_ascii=False, indent=2)
+            new_summary = DirtyStore._data_summary(data)
+            DirtyStore._write_serialized_to_disk(serialized_text, new_summary)
 
     @staticmethod
     def _replace_file_with_retry(src, dst, attempts=8, delay=0.05):
@@ -530,14 +1024,14 @@ class _DeckHistory:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _snapshot(data: dict) -> str:
-        import json
-        return json.dumps(data)
+    def _snapshot(data: dict) -> dict:
+        import copy
+        return copy.deepcopy(data)
 
     @staticmethod
-    def _restore(snapshot: str) -> dict:
-        import json
-        return json.loads(snapshot)
+    def _restore(snapshot: dict) -> dict:
+        import copy
+        return copy.deepcopy(snapshot)
 
     def push(self, data: dict):
         """Mutate se PEHLE call karo."""

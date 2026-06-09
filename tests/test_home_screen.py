@@ -27,12 +27,17 @@ class HomeScreenJournalTests(unittest.TestCase):
         mock_dialog_instance = MagicMock()
         mock_journal_dialog_class.return_value = mock_dialog_instance
 
+        # Mock HomeScreen dependencies
+        self.home_screen._current_theme = "classic"
+        self.home_screen._tmnt_layout = None
+        self.home_screen._ensure_classic_layout = MagicMock()
+        self.home_screen._get_splitter = MagicMock(return_value=None)
+
         # Call the method
         self.home_screen._show_journal()
 
-        # Verify dialog was instantiated with self as parent and exec_ was called
-        mock_journal_dialog_class.assert_called_once_with(self.home_screen)
-        mock_dialog_instance.exec_.assert_called_once()
+        # Verify dialog was instantiated with self as parent
+        mock_journal_dialog_class.assert_called_once_with(parent=self.home_screen)
 
     @patch('PyQt5.QtWidgets.QMessageBox.warning')
     @patch('ui.home_screen._JOURNAL_AVAILABLE', False)
@@ -323,6 +328,7 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         class FakeReview(QWidget):
             finished = pyqtSignal()
             cancelled = pyqtSignal()
+            undo_requested_when_empty = pyqtSignal()
 
             def __init__(self, *args, **kwargs):
                 super().__init__()
@@ -348,6 +354,7 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         class FakeReview(QWidget):
             finished = pyqtSignal()
             cancelled = pyqtSignal()
+            undo_requested_when_empty = pyqtSignal()
 
             def __init__(self, *args, **kwargs):
                 super().__init__()
@@ -423,6 +430,7 @@ class _FakeTMNTHomeLayout(QWidget):
     btn_shortcuts_clicked = pyqtSignal()
     font_change = pyqtSignal(int)
     bgm_toggle = pyqtSignal()
+    bgm_volume_changed = pyqtSignal(int)
 
     def __init__(self, data, parent=None):
         super().__init__(parent)
