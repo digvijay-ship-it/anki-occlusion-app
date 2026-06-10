@@ -492,7 +492,9 @@ class ReviewSessionManager:
                     page_str = f"p.{page + 1} · "
 
             # ── Box label ─────────────────────────────────────────────────────
-            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            if card.get("card_type") == "text":
+                label = f"📝 {card.get('title', 'Text')}"
+            elif isinstance(box_idx, tuple) and box_idx[0] == "group":
                 gid = box_idx[1]
                 # Find box number of first box in group
                 grp_num = next(

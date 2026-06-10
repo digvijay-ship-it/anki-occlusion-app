@@ -182,6 +182,7 @@ from theme_manager import (
     get_palette as _get_palette,
     normalize_theme,
     NINJA_THEME_ENABLED,
+    get_label,
 )
 
 _DARK = _get_palette("dark")
@@ -510,6 +511,8 @@ class DeckView(QWidget):
         hdr.addStretch()
         self.btn_add = QPushButton("＋ Add Card")
         self.btn_add.clicked.connect(self._add_card)
+        self.btn_add_text = QPushButton("＋ Basic Card")
+        self.btn_add_text.clicked.connect(self._add_text_card)
         self.btn_due = QPushButton("🔴 Review Due")
         self.btn_due.setObjectName("danger")
         self.btn_due.clicked.connect(self._review_due)
@@ -517,6 +520,7 @@ class DeckView(QWidget):
         self.btn_all.setObjectName("success")
         self.btn_all.clicked.connect(self._review_all)
         hdr.addWidget(self.btn_add)
+        hdr.addWidget(self.btn_add_text)
         hdr.addWidget(self.btn_due)
         hdr.addWidget(self.btn_all)
         L.addWidget(self.hdr_w)
@@ -722,6 +726,14 @@ class DeckView(QWidget):
                 f"QPushButton{{background:transparent;border:2px solid {C_GREEN};color:{C_GREEN};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:12px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(80,250,123,0.1);}}"
             )
 
+            C_PURPLE = "#A86CFF"
+            self.btn_add_text.setText(" SCRIBE TILE")
+            self.btn_add_text.setIcon(QIcon(DojoAssets.get().get_ui_icon(1, 32)))
+            self.btn_add_text.setIconSize(QSize(24, 24))
+            self.btn_add_text.setStyleSheet(
+                f"QPushButton{{background:transparent;border:2px solid {C_PURPLE};color:{C_PURPLE};border-radius:4px;padding:8px 16px;font-family:'Segoe UI';font-weight:bold;font-size:12px;letter-spacing:1px;text-align:left;}} QPushButton:hover{{background:rgba(168,108,255,0.1);}}"
+            )
+
         else:
             self.lbl_deck_sub.hide()
             self.lbl_deck_icon.hide()
@@ -738,9 +750,13 @@ class DeckView(QWidget):
             if not self.deck:
                 self.lbl_deck.setText("← Select a deck")
 
-            self.btn_add.setText("＋ Add Card")
+            self.btn_add.setText(get_label("BTN_ADD", theme))
             self.btn_add.setIcon(QIcon())
             self.btn_add.setStyleSheet("")
+
+            self.btn_add_text.setText(get_label("BTN_ADD_TEXT", theme))
+            self.btn_add_text.setIcon(QIcon())
+            self.btn_add_text.setStyleSheet("")
 
             self.btn_all.setText("▶ Review")
             self.btn_all.setIcon(QIcon())
@@ -909,33 +925,37 @@ class DeckView(QWidget):
                 "🔴 Due" if self._card_has_due_today(c) else f"✅ {sm2_days_left(c)}d"
             )
 
-            # ── Pages count ───────────────────────────────────────────────────
-            pdf_path = resolve_asset_path(c.get("pdf_path", ""))
-            if pdf_path and os.path.exists(pdf_path) and _pdf_support_available():
-                n_pages = get_pdf_page_count(pdf_path)
-                pages_str = f"📄{n_pages}p  "
-            else:
+            if c.get("card_type") == "text":
                 pages_str = ""
-
-            # ── Mask count: grouped + individual ─────────────────────────────
-            seen_grp = set()
-            n_grouped = 0
-            n_indiv = 0
-            boxes = c.get("boxes", [])
-            for b in boxes:
-                gid = b.get("group_id", "")
-                if gid:
-                    if gid not in seen_grp:
-                        seen_grp.add(gid)
-                        n_grouped += 1
+                mask_str = "📝 Text"
+            else:
+                # ── Pages count ───────────────────────────────────────────────────
+                pdf_path = resolve_asset_path(c.get("pdf_path", ""))
+                if pdf_path and os.path.exists(pdf_path) and _pdf_support_available():
+                    n_pages = get_pdf_page_count(pdf_path)
+                    pages_str = f"📄{n_pages}p  "
                 else:
-                    n_indiv += 1
-            mask_parts = []
-            if n_grouped:
-                mask_parts.append(f"{n_grouped}grp")
-            if n_indiv:
-                mask_parts.append(f"{n_indiv}ind")
-            mask_str = "🎭" + ("+".join(mask_parts) if mask_parts else "0")
+                    pages_str = ""
+
+                # ── Mask count: grouped + individual ─────────────────────────────
+                seen_grp = set()
+                n_grouped = 0
+                n_indiv = 0
+                boxes = c.get("boxes", [])
+                for b in boxes:
+                    gid = b.get("group_id", "")
+                    if gid:
+                        if gid not in seen_grp:
+                            seen_grp.add(gid)
+                            n_grouped += 1
+                    else:
+                        n_indiv += 1
+                mask_parts = []
+                if n_grouped:
+                    mask_parts.append(f"{n_grouped}grp")
+                if n_indiv:
+                    mask_parts.append(f"{n_indiv}ind")
+                mask_str = "🎭" + ("+".join(mask_parts) if mask_parts else "0")
 
             item = QListWidgetItem(
                 f"  {c.get('title','Untitled')}  "
@@ -1033,6 +1053,31 @@ class DeckView(QWidget):
         dlg.clear_recovery_draft()
         print("[DEBUG][data_save] card_add_checkpoint_saved")
 
+    def _add_text_card(self):
+        if not self.deck:
+            return
+        self._push_undo()
+        from ui.text_card_editor_dialog import TextCardEditorDialog
+        dlg = TextCardEditorDialog(self, data=self._data, deck=self.deck)
+        res = dlg.exec_()
+        home = self._find_home()
+        if home and hasattr(home, "_clear_home_ram_caches"):
+            home._clear_home_ram_caches()
+        if res != QDialog.Accepted:
+            self._undo_stack.pop() if self._undo_stack else None
+            return
+        card = dlg.get_card()
+        self.deck.setdefault("cards", []).append(card)
+
+        home = self._find_home()
+        if home:
+            home.refresh()
+        else:
+            self._refresh()
+        store.mark_dirty()  # 🔒 DirtyStore
+        store.save_force(async_save=True)
+        print("[DEBUG][data_save] text_card_add_checkpoint_saved")
+
     def _find_home(self):
         from ui.home_screen import HomeScreen
 
@@ -1050,6 +1095,45 @@ class DeckView(QWidget):
         cards = self.deck.get("cards", [])
         if not 0 <= idx < len(cards):
             return
+        card = cards[idx]
+        if card.get("card_type") == "text":
+            from ui.text_card_editor_dialog import TextCardEditorDialog
+            dlg = TextCardEditorDialog(self, card=dict(card), data=self._data, deck=self.deck)
+            res = dlg.exec_()
+            home = self._find_home()
+            if home and hasattr(home, "_clear_home_ram_caches"):
+                home._clear_home_ram_caches()
+            if res == QDialog.Accepted:
+                c = dlg.get_card()
+                # Preserve SM-2 state
+                SM2_KEYS = (
+                    "sched_state",
+                    "sched_step",
+                    "sm2_interval",
+                    "sm2_ease",
+                    "sm2_due",
+                    "sm2_last_quality",
+                    "sm2_repetitions",
+                    "reviews",
+                )
+                for k in SM2_KEYS:
+                    if k in card:
+                        c[k] = card[k]
+                cards[idx] = c
+                from perf_utils import invalidate_deck_stats
+                invalidate_deck_stats()
+                home = self._find_home()
+                if home:
+                    home.refresh()
+                else:
+                    self._refresh()
+                store.mark_dirty()
+                store.save_force(async_save=True)
+                print("[DEBUG][data_save] text_card_edit_checkpoint_saved")
+            else:
+                self._undo_stack.pop() if self._undo_stack else None
+            return
+
         self._push_undo()
         dlg = _load_card_editor_dialog()(
             self, card=dict(cards[idx]), data=self._data, deck=self.deck

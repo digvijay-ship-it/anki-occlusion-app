@@ -90,6 +90,9 @@ class Card:
     image_path: Optional[str] = None
     _auto_subdeck: Optional[str] = None
     last_reviewed_at: Optional[str] = None
+    card_type: str = "occlusion"
+    question: str = ""
+    answer: str = ""
     
     # SM2 fields (for cards without boxes)
     sm2_interval: int = 1

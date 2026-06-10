@@ -58,6 +58,9 @@ class ReviewItem(BaseModel):
     pdf_box_render_zoom: float = 1.5
     pdf_path: str | None = None
     image_path: str | None = None
+    card_type: str = "occlusion"
+    question: str = ""
+    answer: str = ""
 
 
 class RateRequest(BaseModel):

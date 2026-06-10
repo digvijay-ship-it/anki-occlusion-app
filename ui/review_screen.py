@@ -97,6 +97,8 @@ from pdf_engine import (
 
 from editor_ui import OcclusionCanvas, _ZoomableScrollArea
 from ui.editor_dialog import CardEditorDialog
+from ui.text_card_editor_dialog import TextCardEditorDialog
+from ui.text_review_widget import TextReviewWidget
 from ui.pdf_annotation_dialog import PdfAnnotationDialog
 from ui.canvas.retro_effects import CRTOverlay, ParticleBurstOverlay
 from PyQt5.QtMultimedia import QSoundEffect
@@ -127,6 +129,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
     QWidget,
+    QStackedWidget,
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
@@ -1223,6 +1226,41 @@ class ReviewScreen(QWidget):
             icon = parts[1] if len(parts) > 1 else ""
             btn.setText(f"{parts[0]} {icon}  {val}  {color_lbl}")
 
+        if card.get("card_type") == "text":
+            self._stacked_widget.setCurrentIndex(1)
+            self._text_review_widget.load_card(card)
+            # Disable page nav/zoom/pen buttons in toolbar
+            self._btn_prev_page.setEnabled(False)
+            self._btn_next_page.setEnabled(False)
+            self._page_jump.setEnabled(False)
+            self._btn_invert_pdf.setEnabled(False)
+            self._btn_toggle_pen.setEnabled(False)
+            self._btn_pen_color.setEnabled(False)
+            self._btn_pen_clear.setEnabled(False)
+            
+            self._rating_frame.hide()
+            QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
+            self._text_review_widget.txt_input.setFocus()
+            
+            self._review_profile_log(
+                "item_loaded",
+                idx=f"{self._idx + 1}/{len(self._items)}",
+                same_pdf=False,
+                title=item_title,
+                box_ref=box_idx,
+                elapsed=f"{(time.perf_counter() - load_t0) * 1000:.1f}ms",
+            )
+            return
+        else:
+            self._stacked_widget.setCurrentIndex(0)
+            self._btn_prev_page.setEnabled(True)
+            self._btn_next_page.setEnabled(True)
+            self._page_jump.setEnabled(True)
+            self._btn_invert_pdf.setEnabled(True)
+            self._btn_toggle_pen.setEnabled(True)
+            self._btn_pen_color.setEnabled(True)
+            self._btn_pen_clear.setEnabled(True)
+
         current_path = getattr(self.canvas, "_current_pdf_path", "") or getattr(
             self, "_canvas_pdf_path", ""
         )
@@ -1326,10 +1364,14 @@ class ReviewScreen(QWidget):
                 # Already revealed — hide karo (toggle back)
                 self._rating_frame.hide()
                 self._show_overlay(self._reveal_bar)
-                # Masks wapas hide karo
-                for b in self.canvas._boxes:
-                    b["revealed"] = False
-                self.canvas._redraw()
+                # Reset text card or masks wapas hide karo
+                card = self._items[self._idx][0] if 0 <= self._idx < len(self._items) else None
+                if card and card.get("card_type") == "text":
+                    self._text_review_widget.load_card(card)
+                else:
+                    for b in self.canvas._boxes:
+                        b["revealed"] = False
+                    self.canvas._redraw()
             else:
                 self._reveal_current()
         elif self._rating_frame.isVisible() and self._rating_quality_for_event(e) is not None:
@@ -1438,8 +1480,11 @@ class ReviewScreen(QWidget):
     def _reveal_current(self):
         if not (0 <= self._idx < len(self._items)):
             return
-        _, box_idx, _ = self._items[self._idx]
-        if box_idx is None:
+        card, box_idx, _ = self._items[self._idx]
+        if card.get("card_type") == "text":
+            self._text_review_widget.reveal_answer()
+            self.setFocus()
+        elif box_idx is None:
             self.canvas.reveal_all()
         elif isinstance(box_idx, tuple) and box_idx[0] == "group":
             gid = box_idx[1]
@@ -1991,12 +2036,18 @@ class ReviewScreen(QWidget):
             debug_hook=self._review_nav_debug,
         )
 
+        self._stacked_widget = QStackedWidget()
+        self._stacked_widget.addWidget(self._canvas_scroll)
+        self._text_review_widget = TextReviewWidget(self)
+        self._text_review_widget.answer_submitted.connect(self._reveal_current)
+        self._stacked_widget.addWidget(self._text_review_widget)
+
         self._canvas_stage = QWidget()
         self._canvas_stage.setStyleSheet(f"background:{bg};")
         canvas_stage_l = QVBoxLayout(self._canvas_stage)
         canvas_stage_l.setContentsMargins(0, 0, 0, 0)
         canvas_stage_l.setSpacing(0)
-        canvas_stage_l.addWidget(self._canvas_scroll)
+        canvas_stage_l.addWidget(self._stacked_widget)
 
         self._floating_timer_frame = None
         self._floating_timer_session = None
@@ -2974,6 +3025,19 @@ class ReviewScreen(QWidget):
         if not (0 <= idx < len(self._items)):
             return
         card, box_idx, sm2_obj = self._items[idx]
+
+        if card.get("card_type") == "text":
+            dlg = TextCardEditorDialog(self, card=dict(card), data=self._data, deck=None)
+            self._active_editor = dlg
+            dlg.finished.connect(
+                lambda result, d=dlg, c=card: self._finish_edit_current_text_card(d, c, result)
+            )
+            dlg.setWindowModality(Qt.ApplicationModal)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            return
+
         scroll_pos = self._canvas_scroll.verticalScrollBar().value()
         review_scale = self.canvas._scale
         img_y = scroll_pos / max(review_scale, 0.01)
@@ -3004,6 +3068,41 @@ class ReviewScreen(QWidget):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def _finish_edit_current_text_card(self, dlg, card, result):
+        if getattr(self, "_active_editor", None) is dlg:
+            self._active_editor = None
+        if result != QDialog.Accepted:
+            return
+            
+        edited = dlg.get_card()
+        # Preserve SM-2 state of the card
+        SM2_KEYS = (
+            "sched_state",
+            "sched_step",
+            "sm2_interval",
+            "sm2_ease",
+            "sm2_due",
+            "sm2_last_quality",
+            "sm2_repetitions",
+            "reviews",
+        )
+        for k in SM2_KEYS:
+            if k in card:
+                edited[k] = card[k]
+                
+        card.update(edited)
+        if self._data:
+            store.mark_dirty()
+            self._review_data_dirty = True
+            
+        self._items = [
+            (c, None, c) if id(c) == id(card) else item 
+            for item in self._items
+        ]
+        self.mgr._queue_needs_full_rebuild = True
+        self._rebuild_queue()
+        self._load_item()
 
     def _finish_edit_current_card(self, dlg, card, before_ids, result):
         if getattr(self, "_active_editor", None) is dlg:
@@ -3197,6 +3296,8 @@ class ReviewScreen(QWidget):
         if not (0 <= view_idx < len(self._items)):
             return
         card, box_idx, _ = self._items[view_idx]
+        if card.get("card_type") == "text":
+            return
         reload_t0 = time.perf_counter()
         self._bg_pending_inserts.clear()
         self._pending_skeleton_result = None

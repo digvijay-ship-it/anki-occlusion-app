@@ -102,8 +102,8 @@ class GDriveService:
                 pass
         # Fall back to default placeholders
         self._config = {
-            "client_id": "205261143452-bdt86s376r2q41cd6vnchk92jcvrfsib.apps.googleusercontent.com",
-            "client_secret": "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"
+            "client_id": "205261143452-r2tv7nc4ndp2s4ncd4u6n2tfl4a4hjcb.apps.googleusercontent.com",
+            "client_secret": "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"
         }
 
     def save_config(self, client_id, client_secret):
@@ -142,12 +142,6 @@ class GDriveService:
                 pass
 
     def start_oauth_flow(self, port=8080):
-        try:
-            with open("gdrive_debug.log", "a", encoding="utf-8") as f:
-                f.write(f"start_oauth_flow: client_id={self._config.get('client_id')} client_secret={self._config.get('client_secret')}\n")
-        except Exception as e:
-            print(f"Failed to write debug log: {e}")
-
         if not self.is_configured():
             raise ValueError("Google OAuth credentials (Client ID / Secret) are not configured.")
 
@@ -181,12 +175,6 @@ class GDriveService:
     def exchange_code_for_tokens(self, code, port=8080):
         client_id = self._config["client_id"]
         client_secret = self._config["client_secret"]
-        try:
-            with open("gdrive_debug.log", "a", encoding="utf-8") as f:
-                f.write(f"exchange_code_for_tokens: client_id={client_id} client_secret={client_secret}\n")
-        except Exception as e:
-            print(f"Failed to write debug log: {e}")
-
         redirect_uri = f"http://localhost:{port}"
 
         token_url = "https://oauth2.googleapis.com/token"
