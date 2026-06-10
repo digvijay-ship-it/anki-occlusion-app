@@ -401,6 +401,11 @@ class TMNTStatCard(QFrame):
             self._hover_glow.start()
 
     def _setup(self, title, subtitle, color):
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        if theme_name not in ("tmnt", "manhattan"):
+            theme_name = "tmnt"
+
         self.setStyleSheet(
             _scale_ss(
                 f"""
@@ -436,14 +441,22 @@ class TMNTStatCard(QFrame):
 
         txt = QVBoxLayout()
         txt.setSpacing(_px(2, self._scale))
+        
+        # Manhattan font scaling for number val label
+        val_size = 22 if theme_name == "manhattan" else 32
         self.val_lbl = QLabel("0")
         self.val_lbl.setStyleSheet(
             _scale_ss(
-                f"color: {color}; font-size: 32px; font-weight: 900; "
+                f"color: {color}; font-size: {val_size}px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; background: transparent; border: none;",
                 self._scale,
             )
         )
+        val_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        val_font.setPixelSize(_px(val_size, self._scale))
+        val_font.setBold(True)
+        self.val_lbl.setFont(val_font)
+
         t_lbl = QLabel(title)
         t_lbl.setStyleSheet(
             _scale_ss(
@@ -452,6 +465,11 @@ class TMNTStatCard(QFrame):
                 self._scale,
             )
         )
+        t_font = QFont(T_MONO)
+        t_font.setPixelSize(_px(10, self._scale))
+        t_font.setBold(True)
+        t_lbl.setFont(t_font)
+
         s_lbl = QLabel(subtitle)
         s_lbl.setStyleSheet(
             _scale_ss(
@@ -460,6 +478,10 @@ class TMNTStatCard(QFrame):
                 self._scale,
             )
         )
+        s_font = QFont(T_MONO)
+        s_font.setPixelSize(_px(10, self._scale))
+        s_lbl.setFont(s_font)
+
         txt.addWidget(self.val_lbl)
         txt.addWidget(t_lbl)
         txt.addWidget(s_lbl)
@@ -482,6 +504,12 @@ class TMNTMissionBanner(QFrame):
         super().__init__(parent)
         self.setObjectName("tmnt_banner1")
         self._scale = _tmnt_scale(data)
+        # Determine theme name
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        if theme_name not in ("tmnt", "manhattan"):
+            theme_name = "tmnt"
+
         self.setStyleSheet(
             _scale_ss(
                 f"""
@@ -507,22 +535,36 @@ class TMNTMissionBanner(QFrame):
 
         left = QVBoxLayout()
         left.setSpacing(_px(6, self._scale))
-        title = QLabel("⚔  TRAINING MISSION")
+        
+        title_text = "⚔  STAGE COMBAT" if theme_name == "manhattan" else "⚔  TRAINING MISSION"
+        title_size = 9 if theme_name == "manhattan" else 12
+        title = QLabel(title_text)
         title.setStyleSheet(
             _scale_ss(
-                f"color: {T_PURPLE}; font-size: 12px; font-weight: 900; "
+                f"color: {T_PURPLE}; font-size: {title_size}px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 1px; background: transparent; border: none;",
                 self._scale,
             )
         )
-        desc = QLabel("Continue your training and defeat the due cards!")
+        title_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        title_font.setPixelSize(_px(title_size, self._scale))
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        desc_text = "Stop Shredder's project and clear the levels!" if theme_name == "manhattan" else "Continue your training and defeat the due cards!"
+        desc = QLabel(desc_text)
         desc.setStyleSheet(
             _scale_ss(
                 f"color: {T_TEXT}; font-size: 14px; font-family: {T_MONO}; background: transparent; border: none;",
                 self._scale,
             )
         )
-        self.quote = QLabel("> Cowabunga! 🐢_")
+        desc_font = QFont(T_MONO)
+        desc_font.setPixelSize(_px(14, self._scale))
+        desc.setFont(desc_font)
+
+        quote_text = "> Pizza time! 🍕_" if theme_name == "manhattan" else "> Cowabunga! 🐢_"
+        self.quote = QLabel(quote_text)
         self.quote.setStyleSheet(
             _scale_ss(
                 f"color: {T_GREEN}; font-size: 12px; font-weight: bold; "
@@ -530,6 +572,11 @@ class TMNTMissionBanner(QFrame):
                 self._scale,
             )
         )
+        quote_font = QFont(T_MONO)
+        quote_font.setPixelSize(_px(12, self._scale))
+        quote_font.setBold(True)
+        self.quote.setFont(quote_font)
+
         left.addWidget(title)
         left.addWidget(desc)
         left.addWidget(self.quote)
@@ -541,7 +588,24 @@ class TMNTMissionBanner(QFrame):
         right.setSpacing(_px(8, self._scale))
         right.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
 
-        self.btn_train = QPushButton("▶  START TRAINING\nREVIEW DUE SCROLLS")
+        if theme_name == "manhattan":
+            btn_train_text = "▶  FIGHT FOOT CLAN\nREVIEW DUE COMBATS"
+            btn_train_size = 9
+            btn_train_family = "Press Start 2P"
+            btn_selected_text = "◎  CLEAR SELECTED AREA"
+            btn_selected_size = 8
+            btn_selected_family = "Press Start 2P"
+            btn_selected_bold = True
+        else:
+            btn_train_text = "▶  START TRAINING\nREVIEW DUE SCROLLS"
+            btn_train_size = 14
+            btn_train_family = "Orbitron"
+            btn_selected_text = "◎  TRAIN SELECTED SCROLL"
+            btn_selected_size = 12
+            btn_selected_family = T_MONO
+            btn_selected_bold = True
+
+        self.btn_train = QPushButton(btn_train_text)
         self.btn_train.setStyleSheet(
             _scale_ss(
                 f"""
@@ -551,8 +615,8 @@ class TMNTMissionBanner(QFrame):
                 border: 1px solid #60c467;
                 border-radius: 2px;
                 font-weight: 900;
-                font-family: {T_PIXEL};
-                font-size: 14px;
+                font-family: {btn_train_family};
+                font-size: {btn_train_size}px;
                 min-height: 52px;
                 padding: 0px 24px;
                 text-align: center;
@@ -564,8 +628,13 @@ class TMNTMissionBanner(QFrame):
         )
         self.btn_train.clicked.connect(self.train_clicked)
         _apply_glow(self.btn_train, "#5bc561", blur=_px(24, self._scale), alpha=120)
+        
+        btn_train_font = QFont(btn_train_family)
+        btn_train_font.setPixelSize(_px(btn_train_size, self._scale))
+        btn_train_font.setBold(True)
+        self.btn_train.setFont(btn_train_font)
 
-        self.btn_selected = QPushButton("◎  TRAIN SELECTED SCROLL")
+        self.btn_selected = QPushButton(btn_selected_text)
         self.btn_selected.setStyleSheet(
             _scale_ss(
                 f"""
@@ -574,9 +643,9 @@ class TMNTMissionBanner(QFrame):
                 color: #aab1c4;
                 border: 1px solid #555c6e;
                 border-radius: 2px;
-                font-size: 12px;
+                font-size: {btn_selected_size}px;
                 font-weight: 700;
-                font-family: {T_MONO};
+                font-family: {btn_selected_family};
                 letter-spacing: 1px;
                 min-height: 36px;
                 padding: 0px 16px;
@@ -587,6 +656,11 @@ class TMNTMissionBanner(QFrame):
             )
         )
         self.btn_selected.clicked.connect(self.selected_clicked)
+        
+        btn_sel_font = QFont(btn_selected_family)
+        btn_sel_font.setPixelSize(_px(btn_selected_size, self._scale))
+        btn_sel_font.setBold(btn_selected_bold)
+        self.btn_selected.setFont(btn_sel_font)
 
         right.addWidget(self.btn_train)
         right.addWidget(self.btn_selected)
@@ -948,6 +1022,10 @@ class TMNTBangaLab(QFrame):
                 self._scale,
             )
         )
+        clr_font = QFont(T_MONO)
+        clr_font.setPixelSize(_px(9, self._scale))
+        clr_font.setBold(True)
+        clr.setFont(clr_font)
         clr.clicked.connect(self._clear_all)
         body.addWidget(clr)
         body.addStretch()
@@ -1126,6 +1204,10 @@ class TMNTBangaDrawer(QFrame):
                 self._scale,
             )
         )
+        chip_font = QFont(T_MONO)
+        chip_font.setPixelSize(_px(10, self._scale))
+        chip_font.setBold(True)
+        self._memory_chip.setFont(chip_font)
 
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
@@ -1725,8 +1807,15 @@ class TMNTSidebar(QFrame):
         )
         fl.setSpacing(_px(8, self._scale))
 
+        # Determine theme name
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        if theme_name not in ("tmnt", "manhattan"):
+            theme_name = "tmnt"
+
         def _foot_btn(text):
             b = QPushButton(text)
+            f_size = 8 if theme_name == "manhattan" else 12
             b.setStyleSheet(
                 _scale_ss(
                     f"""
@@ -1735,7 +1824,7 @@ class TMNTSidebar(QFrame):
                     color: {T_GREEN};
                     border: 1px solid {T_GREEN};
                     border-radius: 2px;
-                    font-size: 12px;
+                    font-size: {f_size}px;
                     font-weight: 900;
                     font-family: {T_PIXEL};
                     padding: 6px 8px;
@@ -1745,10 +1834,16 @@ class TMNTSidebar(QFrame):
                     self._scale,
                 )
             )
+            btn_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+            btn_font.setPixelSize(_px(f_size, self._scale))
+            btn_font.setBold(True)
+            b.setFont(btn_font)
             return b
 
-        btn_new = _foot_btn("+ NEW DOJO")
-        btn_sub = _foot_btn("+ SUB Dojo")
+        new_label = "+ STAGE" if theme_name == "manhattan" else "+ NEW DOJO"
+        sub_label = "+ SUBSTAGE" if theme_name == "manhattan" else "+ SUB Dojo"
+        btn_new = _foot_btn(new_label)
+        btn_sub = _foot_btn(sub_label)
         from PyQt5.QtGui import QIcon
         from PyQt5.QtCore import QSize
 
@@ -2388,7 +2483,32 @@ class TMNTMainContent(DeckView):
         bot = QHBoxLayout()
         bot.setSpacing(_px(10, self._scale))
 
-        self.btn_edit = QPushButton("✏  Edit")
+        # Determine theme name
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        if theme_name not in ("tmnt", "manhattan"):
+            theme_name = "tmnt"
+
+        if theme_name == "manhattan":
+            edit_text = "✏  EDIT"
+            btn_font_size = 8
+            btn_font_family = "Press Start 2P"
+            btn_font_bold = True
+            delete_text = "🗑  DELETE"
+            del_font_size = 8
+            del_font_family = "Press Start 2P"
+            del_font_bold = True
+        else:
+            edit_text = "✏  Edit"
+            btn_font_size = 14
+            btn_font_family = T_MONO
+            btn_font_bold = False
+            delete_text = "🗑  DELETE"
+            del_font_size = 14
+            del_font_family = T_MONO
+            del_font_bold = True
+
+        self.btn_edit = QPushButton(edit_text)
         self.btn_edit.setStyleSheet(
             _scale_ss(
                 f"""
@@ -2397,8 +2517,8 @@ class TMNTMainContent(DeckView):
                 color: {T_TEXT};
                 border: 1px solid {T_BORDER};
                 border-radius: 2px;
-                font-size: 14px;
-                font-family: {T_MONO};
+                font-size: {btn_font_size}px;
+                font-family: {btn_font_family};
                 padding: 6px 14px;
             }}
             QPushButton:hover {{ background: {T_CARD}; color: white; }}
@@ -2409,8 +2529,12 @@ class TMNTMainContent(DeckView):
         self.btn_edit.clicked.connect(
             lambda: self._edit_card(self.card_list.currentItem())
         )
+        edit_font = QFont(btn_font_family)
+        edit_font.setPixelSize(_px(btn_font_size, self._scale))
+        edit_font.setBold(btn_font_bold)
+        self.btn_edit.setFont(edit_font)
 
-        self.btn_delete_tmnt = QPushButton("🗑  DELETE")
+        self.btn_delete_tmnt = QPushButton(delete_text)
         self.btn_delete_tmnt.setStyleSheet(
             _scale_ss(
                 f"""
@@ -2419,9 +2543,9 @@ class TMNTMainContent(DeckView):
                 color: {T_RED};
                 border: 1px solid {T_RED};
                 border-radius: 2px;
-                font-size: 14px;
+                font-size: {del_font_size}px;
                 font-weight: bold;
-                font-family: {T_MONO};
+                font-family: {del_font_family};
                 padding: 6px 14px;
             }}
             QPushButton:hover {{ background: {T_RED}; color: white; }}
@@ -2431,6 +2555,11 @@ class TMNTMainContent(DeckView):
         )
         self.btn_delete_tmnt.clicked.connect(self._delete_card)
         _apply_glow(self.btn_delete_tmnt, T_RED, blur=_px(18, self._scale), alpha=100)
+        
+        del_font = QFont(del_font_family)
+        del_font.setPixelSize(_px(del_font_size, self._scale))
+        del_font.setBold(del_font_bold)
+        self.btn_delete_tmnt.setFont(del_font)
 
         bot.addWidget(self.btn_edit)
         bot.addWidget(self.btn_delete_tmnt)
