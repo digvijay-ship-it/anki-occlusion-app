@@ -101,7 +101,7 @@ PALETTES = {
         "C_SUBTEXT": "#7a8ca3",
         "C_BORDER": "#212a3b",
         "C_YELLOW": "#ffcc00",
-        "header_font": "'Press Start 2P', 'Courier New', monospace",
+        "header_font": "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif",
         "body_font": "'Courier New', monospace",
     },
 }

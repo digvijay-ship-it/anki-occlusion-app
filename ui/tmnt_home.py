@@ -442,8 +442,7 @@ class TMNTStatCard(QFrame):
         txt = QVBoxLayout()
         txt.setSpacing(_px(2, self._scale))
         
-        # Manhattan font scaling for number val label
-        val_size = 22 if theme_name == "manhattan" else 32
+        val_size = 32
         self.val_lbl = QLabel("0")
         self.val_lbl.setStyleSheet(
             _scale_ss(
@@ -452,7 +451,7 @@ class TMNTStatCard(QFrame):
                 self._scale,
             )
         )
-        val_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        val_font = QFont("Orbitron")
         val_font.setPixelSize(_px(val_size, self._scale))
         val_font.setBold(True)
         self.val_lbl.setFont(val_font)
@@ -537,7 +536,7 @@ class TMNTMissionBanner(QFrame):
         left.setSpacing(_px(6, self._scale))
         
         title_text = "⚔  STAGE COMBAT" if theme_name == "manhattan" else "⚔  TRAINING MISSION"
-        title_size = 9 if theme_name == "manhattan" else 12
+        title_size = 12
         title = QLabel(title_text)
         title.setStyleSheet(
             _scale_ss(
@@ -546,7 +545,7 @@ class TMNTMissionBanner(QFrame):
                 self._scale,
             )
         )
-        title_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        title_font = QFont("Orbitron")
         title_font.setPixelSize(_px(title_size, self._scale))
         title_font.setBold(True)
         title.setFont(title_font)
@@ -590,20 +589,15 @@ class TMNTMissionBanner(QFrame):
 
         if theme_name == "manhattan":
             btn_train_text = "▶  FIGHT FOOT CLAN\nREVIEW DUE COMBATS"
-            btn_train_size = 9
-            btn_train_family = "Press Start 2P"
             btn_selected_text = "◎  CLEAR SELECTED AREA"
-            btn_selected_size = 8
-            btn_selected_family = "Press Start 2P"
-            btn_selected_bold = True
         else:
             btn_train_text = "▶  START TRAINING\nREVIEW DUE SCROLLS"
-            btn_train_size = 14
-            btn_train_family = "Orbitron"
             btn_selected_text = "◎  TRAIN SELECTED SCROLL"
-            btn_selected_size = 12
-            btn_selected_family = T_MONO
-            btn_selected_bold = True
+        btn_train_size = 14
+        btn_train_family = "Orbitron"
+        btn_selected_size = 12
+        btn_selected_family = T_MONO
+        btn_selected_bold = True
 
         self.btn_train = QPushButton(btn_train_text)
         self.btn_train.setStyleSheet(
@@ -1713,7 +1707,7 @@ class TMNTSidebar(QFrame):
 
         sidebar_hdr = "SEWER CAVES" if theme_name == "manhattan" else "DOJO CAVE"
         title = QLabel(sidebar_hdr)
-        title_size = 9 if theme_name == "manhattan" else 14
+        title_size = 14
         title.setStyleSheet(
             _scale_ss(
                 f"color: {T_GREEN}; font-size: {title_size}px; font-weight: 900; "
@@ -1721,7 +1715,7 @@ class TMNTSidebar(QFrame):
                 self._scale,
             )
         )
-        title_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        title_font = QFont("Orbitron")
         title_font.setPixelSize(_px(title_size, self._scale))
         title_font.setBold(True)
         title.setFont(title_font)
@@ -1754,7 +1748,7 @@ class TMNTSidebar(QFrame):
         search_placeholder = "Search area..." if theme_name == "manhattan" else "Search scrolls..."
         self.search_in.setPlaceholderText(search_placeholder)
         self.search_in.setClearButtonEnabled(True)
-        search_font_size = 11 if theme_name == "manhattan" else 14
+        search_font_size = 14
         self.search_in.setStyleSheet(
             _scale_ss(
                 f"background: transparent; border: none; color: {T_TEXT}; "
@@ -1815,7 +1809,7 @@ class TMNTSidebar(QFrame):
 
         def _foot_btn(text):
             b = QPushButton(text)
-            f_size = 8 if theme_name == "manhattan" else 12
+            f_size = 12
             b.setStyleSheet(
                 _scale_ss(
                     f"""
@@ -1834,7 +1828,7 @@ class TMNTSidebar(QFrame):
                     self._scale,
                 )
             )
-            btn_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+            btn_font = QFont("Orbitron")
             btn_font.setPixelSize(_px(f_size, self._scale))
             btn_font.setBold(True)
             b.setFont(btn_font)
@@ -2297,7 +2291,7 @@ class TMNTMainContent(DeckView):
             btn_add_text_label = "🍕  ADD PIZZA SLICE"
             hover_green_bg = "rgba(57,255,20,0.10)"
             hover_purple_bg = "rgba(168,108,255,0.10)"
-            btn_font_size = 8
+            btn_font_size = 12
         else:
             btn_add_label = "🐢  FORGE SCROLL"
             btn_add_text_label = "🥋  SCRIBE TILE"
@@ -2354,7 +2348,7 @@ class TMNTMainContent(DeckView):
         title_row.addWidget(self.btn_add_text)
 
         # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping
-        btn_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        btn_font = QFont("Orbitron")
         btn_font.setPixelSize(_px(btn_font_size, self._scale))
         btn_font.setBold(True)
         self.btn_add.setFont(btn_font)
@@ -2491,12 +2485,12 @@ class TMNTMainContent(DeckView):
 
         if theme_name == "manhattan":
             edit_text = "✏  EDIT"
-            btn_font_size = 8
-            btn_font_family = "Press Start 2P"
-            btn_font_bold = True
+            btn_font_size = 14
+            btn_font_family = T_MONO
+            btn_font_bold = False
             delete_text = "🗑  DELETE"
-            del_font_size = 8
-            del_font_family = "Press Start 2P"
+            del_font_size = 14
+            del_font_family = T_MONO
             del_font_bold = True
         else:
             edit_text = "✏  Edit"
@@ -2842,7 +2836,7 @@ class TMNTTopBar(QFrame):
             theme_name = "tmnt"
 
         # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping
-        brand_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        brand_font = QFont("Orbitron")
         brand_font.setPixelSize(self._brand_font_px())
         brand_font.setBold(True)
         self.brand_name.setFont(brand_font)
@@ -3810,7 +3804,7 @@ class TMNTTopBar(QFrame):
     def _brand_font_px(self):
         app = QApplication.instance()
         theme_name = getattr(app, "_active_theme", "tmnt")
-        scale_factor = 0.70 if theme_name == "manhattan" else 1.0
+        scale_factor = 1.0
         return int(round(self.BRAND_BASE_FONT_PX * self.BRAND_TITLE_SCALE * scale_factor))
 
     def _brand_name_ss(self):
@@ -3954,7 +3948,7 @@ class TMNTTopBar(QFrame):
         # Re-apply explicit font to prevent layout recalculation clipping
         app = QApplication.instance()
         theme_name = getattr(app, "_active_theme", "tmnt")
-        brand_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        brand_font = QFont("Orbitron")
         brand_font.setPixelSize(self._brand_font_px())
         brand_font.setBold(True)
         self.brand_name.setFont(brand_font)
@@ -3977,7 +3971,7 @@ class TMNTTopBar(QFrame):
             # Re-apply explicit font to prevent layout recalculation clipping
             app = QApplication.instance()
             theme_name = getattr(app, "_active_theme", "tmnt")
-            brand_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+            brand_font = QFont("Orbitron")
             brand_font.setPixelSize(self._brand_font_px())
             brand_font.setBold(True)
             self.brand_name.setFont(brand_font)
