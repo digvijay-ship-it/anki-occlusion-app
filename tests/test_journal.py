@@ -76,6 +76,61 @@ class JournalDialogFocusTimeTests(unittest.TestCase):
         self.assertNotIn("GRID", button_labels)
         self.assertNotIn("EXPORT SCROLL", button_labels)
         self.assertEqual(overflow_labels, ["REWIND", "GRID", "EXPORT SCROLL"])
+
+    @patch('data_manager.store')
+    @patch('ui.journal._load_journal')
+    def test_daily_activity_stats_parsing(self, mock_load_journal, mock_store):
+        mock_load_journal.return_value = {
+            "2026-06-10": {"focus_seconds": 120}
+        }
+        # Mock the store data
+        mock_store.get.return_value = {
+            "decks": [
+                {
+                    "name": "Surgical Anatomy",
+                    "cards": [
+                        {
+                            "title": "Heart",
+                            "reviewed_at": "2026-06-10T12:00:00",
+                            "last_quality": 4, # Good
+                            "boxes": [
+                                {
+                                    "box_id": "b1",
+                                    "reviewed_at": "2026-06-10T12:01:00",
+                                    "last_quality": 6 # Perfect
+                                },
+                                {
+                                    "box_id": "b2",
+                                    "reviewed_at": "2026-06-09T12:01:00", # Yesterday
+                                    "last_quality": 1
+                                }
+                            ]
+                        }
+                    ],
+                    "children": []
+                }
+            ]
+        }
+        
+        with patch('ui.journal.date') as mock_date, patch('os.path.exists', return_value=False):
+            mock_date.today.return_value.isoformat.return_value = "2026-06-10"
+            
+            dialog = JournalDialog()
+            dialog._load_date("2026-06-10")
+            
+            # Verify the stats values computed
+            stats = dialog._get_activity_stats("2026-06-10")
+            self.assertEqual(stats["total"], 2) # 1 card review + 1 box review
+            self.assertEqual(stats["good"], 1)
+            self.assertEqual(stats["perfect"], 1)
+            self.assertEqual(stats["again"], 0)
+            self.assertIn("Surgical Anatomy", stats["decks"])
+            self.assertEqual(stats["decks"]["Surgical Anatomy"], 2)
+            
+            # Verify UI labels show correct values
+            self.assertEqual(dialog._lbl_cards_val.text(), "2")
+            self.assertEqual(dialog._lbl_succ_val.text(), "100%")
+            self.assertEqual(dialog._lbl_focus_val.text(), "2m")
             
 if __name__ == '__main__':
     unittest.main()

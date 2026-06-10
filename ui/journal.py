@@ -768,6 +768,32 @@ class JournalDialog(QDialog):
             QScrollBar::handle:horizontal {{
                 background:{C_BORDER}; border-radius:4px;
             }}
+            QFrame#stats_panel {{
+                background:{C_SURFACE}; border-left:1px solid {C_BORDER}; border-radius:0px;
+            }}
+            QLabel#stats_header {{
+                color:{C_ACCENT}; font-weight:bold; font-size:16px; padding-bottom:2px;
+            }}
+            QLabel#stats_num {{
+                color:{C_TEXT}; font-size:22px; font-weight:bold;
+            }}
+            QLabel#stats_label {{
+                color:{C_SUBTEXT}; font-size:12px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px;
+            }}
+            QPushButton#btn_toggle_stats {{
+                background:{C_CARD}; color:{C_TEXT};
+                border:1px solid {C_BORDER}; border-radius:6px;
+                padding:5px 12px; font-size:12px;
+            }}
+            QPushButton#btn_toggle_stats:hover {{
+                background:{C_SURFACE}; color:white;
+            }}
+            QPushButton#btn_toggle_stats:checked {{
+                background:{C_ACCENT}; color:white; border:none;
+            }}
+            QPushButton#btn_toggle_stats:checked:hover {{
+                background:#6A58E0;
+            }}
         """
 
     def _ninja_ss(self, p) -> str:
@@ -789,6 +815,9 @@ class JournalDialog(QDialog):
         btn_fsize = "8px" if is_ps else "11px"
         btn_fweight = "normal" if is_ps else "700"
         btn_letter_spacing = "0px" if is_ps else "1px"
+
+        stats_hdr_size = "13px" if is_ps else "16px"
+        stats_lbl_size = "11px" if is_ps else "13px"
 
         return f"""
             @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
@@ -857,6 +886,33 @@ class JournalDialog(QDialog):
             QScrollBar::handle:horizontal {{
                 background:{N_BORDER}; border-radius:3px;
             }}
+            QFrame#stats_panel {{
+                background:{N_SURFACE}; border-left:1px solid {N_BORDER}; border-radius:0px;
+            }}
+            QLabel#stats_header {{
+                color:{N_ACCENT}; font-family:{hf}, 'Segoe UI'; font-size:{stats_hdr_size}; font-weight:900; letter-spacing:1.5px; padding-bottom:2px;
+            }}
+            QLabel#stats_num {{
+                color:{N_TEXT}; font-family:{bf}, 'Consolas'; font-size:20px; font-weight:bold;
+            }}
+            QLabel#stats_label {{
+                color:{N_SUBTEXT}; font-family:{hf}, 'Segoe UI'; font-size:{stats_lbl_size}; font-weight:700; text-transform:uppercase; letter-spacing:1px;
+            }}
+            QPushButton#btn_toggle_stats {{
+                background:{N_CARD}; color:{N_ACCENT};
+                border:1px solid {N_ACCENT}; border-radius:2px;
+                padding:4px 10px; font-size:11px;
+                font-family:{hf}, 'Segoe UI'; font-weight:700; letter-spacing:1px;
+            }}
+            QPushButton#btn_toggle_stats:hover {{
+                background:rgba(114,255,79,0.1);
+            }}
+            QPushButton#btn_toggle_stats:checked {{
+                background:{N_ACCENT}; color:{N_BG}; border:none; font-weight:900;
+            }}
+            QPushButton#btn_toggle_stats:checked:hover {{
+                background:white; color:{N_BG};
+            }}
         """
 
     def __init__(self, parent=None):
@@ -869,6 +925,7 @@ class JournalDialog(QDialog):
         self.setMinimumSize(*JOURNAL_WINDOW_SIZE)
         self.resize(*JOURNAL_WINDOW_SIZE)
         self._apply_theme_ss()
+        self._stats_visible = True
 
         try:
             self._journal = _load_journal()
@@ -1082,10 +1139,18 @@ class JournalDialog(QDialog):
         btn_export.setFixedHeight(36)
         btn_export.clicked.connect(self._export)
 
+        self._btn_toggle_stats = QPushButton("📊 Stats")
+        self._btn_toggle_stats.setObjectName("btn_toggle_stats")
+        self._btn_toggle_stats.setFixedHeight(36)
+        self._btn_toggle_stats.setCheckable(True)
+        self._btn_toggle_stats.setChecked(self._stats_visible)
+        self._btn_toggle_stats.clicked.connect(self._toggle_stats)
+
         tl.addWidget(btn_undo)
         tl.addWidget(btn_clear)
         tl.addWidget(btn_lines)
         tl.addWidget(btn_export)
+        tl.addWidget(self._btn_toggle_stats)
         tl.addStretch()
 
         btn_close = QPushButton("✕")
@@ -1097,6 +1162,7 @@ class JournalDialog(QDialog):
 
         # Main area
         split = QSplitter(Qt.Horizontal)
+        self._splitter = split
         split.setHandleWidth(1)
 
         # Sidebar
@@ -1129,7 +1195,12 @@ class JournalDialog(QDialog):
         self._canvas = JournalCanvas()
         self._scroll.setWidget(self._canvas)
         split.addWidget(self._scroll)
-        split.setSizes([188, 872])
+
+        # Stats Panel
+        self._stats_panel = self._build_stats_panel()
+        self._stats_panel.setVisible(self._stats_visible)
+        split.addWidget(self._stats_panel)
+        split.setSizes([188, 800, 337])
 
         root.addWidget(split, stretch=1)
 
@@ -1336,10 +1407,18 @@ class JournalDialog(QDialog):
         self._btn_more_tools.setMenu(self._overflow_menu)
         self._btn_more_tools.setToolTip("More journal actions")
 
+        self._btn_toggle_stats = QPushButton("📊 REPORT")
+        self._btn_toggle_stats.setObjectName("btn_toggle_stats")
+        self._btn_toggle_stats.setFixedHeight(30)
+        self._btn_toggle_stats.setCheckable(True)
+        self._btn_toggle_stats.setChecked(self._stats_visible)
+        self._btn_toggle_stats.clicked.connect(self._toggle_stats)
+
         tool_l.addWidget(self._dot)
         tool_l.addWidget(btn_color)
         tool_l.addWidget(btn_clear)
         tool_l.addWidget(self._btn_more_tools)
+        tool_l.addWidget(self._btn_toggle_stats)
         tool_l.addStretch()
 
         btn_close = QPushButton()
@@ -1357,6 +1436,7 @@ class JournalDialog(QDialog):
 
         # ── Main layout ───────────────────────────────────────────────────────
         split = QSplitter(Qt.Horizontal)
+        self._splitter = split
         split.setHandleWidth(1)
         split.setStyleSheet(f"QSplitter::handle{{background:{N_BORDER};}}")
 
@@ -1447,7 +1527,12 @@ class JournalDialog(QDialog):
         self._canvas.setStyleSheet(f"background:{N_CANVAS};")
         self._scroll.setWidget(self._canvas)
         split.addWidget(self._scroll)
-        split.setSizes([195, 865])
+
+        # Stats Panel
+        self._stats_panel = self._build_stats_panel()
+        self._stats_panel.setVisible(self._stats_visible)
+        split.addWidget(self._stats_panel)
+        split.setSizes([195, 800, 330])
 
         root.addWidget(split, stretch=1)
 
@@ -1727,6 +1812,9 @@ class JournalDialog(QDialog):
         self._canvas.set_content(strokes, texts)
         self._scroll.verticalScrollBar().setValue(0)
 
+        # Update activity stats for this date
+        self._update_stats(date_str, focus_secs)
+
         for i in range(self._sidebar.count()):
             item = self._sidebar.item(i)
             if item.data(Qt.UserRole) == date_str:
@@ -1802,6 +1890,370 @@ class JournalDialog(QDialog):
             except Exception:
                 pass
 
+    # ── Daily Activity Stats ──────────────────────────────────────────────────
+
+    def _get_activity_stats(self, date_str):
+        from data_manager import store
+        data = store.get()
+        
+        total = again = hard = good = easy = perfect = 0
+        deck_counts = {}
+        
+        def walk(deck, parent_path):
+            nonlocal total, again, hard, good, easy, perfect
+            name = deck.get("name", "Unnamed Deck")
+            full_path = f"{parent_path} / {name}" if parent_path else name
+            
+            # Cards in deck
+            for card in deck.get("cards", []) or []:
+                rat = card.get("reviewed_at")
+                if rat and rat.startswith(date_str):
+                    total += 1
+                    q = card.get("last_quality", -1)
+                    if q == 1: again += 1
+                    elif q == 3: hard += 1
+                    elif q == 4: good += 1
+                    elif q == 5: easy += 1
+                    elif q == 6: perfect += 1
+                    deck_counts[full_path] = deck_counts.get(full_path, 0) + 1
+                
+                # Boxes in card (occlusions)
+                for box in card.get("boxes", []) or []:
+                    brat = box.get("reviewed_at")
+                    if brat and brat.startswith(date_str):
+                        total += 1
+                        q = box.get("last_quality", -1)
+                        if q == 1: again += 1
+                        elif q == 3: hard += 1
+                        elif q == 4: good += 1
+                        elif q == 5: easy += 1
+                        elif q == 6: perfect += 1
+                        deck_counts[full_path] = deck_counts.get(full_path, 0) + 1
+                        
+            # Subdecks
+            for child in deck.get("children", []) or deck.get("subdecks", []) or []:
+                walk(child, full_path)
+                
+        for deck in data.get("decks", []) or []:
+            walk(deck, "")
+            
+        return {
+            "total": total,
+            "again": again,
+            "hard": hard,
+            "good": good,
+            "easy": easy,
+            "perfect": perfect,
+            "decks": deck_counts
+        }
+
+    def _build_stats_panel(self):
+        from PyQt5.QtWidgets import QScrollArea, QProgressBar
+        
+        panel = QFrame()
+        panel.setObjectName("stats_panel")
+        panel.setMinimumWidth(_journal_font_size(260))
+        
+        pl = QVBoxLayout(panel)
+        pl.setContentsMargins(12, 12, 12, 12)
+        pl.setSpacing(10)
+        
+        # Header
+        self._stats_title = QLabel("⛩ MISSION REPORT" if self._ninja else "📊 Daily Stats")
+        self._stats_title.setObjectName("stats_header")
+        self._stats_title.setFont(QFont(self._p["header_font"], 12, QFont.Bold))
+        self._stats_title.setAlignment(Qt.AlignCenter)
+        pl.addWidget(self._stats_title)
+        
+        # Divider line
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"background:{self._p['C_BORDER']}; border:none;")
+        sep.setFixedHeight(1)
+        pl.addWidget(sep)
+        
+        # Scroll Area for stats details
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
+        
+        scroll_content = QWidget()
+        self._stats_scroll_content = scroll_content
+        scroll_content.setStyleSheet("background:transparent;")
+        scl = QVBoxLayout(scroll_content)
+        scl.setContentsMargins(0, 0, 0, 0)
+        scl.setSpacing(14)
+        
+        # 1. No Activity Label
+        self._lbl_no_activity = QLabel("No study activity recorded\nfor this day.")
+        self._lbl_no_activity.setAlignment(Qt.AlignCenter)
+        self._lbl_no_activity.setStyleSheet(f"color:{self._p['C_SUBTEXT']}; font-size:12px; padding: 40px 10px;")
+        scl.addWidget(self._lbl_no_activity)
+        
+        # 2. Main Stats Widget (container for stats when there IS activity)
+        self._stats_container = QWidget()
+        self._stats_container.setStyleSheet("background:transparent;")
+        scl_container = QVBoxLayout(self._stats_container)
+        scl_container.setContentsMargins(0, 0, 0, 0)
+        scl_container.setSpacing(14)
+        
+        # Metrics Cards (Grid or vertical stack of small cards)
+        # Card 1: Time spent
+        card_time = QFrame()
+        card_time.setObjectName("stats_card")
+        card_time.setStyleSheet(f"QFrame#stats_card {{ background:{self._p['C_CARD']}; border:1px solid {self._p['C_BORDER']}; border-radius:6px; }}")
+        ctl = QVBoxLayout(card_time)
+        ctl.setContentsMargins(8, 8, 8, 8)
+        ctl.setSpacing(2)
+        lbl_time_hdr = QLabel("FOCUS TIME" if self._ninja else "Focus Time")
+        lbl_time_hdr.setObjectName("stats_label")
+        self._lbl_focus_val = QLabel("0s")
+        self._lbl_focus_val.setObjectName("stats_num")
+        self._lbl_focus_val.setAlignment(Qt.AlignCenter)
+        ctl.addWidget(lbl_time_hdr, 0, Qt.AlignCenter)
+        ctl.addWidget(self._lbl_focus_val)
+        scl_container.addWidget(card_time)
+        
+        # Card 2: Cards Studied
+        card_cards = QFrame()
+        card_cards.setObjectName("stats_card")
+        card_cards.setStyleSheet(f"QFrame#stats_card {{ background:{self._p['C_CARD']}; border:1px solid {self._p['C_BORDER']}; border-radius:6px; }}")
+        ccl = QVBoxLayout(card_cards)
+        ccl.setContentsMargins(8, 8, 8, 8)
+        ccl.setSpacing(2)
+        lbl_cards_hdr = QLabel("CARDS REVIEWED" if self._ninja else "Cards Reviewed")
+        lbl_cards_hdr.setObjectName("stats_label")
+        self._lbl_cards_val = QLabel("0")
+        self._lbl_cards_val.setObjectName("stats_num")
+        self._lbl_cards_val.setAlignment(Qt.AlignCenter)
+        ccl.addWidget(lbl_cards_hdr, 0, Qt.AlignCenter)
+        ccl.addWidget(self._lbl_cards_val)
+        scl_container.addWidget(card_cards)
+        
+        # Card 3: Success Rate
+        card_succ = QFrame()
+        card_succ.setObjectName("stats_card")
+        card_succ.setStyleSheet(f"QFrame#stats_card {{ background:{self._p['C_CARD']}; border:1px solid {self._p['C_BORDER']}; border-radius:6px; }}")
+        csl = QVBoxLayout(card_succ)
+        csl.setContentsMargins(8, 8, 8, 8)
+        csl.setSpacing(2)
+        lbl_succ_hdr = QLabel("RETENTION" if self._ninja else "Retention")
+        lbl_succ_hdr.setObjectName("stats_label")
+        self._lbl_succ_val = QLabel("0%")
+        self._lbl_succ_val.setObjectName("stats_num")
+        self._lbl_succ_val.setAlignment(Qt.AlignCenter)
+        csl.addWidget(lbl_succ_hdr, 0, Qt.AlignCenter)
+        csl.addWidget(self._lbl_succ_val)
+        scl_container.addWidget(card_succ)
+        
+        # Rating Breakdown bars
+        breakdown_box = QFrame()
+        breakdown_box.setObjectName("stats_card")
+        breakdown_box.setStyleSheet(f"QFrame#stats_card {{ background:{self._p['C_CARD']}; border:1px solid {self._p['C_BORDER']}; border-radius:6px; }}")
+        bvl = QVBoxLayout(breakdown_box)
+        bvl.setContentsMargins(10, 10, 10, 10)
+        bvl.setSpacing(6)
+        
+        lbl_b_hdr = QLabel("BREAKDOWN" if self._ninja else "Rating Breakdown")
+        lbl_b_hdr.setObjectName("stats_label")
+        bvl.addWidget(lbl_b_hdr)
+        
+        hf = self._p.get("header_font", "").split(",")[0].strip("'")
+        is_ps = (hf == "Press Start 2P")
+        deck_font_size = 11 if is_ps else 14
+
+        self._bars = {}
+        for rating_name, rating_color in [
+            ("again", self._p["C_RED"]),
+            ("hard", self._p["C_ORANGE"]),
+            ("good", self._p["C_GREEN"]),
+            ("easy", self._p["C_YELLOW"]),
+            ("perfect", self._p["C_PURPLE"]),
+        ]:
+            row = QWidget()
+            row.setStyleSheet("background:transparent;")
+            row_l = QHBoxLayout(row)
+            row_l.setContentsMargins(0, 2, 0, 2)
+            row_l.setSpacing(6)
+            
+            lbl_name = QLabel(rating_name.upper() if self._ninja else rating_name.capitalize())
+            lbl_name.setStyleSheet(f"color:{self._p['C_TEXT']}; font-size:{deck_font_size}px;")
+            
+            lbl_val = QLabel("0")
+            lbl_val.setStyleSheet(f"color:{rating_color}; font-size:{deck_font_size}px; font-weight:bold;")
+            lbl_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            
+            row_l.addWidget(lbl_name, 1)
+            row_l.addWidget(lbl_val)
+            
+            bar = QProgressBar()
+            bar.setFixedHeight(5)
+            bar.setTextVisible(False)
+            bar.setStyleSheet(f"""
+                QProgressBar {{ background:{self._p['C_BORDER']}; border:none; border-radius:2px; }}
+                QProgressBar::chunk {{ background:{rating_color}; border-radius:2px; }}
+            """)
+            
+            bvl.addWidget(row)
+            bvl.addWidget(bar)
+            self._bars[rating_name] = (bar, lbl_val)
+            
+        scl_container.addWidget(breakdown_box)
+        
+        # Decks Covered box
+        decks_box = QFrame()
+        decks_box.setObjectName("stats_card")
+        decks_box.setStyleSheet(f"QFrame#stats_card {{ background:{self._p['C_CARD']}; border:1px solid {self._p['C_BORDER']}; border-radius:6px; }}")
+        dvl = QVBoxLayout(decks_box)
+        dvl.setContentsMargins(10, 10, 10, 10)
+        dvl.setSpacing(6)
+        
+        self._lbl_decks_hdr = QLabel("DECKS COVERED" if self._ninja else "Decks Covered")
+        self._lbl_decks_hdr.setObjectName("stats_label")
+        dvl.addWidget(self._lbl_decks_hdr)
+        
+        # List of decks
+        self._decks_list_layout = QVBoxLayout()
+        self._decks_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._decks_list_layout.setSpacing(4)
+        dvl.addLayout(self._decks_list_layout)
+        
+        scl_container.addWidget(decks_box)
+        
+        # Add to scroll area layout
+        scl.addWidget(self._stats_container)
+        scroll.setWidget(scroll_content)
+        pl.addWidget(scroll, stretch=1)
+        
+        return panel
+
+    def _update_stats(self, date_str, focus_secs):
+        stats = self._get_activity_stats(date_str)
+        
+        has_activity = (stats["total"] > 0) or (focus_secs > 0)
+        
+        if not has_activity:
+            self._lbl_no_activity.show()
+            self._stats_container.hide()
+            return
+            
+        self._lbl_no_activity.hide()
+        self._stats_container.show()
+        
+        # 1. Update Focus Time
+        h, rem = divmod(focus_secs, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            time_str = f"{h}h {m}m"
+        elif m:
+            time_str = f"{m}m"
+        else:
+            time_str = f"{s}s"
+        self._lbl_focus_val.setText(time_str)
+        
+        # 2. Update Total Reviews
+        self._lbl_cards_val.setText(str(stats["total"]))
+        
+        # 3. Update Success Rate (Retention)
+        correct = stats["good"] + stats["easy"] + stats["perfect"]
+        total_answers = stats["total"]
+        retention = round(correct / total_answers * 100) if total_answers > 0 else 0
+        self._lbl_succ_val.setText(f"{retention}%")
+        
+        # Color accuracy label based on percentage
+        green = self._p.get("C_GREEN", "#50FA7B")
+        yellow = self._p.get("C_YELLOW", "#F1FA8C")
+        red = self._p.get("C_RED", "#FF5555")
+        ret_color = green if retention >= 80 else yellow if retention >= 60 else red
+        self._lbl_succ_val.setStyleSheet(f"color: {ret_color};")
+        
+        # 4. Update breakdown progress bars
+        total_rated = stats["again"] + stats["hard"] + stats["good"] + stats["easy"] + stats["perfect"]
+        for rating_name in ["again", "hard", "good", "easy", "perfect"]:
+            count = stats[rating_name]
+            bar, lbl_val = self._bars[rating_name]
+            bar.setRange(0, total_rated if total_rated > 0 else 1)
+            bar.setValue(count)
+            pct = round(count / total_rated * 100) if total_rated > 0 else 0
+            lbl_val.setText(f"{count} ({pct}%)")
+            
+        # 5. Clear and rebuild decks covered list
+        num_decks = len(stats["decks"])
+        total_deck_reviews = sum(stats["decks"].values())
+        if num_decks > 0:
+            if self._ninja:
+                hdr_text = f"DECKS COVERED ({num_decks} DECKS, {total_deck_reviews} REVIEWS)"
+            else:
+                hdr_text = f"Decks Covered ({num_decks} decks, {total_deck_reviews} reviews)"
+        else:
+            hdr_text = "DECKS COVERED" if self._ninja else "Decks Covered"
+        self._lbl_decks_hdr.setText(hdr_text)
+
+        while self._decks_list_layout.count():
+            item = self._decks_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+                
+        hf = self._p.get("header_font", "").split(",")[0].strip("'")
+        is_ps = (hf == "Press Start 2P")
+        deck_font_size = 11 if is_ps else 14
+
+        if not stats["decks"]:
+            lbl_none = QLabel("No decks studied.")
+            lbl_none.setStyleSheet(f"color:{self._p['C_SUBTEXT']}; font-size:{deck_font_size}px; font-style:italic;")
+            self._decks_list_layout.addWidget(lbl_none)
+        else:
+            for deck_name, count in sorted(stats["decks"].items(), key=lambda x: x[1], reverse=True):
+                row = QWidget()
+                row.setStyleSheet("background:transparent;")
+                row_l = QHBoxLayout(row)
+                row_l.setContentsMargins(0, 2, 0, 2)
+                row_l.setSpacing(4)
+                
+                display_name = deck_name.split(" / ")[-1]
+                lbl_deck = QLabel(display_name)
+                lbl_deck.setToolTip(deck_name)
+                lbl_deck.setStyleSheet(f"color:{self._p['C_TEXT']}; font-size:{deck_font_size}px;")
+                
+                lbl_count = QLabel(f"{count} review(s)")
+                lbl_count.setStyleSheet(f"color:{self._p['C_ACCENT']}; font-size:{deck_font_size}px; font-weight:bold;")
+                lbl_count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                
+                row_l.addWidget(lbl_deck, 1)
+                row_l.addWidget(lbl_count)
+                self._decks_list_layout.addWidget(row)
+
+        # Force layout update to compute the new minimum size hint
+        if hasattr(self, "_stats_scroll_content") and self._stats_scroll_content.layout():
+            self._stats_scroll_content.layout().invalidate()
+            self._stats_scroll_content.layout().activate()
+            content_w = self._stats_scroll_content.layout().minimumSize().width()
+        else:
+            content_w = 0
+            
+        # Calculate new required width based on scroll content + margins + scrollbar buffer
+        req_w = content_w + _journal_font_size(12 * 2 + 20)
+        base_w = _journal_font_size(260)
+        final_w = max(base_w, req_w)
+        
+        # Only constrain minimum width and resize splitter if dialog is fully visible and fonts are resolved
+        if self.isVisible():
+            self._stats_panel.setMinimumWidth(final_w)
+            
+            # Update splitter sizes to accommodate the new minimum width
+            if hasattr(self, "_splitter") and self._stats_visible:
+                sizes = self._splitter.sizes()
+                if len(sizes) == 3 and sum(sizes) > 0:
+                    if sizes[2] < final_w:
+                        diff = final_w - sizes[2]
+                        sizes[1] = max(100, sizes[1] - diff)
+                        sizes[2] = final_w
+                        self._splitter.setSizes(sizes)
+        else:
+            self._stats_panel.setMinimumWidth(base_w)
+
     # ── Tools ─────────────────────────────────────────────────────────────────
 
     def _cycle_color(self):
@@ -1875,3 +2327,35 @@ class JournalDialog(QDialog):
     def closeEvent(self, e):
         self._save_current()
         super().closeEvent(e)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Reload current date now that window is shown and fonts are resolved,
+        # forcing correct QSplitter sizing.
+        self._load_date(self._current_date)
+
+    def _toggle_stats(self):
+        self._stats_visible = self._btn_toggle_stats.isChecked()
+        self._stats_panel.setVisible(self._stats_visible)
+        if self._stats_visible and hasattr(self, "_splitter"):
+            # Force layout update to compute the new minimum size hint
+            if hasattr(self, "_stats_scroll_content") and self._stats_scroll_content.layout():
+                self._stats_scroll_content.layout().invalidate()
+                self._stats_scroll_content.layout().activate()
+                content_w = self._stats_scroll_content.layout().minimumSize().width()
+            else:
+                content_w = 0
+            
+            req_w = content_w + _journal_font_size(12 * 2 + 20)
+            base_w = _journal_font_size(260)
+            final_w = max(base_w, req_w)
+            
+            self._stats_panel.setMinimumWidth(final_w)
+            
+            sizes = self._splitter.sizes()
+            if len(sizes) == 3 and sum(sizes) > 0:
+                if sizes[2] < final_w:
+                    diff = final_w - sizes[2]
+                    sizes[1] = max(100, sizes[1] - diff)
+                    sizes[2] = final_w
+                    self._splitter.setSizes(sizes)

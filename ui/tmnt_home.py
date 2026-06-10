@@ -1623,14 +1623,27 @@ class TMNTSidebar(QFrame):
         torii.setStyleSheet(
             _scale_ss(f"color: {T_GREEN}; font-size: 18px;", self._scale)
         )
-        title = QLabel("DOJO CAVE")
+
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        if theme_name not in ("tmnt", "manhattan"):
+            theme_name = "tmnt"
+
+        sidebar_hdr = "SEWER CAVES" if theme_name == "manhattan" else "DOJO CAVE"
+        title = QLabel(sidebar_hdr)
+        title_size = 9 if theme_name == "manhattan" else 14
         title.setStyleSheet(
             _scale_ss(
-                f"color: {T_GREEN}; font-size: 14px; font-weight: 900; "
+                f"color: {T_GREEN}; font-size: {title_size}px; font-weight: 900; "
                 f"font-family: {T_PIXEL}; letter-spacing: 2px;",
                 self._scale,
             )
         )
+        title_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        title_font.setPixelSize(_px(title_size, self._scale))
+        title_font.setBold(True)
+        title.setFont(title_font)
+
         title_row.addWidget(torii)
         title_row.addWidget(title)
         title_row.addStretch()
@@ -1656,12 +1669,14 @@ class TMNTSidebar(QFrame):
             )
         )
         self.search_in = QLineEdit()
-        self.search_in.setPlaceholderText("Search scrolls...")
+        search_placeholder = "Search area..." if theme_name == "manhattan" else "Search scrolls..."
+        self.search_in.setPlaceholderText(search_placeholder)
         self.search_in.setClearButtonEnabled(True)
+        search_font_size = 11 if theme_name == "manhattan" else 14
         self.search_in.setStyleSheet(
             _scale_ss(
                 f"background: transparent; border: none; color: {T_TEXT}; "
-                f"font-family: {T_MONO}; font-size: 14px;",
+                f"font-family: {T_MONO}; font-size: {search_font_size}px;",
                 self._scale,
             )
         )
@@ -2175,29 +2190,81 @@ class TMNTMainContent(DeckView):
 
         title_row.addStretch()
 
-        self.btn_add = QPushButton("🐢  FORGE SCROLL")
+        # Dynamic labels & colors for retro layout (Dojo vs Manhattan)
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        if theme_name not in ("tmnt", "manhattan"):
+            theme_name = "tmnt"
+
+        if theme_name == "manhattan":
+            btn_add_label = "🍕  ADD PIZZA CARD"
+            btn_add_text_label = "🍕  ADD PIZZA SLICE"
+            hover_green_bg = "rgba(57,255,20,0.10)"
+            hover_purple_bg = "rgba(168,108,255,0.10)"
+            btn_font_size = 8
+        else:
+            btn_add_label = "🐢  FORGE SCROLL"
+            btn_add_text_label = "🥋  SCRIBE TILE"
+            hover_green_bg = "rgba(69,162,71,0.10)"
+            hover_purple_bg = "rgba(176,136,249,0.10)"
+            btn_font_size = 12
+
+        self.btn_add = QPushButton(btn_add_label)
         self.btn_add.setStyleSheet(
             _scale_ss(
                 f"""
             QPushButton {{
                 background: rgba(69,162,71,0.04);
-                color: #58b85d;
-                border: 1px solid #58b85d;
+                color: {T_GREEN};
+                border: 1px solid {T_GREEN};
                 border-radius: 2px;
-                font-size: 12px;
+                font-size: {btn_font_size}px;
                 font-weight: 900;
                 font-family: {T_PIXEL};
                 padding: 8px 16px;
                 letter-spacing: 1px;
             }}
-            QPushButton:hover {{ background: rgba(69,162,71,0.10); color: #78c97c; border-color: #78c97c; }}
+            QPushButton:hover {{ background: {hover_green_bg}; color: {T_GREEN}; border-color: {T_GREEN}; }}
         """,
                 self._scale,
             )
         )
         self.btn_add.clicked.connect(self._add_card)
-        _apply_glow(self.btn_add, "#58b85d", blur=_px(22, self._scale), alpha=95)
+        _apply_glow(self.btn_add, T_GREEN, blur=_px(22, self._scale), alpha=95)
         title_row.addWidget(self.btn_add)
+
+        self.btn_add_text = QPushButton(btn_add_text_label)
+        self.btn_add_text.setStyleSheet(
+            _scale_ss(
+                f"""
+            QPushButton {{
+                background: rgba(168,108,255,0.04);
+                color: {T_PURPLE};
+                border: 1px solid {T_PURPLE};
+                border-radius: 2px;
+                font-size: {btn_font_size}px;
+                font-weight: 900;
+                font-family: {T_PIXEL};
+                padding: 8px 16px;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: {hover_purple_bg}; color: {T_PURPLE}; border-color: {T_PURPLE}; }}
+        """,
+                self._scale,
+            )
+        )
+        self.btn_add_text.clicked.connect(self._add_text_card)
+        _apply_glow(self.btn_add_text, T_PURPLE, blur=_px(22, self._scale), alpha=95)
+        title_row.addWidget(self.btn_add_text)
+
+        # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping
+        btn_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        btn_font.setPixelSize(_px(btn_font_size, self._scale))
+        btn_font.setBold(True)
+        self.btn_add.setFont(btn_font)
+        self.btn_add_text.setFont(btn_font)
+
         L.addLayout(title_row)
 
         # ── 3 Stat Cards ──
@@ -2399,6 +2466,7 @@ class TMNTMainContent(DeckView):
         has_card = self.card_list.currentRow() >= 0 and self.card_list.count() > 0
         has_due = bool(has_deck and self._collect_due_by_pdf(self.deck))
         self.btn_add.setEnabled(has_deck)
+        self.btn_add_text.setEnabled(has_deck)
         self.btn_due.setEnabled(has_due)
         self.btn_edit.setEnabled(has_card)
         self.btn_delete_tmnt.setEnabled(has_card)
@@ -2639,10 +2707,22 @@ class TMNTTopBar(QFrame):
         self.brand_name.setObjectName("tmnt_brand_name")
         self.brand_name.setStyleSheet(self._brand_name_ss())
 
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        if theme_name not in ("tmnt", "manhattan"):
+            theme_name = "tmnt"
+
+        # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping
+        brand_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        brand_font.setPixelSize(self._brand_font_px())
+        brand_font.setBold(True)
+        self.brand_name.setFont(brand_font)
+
         self.ghost_r = QLabel("ANKI OCCLUSION", self.brand_name)
         self.ghost_r.setStyleSheet(
             self._brand_name_ss().replace(T_NEON, "rgba(255, 77, 77, 180)")
         )
+        self.ghost_r.setFont(brand_font)
         self.ghost_r.move(_px(-3, self._scale), _px(-1, self._scale))
         self.ghost_r.hide()
 
@@ -2650,6 +2730,7 @@ class TMNTTopBar(QFrame):
         self.ghost_c.setStyleSheet(
             self._brand_name_ss().replace(T_NEON, "rgba(102, 252, 241, 180)")
         )
+        self.ghost_c.setFont(brand_font)
         self.ghost_c.move(_px(3, self._scale), _px(1, self._scale))
         self.ghost_c.hide()
 
@@ -3598,7 +3679,10 @@ class TMNTTopBar(QFrame):
         )
 
     def _brand_font_px(self):
-        return int(round(self.BRAND_BASE_FONT_PX * self.BRAND_TITLE_SCALE))
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        scale_factor = 0.70 if theme_name == "manhattan" else 1.0
+        return int(round(self.BRAND_BASE_FONT_PX * self.BRAND_TITLE_SCALE * scale_factor))
 
     def _brand_name_ss(self):
         return _scale_ss(
@@ -3737,6 +3821,15 @@ class TMNTTopBar(QFrame):
     def _reset_brand_glitch(self):
         self.brand_name.setText("ANKI OCCLUSION")
         self.brand_name.setStyleSheet(self._brand_name_ss())
+        
+        # Re-apply explicit font to prevent layout recalculation clipping
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
+        brand_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+        brand_font.setPixelSize(self._brand_font_px())
+        brand_font.setBold(True)
+        self.brand_name.setFont(brand_font)
+
         if hasattr(self, "ghost_r"):
             self.ghost_r.hide()
             self.ghost_c.hide()
@@ -3751,6 +3844,15 @@ class TMNTTopBar(QFrame):
             self.brand_name.setStyleSheet(
                 self._brand_name_ss().replace(T_NEON, "white")
             )
+            
+            # Re-apply explicit font to prevent layout recalculation clipping
+            app = QApplication.instance()
+            theme_name = getattr(app, "_active_theme", "tmnt")
+            brand_font = QFont("Press Start 2P" if theme_name == "manhattan" else "Orbitron")
+            brand_font.setPixelSize(self._brand_font_px())
+            brand_font.setBold(True)
+            self.brand_name.setFont(brand_font)
+
             self._brand_name_glow.setBlurRadius(0)
 
             chars = list("ANKI OCCLUSION")
