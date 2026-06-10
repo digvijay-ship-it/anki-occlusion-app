@@ -2,6 +2,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
+    QGridLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -65,9 +66,11 @@ class RecoveryDialog(QDialog):
             QDialog {
                 background: #0B0F16;
                 color: #F4F7FB;
+                font-family: 'Segoe UI', sans-serif;
             }
             QLabel {
                 color: #F4F7FB;
+                font-family: 'Segoe UI', sans-serif;
             }
             QListWidget {
                 background: #070A10;
@@ -76,6 +79,7 @@ class RecoveryDialog(QDialog):
                 border-radius: 8px;
                 padding: 6px;
                 outline: none;
+                font-family: 'Segoe UI', sans-serif;
             }
             QListWidget::item {
                 border: 1px solid transparent;
@@ -95,6 +99,8 @@ class RecoveryDialog(QDialog):
                 border-radius: 8px;
                 padding: 8px 12px;
                 font-weight: bold;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 11px;
             }
             QPushButton:hover {
                 background: #16243A;
@@ -206,7 +212,10 @@ class RecoveryDialog(QDialog):
         quick_row.addWidget(self.btn_delete_all)
         layout.addLayout(quick_row)
 
-        row = QHBoxLayout()
+        # Action Grid (2x2) to prevent horizontal button clipping/trimming on smaller resolutions
+        grid = QGridLayout()
+        grid.setSpacing(8)
+
         review_button_text = (
             "Recover Review Progress"
             if recoverable
@@ -216,20 +225,32 @@ class RecoveryDialog(QDialog):
         self.btn_open_draft = QPushButton("Restore Selected Draft")
         self.btn_delete_draft = QPushButton("Delete Selected Draft")
         self.btn_close = QPushButton("Close (Keep Progress)" if review_only else "Close (Keep Drafts)")
+        
         if recoverable:
             self.btn_recover_reviews.setObjectName("primaryRecoveryButton")
         self.btn_open_draft.setObjectName("primaryRecoveryButton")
         self.btn_delete_draft.setObjectName("dangerRecoveryButton")
+        
         self.btn_recover_reviews.setEnabled(bool(recoverable))
         self.btn_recover_reviews.setDefault(bool(recoverable) and not bool(drafts))
         self.btn_open_draft.setEnabled(bool(drafts))
         self.btn_delete_draft.setEnabled(bool(drafts))
-        row.addWidget(self.btn_recover_reviews)
-        row.addWidget(self.btn_open_draft)
-        row.addWidget(self.btn_delete_draft)
-        row.addStretch()
-        row.addWidget(self.btn_close)
-        layout.addLayout(row)
+        
+        grid.addWidget(self.btn_recover_reviews, 0, 0)
+        grid.addWidget(self.btn_open_draft, 0, 1)
+        grid.addWidget(self.btn_delete_draft, 1, 0)
+        grid.addWidget(self.btn_close, 1, 1)
+        layout.addLayout(grid)
+
+        # Apply clean explicit QFont to all buttons to prevent metric/rendering overflows in retro themes
+        from PyQt5.QtGui import QFont
+        btn_font = QFont("Segoe UI")
+        btn_font.setPixelSize(11)
+        btn_font.setBold(True)
+        for btn in (self.btn_restore_latest, self.btn_delete_all, 
+                    self.btn_recover_reviews, self.btn_open_draft, 
+                    self.btn_delete_draft, self.btn_close):
+            btn.setFont(btn_font)
 
         self.btn_restore_latest.clicked.connect(self._open_latest_draft)
         self.btn_delete_all.clicked.connect(self._delete_all_drafts)
