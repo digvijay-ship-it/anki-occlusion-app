@@ -300,6 +300,53 @@ QUEUE_INDEX_ROLE = Qt.UserRole + 11
 CARD_DRAG_MIME = "application/x-anki-card"
 
 
+class DraggableFrame(QFrame):
+    def __init__(self, parent=None, on_drag=None, on_release=None):
+        super().__init__(parent)
+        self._on_drag = on_drag
+        self._on_release = on_release
+        self._drag_start_pos = None
+        self.setCursor(Qt.OpenHandCursor)
+
+    def enterEvent(self, event):
+        self.setCursor(Qt.OpenHandCursor)
+        super().enterEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.globalPos() - self.frameGeometry().topLeft()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self._drag_start_pos is not None:
+            new_pos = event.globalPos() - self._drag_start_pos
+            parent = self.parentWidget()
+            if parent:
+                x = max(0, min(new_pos.x(), parent.width() - self.width()))
+                y = max(0, min(new_pos.y(), parent.height() - self.height()))
+                self.move(x, y)
+                if self._on_drag:
+                    self._on_drag(x, y)
+            else:
+                self.move(new_pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = None
+            self.setCursor(Qt.OpenHandCursor)
+            if self._on_release:
+                self._on_release(self.x(), self.y())
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+
 from ui.review.queue_delegate import QueueDelegate
 
 
@@ -633,6 +680,15 @@ class ReviewScreen(QWidget):
         self._queue_edge_handle_visible = False
         self._review_data_dirty = False
         self._floating_timer_reposition_pending = False
+        settings = QSettings("AnkiOcclusion", "App")
+        try:
+            self._timer_x_pct = float(settings.value("review/timer_x_pct", 1.0))
+        except (TypeError, ValueError):
+            self._timer_x_pct = 1.0
+        try:
+            self._timer_y_pct = float(settings.value("review/timer_y_pct", 0.0))
+        except (TypeError, ValueError):
+            self._timer_y_pct = 0.0
         self._floating_timer_last_reposition_ts = 0.0
         self._review_scroll_profile_last_event_ts = None
         self._review_scroll_profile_last_log_ts = 0.0
@@ -791,6 +847,15 @@ class ReviewScreen(QWidget):
         except Exception:
             pass
 
+        # Disconnect child scroll area signals to prevent late-fired visible pages events during destruction
+        if hasattr(self, "_canvas_scroll") and self._canvas_scroll is not None:
+            try:
+                self._canvas_scroll.visible_pages_changed.disconnect(
+                    self._on_visible_pages_changed
+                )
+            except Exception:
+                pass
+
         MASK_REGISTRY.unregister(self.canvas)
 
         # Clear canvas page/pixmap cache to free QPixmap memory immediately
@@ -912,7 +977,8 @@ class ReviewScreen(QWidget):
         return super().eventFilter(obj, event)
 
     def _note_user_activity(self):
-        self._ui_idle_timer.start()
+        if self._ui_idle_timer is not None:
+            self._ui_idle_timer.start()
         if self._stimer:
             self._stimer.note_activity()
 
@@ -976,8 +1042,8 @@ class ReviewScreen(QWidget):
                 self.crt.raise_()
 
     def _reposition_overlays(self):
-        """Pin overlays to bottom-center of canvas scroll area."""
-        ref = self._canvas_scroll
+        """Pin overlays to bottom-center of canvas stage area."""
+        ref = self._canvas_stage
         w = ref.width()
         h = ref.height()
 
@@ -1103,12 +1169,44 @@ class ReviewScreen(QWidget):
         if frame is None or canvas_stage is None:
             return
         frame.adjustSize()
+        x_pct = self.__dict__.get("_timer_x_pct", 1.0)
+        y_pct = self.__dict__.get("_timer_y_pct", 0.0)
+
+        frame_w = frame.width()
+        frame_h = frame.height()
+        stage_w = canvas_stage.width()
+        stage_h = canvas_stage.height()
+
+        x = int(x_pct * (stage_w - frame_w))
+        y = int(y_pct * (stage_h - frame_h))
+
         margin = 10
-        frame.move(
-            max(margin, canvas_stage.width() - frame.width() - margin),
-            margin,
-        )
+        x = max(margin, min(x, stage_w - frame_w - margin))
+        y = max(margin, min(y, stage_h - frame_h - margin))
+
+        frame.move(x, y)
         frame.raise_()
+
+    def _save_floating_timer_position(self, x, y):
+        frame = self.__dict__.get("_floating_timer_frame")
+        canvas_stage = self.__dict__.get("_canvas_stage")
+        if frame is None or canvas_stage is None:
+            return
+        max_x = canvas_stage.width() - frame.width()
+        max_y = canvas_stage.height() - frame.height()
+
+        x_pct = x / max_x if max_x > 0 else 0.0
+        y_pct = y / max_y if max_y > 0 else 0.0
+
+        x_pct = max(0.0, min(x_pct, 1.0))
+        y_pct = max(0.0, min(y_pct, 1.0))
+
+        self._timer_x_pct = x_pct
+        self._timer_y_pct = y_pct
+
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("review/timer_x_pct", float(x_pct))
+        settings.setValue("review/timer_y_pct", float(y_pct))
 
     def _finish_initial_overlay_placement(self):
         self._review_overlays_ready = True
@@ -1121,6 +1219,11 @@ class ReviewScreen(QWidget):
         if frame is None:
             return
         if not self.__dict__.get("_review_overlays_ready", True):
+            self._floating_timer_visible = False
+            frame.hide()
+            self._set_floating_timer_sync_enabled(False)
+            return
+        if self.__dict__.get("_user_timer_hidden", False):
             self._floating_timer_visible = False
             frame.hide()
             self._set_floating_timer_sync_enabled(False)
@@ -1138,6 +1241,20 @@ class ReviewScreen(QWidget):
             self._floating_timer_visible = False
             frame.hide()
             self._set_floating_timer_sync_enabled(False)
+
+    def _toggle_floating_timer_visibility(self):
+        frame = self.__dict__.get("_floating_timer_frame")
+        if frame is None:
+            return
+        self._user_timer_hidden = not self.__dict__.get("_user_timer_hidden", False)
+        if self._user_timer_hidden:
+            frame.hide()
+            self._set_floating_timer_sync_enabled(False)
+            self.canvas._show_toast("⏱ Timer Hidden (Press Alt+T to show)")
+        else:
+            self._update_floating_timer_visibility()
+            if self.__dict__.get("_floating_timer_visible", False):
+                self.canvas._show_toast("⏱ Timer Visible")
 
     def _reposition_queue_edge_handle(self):
         from ui.review.queue_panel import reposition_queue_edge_handle
@@ -1227,20 +1344,30 @@ class ReviewScreen(QWidget):
             btn.setText(f"{parts[0]} {icon}  {val}  {color_lbl}")
 
         if card.get("card_type") == "text":
-            self._stacked_widget.setCurrentIndex(1)
-            self._text_review_widget.load_card(card)
-            # Disable page nav/zoom/pen buttons in toolbar
+            self._stacked_widget.setCurrentIndex(0)
+            px = self._render_text_card_to_pixmap(card, is_revealed=False)
+            self.canvas.load_pixmap(px)
+            self.canvas.set_boxes_with_state([])
+            self.canvas.set_target_box(-1)
+            self.canvas.set_mode("review")
+            
+            # Disable page nav/contrast/jump/annotate but keep pen buttons enabled
             self._btn_prev_page.setEnabled(False)
             self._btn_next_page.setEnabled(False)
             self._page_jump.setEnabled(False)
             self._btn_invert_pdf.setEnabled(False)
-            self._btn_toggle_pen.setEnabled(False)
-            self._btn_pen_color.setEnabled(False)
-            self._btn_pen_clear.setEnabled(False)
+            if hasattr(self, "_btn_annot") and self._btn_annot is not None:
+                self._btn_annot.setEnabled(False)
+            self._btn_toggle_pen.setEnabled(True)
+            self._btn_pen_color.setEnabled(True)
+            self._btn_pen_clear.setEnabled(True)
             
             self._rating_frame.hide()
             QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
-            self._text_review_widget.txt_input.setFocus()
+            
+            # Fit the rendered card width to the viewport
+            QTimer.singleShot(0, self._zoom_fit)
+            self.canvas.setFocus()
             
             self._review_profile_log(
                 "item_loaded",
@@ -1257,6 +1384,8 @@ class ReviewScreen(QWidget):
             self._btn_next_page.setEnabled(True)
             self._page_jump.setEnabled(True)
             self._btn_invert_pdf.setEnabled(True)
+            if hasattr(self, "_btn_annot") and self._btn_annot is not None:
+                self._btn_annot.setEnabled(True)
             self._btn_toggle_pen.setEnabled(True)
             self._btn_pen_color.setEnabled(True)
             self._btn_pen_clear.setEnabled(True)
@@ -1367,7 +1496,10 @@ class ReviewScreen(QWidget):
                 # Reset text card or masks wapas hide karo
                 card = self._items[self._idx][0] if 0 <= self._idx < len(self._items) else None
                 if card and card.get("card_type") == "text":
-                    self._text_review_widget.load_card(card)
+                    px = self._render_text_card_to_pixmap(card, is_revealed=False)
+                    self.canvas._px = px
+                    self.canvas._spx_cache.clear()
+                    self.canvas.update()
                 else:
                     for b in self.canvas._boxes:
                         b["revealed"] = False
@@ -1390,7 +1522,16 @@ class ReviewScreen(QWidget):
             self._center_on_target()
             self._user_zoom_scale = self.canvas._scale
         elif shortcut_manager.event_matches(e, "review.center"):
-            self._trigger_center_fit()
+            is_text = False
+            try:
+                if hasattr(self, "mgr") and self.mgr is not None:
+                    if self._items and self._idx < len(self._items):
+                        card = self._items[self._idx][0]
+                        is_text = (card.get("card_type") == "text") if card else False
+            except RuntimeError:
+                pass
+            if not is_text:
+                self._trigger_center_fit()
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
         elif shortcut_manager.event_matches(e, "review.undo"):
@@ -1417,6 +1558,8 @@ class ReviewScreen(QWidget):
             self._go_next_review_page()
         elif shortcut_manager.event_matches(e, "review.pdf_contrast") and not e.isAutoRepeat():
             self._toggle_pdf_contrast()
+        elif shortcut_manager.event_matches(e, "review.toggle_timer") and not e.isAutoRepeat():
+            self._toggle_floating_timer_visibility()
         elif (
             key == Qt.Key_Alt
             or shortcut_manager.event_matches(e, "review.pen_toggle")
@@ -1482,7 +1625,10 @@ class ReviewScreen(QWidget):
             return
         card, box_idx, _ = self._items[self._idx]
         if card.get("card_type") == "text":
-            self._text_review_widget.reveal_answer()
+            px = self._render_text_card_to_pixmap(card, is_revealed=True)
+            self.canvas._px = px
+            self.canvas._spx_cache.clear()
+            self.canvas.update()
             self.setFocus()
         elif box_idx is None:
             self.canvas.reveal_all()
@@ -1655,12 +1801,12 @@ class ReviewScreen(QWidget):
 
         b_edit = _hdr_btn("✏ Edit Card", primary=True)
         b_edit.clicked.connect(self._edit_current_card)
-        b_annot = _hdr_btn("🖊 Annotate Scroll")
-        b_annot.clicked.connect(self._open_annotation_beta)
+        self._btn_annot = _hdr_btn("🖊 Annotate Scroll")
+        self._btn_annot.clicked.connect(self._open_annotation_beta)
         b_cache = _hdr_btn("💾 Cache")
         b_cache.clicked.connect(self._toggle_cache_panel)
         row1.addWidget(b_edit)
-        row1.addWidget(b_annot)
+        row1.addWidget(self._btn_annot)
         row1.addWidget(b_cache)
 
         self._btn_mode = _hdr_btn("🟧 Hide All, Guess One")
@@ -2054,17 +2200,19 @@ class ReviewScreen(QWidget):
         self._floating_timer_today = None
         self._floating_timer_queue = None
         if self._stimer:
-            floating_timer = QFrame(self._canvas_stage)
+            floating_timer = DraggableFrame(
+                self._canvas_stage,
+                on_release=self._save_floating_timer_position
+            )
             floating_timer.setToolTip("Study timer")
-            floating_timer.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             if dojo:
                 floating_timer.setStyleSheet(
-                    f"QFrame{{background:rgba(7,7,11,215);"
+                    f"QFrame{{background:rgba(7,7,11,80);"
                     f"border:1px solid {border};border-radius:2px;}}"
                 )
             else:
                 floating_timer.setStyleSheet(
-                    f"QFrame{{background:rgba(30,30,46,220);"
+                    f"QFrame{{background:rgba(30,30,46,80);"
                     f"border:1px solid {border};border-radius:6px;}}"
                 )
             ft_l = QVBoxLayout(floating_timer)
@@ -2374,7 +2522,7 @@ class ReviewScreen(QWidget):
         control_metrics = self._review_control_metrics(dojo)
 
         # ── Floating overlay: Show Answer button ──────────────────────────────
-        self._reveal_bar = QFrame(self._canvas_scroll)
+        self._reveal_bar = QFrame(self._canvas_stage)
         self._reveal_bar.setStyleSheet("QFrame{background:transparent;border:none;}")
         rb_l = QHBoxLayout(self._reveal_bar)
         rb_l.setContentsMargins(0, 0, 0, 20)
@@ -2447,7 +2595,7 @@ class ReviewScreen(QWidget):
         self._reveal_bar.hide()
 
         # ── Floating overlay: Rating buttons ──────────────────────────────────
-        self._rating_frame = QFrame(self._canvas_scroll)
+        self._rating_frame = QFrame(self._canvas_stage)
         self._rating_frame.setStyleSheet("QFrame{background:transparent;border:none;}")
         rfl = QHBoxLayout(self._rating_frame)
         rfl.setContentsMargins(0, 0, 0, 0)
@@ -3218,6 +3366,11 @@ class ReviewScreen(QWidget):
         reveal_current_pdf_in_folder(self)
 
     def _open_annotation_beta(self):
+        if self._items and self._idx < len(self._items):
+            card, _, _ = self._items[self._idx]
+            if card.get("card_type") == "text":
+                self.canvas._show_toast("Annotations are not supported for text cards")
+                return
         from ui.review.annotation_handler import open_annotation_beta
         open_annotation_beta(self)
 
@@ -3275,6 +3428,164 @@ class ReviewScreen(QWidget):
         from ui.review.annotation_handler import apply_annotation_beta_refresh
         apply_annotation_beta_refresh(self, path, changed_pages, return_page)
 
+    def _render_text_card_to_pixmap(self, card, is_revealed):
+        import re
+        from PyQt5.QtGui import QTextDocument, QPainter, QPixmap, QColor
+        from PyQt5.QtCore import QUrl, Qt, QRectF
+        from ui.text_review_widget import get_base_url
+        from theme_manager import get_palette
+
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        p = get_palette(theme)
+        
+        # Determine background & text colors
+        bg_hex = p.get("C_CARD", "#1E1E2E")
+        bg_color = QColor(bg_hex)
+        text_color_hex = "#CDD6F4" if theme != "classic" else p.get("C_TEXT", "#212529")
+        subtext_color_hex = "#A6ADC8" if theme != "classic" else p.get("C_SUBTEXT", "#868E96")
+        border_color_hex = p.get("C_BORDER", "#45475A")
+        accent_color_hex = p.get("C_ACCENT", "#7C6AF7")
+        body_font = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
+        header_font = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
+
+        # Create QTextDocument
+        doc = QTextDocument()
+        doc.setBaseUrl(get_base_url())
+
+        # Setup base styling
+        css = f"""
+        body {{
+            background-color: transparent;
+            color: {text_color_hex};
+            font-family: {body_font};
+            font-size: 16px;
+            margin: 0;
+            padding: 0;
+        }}
+        .question {{
+            margin-bottom: 20px;
+        }}
+        .answer {{
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }}
+        .notes-title {{
+            color: {subtext_color_hex};
+            font-family: {header_font};
+            font-weight: bold;
+            font-size: 13px;
+            margin-top: 20px;
+            margin-bottom: 5px;
+        }}
+        .notes-content {{
+            color: {subtext_color_hex};
+            font-size: 12px;
+        }}
+        hr {{
+            border: none;
+            border-top: 1px solid {border_color_hex};
+            margin: 20px 0;
+        }}
+        """
+        doc.setDefaultStyleSheet(css)
+
+        # Build HTML content
+        question = card.get("question", "")
+        answer = card.get("answer", "")
+        notes = card.get("notes", "")
+
+        def format_field(text):
+            if not text:
+                return ""
+            if "<img" in text or "<html>" in text or "<p>" in text or "<div" in text or "<span>" in text or "<br" in text:
+                return text
+            import html
+            return html.escape(text).replace("\n", "<br>")
+
+        q_html = format_field(question)
+        
+        # Parse img tags and resolve local paths into resources for document rendering
+        # Also clean img tags to remove original sizes and use width=720px
+        def process_html_images(html_content):
+            if not html_content:
+                return ""
+            # Find all image sources
+            img_pattern = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+            sources = img_pattern.findall(html_content)
+            
+            base_url = get_base_url()
+            base_path = ""
+            if base_url.isLocalFile():
+                base_path = base_url.toLocalFile()
+                
+            for src in sources:
+                abs_path = src
+                if not os.path.isabs(src):
+                    if base_path:
+                        abs_path = os.path.join(base_path, src)
+                    else:
+                        from storage_paths import get_mission_archive_root
+                        root = get_mission_archive_root()
+                        if root:
+                            abs_path = os.path.join(root, src)
+                abs_path = os.path.normpath(abs_path)
+                
+                if os.path.exists(abs_path):
+                    pixmap = QPixmap(abs_path)
+                    if not pixmap.isNull():
+                        w = pixmap.width()
+                        if w > 0:
+                            # Scale pixmap smoothly to width 720
+                            scaled_pixmap = pixmap.scaledToWidth(720, Qt.SmoothTransformation)
+                            doc.addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
+                            doc.addResource(QTextDocument.ImageResource, QUrl.fromLocalFile(abs_path), scaled_pixmap)
+            
+            # Clean and resize img tags
+            def clean_and_resize_img_tags(match):
+                tag = match.group(0)
+                tag = re.sub(r'width\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
+                tag = re.sub(r'height\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
+                tag = re.sub(r'style\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
+                # Inject width="720"
+                tag = tag[:-1] + ' width="720">'
+                return tag
+                
+            cleaned = re.compile(r'<img\s+[^>]+>', re.IGNORECASE).sub(clean_and_resize_img_tags, html_content)
+            # Clean inline font-size to allow default css style scaling
+            cleaned = re.sub(r'font-size\s*:\s*[^;\'"]+;?', '', cleaned, flags=re.IGNORECASE)
+            return cleaned
+
+        q_html = process_html_images(q_html)
+
+        html_body = f'<div class="question">{q_html}</div>'
+
+        if is_revealed:
+            a_html = format_field(answer)
+            a_html = process_html_images(a_html)
+            html_body += f'<hr><div class="answer">{a_html}</div>'
+            
+            if notes:
+                n_html = format_field(notes)
+                n_html = process_html_images(n_html)
+                html_body += f'<div class="notes-title">Notes / Hints:</div><div class="notes-content">{n_html}</div>'
+
+        doc.setHtml(html_body)
+        doc.setTextWidth(720.0)
+
+        h = int(doc.size().height())
+        total_height = max(500, h + 80)
+        
+        px = QPixmap(800, total_height)
+        px.fill(bg_color)
+        
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.translate(40, 40)
+        doc.drawContents(painter, QRectF(0, 0, 720, h))
+        painter.end()
+        return px
+
     def _reload_current_canvas(self, view_idx=None):
         """
         STEP 4 — Skeleton-first lazy loading.
@@ -3312,7 +3623,7 @@ class ReviewScreen(QWidget):
 
         # ── 1. IMAGE CARD ─────────────────────────────────────────────────────
         image_path = resolve_asset_path(card.get("image_path", ""))
-        if card.get("image_path") and os.path.exists(image_path):
+        if card.get("image_path") and not card.get("pdf_path") and os.path.exists(image_path):
             px = QPixmap(image_path)
             if px and not px.isNull():
                 self._apply_canvas(card, box_idx, px)
@@ -3813,14 +4124,16 @@ class ReviewScreen(QWidget):
             self._bg_pending_inserts.clear()
             return
         if self._pending_visible_request:
-            self._ui_idle_timer.start()
+            if self._ui_idle_timer is not None:
+                self._ui_idle_timer.start()
             return
         if (
             self._ondemand_thread
             and self._ondemand_thread.isRunning()
             and getattr(self, "_ondemand_kind", None) == "visible"
         ):
-            self._ui_idle_timer.start()
+            if self._ui_idle_timer is not None:
+                self._ui_idle_timer.start()
             return
         if (
             self._ondemand_thread
@@ -4039,7 +4352,8 @@ class ReviewScreen(QWidget):
                 f"requested={self._fmt_review_pages(requested)} "
                 f"remaining={len(remaining)}"
             )
-            self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
+            if self._ui_idle_timer is not None:
+                self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
             return
 
         self._background_fill_state = None
@@ -4820,9 +5134,11 @@ class ReviewScreen(QWidget):
 
     def _show_session_summary(self):
         """Session khatam — stats dialog dikhao."""
-        from ui.review.summary_dialog import ReviewSessionSummaryDialog
-        dialog = ReviewSessionSummaryDialog(self)
-        dialog.exec_()
+        has_pdf = any(bool(card.get("pdf_path")) for card, _, _ in self._items) if self._items else False
+        if has_pdf:
+            from ui.review.summary_dialog import ReviewSessionSummaryDialog
+            dialog = ReviewSessionSummaryDialog(self)
+            dialog.exec_()
         self.finished.emit()
 
     def _show_waiting_state(self, wait_ms: int, pending_count: int):

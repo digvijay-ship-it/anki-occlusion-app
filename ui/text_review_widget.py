@@ -1,66 +1,70 @@
 import os
-import difflib
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QTextBrowser, QFrame, QApplication, QScrollArea
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QTextBrowser, QFrame, QApplication
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QUrl, QEvent
+from PyQt5.QtGui import QFont, QColor, QPen, QPainter
 from theme_manager import get_palette
 
+def get_base_url():
+    from storage_paths import get_mission_archive_root, current_data_file
+    root = get_mission_archive_root()
+    if not root:
+        root = os.path.dirname(current_data_file())
+    if root:
+        return QUrl.fromLocalFile(os.path.abspath(root) + "/")
+    return QUrl()
+
+class ZoomableTextBrowser(QTextBrowser):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.NoFocus)
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier:
+            p = self.parentWidget()
+            while p and not hasattr(p, "zoom_in"):
+                p = p.parentWidget()
+            if p:
+                p.wheelEvent(e)
+            e.accept()
+        else:
+            super().wheelEvent(e)
+
+    def event(self, e):
+        if e.type() == QEvent.NativeGesture:
+            p = self.parentWidget()
+            while p and not hasattr(p, "zoom_in"):
+                p = p.parentWidget()
+            if p:
+                p.event(e)
+            return True
+        return super().event(e)
+
 class TextReviewWidget(QWidget):
-    answer_submitted = pyqtSignal() # Emitted when user presses Enter in the input field to show the answer
+    answer_submitted = pyqtSignal() # Emitted if needed for compatibility/actions
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.card = None
         self.is_revealed = False
+        self._zoom_factor = 1.0
         self._setup_ui()
+        self.scratchpad = ScratchpadOverlay(self)
+        self.scratchpad.setGeometry(self.rect())
         
     def _setup_ui(self):
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         p = get_palette(theme)
         
         # Dynamic fonts based on theme
-        is_dojo = theme in ("dojo", "tmnt", "manhattan")
         self._font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
         self._header_font_family = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
         
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(40, 40, 40, 40)
-        main_layout.setAlignment(Qt.AlignCenter)
-        
-        # Card container (Glassmorphic / elegant rounded frame)
-        self.card_frame = QFrame()
-        self.card_frame.setObjectName("card_frame")
-        self.card_frame.setFixedWidth(650)
-        self.card_frame.setMinimumHeight(350)
-        
-        # Frame styles
-        border_px = "2px" if is_dojo else "1px"
-        self.card_frame.setStyleSheet(f"""
-            QFrame#card_frame {{
-                background: {p['C_SURFACE']};
-                border: {border_px} solid {p['C_BORDER']};
-                border-radius: 12px;
-            }}
-            QLabel {{
-                background: transparent;
-                color: {p['C_TEXT']};
-                font-family: {self._font_family};
-            }}
-            QLineEdit {{
-                background: {p['C_CARD']};
-                color: {p['C_TEXT']};
-                border: 2px solid {p['C_BORDER']};
-                border-radius: 6px;
-                padding: 10px 14px;
-                font-size: 14px;
-                font-family: {self._font_family};
-            }}
-            QLineEdit:focus {{
-                border: 2px solid {p['C_ACCENT']};
-            }}
+        # Set transparent background to blend directly with the main screen background
+        self.setStyleSheet(f"""
+            QWidget {{ background: transparent; color: {p['C_TEXT']}; }}
             QTextBrowser {{
                 background: transparent;
                 border: none;
@@ -69,205 +73,301 @@ class TextReviewWidget(QWidget):
             }}
         """)
         
-        card_layout = QVBoxLayout(self.card_frame)
-        card_layout.setContentsMargins(30, 30, 30, 30)
-        card_layout.setSpacing(20)
-        
-        # Question Section
-        self.lbl_question_title = QLabel("QUESTION" if is_dojo else "Question")
-        self.lbl_question_title.setStyleSheet(f"""
-            color: {p['C_ACCENT']};
-            font-size: {'10px' if is_dojo else '12px'};
-            font-family: {self._header_font_family};
-            font-weight: bold;
-            letter-spacing: 2px;
-        """)
-        card_layout.addWidget(self.lbl_question_title)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(40, 20, 40, 20)
+        main_layout.setSpacing(20)
         
         # Scrollable Question text
-        self.q_browser = QTextBrowser()
+        self.q_browser = ZoomableTextBrowser()
         self.q_browser.setOpenExternalLinks(True)
         self.q_browser.setFont(QFont(self._font_family, 16))
-        card_layout.addWidget(self.q_browser, stretch=1)
+        self.q_browser.document().setDocumentMargin(0)
+        self.q_browser.document().setDefaultStyleSheet("img { width: 100%; }")
+        main_layout.addWidget(self.q_browser, stretch=1)
         
-        # Separator 1
-        self.sep1 = QFrame()
-        self.sep1.setFrameShape(QFrame.HLine)
-        self.sep1.setStyleSheet(f"background: {p['C_BORDER']}; height: 1px;")
-        card_layout.addWidget(self.sep1)
-        
-        # Input Section
-        self.lbl_input_title = QLabel("YOUR ANSWER" if is_dojo else "Your Answer")
-        self.lbl_input_title.setStyleSheet(f"""
-            color: {p['C_SUBTEXT']};
-            font-size: {'9px' if is_dojo else '11px'};
-            font-family: {self._header_font_family};
-            font-weight: bold;
-            letter-spacing: 1.5px;
-        """)
-        card_layout.addWidget(self.lbl_input_title)
-        
-        self.txt_input = QLineEdit()
-        self.txt_input.setPlaceholderText("Type your answer here and press Enter to reveal...")
-        self.txt_input.returnPressed.connect(self._on_enter_pressed)
-        card_layout.addWidget(self.txt_input)
-        
-        # Reveal / Comparison Section (initially hidden)
+        # Reveal Section (initially hidden)
         self.answer_container = QWidget()
         ans_layout = QVBoxLayout(self.answer_container)
         ans_layout.setContentsMargins(0, 0, 0, 0)
-        ans_layout.setSpacing(10)
+        ans_layout.setSpacing(20)
         
-        # Separator 2
-        self.sep2 = QFrame()
-        self.sep2.setFrameShape(QFrame.HLine)
-        self.sep2.setStyleSheet(f"background: {p['C_BORDER']}; height: 1px;")
-        ans_layout.addWidget(self.sep2)
+        # Separator line
+        self.sep = QFrame()
+        self.sep.setFrameShape(QFrame.HLine)
+        self.sep.setStyleSheet(f"background: {p['C_BORDER']}; height: 1px;")
+        ans_layout.addWidget(self.sep)
         
-        self.lbl_diff_title = QLabel("COMPARISON" if is_dojo else "Comparison")
-        self.lbl_diff_title.setStyleSheet(f"""
-            color: {p['C_PURPLE'] if is_dojo else p['C_ACCENT']};
-            font-size: {'9px' if is_dojo else '11px'};
-            font-family: {self._header_font_family};
-            font-weight: bold;
-            letter-spacing: 1.5px;
-        """)
-        ans_layout.addWidget(self.lbl_diff_title)
-        
-        self.diff_browser = QTextBrowser()
-        self.diff_browser.setFont(QFont(self._font_family, 13))
-        self.diff_browser.setFixedHeight(120)
-        ans_layout.addWidget(self.diff_browser)
+        # Answer QTextBrowser
+        self.a_browser = ZoomableTextBrowser()
+        self.a_browser.setOpenExternalLinks(True)
+        self.a_browser.setFont(QFont(self._font_family, 16))
+        self.a_browser.document().setDocumentMargin(0)
+        self.a_browser.document().setDefaultStyleSheet("img { width: 100%; }")
+        ans_layout.addWidget(self.a_browser, stretch=1)
         
         # Notes Section (if any)
         self.notes_container = QWidget()
         notes_layout = QVBoxLayout(self.notes_container)
         notes_layout.setContentsMargins(0, 0, 0, 0)
-        notes_layout.setSpacing(4)
+        notes_layout.setSpacing(8)
         
-        self.lbl_notes_title = QLabel("NOTES" if is_dojo else "Notes / Hints")
+        self.lbl_notes_title = QLabel("Notes / Hints:")
         self.lbl_notes_title.setStyleSheet(f"""
             color: {p['C_SUBTEXT']};
-            font-size: {'8px' if is_dojo else '10px'};
+            font-size: 13px;
             font-family: {self._header_font_family};
             font-weight: bold;
-            letter-spacing: 1px;
         """)
         notes_layout.addWidget(self.lbl_notes_title)
         
-        self.notes_browser = QTextBrowser()
+        self.notes_browser = ZoomableTextBrowser()
         self.notes_browser.setFont(QFont(self._font_family, 12))
-        self.notes_browser.setFixedHeight(60)
+        self.notes_browser.document().setDocumentMargin(0)
+        self.notes_browser.setFixedHeight(80)
         notes_layout.addWidget(self.notes_browser)
         ans_layout.addWidget(self.notes_container)
         
-        card_layout.addWidget(self.answer_container)
+        main_layout.addWidget(self.answer_container)
         self.answer_container.hide()
-        
-        main_layout.addWidget(self.card_frame)
+
+    def keyPressEvent(self, e):
+        # Forward keyboard events to the parent (review_screen) so that shortcuts work correctly
+        if self.parent():
+            self.parent().keyPressEvent(e)
+        else:
+            super().keyPressEvent(e)
         
     def load_card(self, card):
         self.card = card
         self.is_revealed = False
-        self.txt_input.clear()
-        self.txt_input.setReadOnly(False)
-        self.txt_input.setEnabled(True)
-        self.txt_input.setFocus()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.clear()
         
-        # Load Question
-        question_html = f"<div style='font-size: 16px; color: #CDD6F4;'>{self._escape_and_format(card.get('question', ''))}</div>"
-        # Adjust text color for classic theme
-        theme = getattr(QApplication.instance(), "_active_theme", "classic")
-        p = get_palette(theme)
-        if theme == "classic":
-            question_html = f"<div style='font-size: 16px; color: {p['C_TEXT']};'>{self._escape_and_format(card.get('question', ''))}</div>"
-            
-        self.q_browser.setHtml(question_html)
+        self.q_browser.document().setBaseUrl(get_base_url())
+        self.a_browser.document().setBaseUrl(get_base_url())
+        self.notes_browser.document().setBaseUrl(get_base_url())
+        
+        self._update_scaled_html()
         
         # Clear/Hide answer container
         self.answer_container.hide()
-        self.diff_browser.clear()
+        self.a_browser.clear()
         self.notes_browser.clear()
         
     def reveal_answer(self):
         if self.is_revealed:
             return
         self.is_revealed = True
-        self.txt_input.setReadOnly(True) # Prevent editing once revealed
         
-        typed = self.txt_input.text().strip()
-        correct = self.card.get("answer", "").strip()
-        
-        # Generate visual diff HTML
-        diff_html = self._generate_diff_html(typed, correct)
-        self.diff_browser.setHtml(diff_html)
-        
-        # Load Notes if exists
-        notes = self.card.get("notes", "").strip()
-        if notes:
-            theme = getattr(QApplication.instance(), "_active_theme", "classic")
-            p = get_palette(theme)
-            notes_color = "#A6ADC8" if theme != "classic" else p['C_TEXT']
-            self.notes_browser.setHtml(f"<div style='color: {notes_color}; font-size: 13px;'>{self._escape_and_format(notes)}</div>")
-            self.notes_container.show()
-        else:
-            self.notes_container.hide()
-            
+        self._update_scaled_html()
         self.answer_container.show()
         
-    def _on_enter_pressed(self):
-        if not self.is_revealed:
-            self.answer_submitted.emit()
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._update_scaled_html()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.setGeometry(self.rect())
+        
+    def _update_scaled_html(self):
+        if not self.card:
+            return
             
+        # Dynamically calculate the actual available width in pixels
+        # Margins are 40px left and 40px right, so available width is self.width() - 80.
+        target_width = int(max(200, (self.width() - 80) * self._zoom_factor))
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        p = get_palette(theme)
+        text_color = "#CDD6F4" if theme != "classic" else p['C_TEXT']
+        
+        # Update fonts on browsers based on zoom factor
+        font_size = int(16 * self._zoom_factor)
+        self.q_browser.setFont(QFont(self._font_family, font_size))
+        self.a_browser.setFont(QFont(self._font_family, font_size))
+        self.notes_browser.setFont(QFont(self._font_family, int(12 * self._zoom_factor)))
+        
+        # Load Question
+        question = self.card.get('question', '')
+        if "<img" in question or "<html>" in question:
+            self._scale_and_load_html(self.q_browser, question, target_width)
+        else:
+            question_html = f"<div style='font-size: {font_size}px; color: {text_color};'>{self._escape_and_format(question)}</div>"
+            self.q_browser.setHtml(question_html)
+            
+        # Load Answer if revealed
+        if self.is_revealed:
+            answer = self.card.get("answer", "")
+            if "<img" in answer or "<html>" in answer:
+                self._scale_and_load_html(self.a_browser, answer, target_width)
+            else:
+                answer_html = f"<div style='font-size: {font_size}px; color: {text_color};'>{self._escape_and_format(answer)}</div>"
+                self.a_browser.setHtml(answer_html)
+                
+            # Load Notes
+            notes = self.card.get("notes", "").strip()
+            if notes:
+                notes_color = "#A6ADC8" if theme != "classic" else p['C_TEXT']
+                notes_html = f"<div style='color: {notes_color}; font-size: {int(13 * self._zoom_factor)}px;'>{self._escape_and_format(notes)}</div>"
+                self.notes_browser.setHtml(notes_html)
+                self.notes_container.show()
+            else:
+                self.notes_container.hide()
+        
+    def _scale_and_load_html(self, browser, html_content, target_width):
+        import re
+        from PyQt5.QtGui import QPixmap, QTextDocument
+        from PyQt5.QtCore import QUrl
+        
+        # 1. Parse img tags and their src attributes
+        img_pattern = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+        sources = img_pattern.findall(html_content)
+        
+        base_url = get_base_url()
+        base_path = ""
+        if base_url.isLocalFile():
+            base_path = base_url.toLocalFile()
+            
+        for src in sources:
+            # Resolve the absolute path of the image
+            abs_path = src
+            if not os.path.isabs(src):
+                if base_path:
+                    abs_path = os.path.join(base_path, src)
+                else:
+                    from storage_paths import get_mission_archive_root
+                    root = get_mission_archive_root()
+                    if root:
+                        abs_path = os.path.join(root, src)
+            abs_path = os.path.normpath(abs_path)
+            
+            if os.path.exists(abs_path):
+                pixmap = QPixmap(abs_path)
+                if not pixmap.isNull():
+                    w = pixmap.width()
+                    if w > 0:
+                        # Scale pixmap smoothly to target_width
+                        scaled_pixmap = pixmap.scaledToWidth(target_width, Qt.SmoothTransformation)
+                        # Register in document cache
+                        browser.document().addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
+                        browser.document().addResource(QTextDocument.ImageResource, QUrl.fromLocalFile(abs_path), scaled_pixmap)
+                        
+        # 2. Clean width/height/style attributes specifically on img tags
+        def clean_img_tags(match):
+            tag = match.group(0)
+            tag = re.sub(r'width\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'height\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'style\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
+            return tag
+            
+        cleaned = re.compile(r'<img\s+[^>]+>', re.IGNORECASE).sub(clean_img_tags, html_content)
+        
+        # 3. Clean inline font-size styles to let the QTextBrowser font scale handle text size
+        cleaned = re.sub(r'font-size\s*:\s*[^;\'"]+;?', '', cleaned, flags=re.IGNORECASE)
+        
+        browser.setHtml(cleaned)
+        
     def _escape_and_format(self, text):
         import html
         escaped = html.escape(text)
         return escaped.replace("\n", "<br>")
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier:
+            angle = e.angleDelta().y()
+            if angle > 0:
+                self.zoom_in()
+            elif angle < 0:
+                self.zoom_out()
+            e.accept()
+        else:
+            super().wheelEvent(e)
+
+    def event(self, e):
+        if e.type() == QEvent.NativeGesture:
+            if e.gestureType() == Qt.ZoomNativeGesture:
+                factor = 1.0 + e.value()
+                self._zoom_factor = max(0.5, min(3.0, self._zoom_factor * factor))
+                self._update_scaled_html()
+                return True
+        return super().event(e)
+
+    def zoom_in(self):
+        self._zoom_factor = min(self._zoom_factor + 0.1, 3.0)
+        self._update_scaled_html()
+
+    def zoom_out(self):
+        self._zoom_factor = max(self._zoom_factor - 0.1, 0.5)
+        self._update_scaled_html()
+
+    def zoom_reset(self):
+        self._zoom_factor = 1.0
+        self._update_scaled_html()
+
+class ScratchpadOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setVisible(False)
+        self.strokes = []
+        self.current_stroke = []
+        self.active_color = QColor("#FF4444")
+        self.active_width = 2.0
         
-    def _generate_diff_html(self, typed: str, correct: str) -> str:
-        theme = getattr(QApplication.instance(), "_active_theme", "classic")
-        p = get_palette(theme)
+    def set_pen_active(self, active):
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, not active)
+        self.setVisible(active)
+        if active:
+            self.raise_()
+            self.update()
+            
+    def clear(self):
+        self.strokes = []
+        self.current_stroke = []
+        self.update()
         
-        # Color schemes based on dark/light themes
-        c_green = "#50FA7B" if theme != "classic" else "#2F9E44"
-        c_red = "#FF5555" if theme != "classic" else "#E03131"
-        c_orange = "#FFB86C" if theme != "classic" else "#E8590C"
-        c_cyan = "#8BE9FD" if theme != "classic" else "#15AABF"
-        c_text = p['C_TEXT']
+    def paintEvent(self, e):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
         
-        if typed == correct:
-            return f"<div style='font-family: sans-serif; font-size: 14px; color: {c_text};'>" \
-                   f"<p><b>Your Input:</b> <code style='font-size: 15px; color: {c_green};'>{self._escape_and_format(typed)}</code></p>" \
-                   f"<p style='color: {c_green}; font-weight: bold;'>✓ Perfect Match!</p></div>"
-                   
-        matcher = difflib.SequenceMatcher(None, typed, correct)
-        typed_html = []
-        correct_html = []
-        
-        for opcode, a_start, a_end, b_start, b_end in matcher.get_opcodes():
-            if opcode == 'equal':
-                match_str = self._escape_and_format(typed[a_start:a_end])
-                typed_html.append(f"<span style='color: {c_green};'>{match_str}</span>")
-                correct_html.append(f"<span style='color: {c_green};'>{match_str}</span>")
-            elif opcode == 'replace':
-                replaced_str = self._escape_and_format(typed[a_start:a_end])
-                correct_str = self._escape_and_format(correct[b_start:b_end])
-                typed_html.append(f"<span style='color: {c_red}; text-decoration: line-through;'>{replaced_str}</span>")
-                correct_html.append(f"<span style='color: {c_orange}; font-weight: bold;'>{correct_str}</span>")
-            elif opcode == 'delete':
-                deleted_str = self._escape_and_format(typed[a_start:a_end])
-                typed_html.append(f"<span style='color: {c_red}; text-decoration: line-through;'>{deleted_str}</span>")
-            elif opcode == 'insert':
-                inserted_str = self._escape_and_format(correct[b_start:b_end])
-                correct_html.append(f"<span style='color: {c_cyan}; text-decoration: underline;'>{inserted_str}</span>")
+        for stroke in self.strokes:
+            pen = QPen(stroke["color"], stroke["width"], Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen)
+            points = stroke["points"]
+            if len(points) > 1:
+                for i in range(len(points) - 1):
+                    painter.drawLine(points[i], points[i+1])
+                    
+        if len(self.current_stroke) > 1:
+            pen = QPen(self.active_color, self.active_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen)
+            for i in range(len(self.current_stroke) - 1):
+                painter.drawLine(self.current_stroke[i], self.current_stroke[i+1])
                 
-        typed_res = "".join(typed_html)
-        correct_res = "".join(correct_html)
-        
-        html = f"""
-        <div style='font-family: sans-serif; font-size: 14px; color: {c_text};'>
-            <p style='margin-bottom: 6px;'><b>Your Input:</b> <code style='font-size: 14px;'>{typed_res if typed_res else "<span style='color: " + c_red + ";'>(empty)</span>"}</code></p>
-            <p style='margin-top: 0px;'><b>Correct:</b> <code style='font-size: 14px;'>{correct_res}</code></p>
-        </div>
-        """
-        return html
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.current_stroke = [e.pos()]
+            self.update()
+            e.accept()
+        else:
+            e.ignore()
+            
+    def mouseMoveEvent(self, e):
+        if self.current_stroke:
+            self.current_stroke.append(e.pos())
+            self.update()
+            e.accept()
+        else:
+            e.ignore()
+            
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.current_stroke:
+            self.strokes.append({
+                "color": QColor(self.active_color),
+                "width": self.active_width,
+                "points": self.current_stroke
+            })
+            self.current_stroke = []
+            self.update()
+            e.accept()
+        else:
+            e.ignore()

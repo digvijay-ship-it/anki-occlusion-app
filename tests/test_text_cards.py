@@ -29,25 +29,43 @@ class TestTextCards(unittest.TestCase):
         self.assertEqual(loaded_card.notes, "Introduced in Python 3.7")
         self.assertEqual(loaded_card.tags, ["python", "oop"])
 
-    def test_visual_diff_helper(self):
-        # Instantiating widget (no parent needed for basic helper testing)
+    def test_text_review_widget_load_and_reveal(self):
         import sys
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance() or QApplication(sys.argv)
         
         widget = TextReviewWidget()
+        card = {
+            "card_type": "text",
+            "question": "What is 2+2?",
+            "answer": "4",
+            "notes": "Basic addition"
+        }
         
-        # Exact match
-        res_perfect = widget._generate_diff_html("apple", "apple")
-        self.assertIn("Perfect Match!", res_perfect)
-        self.assertIn("apple", res_perfect)
+        widget.load_card(card)
+        self.assertFalse(widget.is_revealed)
+        self.assertTrue(widget.answer_container.isHidden())
+        self.assertIn("What is 2+2?", widget.q_browser.toPlainText())
         
-        # Diff matches
-        res_diff = widget._generate_diff_html("aple", "apple")
-        import re
-        plain_text = re.sub('<[^<]+?>', '', res_diff)
-        self.assertIn("aple", plain_text)
-        self.assertIn("apple", plain_text)
+        widget.reveal_answer()
+        self.assertTrue(widget.is_revealed)
+        self.assertFalse(widget.answer_container.isHidden())
+        self.assertIn("4", widget.a_browser.toPlainText())
+        self.assertIn("Basic addition", widget.notes_browser.toPlainText())
+
+    def test_image_scaling_replaces_with_pixel_width(self):
+        import sys
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication(sys.argv)
+        
+        widget = TextReviewWidget()
+        html_input = '<p>Check this image:</p><img src="images/test.png" style="max-width: 100%;" />'
+        widget._scale_and_load_html(widget.q_browser, html_input, 1200)
+        
+        # Verify the HTML in the browser has style removed from img tags
+        html_output = widget.q_browser.toHtml()
+        self.assertNotIn('max-width', html_output)
+        self.assertIn('test.png', html_output)
         
 if __name__ == "__main__":
     unittest.main()

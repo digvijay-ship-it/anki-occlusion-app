@@ -145,6 +145,218 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
 
         screen._open_annotation_beta.assert_called_once_with()
 
+    def test_alt_t_shortcut_toggles_floating_timer(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen.canvas._mode = "review"
+        screen._rating_frame = MagicMock()
+        screen._rating_frame.isVisible.return_value = False
+        screen._toggle_floating_timer_visibility = MagicMock()
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_T, Qt.AltModifier)
+
+        screen.keyPressEvent(event)
+
+        screen._toggle_floating_timer_visibility.assert_called_once()
+
+    def test_toggle_floating_timer_visibility_toggles_state_and_toasts(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen._floating_timer_frame = MagicMock()
+        screen._floating_timer_sync_timer = MagicMock()
+        screen._set_floating_timer_sync_enabled = MagicMock()
+        screen._update_floating_timer_visibility = MagicMock()
+
+        screen._user_timer_hidden = False
+
+        # Toggle to hide
+        screen._toggle_floating_timer_visibility()
+        self.assertTrue(screen._user_timer_hidden)
+        screen._floating_timer_frame.hide.assert_called_once()
+        screen._set_floating_timer_sync_enabled.assert_called_once_with(False)
+        screen.canvas._show_toast.assert_called_once_with("⏱ Timer Hidden (Press Alt+T to show)")
+
+        # Reset mocks
+        screen._floating_timer_frame.hide.reset_mock()
+        screen._set_floating_timer_sync_enabled.reset_mock()
+        screen.canvas._show_toast.reset_mock()
+
+        # Toggle to show
+        screen._toggle_floating_timer_visibility()
+        self.assertFalse(screen._user_timer_hidden)
+        screen._update_floating_timer_visibility.assert_called_once()
+
+    def test_draggable_frame_drag_events(self):
+        from PyQt5.QtGui import QMouseEvent
+        from ui.review_screen import DraggableFrame
+        
+        parent = QWidget()
+        parent.resize(800, 600)
+
+        on_release_called = []
+        def on_release(x, y):
+            on_release_called.append((x, y))
+
+        frame = DraggableFrame(parent, on_release=on_release)
+        frame.resize(100, 50)
+        frame.show()
+
+        # Test press event
+        press_event = QMouseEvent(
+            QEvent.MouseButtonPress,
+            QPoint(10, 10),
+            QPoint(100, 100),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier
+        )
+        frame.mousePressEvent(press_event)
+        self.assertEqual(frame._drag_start_pos, QPoint(100, 100) - frame.frameGeometry().topLeft())
+
+        # Test move event (drag)
+        move_event = QMouseEvent(
+            QEvent.MouseMove,
+            QPoint(20, 20),
+            QPoint(150, 120),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier
+        )
+        frame.mouseMoveEvent(move_event)
+
+        # New pos should be updated based on drag
+        self.assertEqual(frame.x(), 150 - frame._drag_start_pos.x())
+        self.assertEqual(frame.y(), 120 - frame._drag_start_pos.y())
+
+        # Test release event
+        release_event = QMouseEvent(
+            QEvent.MouseButtonRelease,
+            QPoint(20, 20),
+            QPoint(150, 120),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier
+        )
+        frame.mouseReleaseEvent(release_event)
+        self.assertIsNone(frame._drag_start_pos)
+        self.assertEqual(len(on_release_called), 1)
+        self.assertEqual(on_release_called[0], (frame.x(), frame.y()))
+
+    def test_reposition_respects_and_saves_settings(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._floating_timer_frame = MagicMock()
+        screen._floating_timer_frame.width.return_value = 100
+        screen._floating_timer_frame.height.return_value = 50
+        screen._canvas_stage = MagicMock()
+        screen._canvas_stage.width.return_value = 800
+        screen._canvas_stage.height.return_value = 600
+
+        with patch('ui.review_screen.QSettings') as MockQSettings:
+            settings_mock = MockQSettings.return_value
+            settings_mock.value.side_effect = lambda key, default: 0.5
+
+            screen._timer_x_pct = 0.5
+            screen._timer_y_pct = 0.5
+            screen._reposition_floating_timer()
+
+            # x = 0.5 * (800 - 100) = 350
+            # y = 0.5 * (600 - 50) = 275
+            screen._floating_timer_frame.move.assert_called_once_with(350, 275)
+
+        # Test save method
+        screen._floating_timer_frame.x.return_value = 350
+        screen._floating_timer_frame.y.return_value = 275
+        with patch('ui.review_screen.QSettings') as MockQSettings:
+            settings_mock = MockQSettings.return_value
+            screen._save_floating_timer_position(350, 275)
+
+            self.assertEqual(screen._timer_x_pct, 0.5)
+            self.assertEqual(screen._timer_y_pct, 0.5)
+            settings_mock.setValue.assert_any_call("review/timer_x_pct", 0.5)
+            settings_mock.setValue.assert_any_call("review/timer_y_pct", 0.5)
+
+    def test_show_session_summary_shown_for_pdf_cards(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.finished = MagicMock()
+        screen.prog = MagicMock()
+        screen.mgr = MagicMock()
+
+        card1 = {"pdf_path": "some_doc.pdf"}
+        screen.mgr._items = [(card1, 0, {})]
+
+        with patch("ui.review.summary_dialog.ReviewSessionSummaryDialog") as MockDialog:
+            dialog_instance = MockDialog.return_value
+            screen._show_session_summary()
+
+            MockDialog.assert_called_once_with(screen)
+            dialog_instance.exec_.assert_called_once()
+            screen.finished.emit.assert_called_once()
+
+    def test_show_session_summary_skipped_for_image_cards(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.finished = MagicMock()
+        screen.prog = MagicMock()
+        screen.mgr = MagicMock()
+
+        card1 = {"image_path": "some_image.png"}
+        card2 = {"title": "Text Card"}
+        screen.mgr._items = [(card1, 0, {}), (card2, 1, {})]
+
+        with patch("ui.review.summary_dialog.ReviewSessionSummaryDialog") as MockDialog:
+            screen._show_session_summary()
+
+            MockDialog.assert_not_called()
+            screen.finished.emit.assert_called_once()
+
+    def test_apply_annotation_beta_refresh_invalidates_cache_and_emits_pages(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = MagicMock()
+        screen._canvas_scroll = MagicMock()
+        screen._pdf_render_zoom = 2.0
+        screen._review_canvas_real_pages = {0, 1}
+        screen._start_review_lazy_trace = MagicMock()
+        screen._update_review_page_nav_ui = MagicMock()
+        screen._trigger_center_fit = MagicMock()
+        screen._pdf_watcher = MagicMock()
+
+        path = "test_path.pdf"
+        changed_pages = [0]
+
+        from ui.review.annotation_handler import apply_annotation_beta_refresh
+
+        with patch("ui.review.annotation_handler.PAGE_CACHE") as MockCache:
+            apply_annotation_beta_refresh(screen, path, changed_pages, None)
+
+            # 1. PAGE_CACHE.invalidate_pages called for zoom variant
+            MockCache.invalidate_pages.assert_any_call(path, [0], variant=2.0)
+            # 2. Page 0 discarded from real pages
+            self.assertEqual(screen._review_canvas_real_pages, {1})
+            # 3. _canvas_scroll._emit_visible_pages called
+            screen._canvas_scroll._emit_visible_pages.assert_called_once()
+
+    def test_reload_current_canvas_prefers_pdf_over_image(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.mgr = MagicMock()
+        screen.mgr._idx = 0
+        screen._bg_pending_inserts = MagicMock()
+        screen._close_bg_prefetch_dialog = MagicMock()
+        screen._stop_skeleton_thread = MagicMock()
+        screen._pdf_watcher = MagicMock()
+        screen._start_review_skeleton_thread = MagicMock()
+
+        card = {
+            "card_type": "occlusion",
+            "image_path": "test_image.png",
+            "pdf_path": "test_pdf.pdf"
+        }
+        screen._items = [(card, 0, {})]
+
+        with patch("ui.review_screen.os.path.exists", return_value=True), \
+             patch("ui.review_screen.PDF_SUPPORT", True), \
+             patch("ui.review_screen.resolve_asset_path", side_effect=lambda x: x):
+
+            screen._reload_current_canvas()
+            screen._pdf_watcher.watch_pdf.assert_called_once_with("test_pdf.pdf")
+
     def test_queue_drawer_locked_keeps_queue_visible(self):
         screen = ReviewScreen.__new__(ReviewScreen)
         screen._queue_locked = True
