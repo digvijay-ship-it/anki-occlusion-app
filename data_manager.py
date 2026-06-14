@@ -1013,6 +1013,153 @@ def next_deck_id(data):
 def new_box_id():
     return str(uuid.uuid4())
 
+def compute_file_sha256(filepath: str) -> str:
+    """Compute the SHA-256 hash of a file's content."""
+    import hashlib
+    sha256 = hashlib.sha256()
+    try:
+        with open(filepath, 'rb') as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                sha256.update(chunk)
+        return sha256.hexdigest()
+    except Exception as e:
+        print(f"[ERROR] Failed to compute SHA-256 for {filepath}: {e}")
+        return ""
+
+def compute_image_dhash(image_path) -> str:
+    """Compute the difference hash (dHash) of an image for visual similarity."""
+    if not image_path or not os.path.exists(image_path):
+        return ""
+    try:
+        from PIL import Image
+        img = Image.open(image_path)
+        # Convert to grayscale and resize to 9x8 using Lanczos filtering
+        img = img.convert('L').resize((9, 8), Image.Resampling.LANCZOS)
+        pixels = list(img.getdata())
+        
+        # Compare adjacent pixels in each row
+        diff = []
+        for row in range(8):
+            for col in range(8):
+                pixel_left = pixels[row * 9 + col]
+                pixel_right = pixels[row * 9 + col + 1]
+                diff.append(pixel_left > pixel_right)
+                
+        # Convert the 64 boolean differences to a 16-character hex string
+        decimal_value = 0
+        for bit in diff:
+            decimal_value = (decimal_value << 1) | bit
+        return f"{decimal_value:016x}"
+    except Exception as e:
+        print(f"[ERROR] Failed to compute dHash for {image_path}: {e}")
+        return ""
+
+def hamming_distance(hash1, hash2) -> int:
+    """Calculate the Hamming distance between two 16-character hex dHashes."""
+    if not hash1 or not hash2 or len(hash1) != 16 or len(hash2) != 16:
+        return 999
+    try:
+        h1 = int(hash1, 16)
+        h2 = int(hash2, 16)
+        return bin(h1 ^ h2).count('1')
+    except Exception:
+        return 999
+
+def find_duplicate_card(data: dict, file_sha: str, dhash: str, title: str, target_deck_id=None) -> tuple[bool, bool]:
+    # We return tuple (card, deck)
+    if not isinstance(data, dict):
+        return None, None
+        
+    normalized_title = title.strip().lower() if title else ""
+    is_default_title = normalized_title in ("", "untitled", "pasted image")
+    
+    lazy_cache_updated = [False]
+
+    def _walk(decks):
+        for deck in decks:
+            for card in deck.get("cards", []):
+                # 1. Check exact byte hash (SHA-256)
+                c_sha = card.get("file_hash")
+                path = card.get("image_path") or card.get("pdf_path")
+                
+                # Lazy load SHA-256
+                if not c_sha and path:
+                    from storage_paths import resolve_asset_path
+                    abs_path = resolve_asset_path(path)
+                    if os.path.exists(abs_path):
+                        c_sha = compute_file_sha256(abs_path)
+                        if c_sha:
+                            card["file_hash"] = c_sha
+                            lazy_cache_updated[0] = True
+                            
+                if file_sha and c_sha == file_sha:
+                    return card, deck
+                    
+                # 2. Check visual similarity (dHash) for image cards
+                if dhash and card.get("image_path"):
+                    c_dhash = card.get("visual_hash")
+                    # Lazy load dHash
+                    if not c_dhash and path:
+                        from storage_paths import resolve_asset_path
+                        abs_path = resolve_asset_path(path)
+                        if os.path.exists(abs_path):
+                            c_dhash = compute_image_dhash(abs_path)
+                            if c_dhash:
+                                card["visual_hash"] = c_dhash
+                                lazy_cache_updated[0] = True
+                                
+                    if c_dhash and hamming_distance(dhash, c_dhash) <= 2:
+                        return card, deck
+                        
+                # 3. Check title duplicate (only in target deck if specified)
+                if not is_default_title:
+                    c_title = card.get("title", "").strip().lower()
+                    if c_title == normalized_title:
+                        if target_deck_id is None or deck.get("_id") == target_deck_id:
+                            return card, deck
+                            
+            # Check subdecks
+            found_card, found_deck = _walk(deck.get("children", []) or deck.get("subdecks", []) or [])
+            if found_card:
+                return found_card, found_deck
+        return None, None
+
+    res_card, res_deck = _walk(data.get("decks", []) or [])
+    
+    if lazy_cache_updated[0]:
+        store.mark_dirty()
+        
+    return res_card, res_deck
+
+def find_card_and_deck_by_id(data: dict, card_id) -> tuple[bool, bool]:
+    if not isinstance(data, dict) or card_id is None:
+        return None, None
+        
+    try:
+        card_id = int(card_id)
+    except (ValueError, TypeError):
+        pass
+
+    def _walk(decks):
+        for deck in decks:
+            for card in deck.get("cards", []):
+                c_id = card.get("_id")
+                try:
+                    c_id = int(c_id)
+                except (ValueError, TypeError):
+                    pass
+                if c_id == card_id:
+                    return card, deck
+            found_card, found_deck = _walk(deck.get("children", []) or deck.get("subdecks", []) or [])
+            if found_card:
+                return found_card, found_deck
+        return None, None
+
+    return _walk(data.get("decks", []) or [])
+
 class _DeckHistory:
     MAX = 50
 

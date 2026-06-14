@@ -36,6 +36,7 @@ from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
 from sm2_engine import sm2_init
 from data_manager import new_box_id
 from services import recovery_manager, shortcut_manager
+from services.ocr_engine import OcrTextThread, clean_ocr_title
 from ui.canvas.retro_effects import CRTOverlay
 from pdf_engine import (
     PDF_SUPPORT,
@@ -57,6 +58,7 @@ from storage_paths import (
     find_deck_segments,
     has_mission_archive,
     import_asset_into_archive,
+    relocate_pdf_for_deck,
     resolve_asset_path,
 )
 
@@ -118,6 +120,7 @@ class CardEditorDialog(QDialog):
         self._recovery_accepted = False
         self._recovery_autosave_ready = False
         self._recovery_dirty = False
+        self._card_saved_once = False
         self._recovery_created_at = self.card.get("created") or datetime.now().isoformat()
         self._last_recovery_draft_fingerprint = None
         self._initial_scroll = initial_scroll
@@ -372,7 +375,7 @@ class CardEditorDialog(QDialog):
             tl.addWidget(w)
         tl.addStretch()
 
-        btn_cancel = _tbtn("Cancel", "Discard changes")
+        self.btn_cancel = _tbtn("Cancel", "Discard changes")
         btn_save = QPushButton("💾  Save Card")
         btn_save.setFixedHeight(34)
         btn_save.setToolTip("Save  Ctrl+S")
@@ -381,9 +384,9 @@ class CardEditorDialog(QDialog):
             "border-radius:4px;padding:4px 16px;font-size:13px;min-height:32px;}"
             "QPushButton:hover{background:#3A9040;}"
         )
-        btn_cancel.clicked.connect(self.reject)
+        self.btn_cancel.clicked.connect(self._on_cancel_clicked)
         btn_save.clicked.connect(self._save)
-        tl.addWidget(btn_cancel)
+        tl.addWidget(self.btn_cancel)
         tl.addSpacing(4)
         tl.addWidget(btn_save)
         L.addWidget(top_bar)
@@ -1025,6 +1028,87 @@ class CardEditorDialog(QDialog):
     def _resolve_source_path(self, stored_path: str) -> str:
         return resolve_asset_path(stored_path)
 
+    def _check_and_handle_duplicate(self, file_path, is_paste=False) -> bool:
+        """
+        Check if the file_path is already used in an existing card.
+        If a duplicate is found, warn the user and offer options to:
+          - Yes: Edit existing card (rejects dialog with switch_to_edit_card_id set)
+          - No: Add anyway (continues import)
+          - Cancel: Abort
+        Returns True if the operation should be aborted/cancelled, False if it can proceed.
+        """
+        import os
+        if not file_path or not os.path.exists(file_path):
+            return False
+
+        from data_manager import compute_file_sha256, compute_image_dhash, find_duplicate_card, hamming_distance
+        
+        # Calculate SHA-256 and dHash
+        file_sha = compute_file_sha256(file_path)
+        dhash = ""
+        is_pdf = file_path.lower().endswith('.pdf')
+        if not is_pdf:
+            dhash = compute_image_dhash(file_path)
+            
+        current_title = self.inp_title.text().strip()
+        deck_id = self._deck.get("_id") if isinstance(self._deck, dict) else None
+        
+        # Search for duplicate
+        dup_card, dup_deck = find_duplicate_card(self._data, file_sha, dhash, current_title, target_deck_id=deck_id)
+        if not dup_card:
+            # No duplicate, store the new hashes on this card
+            if file_sha:
+                self.card["file_hash"] = file_sha
+            if dhash:
+                self.card["visual_hash"] = dhash
+            return False
+
+        # Exclude checking the card currently being edited
+        if dup_card.get("_id") == self.card.get("_id"):
+            if file_sha:
+                self.card["file_hash"] = file_sha
+            if dhash:
+                self.card["visual_hash"] = dhash
+            return False
+
+        # Determine duplicate type
+        if file_sha and dup_card.get("file_hash") == file_sha:
+            dup_type = "exact same file content"
+        elif dhash and dup_card.get("visual_hash") and hamming_distance(dhash, dup_card.get("visual_hash")) <= 2:
+            dup_type = "visually similar image (screenshot)"
+        else:
+            dup_type = "same card title"
+
+        # Show confirmation warning
+        msg = (
+            f"Duplicate card detected by {dup_type}!\n\n"
+            f"Card Title: '{dup_card.get('title', 'Untitled')}'\n"
+            f"Deck: '{dup_deck.get('name', 'Unknown')}'\n\n"
+            f"Would you like to edit the existing card instead?"
+        )
+        
+        reply = QMessageBox.warning(
+            self,
+            "Duplicate Card Detected",
+            msg,
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Cancel
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.switch_to_edit_card_id = dup_card.get("_id")
+            self.reject()
+            return True
+        elif reply == QMessageBox.Cancel:
+            return True
+
+        # User clicked No (Add anyway) -> Save new hashes and proceed
+        if file_sha:
+            self.card["file_hash"] = file_sha
+        if dhash:
+            self.card["visual_hash"] = dhash
+        return False
+
     def _current_deck_segments(self):
         deck = getattr(self, "_deck", None)
         deck_id = deck.get("_id") if isinstance(deck, dict) else None
@@ -1073,6 +1157,39 @@ class CardEditorDialog(QDialog):
         print(f"[DEBUG][mission_archive] editor_paste_target_legacy abs={tmp_path}")
         return tmp_path, tmp_path
 
+    def _stop_ocr_thread(self):
+        if hasattr(self, "_ocr_text_thread") and self._ocr_text_thread:
+            if self._ocr_text_thread.isRunning():
+                try:
+                    self._ocr_text_thread.terminate()
+                    self._ocr_text_thread.wait()
+                except Exception:
+                    pass
+            self._ocr_text_thread = None
+
+    def _trigger_ocr_for_image(self, abs_image_path: str, default_title: str):
+        self._stop_ocr_thread()
+        self._ocr_text_thread = OcrTextThread(abs_image_path, default_title, self)
+        self._ocr_text_thread.result.connect(self._on_ocr_result)
+        self._ocr_text_thread.start()
+
+    def _on_ocr_result(self, raw_text: str, default_title: str):
+        if not raw_text:
+            return
+        cleaned = clean_ocr_title(raw_text)
+        if not cleaned:
+            return
+        current_title = self.inp_title.text().strip()
+        is_default = (
+            not current_title 
+            or current_title == default_title 
+            or current_title == "Pasted Image"
+            or current_title == "Untitled"
+        )
+        if is_default:
+            self.inp_title.setText(cleaned)
+            self._schedule_recovery_draft("title")
+
     # ── image / paste ─────────────────────────────────────────────────────────
 
     def _load_image(self):
@@ -1080,6 +1197,8 @@ class CardEditorDialog(QDialog):
             self, "Load Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
         )
         if not path:
+            return
+        if self._check_and_handle_duplicate(path):
             return
         px = QPixmap(path)
         if px.isNull():
@@ -1109,7 +1228,9 @@ class CardEditorDialog(QDialog):
         self.canvas.load_pixmap(px_to_load)
         self._update_pdf_nav_ui()
         if not self.inp_title.text():
-            self.inp_title.setText(os.path.splitext(os.path.basename(path))[0])
+            default_title = os.path.splitext(os.path.basename(path))[0]
+            self.inp_title.setText(default_title)
+            self._trigger_ocr_for_image(path, default_title)
         self._write_recovery_checkpoint("image_loaded")
 
     def _paste_image(self):
@@ -1127,6 +1248,13 @@ class CardEditorDialog(QDialog):
         tmp_path, stored_path = self._prepare_pasted_image_target()
         if not px.save(tmp_path, "PNG"):
             QMessageBox.warning(self, "Error", "Could not save pasted image.")
+            return
+        if self._check_and_handle_duplicate(tmp_path, is_paste=True):
+            try:
+                import os
+                os.remove(tmp_path)
+            except Exception:
+                pass
             return
         self.card["image_path"] = stored_path
         self.card.pop("pdf_path", None)
@@ -1148,6 +1276,7 @@ class CardEditorDialog(QDialog):
         self._update_pdf_nav_ui()
         if not self.inp_title.text():
             self.inp_title.setText("Pasted Image")
+            self._trigger_ocr_for_image(tmp_path, "Pasted Image")
         self._write_recovery_checkpoint("image_pasted")
 
     # ── PDF loading ───────────────────────────────────────────────────────────
@@ -1163,6 +1292,8 @@ class CardEditorDialog(QDialog):
             self, "Load PDF", start_dir, "PDF (*.pdf)"
         )
         if not path:
+            return
+        if self._check_and_handle_duplicate(path):
             return
         if getattr(self, "_deck", None):
             self._deck["pdf_dir"] = os.path.dirname(path)
@@ -2187,13 +2318,144 @@ class CardEditorDialog(QDialog):
             f"t={(time.perf_counter() - save_t0) * 1000:.1f}ms"
         )
         self._write_recovery_checkpoint("save_card")
-        self.accept()
+
+        # Save to database/deck
+        if self._recovery_mode == "add":
+            card_to_add = self.card
+            subdeck_name = self._auto_subdeck_name
+            if subdeck_name and self._deck:
+                if self._deck.get("name", "").strip().lower() == subdeck_name.strip().lower():
+                    target_deck = self._deck
+                else:
+                    target_deck = None
+                    for child in self._deck.get("children", []):
+                        if child.get("name", "").strip().lower() == subdeck_name.strip().lower():
+                            target_deck = child
+                            break
+                    if target_deck is None:
+                        from data_manager import next_deck_id
+                        target_deck = {
+                            "_id": next_deck_id(self._data),
+                            "name": subdeck_name,
+                            "cards": [],
+                            "children": [],
+                            "created": datetime.now().isoformat(),
+                        }
+                        self._deck.setdefault("children", []).append(target_deck)
+                if has_mission_archive() and card_to_add.get("pdf_path"):
+                    deck_segments = find_deck_segments(self._data, target_deck.get("_id"))
+                    relocate_pdf_for_deck(card_to_add, deck_segments)
+                target_deck.setdefault("cards", []).append(card_to_add)
+            elif self._deck:
+                if has_mission_archive() and card_to_add.get("pdf_path"):
+                    deck_segments = find_deck_segments(self._data, self._deck.get("_id"))
+                    relocate_pdf_for_deck(card_to_add, deck_segments)
+                self._deck.setdefault("cards", []).append(card_to_add)
+        elif self._recovery_mode == "edit":
+            orig_card = None
+            card_id = self.card.get("_id")
+            if card_id is not None:
+                def _find(d):
+                    for c in d.get("cards", []):
+                        if c.get("_id") == card_id:
+                            return c
+                    for child in d.get("children", []):
+                        res = _find(child)
+                        if res:
+                            return res
+                    return None
+                if self._deck:
+                    orig_card = _find(self._deck)
+                if not orig_card and self._data:
+                    for d in self._data.get("decks", []):
+                        orig_card = _find(d)
+                        if orig_card:
+                            break
+            if orig_card:
+                orig_card.clear()
+                orig_card.update(self.card)
+
+        # Synchronously write data to disk
+        from data_manager import store
+        store.mark_dirty()
+        store.save_force(async_save=False)
+        self._card_saved_once = True
+
+        if hasattr(self, "btn_cancel"):
+            self.btn_cancel.setText("Done")
+            self.btn_cancel.setToolTip("Close window")
+
+        self.canvas._show_toast("💾 Card saved")
+
+        if self._recovery_mode == "add":
+            self.clear_recovery_draft()
+            self._reset_for_next_card()
+        else:
+            self.accept()
+
+    def _reset_for_next_card(self):
+        self.card = {}
+        self._recovery_initial_card = {}
+        self._recovery_draft_id = recovery_manager.new_draft_id()
+        self._recovery_draft_cleared = False
+        self._recovery_dirty = False
+        self._recovery_created_at = datetime.now().isoformat()
+        self._last_recovery_draft_fingerprint = None
+        self._auto_subdeck_name = None
+
+        # Clear inputs
+        self.inp_title.clear()
+        self.inp_tags.clear()
+        self.inp_notes.clear()
+
+        # Clear canvas
+        self.canvas._pages = []
+        self.canvas._px = None
+        self.canvas._boxes = []
+        self.canvas._selected_idx = -1
+        self.canvas._selected_indices = set()
+        self.canvas._invalidate_mask_cache()
+        self.canvas.update()
+
+        # Stop watch/threads
+        self._stop_watch()
+        self._stop_pdf_threads()
+        self._stop_ocr_thread()
+        self._pdf_pages = []
+        self._cur_page = 0
+        self._pdf_total_pages = 0
+        self._editor_canvas_real_pages = set()
+        self._editor_render_inflight_pages = set()
+        self._editor_visible_debug_seen_pages = set()
+        self._pending_boxes = []
+        self._editor_ondemand_path = None
+
+        # Reset UI elements
+        self.pdf_bar.setVisible(False)
+        self.btn_open_ext.setVisible(False)
+        self.btn_annotate_beta.setVisible(False)
+        self.btn_relink.setVisible(False)
+        self.lbl_sync.setVisible(False)
+        self.lbl_sync.setText("")
+        self.setWindowTitle("Occlusion Card Editor")
+        self.mask_panel._refresh([])
+
+    def _on_cancel_clicked(self):
+        if getattr(self, "_card_saved_once", False):
+            self.accept()
+        else:
+            self.reject()
 
     def get_card(self):
         return self.card
 
     def closeEvent(self, e):
         from cache_manager import MASK_REGISTRY
+
+        if getattr(self, "_card_saved_once", False):
+            self.accept()
+            e.accept()
+            return
 
         if not self._confirm_recovery_close():
             e.ignore()
@@ -2202,10 +2464,15 @@ class CardEditorDialog(QDialog):
         MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         self._stop_pdf_threads()
+        self._stop_ocr_thread()
         super().closeEvent(e)
 
     def reject(self):
         from cache_manager import MASK_REGISTRY
+
+        if getattr(self, "_card_saved_once", False):
+            self.accept()
+            return
 
         if not self._confirm_recovery_close():
             return
@@ -2213,6 +2480,7 @@ class CardEditorDialog(QDialog):
         MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         self._stop_pdf_threads()
+        self._stop_ocr_thread()
         super().reject()
 
     def accept(self):
@@ -2224,6 +2492,7 @@ class CardEditorDialog(QDialog):
         self._recovery_timer.stop()
         MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
+        self._stop_ocr_thread()
         super().accept()
 
 

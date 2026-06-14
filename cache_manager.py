@@ -182,7 +182,10 @@ class LRUPageCache:
         return self._disk_page_path_variant(path, page_num, None)
 
     def _variant_name(self, variant: str | None) -> str:
-        name = (variant or "default").strip() or "default"
+        if variant is None:
+            name = "default"
+        else:
+            name = str(variant).strip() or "default"
         if name == "default":
             if get_pdf_invert_setting():
                 return "inverted"

@@ -304,3 +304,89 @@ def _get_model(force_retrain=True):
     print(f"[ocr_engine] Advanced model trained and saved successfully to: {model_path}")
     return model
 
+
+def run_native_ocr(image_path: str) -> str:
+    if not image_path or not os.path.exists(image_path):
+        return ""
+    try:
+        from storage_paths import app_resource_path
+        ps_script = app_resource_path("services", "run_ocr.ps1")
+        if not os.path.exists(ps_script):
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            ps_script = os.path.join(current_dir, "run_ocr.ps1")
+            
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ps_script,
+            "-ImagePath", image_path
+        ]
+        
+        import subprocess
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0 # SW_HIDE
+            
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='ignore',
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+            timeout=15
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+        else:
+            print(f"[OCR] PowerShell OCR failed: {res.stderr}")
+            return ""
+    except Exception as e:
+        print(f"[OCR] Failed to execute native OCR: {e}")
+        return ""
+
+
+def clean_ocr_title(text: str) -> str:
+    if not text:
+        return ""
+    import re
+    cleaned = re.sub(r'\s+', ' ', text).strip()
+    if not cleaned:
+        return ""
+    q_match = re.search(r'^.*?\?', cleaned)
+    if q_match:
+        cleaned = q_match.group(0)
+    
+    if len(cleaned) > 60:
+        truncated = cleaned[:60]
+        last_space = truncated.rfind(' ')
+        if last_space > 30:
+            cleaned = truncated[:last_space] + "..."
+        else:
+            cleaned = truncated + "..."
+    return cleaned
+
+
+class OcrTextThread(QThread):
+    result = pyqtSignal(str, str)
+    
+    def __init__(self, image_path: str, default_title: str, parent=None):
+        super().__init__(parent)
+        self._image_path = image_path
+        self._default_title = default_title
+        
+    def run(self):
+        try:
+            raw_text = run_native_ocr(self._image_path)
+            self.result.emit(raw_text, self._default_title)
+        except Exception as e:
+            print(f"[ocr_engine] OcrTextThread failed: {e}")
+            self.result.emit("", self._default_title)
+
+
