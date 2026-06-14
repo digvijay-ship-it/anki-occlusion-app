@@ -93,3 +93,15 @@ web/frontend/*.log
 web/backend/*.log
 web/backend/.data/
 web/.run/
+
+# Local agent directories, logs, and scratch files
+.agents/
+scratch/
+scratch_test_render.py
+test_results.txt
+test_run.log
+test_run_v.log
+ORIGINAL_REQUEST.md
+PROJECT.md
+TEST_INFRA.md
+services/run_ocr.ps1
