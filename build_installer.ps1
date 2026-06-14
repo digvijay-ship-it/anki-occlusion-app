@@ -14,21 +14,16 @@ $generatedDir = Join-Path $installerDir "_generated"
 $zipStageDir = Join-Path $generatedDir "zip_payload"
 $zipPath = Join-Path $releaseDir "AnkiOcclusion.zip"
 $setupPath = Join-Path $releaseDir "AnkiOcclusionSetup.exe"
-$iexpressPath = Join-Path $env:WINDIR "System32\iexpress.exe"
 $appBundleDir = Join-Path $distDir "AnkiOcclusion"
 $appExePath = Join-Path $appBundleDir "AnkiOcclusion.exe"
-$tempRoot = Join-Path $env:TEMP "AnkiOcclusionInstaller"
-$sedInstallerDir = Join-Path $tempRoot "installer"
-$sedPayloadDir = Join-Path $tempRoot "payload"
-$tempSetupPath = Join-Path $tempRoot "AnkiOcclusionSetup.exe"
-$sedPath = Join-Path $tempRoot "AnkiOcclusionInstaller.sed"
 
 Set-Location $root
 
 Write-Host "[DEBUG][installer] root=$root"
 
-if (-not (Test-Path -LiteralPath $iexpressPath)) {
-    throw "IExpress was not found at $iexpressPath"
+$cscPath = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if (-not (Test-Path -LiteralPath $cscPath)) {
+    throw "C# compiler was not found at $cscPath"
 }
 
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
@@ -70,12 +65,7 @@ if (Test-Path -LiteralPath $zipPath) {
 if (Test-Path -LiteralPath $setupPath) {
     Remove-Item -LiteralPath $setupPath -Force
 }
-if (Test-Path -LiteralPath $tempRoot) {
-    Remove-Item -LiteralPath $tempRoot -Recurse -Force
-}
-New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
-New-Item -ItemType Directory -Force -Path $sedInstallerDir | Out-Null
-New-Item -ItemType Directory -Force -Path $sedPayloadDir | Out-Null
+
 
 if (Test-Path -LiteralPath $zipStageDir) {
     Remove-Item -LiteralPath $zipStageDir -Recurse -Force
@@ -123,58 +113,22 @@ if (-not $zipped) {
     throw "Could not create installer payload zip."
 }
 
-Copy-Item -LiteralPath (Join-Path $installerDir "install.cmd") -Destination $sedInstallerDir -Force
-Copy-Item -LiteralPath (Join-Path $installerDir "install.ps1") -Destination $sedInstallerDir -Force
-Copy-Item -LiteralPath $zipPath -Destination (Join-Path $sedPayloadDir "AnkiOcclusion.zip") -Force
-
-$sedContent = @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=1
-HideExtractAnimation=0
-UseLongFileName=1
-InsideCompressed=1
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=
-DisplayLicense=
-FinishMessage=Anki Occlusion has been installed.
-TargetName=$tempSetupPath
-FriendlyName=Anki Occlusion Setup
-AppLaunched=cmd.exe /c install.cmd
-PostInstallCmd=<None>
-AdminQuietInstCmd=
-UserQuietInstCmd=cmd.exe /c install.cmd /quiet
-SourceFiles=SourceFiles
-[Strings]
-FILE0="install.cmd"
-FILE1="install.ps1"
-FILE2="AnkiOcclusion.zip"
-[SourceFiles]
-SourceFiles0=$sedInstallerDir
-SourceFiles1=$sedPayloadDir
-[SourceFiles0]
-%FILE0%=
-%FILE1%=
-[SourceFiles1]
-%FILE2%=
-"@
-
-Set-Content -Path $sedPath -Value $sedContent -Encoding ASCII
-
-Write-Host "[DEBUG][installer] iexpress_start target=$setupPath"
-$iexpressProc = Start-Process -FilePath $iexpressPath -ArgumentList @("/N", $sedPath) -PassThru -Wait
-if ($iexpressProc.ExitCode -ne 0) {
-    throw "IExpress failed to create the installer."
+$cscPath = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if (-not (Test-Path -LiteralPath $cscPath)) {
+    throw "C# compiler was not found at $cscPath"
 }
 
-if (-not (Test-Path -LiteralPath $tempSetupPath)) {
-    throw "Installer executable was not created at $tempSetupPath"
+Write-Host "[DEBUG][installer] compiling setup executable target=$setupPath"
+$cscProc = Start-Process -FilePath $cscPath -ArgumentList @(
+    "/target:winexe",
+    "/out:release\AnkiOcclusionSetup.exe",
+    "/resource:release\AnkiOcclusion.zip,AnkiOcclusion.zip",
+    "/resource:installer\install.ps1,install.ps1",
+    "installer\installer.cs"
+) -PassThru -Wait
+
+if ($cscProc.ExitCode -ne 0) {
+    throw "C# compilation failed."
 }
 
-Copy-Item -LiteralPath $tempSetupPath -Destination $setupPath -Force
 Write-Host "[DEBUG][installer] setup_ready path=$setupPath"

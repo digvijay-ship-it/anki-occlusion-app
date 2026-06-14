@@ -38,11 +38,11 @@ class PyInstallerSpecTests(unittest.TestCase):
         self.assertIn('hiddenimports=["PyQt5.QtMultimedia"]', spec)
         self.assertIn("COLLECT(", spec)
 
-    def test_build_script_uses_pyinstaller_and_iexpress(self):
+    def test_build_script_uses_pyinstaller_and_csc(self):
         script = (ROOT / "build_installer.ps1").read_text(encoding="utf-8")
 
         self.assertIn("pyinstaller --noconfirm AnkiOcclusion.spec", script)
-        self.assertIn("iexpress.exe", script)
+        self.assertIn("csc.exe", script)
         self.assertIn("[DEBUG][installer]", script)
 
 

@@ -22,7 +22,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["tensorflow", "keras", "tensorboard", "h5py", "astunparse", "gast", "opt_einsum", "google", "grpc", "absl"],
     noarchive=False,
     optimize=0,
 )
