@@ -229,6 +229,29 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         self.assertEqual(self.home_screen._btn_shortcuts.text(), "⌨ SHORTCUTS")
         self.assertIsNotNone(self.home_screen._classic_settings_panel)
 
+    def test_e_key_press_edits_card_when_deck_selected(self):
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_E, Qt.NoModifier)
+        
+        deck_view = MagicMock()
+        deck_view.isVisible.return_value = True
+        item = MagicMock()
+        deck_view.card_list.currentItem.return_value = item
+        
+        self.home_screen.deck_view = deck_view
+        self.home_screen._deck_view = deck_view
+        self.home_screen._active_review = None
+        
+        def mock_event_matches(event_obj, action_id):
+            return action_id == "home.edit_card"
+            
+        with patch("ui.home_screen.shortcut_manager.event_matches", side_effect=mock_event_matches):
+            self.home_screen.keyPressEvent(event)
+            
+        deck_view._edit_card.assert_called_once_with(item)
+
     def test_classic_settings_panel_toggles_and_shows_archive_controls(self):
         self.home_screen._toggle_classic_settings_panel()
 

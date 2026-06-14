@@ -23,6 +23,8 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("home.redo", "Home", "Redo deck/card change", "Ctrl+Y"),
     ShortcutAction("home.music_toggle", "Home", "Toggle music", "M"),
     ShortcutAction("home.music_next", "Home", "Next music track", "N"),
+    ShortcutAction("home.edit_card", "Home", "Edit selected card", "E"),
+    ShortcutAction("home.add_card", "Home", "Add card to selected deck", "A"),
     ShortcutAction("review.fullscreen", "Review", "Toggle fullscreen", "F11"),
     ShortcutAction("review.cancel", "Review", "Leave review", "Esc"),
     ShortcutAction("review.reveal", "Review", "Reveal answer", "Space"),
@@ -51,6 +53,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.pen_color", "Review", "Cycle pen color", "X"),
     ShortcutAction("review.pen_clear", "Review", "Clear pen marks", "Del"),
     ShortcutAction("review.pdf_contrast", "Review", "Toggle PDF Contrast", "I"),
+    ShortcutAction("review.toggle_timer", "Review", "Toggle study timer visibility", "Alt+T"),
 )
 
 

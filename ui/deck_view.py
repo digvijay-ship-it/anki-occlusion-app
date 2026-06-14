@@ -63,6 +63,7 @@ from sm2_engine import (
 )
 
 from ui.deck_tree import CARD_DRAG_MIME
+from services import shortcut_manager
 
 from data_manager import (
     load_data,
@@ -491,6 +492,7 @@ class DeckView(QWidget):
         title_l.setSpacing(4)
         title_l.setAlignment(Qt.AlignVCenter)
         self.lbl_deck = QLabel("← Select a deck")
+        self.lbl_deck.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.lbl_deck.setFont(QFont("Segoe UI", 15, QFont.Bold))
         self.lbl_deck_sub = QLabel("")
         self.lbl_deck_sub.setStyleSheet(
@@ -771,23 +773,29 @@ class DeckView(QWidget):
         self._refresh()
 
     def _card_list_key_press(self, e):
-        key = e.key()
-        mods = e.modifiers()
-        if mods & Qt.ControlModifier and key == Qt.Key_Z:
+        if shortcut_manager.event_matches(e, "home.edit_card"):
+            self._edit_card(self.card_list.currentItem())
+            return
+        if shortcut_manager.event_matches(e, "home.undo"):
             self.undo()
             return
-        if key == Qt.Key_E:
-            self._edit_card(self.card_list.currentItem())
-        else:
-            QListWidget.keyPressEvent(self.card_list, e)
-
+        QListWidget.keyPressEvent(self.card_list, e)
     def keyPressEvent(self, e):
-        key = e.key()
-        mods = e.modifiers()
-        if mods & Qt.ControlModifier and key == Qt.Key_Z:
+        if shortcut_manager.event_matches(e, "home.undo"):
             self.undo()
             e.accept()
             return
+        if shortcut_manager.event_matches(e, "home.edit_card"):
+            item = self.card_list.currentItem()
+            if item:
+                self._edit_card(item)
+                e.accept()
+                return
+        if shortcut_manager.event_matches(e, "home.add_card"):
+            if self.btn_add.isEnabled():
+                self._add_card()
+                e.accept()
+                return
         super().keyPressEvent(e)
 
     def _push_undo(self):
@@ -1003,45 +1011,69 @@ class DeckView(QWidget):
         home = self._find_home()
         if home and hasattr(home, "_clear_home_ram_caches"):
             home._clear_home_ram_caches()
+            
+        switch_id = getattr(dlg, "switch_to_edit_card_id", None)
+        if switch_id:
+            self._undo_stack.pop() if self._undo_stack else None
+            from data_manager import find_card_and_deck_by_id
+            target_card, target_deck = find_card_and_deck_by_id(self._data, switch_id)
+            if target_card and target_deck:
+                QTimer.singleShot(50, lambda: self._edit_card_by_dict(target_card, target_deck))
+            return
+
         if res != QDialog.Accepted:
             self._undo_stack.pop() if self._undo_stack else None
             return
         card = dlg.get_card()
-        subdeck_name = card.pop("_auto_subdeck", None)
+        # Only append card to deck if it's a valid card (not reset/empty)
+        if card and (card.get("pdf_path") or card.get("image_path")):
+            subdeck_name = card.pop("_auto_subdeck", None)
 
-        if subdeck_name:
-            if (
-                self.deck.get("name", "").strip().lower()
-                == subdeck_name.strip().lower()
-            ):
-                target_deck = self.deck
-            else:
-                target_deck = None
-                for child in self.deck.get("children", []):
+            card_already_added = False
+            def _check_already_added(d):
+                if card in d.get("cards", []):
+                    return True
+                for child in d.get("children", []):
+                    if _check_already_added(child):
+                        return True
+                return False
+            if _check_already_added(self.deck):
+                card_already_added = True
+
+            if not card_already_added:
+                if subdeck_name:
                     if (
-                        child.get("name", "").strip().lower()
+                        self.deck.get("name", "").strip().lower()
                         == subdeck_name.strip().lower()
                     ):
-                        target_deck = child
-                        break
-                if target_deck is None:
-                    target_deck = {
-                        "_id": next_deck_id(self._data),
-                        "name": subdeck_name,
-                        "cards": [],
-                        "children": [],
-                        "created": datetime.now().isoformat(),
-                    }
-                    self.deck.setdefault("children", []).append(target_deck)
-            if has_mission_archive() and card.get("pdf_path"):
-                deck_segments = find_deck_segments(self._data, target_deck.get("_id"))
-                relocate_pdf_for_deck(card, deck_segments)
-            target_deck.setdefault("cards", []).append(card)
-        else:
-            if has_mission_archive() and card.get("pdf_path"):
-                deck_segments = find_deck_segments(self._data, self.deck.get("_id"))
-                relocate_pdf_for_deck(card, deck_segments)
-            self.deck.setdefault("cards", []).append(card)
+                        target_deck = self.deck
+                    else:
+                        target_deck = None
+                        for child in self.deck.get("children", []):
+                            if (
+                                child.get("name", "").strip().lower()
+                                == subdeck_name.strip().lower()
+                            ):
+                                target_deck = child
+                                break
+                        if target_deck is None:
+                            target_deck = {
+                                "_id": next_deck_id(self._data),
+                                "name": subdeck_name,
+                                "cards": [],
+                                "children": [],
+                                "created": datetime.now().isoformat(),
+                            }
+                            self.deck.setdefault("children", []).append(target_deck)
+                    if has_mission_archive() and card.get("pdf_path"):
+                        deck_segments = find_deck_segments(self._data, target_deck.get("_id"))
+                        relocate_pdf_for_deck(card, deck_segments)
+                    target_deck.setdefault("cards", []).append(card)
+                else:
+                    if has_mission_archive() and card.get("pdf_path"):
+                        deck_segments = find_deck_segments(self._data, self.deck.get("_id"))
+                        relocate_pdf_for_deck(card, deck_segments)
+                    self.deck.setdefault("cards", []).append(card)
 
         home = self._find_home()
         if home:
@@ -1096,9 +1128,21 @@ class DeckView(QWidget):
         if not 0 <= idx < len(cards):
             return
         card = cards[idx]
+        self._edit_card_by_dict(card, self.deck)
+
+    def _edit_card_by_dict(self, card, deck):
+        cards = deck.get("cards", [])
+        idx = -1
+        for i, c in enumerate(cards):
+            if c.get("_id") == card.get("_id"):
+                idx = i
+                break
+        if idx == -1:
+            return
+
         if card.get("card_type") == "text":
             from ui.text_card_editor_dialog import TextCardEditorDialog
-            dlg = TextCardEditorDialog(self, card=dict(card), data=self._data, deck=self.deck)
+            dlg = TextCardEditorDialog(self, card=dict(card), data=self._data, deck=deck)
             res = dlg.exec_()
             home = self._find_home()
             if home and hasattr(home, "_clear_home_ram_caches"):
@@ -1136,7 +1180,7 @@ class DeckView(QWidget):
 
         self._push_undo()
         dlg = _load_card_editor_dialog()(
-            self, card=dict(cards[idx]), data=self._data, deck=self.deck
+            self, card=dict(cards[idx]), data=self._data, deck=deck
         )
         res = dlg.exec_()
         home = self._find_home()

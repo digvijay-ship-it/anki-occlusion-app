@@ -2411,6 +2411,22 @@ class HomeScreen(QWidget):
                 self._tmnt_layout.set_bgm_state(self.music_widget._playing)
             e.accept()
             return
+        elif shortcut_manager.event_matches(e, "home.edit_card"):
+            if getattr(self, "_active_review", None) is None:
+                dv = getattr(self, "deck_view", None) or getattr(self, "_deck_view", None)
+                if dv and dv.isVisible():
+                    item = dv.card_list.currentItem()
+                    if item:
+                        dv._edit_card(item)
+                        e.accept()
+                        return
+        elif shortcut_manager.event_matches(e, "home.add_card"):
+            if getattr(self, "_active_review", None) is None:
+                dv = getattr(self, "deck_view", None) or getattr(self, "_deck_view", None)
+                if dv and dv.isVisible() and dv.btn_add.isEnabled():
+                    dv._add_card()
+                    e.accept()
+                    return
 
         super().keyPressEvent(e)  # ← yeh already hai, sirf usse pehle add karo
 
@@ -2703,7 +2719,8 @@ class HomeScreen(QWidget):
                 target_deck = self._target_deck_for_recovered_card(
                     parent_deck, recovered_card
                 )
-                target_deck.setdefault("cards", []).append(recovered_card)
+                if recovered_card not in target_deck.setdefault("cards", []):
+                    target_deck.setdefault("cards", []).append(recovered_card)
             store.mark_dirty()
             store.save_force(async_save=True)
             dlg.clear_recovery_draft()

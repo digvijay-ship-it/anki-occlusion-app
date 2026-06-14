@@ -301,6 +301,8 @@ class WrapperAndHelperTests(unittest.TestCase):
 
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)), \
              patch.object(data_manager, "store", replacement_store):
+
+
             data_manager.save_data(payload)
             loaded = data_manager.load_data()
 
@@ -336,6 +338,114 @@ class WrapperAndHelperTests(unittest.TestCase):
         self.assertEqual(len(first), 36)
         self.assertEqual(len(second), 36)
 
+    def test_compute_file_sha256_hashes_correctly(self):
+        filepath = Path(self.tmpdir.name) / "test_sha.txt"
+        filepath.write_text("hello world", encoding="utf-8")
+        h = data_manager.compute_file_sha256(str(filepath))
+        self.assertEqual(h, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
+
+    def test_compute_image_dhash_produces_valid_hex(self):
+        from PIL import Image
+        filepath = Path(self.tmpdir.name) / "test_img.png"
+        img = Image.new("RGB", (100, 100), color="blue")
+        img.save(str(filepath))
+        
+        h = data_manager.compute_image_dhash(str(filepath))
+        self.assertEqual(len(h), 16)
+        int(h, 16)
+
+    def test_hamming_distance_correctly_counts_different_bits(self):
+        self.assertEqual(data_manager.hamming_distance("8f8f0f0f1f1f3f3f", "8f8f0f0f1f1f3f3f"), 0)
+        self.assertEqual(data_manager.hamming_distance("8f8f0f0f1f1f3f3f", "8e8f0f0f1f1f3f3f"), 1)
+        self.assertGreater(data_manager.hamming_distance("8f8f0f0f1f1f3f3f", "7070f0f0e0e0c0c0"), 10)
+        self.assertEqual(data_manager.hamming_distance("8f", "8f8f0f0f1f1f3f3f"), 999)
+
+    def test_find_duplicate_card_exact_match(self):
+        data = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Biology",
+                    "cards": [
+                        {
+                            "_id": 101,
+                            "title": "Mitosis",
+                            "file_hash": "abcdef1234567890",
+                            "image_path": "mitosis.png"
+                        }
+                    ]
+                }
+            ]
+        }
+        c, d = data_manager.find_duplicate_card(data, "abcdef1234567890", None, "")
+        self.assertIsNotNone(c)
+        self.assertEqual(c["_id"], 101)
+        self.assertEqual(d["name"], "Biology")
+
+    def test_find_duplicate_card_visual_similarity(self):
+        data = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Biology",
+                    "cards": [
+                        {
+                            "_id": 101,
+                            "title": "Mitosis",
+                            "visual_hash": "8f8f0f0f1f1f3f3f",
+                            "image_path": "mitosis.png"
+                        }
+                    ]
+                }
+            ]
+        }
+        c, d = data_manager.find_duplicate_card(data, None, "8e8f0f0f1f1f3f3f", "")
+        self.assertIsNotNone(c)
+        self.assertEqual(c["_id"], 101)
+        
+        c, d = data_manager.find_duplicate_card(data, None, "7070f0f0e0e0c0c0", "")
+        self.assertIsNone(c)
+
+    def test_find_duplicate_card_title_match(self):
+        data = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Biology",
+                    "cards": [
+                        {
+                            "_id": 101,
+                            "title": "Mitosis",
+                            "image_path": "mitosis.png"
+                        }
+                    ]
+                }
+            ]
+        }
+        c, d = data_manager.find_duplicate_card(data, None, None, "mitosis", target_deck_id=1)
+        self.assertIsNotNone(c)
+        self.assertEqual(c["_id"], 101)
+
+    def test_find_card_and_deck_by_id(self):
+        data = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Biology",
+                    "cards": [
+                        {
+                            "_id": 101,
+                            "title": "Mitosis"
+                        }
+                    ]
+                }
+            ]
+        }
+        c, d = data_manager.find_card_and_deck_by_id(data, 101)
+        self.assertIsNotNone(c)
+        self.assertEqual(c["title"], "Mitosis")
+        self.assertEqual(d["name"], "Biology")
+
 
 class DeckHistoryTests(unittest.TestCase):
     def test_undo_restores_snapshot_even_after_source_dict_is_mutated(self):
@@ -358,7 +468,7 @@ class DeckHistoryTests(unittest.TestCase):
         store = data_manager.DirtyStore()
         original = {"decks": [{"_id": 1, "name": "Alpha"}]}
         updated = {"decks": [{"_id": 1, "name": "Beta"}]}
-        store.set(original)
+        store.set(original)
         history.push(store.get())
         store.set(updated)
         history.undo(store)

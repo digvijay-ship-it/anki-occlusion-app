@@ -1652,7 +1652,7 @@ class TMNTSidebar(QFrame):
         self._data = data
         self._scale = _tmnt_scale(data)
         self._selected_deck = None
-        self.setMinimumWidth(_px(220, self._scale))
+        self.setMinimumWidth(_px(280, self._scale))
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setObjectName("tmnt_sidebar1")
         self.setStyleSheet(
@@ -2246,6 +2246,7 @@ class TMNTMainContent(DeckView):
         title_txt = QVBoxLayout()
         title_txt.setSpacing(_px(2, self._scale))
         self.lbl_deck = QLabel("SELECT A DOJO")
+        self.lbl_deck.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.lbl_deck.setStyleSheet(
             _scale_ss(
                 f"color: {T_GREEN}; font-size: 24px; font-weight: 900; "
@@ -4213,6 +4214,18 @@ class TMNTHomeLayout(QWidget):
             self._apply_deck_history(redo=True)
             event.accept()
             return
+        if shortcut_manager.event_matches(event, "home.edit_card"):
+            if self.main and self.main.isVisible():
+                item = self.main.card_list.currentItem()
+                if item:
+                    self.main._edit_card(item)
+                    event.accept()
+                    return
+        if shortcut_manager.event_matches(event, "home.add_card"):
+            if self.main and self.main.isVisible() and self.main.btn_add.isEnabled():
+                self.main._add_card()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def _apply_deck_history(self, redo=False):

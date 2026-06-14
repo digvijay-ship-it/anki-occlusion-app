@@ -283,6 +283,14 @@ def apply_annotation_beta_refresh(
         self._trigger_center_fit()
         return
     refreshed_pages = sorted(set(int(pn) for pn in changed_pages))
+    
+    # Invalidate cached pages for the high-res review zoom variant
+    PAGE_CACHE.invalidate_pages(path, refreshed_pages, variant=self._pdf_render_zoom)
+    
+    # Discard these pages from self._review_canvas_real_pages so that they are re-rendered
+    for page_num in refreshed_pages:
+        self.__dict__.setdefault("_review_canvas_real_pages", set()).discard(page_num)
+
     self._start_review_lazy_trace(refreshed_pages)
     key = os.path.abspath(path)
     if "_suppress_pdf_reload_until" not in self.__dict__:
@@ -300,5 +308,9 @@ def apply_annotation_beta_refresh(
                 source="render", page_num=page_num, pixmap=px
             )
             self.canvas.inject_page(page_num, px)
+            
+    # Explicitly trigger visible pages changed to load the high-res annotated version
+    self._canvas_scroll._emit_visible_pages()
+    
     self._update_review_page_nav_ui()
     self._trigger_center_fit()

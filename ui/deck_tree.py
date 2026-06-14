@@ -281,6 +281,24 @@ class _DeckTreeWidget(QTreeWidget):
         self._drop_line_indent = 0
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
+                       Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape,
+                       Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Home, Qt.Key_End,
+                       Qt.Key_PageUp, Qt.Key_PageDown):
+            super().keyPressEvent(e)
+            return
+        
+        text = e.text()
+        if text and text.isprintable() and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)):
+            e.ignore()
+            return
+            
+        super().keyPressEvent(e)
+
+    def keyboardSearch(self, search):
+        pass
+
     def scrollTo(self, index, hint=QAbstractItemView.EnsureVisible):
         # Override to prevent horizontal scrolling on item selection/focus
         super().scrollTo(index, hint)

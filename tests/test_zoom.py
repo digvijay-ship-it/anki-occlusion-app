@@ -774,8 +774,12 @@ class ReviewScreenZoomTests(unittest.TestCase):
 
     def test_review_annotation_refresh_prints_rendered_pages_after_edit(self):
         screen = UiReviewScreen.__new__(UiReviewScreen)
+        screen._pdf_render_zoom = 2.0
         screen._pdf_watcher = MagicMock()
         screen._update_review_page_nav_ui = MagicMock()
+        screen._canvas_scroll = MagicMock()
+        screen._trigger_center_fit = MagicMock()
+        screen._start_review_lazy_trace = MagicMock()
         screen.canvas = MagicMock()
         pixmap = MagicMock()
         pixmap.isNull.return_value = False

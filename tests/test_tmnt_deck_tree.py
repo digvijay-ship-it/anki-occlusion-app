@@ -146,6 +146,24 @@ class TMNTDeckTreeTests(unittest.TestCase):
         item = self._top_item_by_id(1)
         self.assertFalse(item.data(0, Qt.UserRole + 5))
 
+    def test_deck_tree_ignores_printable_character_keypress_so_it_bubbles_up(self):
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        tree = self.sidebar._engine.tree
+        
+        # Alphanumeric character key event
+        event_e = QKeyEvent(QEvent.KeyPress, Qt.Key_E, Qt.NoModifier, "e")
+        event_e.accept()
+        tree.keyPressEvent(event_e)
+        self.assertFalse(event_e.isAccepted())  # should be ignored/not accepted so it propagates
+        
+        # Navigation key event (e.g. Down arrow)
+        event_down = QKeyEvent(QEvent.KeyPress, Qt.Key_Down, Qt.NoModifier)
+        event_down.accept()
+        tree.keyPressEvent(event_down)
+        self.assertTrue(event_down.isAccepted())  # navigation keys should be handled by QTreeWidget
+
     def test_due_badge_row_rect_extends_to_viewport_right_edge(self):
         tree = QTreeWidget()
         tree.resize(400, 200)
