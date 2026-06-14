@@ -51,7 +51,7 @@ class CommercialWebStore:
 
     def connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -61,6 +61,9 @@ class CommercialWebStore:
         try:
             yield conn
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -165,16 +168,46 @@ class CommercialWebStore:
                 """,
                 (user_id, int(since_revision)),
             ).fetchall()
-        changes = [row_to_change(row) for row in rows]
-        revision = changes[-1]["revision"] if changes else self.max_revision(user_id)
+            changes = [row_to_change(row) for row in rows]
+            if changes:
+                revision = changes[-1]["revision"]
+            else:
+                max_row = conn.execute(
+                    "SELECT COALESCE(MAX(revision), 0) AS revision FROM sync_log WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                revision = int(max_row["revision"])
         return {"revision": revision, "changes": changes}
 
     def push_changes(self, user_id: str, changes: list[Any]) -> dict[str, Any]:
         accepted = 0
-        latest_revision = self.max_revision(user_id)
         with self.connection() as conn:
+            max_row = conn.execute(
+                "SELECT COALESCE(MAX(revision), 0) AS revision FROM sync_log WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            latest_revision = int(max_row["revision"])
+            
             for change in changes:
                 normalized = normalize_change(change)
+                
+                # Check for idempotency: does the new change match what's already stored in sync_items?
+                row = conn.execute(
+                    """
+                    SELECT deleted, payload_json FROM sync_items
+                    WHERE user_id = ? AND collection = ? AND item_id = ?
+                    """,
+                    (user_id, normalized["collection"], normalized["item_id"])
+                ).fetchone()
+                
+                if row is not None:
+                    stored_deleted = bool(row["deleted"])
+                    stored_payload = json_loads(row["payload_json"])
+                    if stored_deleted == normalized["deleted"] and stored_payload == normalized["payload"]:
+                        # Identical change, bypass sync_log and sync_items insert
+                        accepted += 1
+                        continue
+
                 now = utc_now()
                 cur = conn.execute(
                     """

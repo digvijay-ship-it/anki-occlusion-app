@@ -812,6 +812,9 @@ function App() {
   const [journalCanvasHeight, setJournalCanvasHeight] = useState(1200);
 
   const [localDb, setLocalDb] = useState(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isApiReachable, setIsApiReachable] = useState(true);
+  const [pendingCount, setPendingCount] = useState(0);
 
   function recordAction(message) {
     setNotice(message);
@@ -830,6 +833,14 @@ function App() {
         setData(payload);
         const nextDeckId = deckId ?? payload.decks[0]?.id ?? null;
         setSelectedDeckId(nextDeckId);
+        
+        try {
+          const pending = await dbInstance.pendingChanges();
+          setPendingCount(pending.length);
+        } catch (e) {
+          console.warn("Failed to get pending changes count", e);
+        }
+        
         setStatus("ready");
         return payload;
       } else {
@@ -888,6 +899,61 @@ function App() {
       alive = false;
     };
   }, []);
+
+  // Network connectivity and periodic heartbeat
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      checkHeartbeat();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setIsApiReachable(false);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    checkHeartbeat();
+    const interval = setInterval(checkHeartbeat, 10000);
+
+    async function checkHeartbeat() {
+      if (localDb) {
+        try {
+          const pending = await localDb.pendingChanges();
+          setPendingCount(pending.length);
+        } catch (e) {
+          // ignore
+        }
+      }
+      if (!navigator.onLine) {
+        setIsApiReachable(false);
+        return;
+      }
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const response = await fetch(`${import.meta.env?.VITE_API_BASE || "http://127.0.0.1:8000"}/api/health`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (response.ok) {
+          setIsApiReachable(true);
+        } else {
+          setIsApiReachable(false);
+        }
+      } catch (err) {
+        setIsApiReachable(false);
+      }
+    }
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      clearInterval(interval);
+    };
+  }, [localDb]);
 
   const draftCanvasRef = useRef(null);
   const editorCanvasRef = useRef(null);
@@ -1685,6 +1751,10 @@ function App() {
   async function handleForceResetFromBackend() {
     if (!localDb) {
       alert("Local IndexedDB is not loaded yet.");
+      return;
+    }
+    if (!isOnline || !isApiReachable) {
+      alert("Cannot reset from backend while offline.");
       return;
     }
     if (!window.confirm("This will clear all browser-cached decks and reload everything fresh from your local server's database. Proceed?")) {
@@ -5307,9 +5377,18 @@ function App() {
               <span>Local API</span>
               <strong>{status === "error" ? "OFFLINE" : "SYNC"}</strong>
             </button>
-            <button className="toggle-row" onClick={handleForceResetFromBackend} type="button" style={{ color: "#FF4444" }}>
+            <button
+              className="toggle-row"
+              onClick={handleForceResetFromBackend}
+              type="button"
+              style={{
+                color: (!isOnline || !isApiReachable) ? "#888888" : "#FF4444",
+                cursor: (!isOnline || !isApiReachable) ? "not-allowed" : "pointer"
+              }}
+              disabled={!isOnline || !isApiReachable}
+            >
               <span>Reset Local Cache</span>
-              <strong>RELOAD FROM SERVER</strong>
+              <strong>{(!isOnline || !isApiReachable) ? "DISABLED (OFFLINE)" : "RELOAD FROM SERVER"}</strong>
             </button>
           </div>
 
@@ -5398,6 +5477,10 @@ function App() {
             </div>
             <button
               onClick={async () => {
+                if (!isOnline || !isApiReachable) {
+                  alert("Sync is not available while offline.");
+                  return;
+                }
                 if (localDb) {
                   recordAction("Syncing changes with server...");
                   try {
@@ -5410,8 +5493,20 @@ function App() {
                   }
                 }
               }}
+              disabled={!isOnline || !isApiReachable}
               type="button"
-              style={{ background: "rgba(106, 88, 224, 0.1)", border: "1px dashed #6A58E0", borderRadius: "8px", cursor: "pointer", display: "flex", flexDirection: "column", padding: "12px", alignItems: "center", justifyContent: "center" }}
+              style={{
+                background: (!isOnline || !isApiReachable) ? "rgba(120, 120, 120, 0.1)" : "rgba(106, 88, 224, 0.1)",
+                border: (!isOnline || !isApiReachable) ? "1px dashed #888888" : "1px dashed #6A58E0",
+                borderRadius: "8px",
+                cursor: (!isOnline || !isApiReachable) ? "not-allowed" : "pointer",
+                display: "flex",
+                flexDirection: "column",
+                padding: "12px",
+                alignItems: "center",
+                justifyContent: "center",
+                color: (!isOnline || !isApiReachable) ? "#888888" : "inherit"
+              }}
             >
               <span>Sync Changes</span>
               <strong>{costSnapshot?.sync_changes ?? 0}</strong>
@@ -5461,6 +5556,39 @@ function App() {
           </button>
         </nav>
         <div className="top-actions">
+          {!(isOnline && isApiReachable) ? (
+            <div className="sync-badge offline" style={{ display: "flex", alignItems: "center", gap: "6px", background: "rgba(235, 94, 40, 0.15)", border: "1px solid #EB5E28", color: "#EB5E28", padding: "6px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: "bold" }} title="Working locally out of IndexedDB">
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#EB5E28", display: "inline-block" }}></span>
+              Offline
+            </div>
+          ) : pendingCount > 0 ? (
+            <button
+              className="sync-badge pending"
+              onClick={async () => {
+                if (localDb) {
+                  recordAction("Syncing changes with server...");
+                  try {
+                    const res = await flushQueuedChanges(localDb);
+                    recordAction(`Synced successfully! Sent ${res.sent} changes.`);
+                    loadCostSnapshot().then(setCostSnapshot).catch(() => {});
+                    await refreshDashboard();
+                  } catch (err) {
+                    recordAction(`Sync failed: ${err.message}`);
+                  }
+                }
+              }}
+              style={{ display: "flex", alignItems: "center", gap: "6px", background: "rgba(244, 208, 111, 0.15)", border: "1px solid #F4D06F", color: "#F4D06F", padding: "6px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: "bold", cursor: "pointer" }}
+              title="Click to sync local changes"
+            >
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#F4D06F", display: "inline-block" }}></span>
+              Sync Pending ({pendingCount})
+            </button>
+          ) : (
+            <div className="sync-badge synced" style={{ display: "flex", alignItems: "center", gap: "6px", background: "rgba(60, 186, 126, 0.15)", border: "1px solid #3CBA7E", color: "#3CBA7E", padding: "6px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: "bold" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#3CBA7E", display: "inline-block" }}></span>
+              Online & Synced
+            </div>
+          )}
           <button
             className="icon-button"
             disabled={status === "loading" || status === "refreshing"}

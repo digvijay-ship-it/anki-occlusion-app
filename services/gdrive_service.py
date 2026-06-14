@@ -186,7 +186,7 @@ class GDriveService:
             "grant_type": "authorization_code"
         }
 
-        r = requests.post(token_url, data=payload)
+        r = requests.post(token_url, data=payload, timeout=15)
         if r.status_code != 200:
             raise RuntimeError(f"Token exchange failed: {r.text}")
 
@@ -211,7 +211,7 @@ class GDriveService:
         try:
             url = "https://www.googleapis.com/oauth2/v2/userinfo"
             headers = {"Authorization": f"Bearer {access_token}"}
-            r = requests.get(url, headers=headers)
+            r = requests.get(url, headers=headers, timeout=15)
             if r.status_code == 200:
                 return r.json().get("email")
         except Exception as e:
@@ -245,7 +245,7 @@ class GDriveService:
             "grant_type": "refresh_token"
         }
 
-        r = requests.post(token_url, data=payload)
+        r = requests.post(token_url, data=payload, timeout=15)
         if r.status_code != 200:
             print(f"[GDriveService] Token refresh failed: {r.text}")
             # If the refresh token was revoked, unlink
@@ -290,7 +290,8 @@ class GDriveService:
                 # Update existing file (using simple upload protocol for typical small DB files)
                 url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media"
                 with open(local_file_path, "rb") as f:
-                    r = requests.patch(url, headers=headers, data=f)
+                    file_data = f.read()
+                r = requests.patch(url, headers=headers, data=file_data, timeout=15)
                 if r.status_code == 200:
                     print(f"[GDriveService] Successfully updated: {drive_filename} on Drive")
                     return True
@@ -305,11 +306,13 @@ class GDriveService:
                 # Upload using multipart upload protocol
                 # For simplicity and robustness on typical file sizes (<5MB):
                 multipart_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+                with open(local_file_path, "rb") as f:
+                    file_data = f.read()
                 files = {
                     "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
-                    "file": (drive_filename, open(local_file_path, "rb"), "application/octet-stream")
+                    "file": (drive_filename, file_data, "application/octet-stream")
                 }
-                r = requests.post(multipart_url, headers=headers, files=files)
+                r = requests.post(multipart_url, headers=headers, files=files, timeout=15)
                 if r.status_code == 200:
                     print(f"[GDriveService] Successfully uploaded: {drive_filename} to Drive")
                     return True
@@ -325,7 +328,7 @@ class GDriveService:
         url = f"https://www.googleapis.com/drive/v3/files?q={urllib.parse.quote(query)}&fields=files(id)"
         
         try:
-            r = requests.get(url, headers=headers)
+            r = requests.get(url, headers=headers, timeout=15)
             if r.status_code == 200:
                 files = r.json().get("files", [])
                 if files:
@@ -337,7 +340,7 @@ class GDriveService:
                 "name": folder_name,
                 "mimeType": "application/vnd.google-apps.folder"
             }
-            r = requests.post(create_url, headers=headers, json=metadata)
+            r = requests.post(create_url, headers=headers, json=metadata, timeout=15)
             if r.status_code == 200:
                 return r.json().get("id")
         except Exception as e:
@@ -348,7 +351,7 @@ class GDriveService:
         query = f"name = '{filename}' and '{folder_id}' in parents and trashed = false"
         url = f"https://www.googleapis.com/drive/v3/files?q={urllib.parse.quote(query)}&fields=files(id)"
         try:
-            r = requests.get(url, headers=headers)
+            r = requests.get(url, headers=headers, timeout=15)
             if r.status_code == 200:
                 files = r.json().get("files", [])
                 if files:

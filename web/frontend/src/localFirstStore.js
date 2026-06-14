@@ -1,7 +1,7 @@
-import { pushSync } from "./api.js";
+import { pushSync, pullSync } from "./api.js";
 
 const DB_NAME = "anki-occlusion-local";
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 
 const LOCAL_STORE_NAMES = [
   "decks",
@@ -10,6 +10,7 @@ const LOCAL_STORE_NAMES = [
   "review_state",
   "sync_queue",
   "files",
+  "metadata",
 ];
 
 const SYNCABLE_COLLECTIONS = new Set(["decks", "cards", "masks", "review_state"]);
@@ -101,6 +102,18 @@ export function createMemoryLocalFirstStore(initial = {}) {
 
     async queueChange(change) {
       const normalized = normalizeSyncChange(change);
+      if (!normalized.payload.updated_at) {
+        normalized.payload.updated_at = new Date().toISOString();
+      }
+      try {
+        const currentItem = await this.get(normalized.collection, normalized.item_id);
+        if (currentItem && !currentItem.updated_at) {
+          currentItem.updated_at = normalized.payload.updated_at;
+          await this.put(normalized.collection, currentItem);
+        }
+      } catch (err) {
+        // ignore
+      }
       const queued = {
         ...normalized,
         local_id: makeLocalId(),
@@ -175,6 +188,18 @@ function createIndexedDbAdapter(db) {
 
     async queueChange(change) {
       const normalized = normalizeSyncChange(change);
+      if (!normalized.payload.updated_at) {
+        normalized.payload.updated_at = new Date().toISOString();
+      }
+      try {
+        const currentItem = await this.get(normalized.collection, normalized.item_id);
+        if (currentItem && !currentItem.updated_at) {
+          currentItem.updated_at = normalized.payload.updated_at;
+          await this.put(normalized.collection, currentItem);
+        }
+      } catch (err) {
+        // ignore
+      }
       const queued = {
         ...normalized,
         local_id: makeLocalId(),
@@ -202,26 +227,179 @@ function requestToPromise(request) {
   });
 }
 
-export async function flushQueuedChanges(
-  localStore,
-  { baseRevision = 0, push = pushSync } = {},
-) {
-  const queued = await localStore.pendingChanges();
-  if (!queued.length) {
-    return { accepted: 0, revision: baseRevision, conflicts: [], sent: 0 };
+export async function getLastSyncedRevision(localStore) {
+  try {
+    const record = await localStore.get("metadata", "last_synced_revision");
+    return record ? Number(record.value) : 0;
+  } catch (err) {
+    console.error("Failed to get last_synced_revision:", err);
+    return 0;
+  }
+}
+
+export async function setLastSyncedRevision(localStore, revision) {
+  try {
+    await localStore.put("metadata", { id: "last_synced_revision", value: Number(revision) });
+  } catch (err) {
+    console.error("Failed to set last_synced_revision:", err);
+  }
+}
+
+export function resolveConflict(localChange, remoteChange) {
+  if (remoteChange.deleted) {
+    return "remote";
+  }
+  if (localChange.deleted) {
+    return "local";
   }
 
-  const changes = queued.map(({ local_id: _localId, queued_at: _queuedAt, ...change }) =>
-    normalizeSyncChange(change),
-  );
-  const result = await push(changes, baseRevision);
-  const accepted = Number(result.accepted || 0);
-  if (accepted > 0) {
-    await localStore.clearQueuedChanges(
-      queued.slice(0, accepted).map((change) => change.local_id),
-    );
+  const collection = remoteChange.collection;
+  if (collection === "review_state") {
+    const localRep = localChange.payload?.sm2_repetitions || 0;
+    const remoteRep = remoteChange.payload?.sm2_repetitions || 0;
+    const localReviews = localChange.payload?.reviews || 0;
+    const remoteReviews = remoteChange.payload?.reviews || 0;
+
+    if (localRep > remoteRep) {
+      return "local";
+    } else if (remoteRep > localRep) {
+      return "remote";
+    } else {
+      return localReviews >= remoteReviews ? "local" : "remote";
+    }
+  } else {
+    const localTime = localChange.payload?.updated_at ? new Date(localChange.payload.updated_at).getTime() : 0;
+    const remoteTime = remoteChange.payload?.updated_at ? new Date(remoteChange.payload.updated_at).getTime() : 0;
+
+    if (localTime > remoteTime) {
+      return "local";
+    } else if (remoteTime > localTime) {
+      return "remote";
+    } else {
+      return "remote";
+    }
   }
-  return { ...result, sent: changes.length };
+}
+
+export async function flushQueuedChanges(
+  localStore,
+  { baseRevision = null, pull = pullSync, push = pushSync } = {},
+) {
+  // 1. Pull Phase
+  let resolvedBaseRevision = baseRevision;
+  if (resolvedBaseRevision === null || resolvedBaseRevision === undefined) {
+    resolvedBaseRevision = await getLastSyncedRevision(localStore);
+  }
+
+  const pullResult = await pull(resolvedBaseRevision);
+  const serverRevision = Number(pullResult?.revision ?? resolvedBaseRevision);
+  const remoteChanges = pullResult?.changes || [];
+
+  let pending = await localStore.pendingChanges();
+  for (const remoteChange of remoteChanges) {
+    const conflictIndex = pending.findIndex(
+      (p) => p.collection === remoteChange.collection && p.item_id === remoteChange.item_id,
+    );
+
+    if (conflictIndex === -1) {
+      if (remoteChange.deleted) {
+        await localStore.delete(remoteChange.collection, remoteChange.item_id);
+      } else {
+        await localStore.put(remoteChange.collection, remoteChange.payload);
+      }
+    } else {
+      const localChange = pending[conflictIndex];
+      const winner = resolveConflict(localChange, remoteChange);
+
+      if (winner === "remote") {
+        if (remoteChange.deleted) {
+          await localStore.delete(remoteChange.collection, remoteChange.item_id);
+        } else {
+          await localStore.put(remoteChange.collection, remoteChange.payload);
+        }
+        await localStore.clearQueuedChanges([localChange.local_id]);
+        pending.splice(conflictIndex, 1);
+      }
+    }
+  }
+
+  await setLastSyncedRevision(localStore, serverRevision);
+
+  // 2. Push Phase
+  const freshPending = await localStore.pendingChanges();
+  if (!freshPending.length) {
+    return { accepted: 0, revision: serverRevision, conflicts: [], sent: 0 };
+  }
+
+  const groups = {};
+  for (const change of freshPending) {
+    const key = `${change.collection}|${change.item_id}`;
+    if (!groups[key]) {
+      groups[key] = [];
+    }
+    groups[key].push(change);
+  }
+
+  const folded = [];
+  for (const key in groups) {
+    const group = groups[key];
+    group.sort((a, b) => a.queued_at.localeCompare(b.queued_at));
+    const lastChange = group[group.length - 1];
+
+    if (lastChange.deleted) {
+      if (lastChange.item_id.startsWith("local-")) {
+        const idsToDelete = group.map((c) => c.local_id);
+        await localStore.clearQueuedChanges(idsToDelete);
+        try {
+          await localStore.delete(lastChange.collection, lastChange.item_id);
+        } catch (err) {
+          // ignore
+        }
+      } else {
+        folded.push({
+          change: normalizeSyncChange(lastChange),
+          sourceIds: group.map((c) => c.local_id),
+        });
+      }
+    } else {
+      folded.push({
+        change: normalizeSyncChange(lastChange),
+        sourceIds: group.map((c) => c.local_id),
+      });
+    }
+  }
+
+  if (!folded.length) {
+    return { accepted: 0, revision: serverRevision, conflicts: [], sent: 0 };
+  }
+
+  const changesToPush = folded.map((f) => f.change);
+  const result = await push(changesToPush, serverRevision);
+  const accepted = Number(result?.accepted ?? 0);
+
+  if (accepted > 0) {
+    const sourceIdsToClear = [];
+    for (let i = 0; i < accepted; i++) {
+      sourceIdsToClear.push(...folded[i].sourceIds);
+    }
+    await localStore.clearQueuedChanges(sourceIdsToClear);
+
+    const finalRevision = Number(result?.revision ?? serverRevision);
+    await setLastSyncedRevision(localStore, finalRevision);
+    return {
+      accepted,
+      revision: finalRevision,
+      conflicts: result?.conflicts || [],
+      sent: changesToPush.length,
+    };
+  }
+
+  return {
+    accepted: 0,
+    revision: serverRevision,
+    conflicts: result?.conflicts || [],
+    sent: changesToPush.length,
+  };
 }
 
 // ── LOCAL-FIRST SCHEDULER & DASHBOARD HELPERS ──
