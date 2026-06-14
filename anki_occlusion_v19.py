@@ -52,11 +52,65 @@ APP_START_TIME = time.perf_counter()
 
 import sys
 import os
+import traceback
+from datetime import datetime
 
 # Ensure script directory is in sys.path for robust local imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
+
+def setup_logging():
+    try:
+        app_data_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "AnkiOcclusion")
+        if not os.path.exists(app_data_dir):
+            os.makedirs(app_data_dir, exist_ok=True)
+            
+        log_file_path = os.path.join(app_data_dir, "anki_occlusion.log")
+        
+        # Rollover if > 10MB
+        if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 10 * 1024 * 1024:
+            try: os.remove(log_file_path)
+            except Exception: pass
+            
+        log_file = open(log_file_path, "a", encoding="utf-8", buffering=1)
+        log_file.write(f"\n--- App Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        
+        class TeeStream:
+            def __init__(self, original, file_s):
+                self.original = original
+                self.file_s = file_s
+            def write(self, data):
+                if self.original is not None:
+                    try: self.original.write(data)
+                    except Exception: pass
+                try:
+                    self.file_s.write(data)
+                    self.file_s.flush()
+                except Exception: pass
+            def flush(self):
+                if self.original is not None:
+                    try: self.original.flush()
+                    except Exception: pass
+                try: self.file_s.flush()
+                except Exception: pass
+
+        sys.stdout = TeeStream(sys.stdout, log_file)
+        sys.stderr = TeeStream(sys.stderr, log_file)
+
+        def handle_exception(exc_type, exc_value, exc_traceback):
+            if issubclass(exc_type, KeyboardInterrupt):
+                sys.__excepthook__(exc_type, exc_value, exc_traceback)
+                return
+            err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            sys.stderr.write("CRITICAL UNHANDLED EXCEPTION:\n" + err_msg + "\n")
+            
+        sys.excepthook = handle_exception
+        print("Logging initialized. Log file: " + log_file_path)
+    except Exception as e:
+        sys.__stderr__.write("Failed to initialize logging: " + str(e) + "\n")
+
+setup_logging()
 
 from debug_output import install_debug_output_filter
 
