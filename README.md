@@ -155,6 +155,9 @@ changes and sync them as session-level metadata.
 ### 🧠 Study Core
 - **PDF & Image Occlusion** — Load a PDF or image, draw masks over answers, and
   turn your own notes into review cards.
+- **Duplicate Card Protection** — Visual similarity checking (dHash) and file byte hashes (SHA-256) prevent adding identical cards or overlapping screenshots.
+- **Text & Vocabulary Cards** — Edit and review non-image Q&A cards with a dedicated text editor and study interface.
+- **Local-First Syncing** — Web-client sync framework with offline queuing, transaction compaction, LWW conflict resolution, and background Google Drive sync.
 - **SM-2 Spaced Repetition** — Cards move through `new → learning → review →
   relearn` states with intraday learning steps, ease-factor updates, interval
   fuzzing, and a 365-day interval cap.
@@ -589,7 +592,7 @@ Persistence behavior:
 
 | Version | Highlights |
 |---------|------------|
-| Current | Viewport-scoped mask cache & scroll paint fixes, O(1) deck stats cache, fast deepcopy undo/redo snapshots, on-demand OCR lifecycle (54MB boot memory) with animated theme-aware loading toast |
+| Current | Visual similarity (dHash) & byte check (SHA-256) duplicate card protection, Text/Q&A Card creator & review flow, local-first web sync engine with transactional compaction, thread-safe merge-on-save daily journal, viewport-scoped mask cache & scroll paint fixes, O(1) deck stats cache, fast deepcopy undo/redo snapshots, on-demand OCR lifecycle (54MB boot memory) with animated theme-aware loading toast |
 | v19 | SM-2 Hard/EF/fuzzing fixes, DirtyStore autosave, review queue panel, learning countdown, session summary, tablet-friendly pan |
 | v18 | Hardware mask cache and LRU page cache |
 | v17 | Progressive chunk loading and RAM cache improvements |
