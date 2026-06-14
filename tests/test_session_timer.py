@@ -30,6 +30,11 @@ class SessionTimerTests(unittest.TestCase):
         self.test_state_file = str(Path(self.tmpdir.name) / "test_timer_state.json")
         self.test_journal_file = str(Path(self.tmpdir.name) / "test_journal.json")
 
+        import services.journal_manager as jm
+        self.old_jm_file = jm.JOURNAL_FILE
+        jm.JOURNAL_FILE = self.test_journal_file
+        self.addCleanup(setattr, jm, "JOURNAL_FILE", self.old_jm_file)
+
     def test_fmt_human_returns_correct_string(self):
         self.assertEqual(_fmt_human(5), "5s")
         self.assertEqual(_fmt_human(65), "1m")

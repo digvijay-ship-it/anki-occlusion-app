@@ -97,13 +97,7 @@ def _write_focus_to_journal_for_date(day: str, seconds: int):
 
     try:
         from services.journal_manager import _load_journal, _save_journal
-        import services.journal_manager as jm
-        old_path = jm.JOURNAL_FILE
-        jm.JOURNAL_FILE = _JOURNAL_FILE
-        try:
-            journal = _load_journal()
-        finally:
-            jm.JOURNAL_FILE = old_path
+        journal = _load_journal()
     except Exception as e:
         print(f"[ERROR][session_timer] Aborting write to journal to prevent data loss: {e}")
         return
@@ -147,12 +141,7 @@ def _write_focus_to_journal_for_date(day: str, seconds: int):
     journal[day] = entry
     
     try:
-        old_path = jm.JOURNAL_FILE
-        jm.JOURNAL_FILE = _JOURNAL_FILE
-        try:
-            _save_journal(journal)
-        finally:
-            jm.JOURNAL_FILE = old_path
+        _save_journal(journal)
     except Exception as e:
         print(f"[ERROR][session_timer] Failed to save journal: {e}")
 

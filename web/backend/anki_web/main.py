@@ -230,10 +230,25 @@ def create_app() -> FastAPI:
         tmp = None
         try:
             data = await request.json()
+            
+            # Load existing journal to merge new data
+            existing = {}
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                except Exception:
+                    pass
+            if not isinstance(existing, dict):
+                existing = {}
+
+            # Merge new data
+            existing.update(data)
+
             dir_ = os.path.dirname(path) or "."
             fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(existing, f, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
         except Exception as exc:
             if tmp and os.path.exists(tmp):

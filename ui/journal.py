@@ -1830,21 +1830,120 @@ class JournalDialog(QDialog):
         strokes = self._canvas.get_strokes()
         texts = self._canvas.get_texts()
 
-        entry = self._journal.get(self._current_date, {})
-        if isinstance(entry, list):
-            entry = {"strokes": entry, "texts": []}
+        # Load the latest journal from disk to merge changes
+        try:
+            fresh_journal = _load_journal()
+        except Exception as e:
+            print(f"[Journal] Failed to load fresh journal, using in-memory: {e}")
+            fresh_journal = self._journal
+
+        # Retrieve/merge current date's entry
+        fresh_entry = fresh_journal.get(self._current_date, {})
+        if isinstance(fresh_entry, list):
+            fresh_entry = {"strokes": fresh_entry, "texts": []}
+        if not isinstance(fresh_entry, dict):
+            fresh_entry = {"strokes": [], "texts": []}
+
+        # Keep focus_seconds from disk if it exists or is larger
+        current_entry = self._journal.get(self._current_date, {})
+        if isinstance(current_entry, list):
+            current_entry = {"strokes": current_entry, "texts": []}
+        current_focus = current_entry.get("focus_seconds", 0) if isinstance(current_entry, dict) else 0
+        fresh_focus = fresh_entry.get("focus_seconds", 0) if isinstance(fresh_entry, dict) else 0
+        merged_focus = max(current_focus, fresh_focus)
 
         if strokes or texts:
-            entry["strokes"] = _strokes_to_json(strokes)
-            entry["texts"] = _texts_to_json(texts)
-            self._journal[self._current_date] = entry
-        else:
-            entry.pop("strokes", None)
-            entry.pop("texts", None)
-            if not entry:
-                self._journal.pop(self._current_date, None)
+            fresh_entry["strokes"] = _strokes_to_json(strokes)
+            
+            # Merge canvas texts with any background-updated focus label
+            canvas_texts = _texts_to_json(texts)
+            
+            # Find the focus text in fresh_entry (if session_timer wrote it in the background)
+            fresh_texts = fresh_entry.get("texts", [])
+            if not isinstance(fresh_texts, list):
+                fresh_texts = []
+            
+            import session_timer
+            focus_tag = getattr(session_timer, "_JOURNAL_TAG", "\u23f1 Focus today:")
+            fresh_focus_obj = next(
+                (t for t in fresh_texts if isinstance(t, dict) and str(t.get("text", "")).startswith(focus_tag)),
+                None
+            )
+            
+            # Also check if there is a focus text in canvas_texts
+            canvas_focus_idx = next(
+                (i for i, t in enumerate(canvas_texts) if isinstance(t, dict) and str(t.get("text", "")).startswith(focus_tag)),
+                None
+            )
+            
+            if merged_focus > 0:
+                label = f"{focus_tag} {session_timer._fmt_human(merged_focus)}"
+                updated_focus_obj = {
+                    "x": getattr(session_timer, "_TEXT_X", 60),
+                    "y": getattr(session_timer, "_TEXT_Y", 80),
+                    "text": label,
+                    "color": getattr(session_timer, "_TEXT_COLOR", "#7C6AF7"),
+                    "size": getattr(session_timer, "_TEXT_SIZE", 15),
+                }
+                # If there was a focus text in fresh_entry, preserve its styling/coordinates
+                if fresh_focus_obj:
+                    updated_focus_obj["x"] = fresh_focus_obj.get("x", updated_focus_obj["x"])
+                    updated_focus_obj["y"] = fresh_focus_obj.get("y", updated_focus_obj["y"])
+                    updated_focus_obj["color"] = fresh_focus_obj.get("color", updated_focus_obj["color"])
+                    updated_focus_obj["size"] = fresh_focus_obj.get("size", updated_focus_obj["size"])
+                elif canvas_focus_idx is not None:
+                    c_obj = canvas_texts[canvas_focus_idx]
+                    updated_focus_obj["x"] = c_obj.get("x", updated_focus_obj["x"])
+                    updated_focus_obj["y"] = c_obj.get("y", updated_focus_obj["y"])
+                    updated_focus_obj["color"] = c_obj.get("color", updated_focus_obj["color"])
+                    updated_focus_obj["size"] = c_obj.get("size", updated_focus_obj["size"])
+
+                if canvas_focus_idx is not None:
+                    canvas_texts[canvas_focus_idx] = updated_focus_obj
+                else:
+                    canvas_texts.insert(0, updated_focus_obj)
             else:
-                self._journal[self._current_date] = entry
+                if canvas_focus_idx is not None:
+                    canvas_texts.pop(canvas_focus_idx)
+            
+            fresh_entry["texts"] = canvas_texts
+            if merged_focus > 0:
+                fresh_entry["focus_seconds"] = merged_focus
+            else:
+                fresh_entry.pop("focus_seconds", None)
+            
+            fresh_journal[self._current_date] = fresh_entry
+        else:
+            if merged_focus > 0:
+                fresh_entry["strokes"] = []
+                
+                # Ensure the focus text is retained in texts even with empty canvas
+                fresh_texts = fresh_entry.get("texts", [])
+                if not isinstance(fresh_texts, list):
+                    fresh_texts = []
+                
+                import session_timer
+                focus_tag = getattr(session_timer, "_JOURNAL_TAG", "\u23f1 Focus today:")
+                fresh_focus_obj = next(
+                    (t for t in fresh_texts if isinstance(t, dict) and str(t.get("text", "")).startswith(focus_tag)),
+                    None
+                )
+                if not fresh_focus_obj:
+                    label = f"{focus_tag} {session_timer._fmt_human(merged_focus)}"
+                    fresh_focus_obj = {
+                        "x": getattr(session_timer, "_TEXT_X", 60),
+                        "y": getattr(session_timer, "_TEXT_Y", 80),
+                        "text": label,
+                        "color": getattr(session_timer, "_TEXT_COLOR", "#7C6AF7"),
+                        "size": getattr(session_timer, "_TEXT_SIZE", 15),
+                    }
+                fresh_entry["texts"] = [fresh_focus_obj]
+                fresh_entry["focus_seconds"] = merged_focus
+                fresh_journal[self._current_date] = fresh_entry
+            else:
+                fresh_journal.pop(self._current_date, None)
+
+        self._journal = fresh_journal
 
         try:
             _save_journal(self._journal)
