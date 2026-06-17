@@ -77,6 +77,8 @@ class CanvasInteractionMixin:
         # Track recent tablet/stylus activity so review ink can ignore the
         # synthesized mouse events that often follow a pen drag on Windows.
         self._last_tablet_event_time = time.monotonic()
+        if e.type() == QEvent.TabletMove:
+            self._last_tablet_move_time = time.monotonic()
         if not self._handle_review_tablet_ink(e):
             e.ignore()
 
@@ -148,16 +150,26 @@ class CanvasInteractionMixin:
         return False
 
     def _is_recent_stylus_mouse_event(self, e) -> bool:
-        last = float(getattr(self, "_last_tablet_event_time", 0.0) or 0.0)
-        if (time.monotonic() - last) > self._STYLUS_SUPPRESS_WINDOW_S:
-            return False
+        last_event = float(getattr(self, "_last_tablet_event_time", 0.0) or 0.0)
+        last_move = float(getattr(self, "_last_tablet_move_time", 0.0) or 0.0)
+        now = time.monotonic()
 
-        source = None
-        try:
-            source = e.source()
-        except Exception:
-            source = None
-        return True
+        # If tablet moves are actively firing (or just finished), suppress all mouse events
+        # within the window to avoid echo duplicate strokes.
+        if (now - last_move) < self._STYLUS_SUPPRESS_WINDOW_S:
+            return True
+
+        # If a tablet event (like TabletPress) just occurred but no moves did,
+        # only suppress synthesized events briefly (within 0.1s) to allow fallback.
+        if (now - last_event) < 0.1:
+            try:
+                source = e.source()
+            except Exception:
+                source = None
+            if source != Qt.MouseEventNotSynthesized:
+                return True
+
+        return False
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -518,11 +530,17 @@ class CanvasInteractionMixin:
             self._mode == "review"
             and self._ink_active
             and self._ink_current
-            and getattr(self, "_ink_input_kind", None) == "mouse"
         ):
-            self._ink_move(ip)
-            e.accept()
-            return
+            # Fallback to mouse drawing if we are in tablet mode but not receiving tablet moves
+            if getattr(self, "_ink_input_kind", None) == "tablet":
+                last_move = float(getattr(self, "_last_tablet_move_time", 0.0) or 0.0)
+                if (time.monotonic() - last_move) > 0.1:
+                    self._ink_input_kind = "mouse"
+
+            if getattr(self, "_ink_input_kind", None) == "mouse":
+                self._ink_move(ip)
+                e.accept()
+                return
 
         sc = self.parent()
         while sc and not hasattr(sc, "_pan_active"):

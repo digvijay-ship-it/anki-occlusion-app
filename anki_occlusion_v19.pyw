@@ -67,13 +67,21 @@ def setup_logging():
             os.makedirs(app_data_dir, exist_ok=True)
             
         log_file_path = os.path.join(app_data_dir, "anki_occlusion.log")
+        prev_log_path = os.path.join(app_data_dir, "anki_occlusion_prev.log")
         
-        # Rollover if > 10MB
-        if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 10 * 1024 * 1024:
-            try: os.remove(log_file_path)
-            except Exception: pass
+        # Rotate previous log
+        rotated = False
+        if os.path.exists(log_file_path):
+            try:
+                if os.path.exists(prev_log_path):
+                    os.remove(prev_log_path)
+                os.rename(log_file_path, prev_log_path)
+                rotated = True
+            except Exception:
+                pass
             
-        log_file = open(log_file_path, "a", encoding="utf-8", buffering=1)
+        mode = "w" if rotated or not os.path.exists(log_file_path) else "a"
+        log_file = open(log_file_path, mode, encoding="utf-8", buffering=1)
         log_file.write(f"\n--- App Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         
         class TeeStream:

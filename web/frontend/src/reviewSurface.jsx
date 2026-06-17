@@ -35,21 +35,22 @@ function strokePath(points) {
 
 function InkLayer({ active, color, width, strokes, onChange, onPointAction, surfaceSize }) {
   const svgRef = useRef(null);
-  const [draftId, setDraftId] = useState("");
+  const draftIdRef = useRef("");
 
   function updateDraft(event, create = false) {
     if (!active || !svgRef.current) return;
     const point = pointFromPointer(event, svgRef.current, surfaceSize);
     if (create) {
       const id = `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      setDraftId(id);
-      onChange([...(strokes || []), { id, color, width, points: [point] }]);
+      draftIdRef.current = id;
+      onChange((prevStrokes) => [...(prevStrokes || []), { id, color, width, points: [point] }]);
       return;
     }
-    if (!draftId) return;
-    onChange(
-      (strokes || []).map((stroke) =>
-        stroke.id === draftId
+    const currentDraftId = draftIdRef.current;
+    if (!currentDraftId) return;
+    onChange((prevStrokes) =>
+      (prevStrokes || []).map((stroke) =>
+        stroke.id === currentDraftId
           ? { ...stroke, points: [...stroke.points, point] }
           : stroke,
       ),
@@ -61,22 +62,33 @@ function InkLayer({ active, color, width, strokes, onChange, onPointAction, surf
       className={`review-ink-layer ${active ? "active" : ""}`}
       onPointerDown={(event) => {
         if (!active) return;
-        event.preventDefault();
         event.currentTarget.setPointerCapture?.(event.pointerId);
         if (event.ctrlKey || event.metaKey) {
-          setDraftId("");
+          draftIdRef.current = "";
           onPointAction?.(pointFromPointer(event, event.currentTarget, surfaceSize));
           return;
         }
         updateDraft(event, true);
       }}
       onPointerMove={(event) => {
-        if (!active || !draftId) return;
-        event.preventDefault();
+        if (!active || !draftIdRef.current) return;
         updateDraft(event);
       }}
-      onPointerUp={() => setDraftId("")}
-      onPointerCancel={() => setDraftId("")}
+      onPointerUp={(event) => {
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }
+        draftIdRef.current = "";
+      }}
+      onPointerCancel={(event) => {
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }
+        draftIdRef.current = "";
+      }}
+      onLostPointerCapture={() => {
+        draftIdRef.current = "";
+      }}
       preserveAspectRatio="none"
       ref={svgRef}
       viewBox={`0 0 ${Math.max(1, Number(surfaceSize?.width || 100))} ${Math.max(

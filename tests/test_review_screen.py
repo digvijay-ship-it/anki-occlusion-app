@@ -1059,5 +1059,60 @@ class ReviewScreenSequentialTests(unittest.TestCase):
             self.assertIsNone(screen.mgr.rs)
 
 
+class ReviewScreenSummaryToggleTests(unittest.TestCase):
+    def test_summary_toggle_initialization_defaults_to_true(self):
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings") as MockQSettings:
+             
+            # Setup settings mock to return None/True by default
+            settings_instance = MockQSettings.return_value
+            settings_instance.value.return_value = True
+            
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            
+            screen.__init__([])
+            self.assertTrue(screen._show_summary_popup)
+
+    def test_toggle_summary_popup_updates_state_and_settings(self):
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings") as MockQSettings:
+             
+            settings_instance = MockQSettings.return_value
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            
+            screen.__init__([])
+            screen._btn_summary_toggle = MagicMock()
+            
+            # Toggle OFF
+            screen._btn_summary_toggle.isChecked.return_value = False
+            screen._toggle_summary_popup()
+            self.assertFalse(screen._show_summary_popup)
+            settings_instance.setValue.assert_called_with("review/show_summary_popup", False)
+            
+            # Toggle ON
+            screen._btn_summary_toggle.isChecked.return_value = True
+            screen._toggle_summary_popup()
+            self.assertTrue(screen._show_summary_popup)
+            settings_instance.setValue.assert_called_with("review/show_summary_popup", True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -712,6 +712,12 @@ class ReviewScreen(QWidget):
         self._review_ink_width = self._load_review_ink_width()
         self._review_ink_colors, self._review_ink_color_idx = self._load_review_ink_color()
 
+        raw_summary = settings.value("review/show_summary_popup", True)
+        if isinstance(raw_summary, str):
+            self._show_summary_popup = raw_summary.lower() in ("true", "1", "yes", "on")
+        else:
+            self._show_summary_popup = bool(raw_summary)
+
         # Cache environment variables to avoid expensive os.environ.get calls during hot scroll/paint paths
         self._scroll_profile_enabled = (
             os.environ.get(self.REVIEW_SCROLL_PROFILE_ENV, "").strip().lower()
@@ -1830,6 +1836,28 @@ class ReviewScreen(QWidget):
         self._btn_mode.clicked.connect(self._toggle_review_mode)
         row1.addWidget(self._btn_mode)
 
+        self._btn_summary_toggle = _hdr_btn("📊 Summary")
+        self._btn_summary_toggle.setCheckable(True)
+        self._btn_summary_toggle.setChecked(self._show_summary_popup)
+        if dojo:
+            self._btn_summary_toggle.setStyleSheet(
+                self._btn_summary_toggle.styleSheet()
+                + f"QPushButton:checked{{background:{accent2};color:white;"
+                f"border:1px solid {accent2};}}"
+            )
+        else:
+            self._btn_summary_toggle.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:6px;"
+                f"padding:4px 14px;font-size:12px;}}"
+                f"QPushButton:checked{{background:#6A3FBF;color:white;"
+                f"border:1px solid {accent};}}"
+                f"QPushButton:hover{{background:{surface};}}"
+            )
+        self._btn_summary_toggle.clicked.connect(self._toggle_summary_popup)
+        row1.addWidget(self._btn_summary_toggle)
+        self._update_summary_toggle_button_state()
+
         b_exit = _hdr_btn("✕ Exit")
         b_exit.clicked.connect(self.cancelled.emit)
         row1.addWidget(b_exit)
@@ -2790,6 +2818,22 @@ class ReviewScreen(QWidget):
         else:
             self._btn_mode.setText("🟧 Hide All, Guess One")
             self.canvas.set_review_style("hide_all")
+
+    def _toggle_summary_popup(self):
+        self._show_summary_popup = self._btn_summary_toggle.isChecked()
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("review/show_summary_popup", self._show_summary_popup)
+        settings.sync()
+        self._update_summary_toggle_button_state()
+
+    def _update_summary_toggle_button_state(self):
+        if getattr(self, "_btn_summary_toggle", None) is not None:
+            if self._show_summary_popup:
+                self._btn_summary_toggle.setText("📊 Summary: ON")
+                self._btn_summary_toggle.setToolTip("Show session summary popup at the end")
+            else:
+                self._btn_summary_toggle.setText("📊 Summary: OFF")
+                self._btn_summary_toggle.setToolTip("Do not show session summary popup at the end")
 
     def _on_canvas_zoom_settled(self):
         """Ctrl+scroll zoom settle hone ke baad — user zoom yaad rakho."""
@@ -5135,7 +5179,7 @@ class ReviewScreen(QWidget):
     def _show_session_summary(self):
         """Session khatam — stats dialog dikhao."""
         has_pdf = any(bool(card.get("pdf_path")) for card, _, _ in self._items) if self._items else False
-        if has_pdf:
+        if has_pdf and self.__dict__.get("_show_summary_popup", True):
             from ui.review.summary_dialog import ReviewSessionSummaryDialog
             dialog = ReviewSessionSummaryDialog(self)
             dialog.exec_()
