@@ -873,7 +873,6 @@ class ReviewScreen(QWidget):
             try:
                 self.canvas._pages = []
                 self.canvas._px = None
-                self.canvas._mask_cache_layer = None
                 if hasattr(self.canvas, "_spx_cache"):
                     self.canvas._spx_cache.clear()
             except Exception:

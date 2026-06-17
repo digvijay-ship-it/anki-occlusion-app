@@ -27,21 +27,12 @@ v22 Performance Fixes (6 independent bottlenecks eliminated):
 
   [FIX-7] Mask rotate drag: Same as FIX-6 — partial rect update only.
 
-v21 Bug Fix:
-  PROBLEM: Masks were not loading after a certain page number.
-  ROOT CAUSE: _rebuild_mask_cache() created QPixmap(sw, sh) for the ENTIRE
-  canvas height. Qt silently fails / truncates any QPixmap whose height
-  exceeds 32 767 px (GPU texture limit) — the same limit that broke pages
-  in v17. A 42-page PDF at 1.5x zoom = ~50 000 px tall mask cache → all
-  masks on pages beyond ~27 were invisible.
-
+v21 Bug Fix / Cleanup:
+  PROBLEM: Masks were not loading after a certain page number due to giant QPixmap allocation limits.
   FIX:
-    • _rebuild_mask_cache() now checks: if sh > 32 767, skip the cache and
-      set _mask_cache_layer = None (direct-draw signal).
-    • paintEvent mask section: if cache is None, draws all masks directly
-      onto the painter — no single giant QPixmap ever created.
-    • Performance: for normal PDFs (< ~27 pages at 1.5x) the GPU cache path
-      is unchanged. Only large PDFs fall back to direct draw.
+    • The legacy mask-cache layer has been removed entirely.
+    • Masks are now drawn directly in paintEvent per box, clipped to the viewport.
+    • No offscreen QPixmap is allocated for masks, eliminating texture size limits and reducing memory usage.
 
 v20 (Virtual Page Renderer):
   v17 introduced _build_combined_from_pages() which creates ONE giant QPixmap

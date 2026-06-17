@@ -438,6 +438,139 @@ class MainWindow(QMainWindow):
         sb = self.statusBar()
         if sb:
             sb.showMessage(f"❌ Database load failed: {err_msg}")
+
+        # Replace central widget with an error screen
+        error_widget = QWidget()
+        import theme_manager
+        
+        palette = theme_manager.get_palette("dark")
+        c_bg = palette["C_BG"]
+        c_card = palette["C_CARD"]
+        c_text = palette["C_TEXT"]
+        c_red = palette["C_RED"]
+        c_accent = palette["C_ACCENT"]
+        c_subtext = palette["C_SUBTEXT"]
+        c_border = palette["C_BORDER"]
+
+        error_widget.setStyleSheet(f"background-color: {c_bg}; color: {c_text};")
+        
+        layout = QVBoxLayout(error_widget)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(20)
+        
+        # Center card/container to hold the elements
+        container = QWidget()
+        container.setStyleSheet(f"""
+            QWidget {{
+                background-color: {c_card};
+                border: 1px solid {c_border};
+                border-radius: 8px;
+            }}
+        """)
+        container.setFixedWidth(500)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(30, 30, 30, 30)
+        container_layout.setSpacing(15)
+        
+        # Title Label
+        title_label = QLabel("❌ Failed to load database")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet(f"""
+            color: {c_red};
+            font-size: 20px;
+            font-weight: bold;
+            border: none;
+            background: transparent;
+        """)
+        container_layout.addWidget(title_label)
+        
+        # Error message label
+        msg_label = QLabel(err_msg)
+        msg_label.setAlignment(Qt.AlignCenter)
+        msg_label.setWordWrap(True)
+        msg_label.setStyleSheet(f"""
+            color: {c_subtext};
+            font-size: 14px;
+            border: none;
+            background: transparent;
+        """)
+        container_layout.addWidget(msg_label)
+        
+        # Spacer
+        container_layout.addSpacing(10)
+        
+        # Button layout
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(15)
+        
+        # Retry button
+        btn_retry = QPushButton("Retry")
+        btn_retry.setCursor(Qt.PointingHandCursor)
+        btn_retry.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c_accent};
+                color: #FFFFFF;
+                font-weight: bold;
+                padding: 10px 20px;
+                border-radius: 4px;
+                border: none;
+            }}
+            QPushButton:hover {{
+                background-color: #9284F9;
+            }}
+        """)
+        
+        # Quit button
+        btn_quit = QPushButton("Quit")
+        btn_quit.setCursor(Qt.PointingHandCursor)
+        btn_quit.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {c_text};
+                font-weight: bold;
+                padding: 10px 20px;
+                border-radius: 4px;
+                border: 1px solid {c_border};
+            }}
+            QPushButton:hover {{
+                background-color: {c_border};
+            }}
+        """)
+        
+        btn_layout.addWidget(btn_retry)
+        btn_layout.addWidget(btn_quit)
+        container_layout.addLayout(btn_layout)
+        
+        layout.addWidget(container)
+        
+        self.setCentralWidget(error_widget)
+
+        def on_retry():
+            # 1. Clear store's in-memory data
+            with store._lock:
+                store._data = {"decks": []}
+                store._card_index = {}
+                store._dirty = False
+            
+            # 2. Swap central widget back to a fresh loading label
+            loading_label = QLabel("Loading database...")
+            loading_label.setAlignment(Qt.AlignCenter)
+            loading_label.setStyleSheet("font-size: 24px; color: #888; background: #1E1E2E;")
+            self.setCentralWidget(loading_label)
+            
+            sb = self.statusBar()
+            if sb:
+                sb.showMessage("Loading database...")
+            
+            # 3. Recreate and start a new DataLoaderThread
+            self._data_thread = DataLoaderThread()
+            self._data_thread.loaded.connect(self._on_data_loaded)
+            self._data_thread.error.connect(self._on_data_load_error)
+            self._data_thread.start()
+
+        btn_retry.clicked.connect(on_retry)
+        btn_quit.clicked.connect(QApplication.quit)
+
         self._data_thread = None
 
     def change_font_size(self, direction: int):

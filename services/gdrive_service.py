@@ -50,6 +50,8 @@ class OAuthReceiverHandler(BaseHTTPRequestHandler):
                 </body>
                 </html>
             """.encode("utf-8"))
+_SYNC_DISABLED_LOGGED = False
+_SYNC_DISABLED_LOGGED_LOCK = threading.Lock()
 
 
 class GDriveService:
@@ -91,22 +93,33 @@ class GDriveService:
             print(f"[GDriveService] Failed to save tokens: {e}")
 
     def _load_config(self):
+        global _SYNC_DISABLED_LOGGED
         # First check the home folder
         path = storage_paths._home_file(CONFIG_FILE_NAME)
+        has_loaded = False
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     self._config = json.load(f)
                     if not self._config.get("client_secret"):
                         self._config["client_secret"] = os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
-                    return
+                    has_loaded = True
             except Exception:
                 pass
-        # Fall back to default placeholders
-        self._config = {
-            "client_id": "205261143452-r2tv7nc4ndp2s4ncd4u6n2tfl4a4hjcb.apps.googleusercontent.com",
-            "client_secret": os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
-        }
+        
+        if not has_loaded:
+            # Fall back to default placeholders
+            self._config = {
+                "client_id": "205261143452-r2tv7nc4ndp2s4ncd4u6n2tfl4a4hjcb.apps.googleusercontent.com",
+                "client_secret": os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
+            }
+
+        # Check if secret is empty and log it once per process
+        if not self._config.get("client_secret"):
+            with _SYNC_DISABLED_LOGGED_LOCK:
+                if not _SYNC_DISABLED_LOGGED:
+                    print("[gdrive] ANKI_GDRIVE_CLIENT_SECRET not set — sync disabled")
+                    _SYNC_DISABLED_LOGGED = True
 
     def save_config(self, client_id, client_secret):
         self._config = {
