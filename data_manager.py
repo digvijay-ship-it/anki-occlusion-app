@@ -80,8 +80,41 @@ class DirtyStore:
         self._save_seq = 0
         self._latest_save_request_seq = 0
         self._last_async_save_ts = 0.0
+        self._card_index = {}
 
     # ── Load / Get / Set ──────────────────────────────────────────────────────
+
+    def _rebuild_card_index(self) -> None:
+        new_index = {}
+        def _walk(decks):
+            for deck in decks or []:
+                if not isinstance(deck, dict):
+                    continue
+                for card in deck.get("cards", []) or []:
+                    if isinstance(card, dict):
+                        c_id = card.get("_id")
+                        if c_id is not None:
+                            try:
+                                c_id = int(c_id)
+                            except (ValueError, TypeError):
+                                pass
+                            new_index[c_id] = (card, deck)
+                children = deck.get("children", []) or deck.get("subdecks", []) or []
+                _walk(children)
+        _walk(self._data.get("decks", []))
+        self._card_index = new_index
+
+    def get_card_by_id(self, card_id) -> tuple:
+        if card_id is None:
+            return None, None
+        try:
+            card_id = int(card_id)
+        except (ValueError, TypeError):
+            pass
+        with self._lock:
+            if not hasattr(self, "_card_index") or self._card_index is None:
+                self._rebuild_card_index()
+            return self._card_index.get(card_id, (None, None))
 
     def _initialize_sm2_states(self, data):
         if not isinstance(data, dict):
@@ -360,6 +393,8 @@ class DirtyStore:
                     cursor.execute(f"DELETE FROM decks WHERE id IN ({placeholders});", chunk)
                 
             conn.commit()
+            with self._lock:
+                self._rebuild_card_index()
         except Exception as e:
             conn.rollback()
             raise e
@@ -549,6 +584,7 @@ class DirtyStore:
         with self._lock:
             self._dirty = False
             self.revision += 1
+            self._rebuild_card_index()
         return self._data
 
     def get(self):
@@ -562,6 +598,7 @@ class DirtyStore:
             self._data = data
             self._dirty = True
             self.revision += 1
+            self._rebuild_card_index()
 
     # ── Dirty flag ────────────────────────────────────────────────────────────
 
@@ -574,7 +611,6 @@ class DirtyStore:
     def is_dirty(self):
         return self._dirty
 
-
     def save_if_dirty(self):
         """
         Write to disk only if dirty.
@@ -583,8 +619,12 @@ class DirtyStore:
         with self._lock:
             if not self._dirty:
                 return False
-            snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
-            snapshot_summary = DirtyStore._data_summary(self._data)
+            if DATA_FILE.endswith(".json"):
+                snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
+                snapshot_summary = DirtyStore._data_summary(self._data)
+            else:
+                snapshot_text = None
+                snapshot_summary = None
             self._save_seq += 1
             save_seq = self._save_seq
             self._latest_save_request_seq = save_seq
@@ -601,8 +641,12 @@ class DirtyStore:
     def save_force(self, async_save=False):
         """Force write regardless of dirty flag (use on app exit, or async in UI)."""
         with self._lock:
-            snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
-            snapshot_summary = DirtyStore._data_summary(self._data)
+            if DATA_FILE.endswith(".json"):
+                snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
+                snapshot_summary = DirtyStore._data_summary(self._data)
+            else:
+                snapshot_text = None
+                snapshot_summary = None
             self._save_seq += 1
             save_seq = self._save_seq
             self._latest_save_request_seq = save_seq
@@ -643,7 +687,7 @@ class DirtyStore:
             self._save_to_sqlite(db_path, self._data)
             
             # JSON Compatibility Mode
-            if DATA_FILE.endswith(".json"):
+            if DATA_FILE.endswith(".json") and snapshot_text is not None:
                 self._write_serialized_to_disk(snapshot_text, snapshot_summary)
                 
             # Asynchronous Google Drive Sync (Runs in a background thread)
@@ -1068,7 +1112,7 @@ def hamming_distance(hash1, hash2) -> int:
     except Exception:
         return 999
 
-def find_duplicate_card(data: dict, file_sha: str, dhash: str, title: str, target_deck_id=None) -> tuple[bool, bool]:
+def find_duplicate_card(data: dict, file_sha: str, dhash: str, title: str, target_deck_id=None) -> tuple:
     # We return tuple (card, deck)
     if not isinstance(data, dict):
         return None, None
@@ -1077,6 +1121,62 @@ def find_duplicate_card(data: dict, file_sha: str, dhash: str, title: str, targe
     is_default_title = normalized_title in ("", "untitled", "pasted image")
     
     lazy_cache_updated = [False]
+
+    if data is store.get():
+        with store._lock:
+            if not hasattr(store, "_card_index") or store._card_index is None:
+                store._rebuild_card_index()
+            card_items = list(store._card_index.values())
+        
+        for card, deck in card_items:
+            # 1. Check exact byte hash (SHA-256)
+            c_sha = card.get("file_hash")
+            path = card.get("image_path") or card.get("pdf_path")
+            
+            # Lazy load SHA-256
+            if not c_sha and path:
+                from storage_paths import resolve_asset_path
+                abs_path = resolve_asset_path(path)
+                if os.path.exists(abs_path):
+                    c_sha = compute_file_sha256(abs_path)
+                    if c_sha:
+                        card["file_hash"] = c_sha
+                        lazy_cache_updated[0] = True
+                        
+            if file_sha and c_sha == file_sha:
+                if lazy_cache_updated[0]:
+                    store.mark_dirty()
+                return card, deck
+                
+            # 2. Check visual similarity (dHash) for image cards
+            if dhash and card.get("image_path"):
+                c_dhash = card.get("visual_hash")
+                # Lazy load dHash
+                if not c_dhash and path:
+                    from storage_paths import resolve_asset_path
+                    abs_path = resolve_asset_path(path)
+                    if os.path.exists(abs_path):
+                        c_dhash = compute_image_dhash(abs_path)
+                        if c_dhash:
+                            card["visual_hash"] = c_dhash
+                            lazy_cache_updated[0] = True
+                            
+                if c_dhash and hamming_distance(dhash, c_dhash) <= 2:
+                    if lazy_cache_updated[0]:
+                        store.mark_dirty()
+                    return card, deck
+                    
+            # 3. Check title duplicate (only in target deck if specified)
+            if not is_default_title:
+                c_title = card.get("title", "").strip().lower()
+                if c_title == normalized_title:
+                    if target_deck_id is None or deck.get("_id") == target_deck_id:
+                        if lazy_cache_updated[0]:
+                            store.mark_dirty()
+                        return card, deck
+        if lazy_cache_updated[0]:
+            store.mark_dirty()
+        return None, None
 
     def _walk(decks):
         for deck in decks:
@@ -1134,7 +1234,7 @@ def find_duplicate_card(data: dict, file_sha: str, dhash: str, title: str, targe
         
     return res_card, res_deck
 
-def find_card_and_deck_by_id(data: dict, card_id) -> tuple[bool, bool]:
+def find_card_and_deck_by_id(data: dict, card_id) -> tuple:
     if not isinstance(data, dict) or card_id is None:
         return None, None
         
@@ -1142,6 +1242,9 @@ def find_card_and_deck_by_id(data: dict, card_id) -> tuple[bool, bool]:
         card_id = int(card_id)
     except (ValueError, TypeError):
         pass
+
+    if data is store.get():
+        return store.get_card_by_id(card_id)
 
     def _walk(decks):
         for deck in decks:

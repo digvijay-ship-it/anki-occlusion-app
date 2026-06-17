@@ -20,49 +20,79 @@ import math
 import copy
 import os
 
-from cache_manager import MASK_REGISTRY, PIXMAP_REGISTRY
+from cache_manager import PIXMAP_REGISTRY
 
-# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
-from theme_manager import get_palette as _get_palette
-
-_DARK = _get_palette("dark")
-C_BG = _DARK["C_BG"]
-C_SURFACE = _DARK["C_SURFACE"]
-C_CARD = _DARK["C_CARD"]
-C_ACCENT = _DARK["C_ACCENT"]
-C_GREEN = _DARK["C_GREEN"]
-C_RED = _DARK["C_RED"]
-C_YELLOW = _DARK["C_YELLOW"]
-C_TEXT = _DARK["C_TEXT"]
-C_SUBTEXT = _DARK["C_SUBTEXT"]
-C_BORDER = _DARK["C_BORDER"]
+from .colors import (
+    C_BG, C_SURFACE, C_CARD, C_ACCENT, C_GREEN, C_RED, C_YELLOW,
+    C_TEXT, C_SUBTEXT, C_BORDER, PAGE_GAP, REVEAL_COLOR
+)
 C_MASK = "#F7916A"
 C_GROUP = "#BD93F9"
 
 
-# Dummy values that were in editor_ui
-PAGE_GAP = 12
-REVEAL_COLOR = "#00000000"  # transparent
+_CANVAS_COLORS_CACHE = {}
 
-
-def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    return abs(lx) <= w / 2 and abs(ly) <= h / 2
-
-
-def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    if rx < 1 or ry < 1:
-        return False
-    return (lx / rx) ** 2 + (ly / ry) ** 2 <= 1
+def _get_canvas_colors_objects(invert: bool):
+    if invert in _CANVAS_COLORS_CACHE:
+        return _CANVAS_COLORS_CACHE[invert]
+    
+    if invert:
+        c_dict = {
+            "C_MASK": "#8E4A35",        # Dark muted brick orange/rust
+            "C_GREEN": "#2E7D32",       # Medium-dark forest green (visible but soft)
+            "C_RED": "#8B0000",         # Dark red
+            "C_ACCENT": "#512DA8",      # Dark purple
+            "C_GROUP": "#5c3f91",       # Dark muted group purple
+            "C_BLUE": "#1565C0",        # Dark muted group blue
+            "C_BORDER": "#555555",      # Muted dark grey border for non-target masks
+            "C_TARGET_BORDER": "#FFFFFF", # Clear white border for target mask
+            "C_TEXT": "#E0E0E0",
+            "C_YELLOW": "#9E9D24",
+            "C_HANDLE_BG": "#1E1E2E",
+            "C_WHITE": "#FFFFFF"
+        }
+    else:
+        c_dict = {
+            "C_MASK": "#8E4A35",        # Dark muted brick orange/rust
+            "C_GREEN": "#2E7D32",       # Medium-dark forest green
+            "C_RED": "#8B0000",         # Dark red
+            "C_ACCENT": "#512DA8",      # Dark purple
+            "C_GROUP": "#5c3f91",       # Dark muted group purple
+            "C_BLUE": "#1565C0",        # Dark muted blue
+            "C_BORDER": "#555555",      # Muted dark grey border
+            "C_TARGET_BORDER": "#1E1E2E",  # Dark border for target mask
+            "C_TEXT": "#E0E0E0",
+            "C_YELLOW": "#9E9D24",
+            "C_HANDLE_BG": "#1E1E2E",
+            "C_WHITE": "#FFFFFF"
+        }
+        
+    obj_dict = {}
+    for name, hex_str in c_dict.items():
+        color = QColor(hex_str)
+        obj_dict[name] = color
+        obj_dict[f"{name}_PEN_1"] = QPen(color, 1)
+        obj_dict[f"{name}_PEN_2"] = QPen(color, 2)
+        obj_dict[f"{name}_PEN_1_DOT"] = QPen(color, 1, Qt.DotLine)
+        obj_dict[f"{name}_PEN_1_DASH"] = QPen(color, 1, Qt.DashLine)
+        obj_dict[f"{name}_PEN_2_DASH"] = QPen(color, 2, Qt.DashLine)
+        obj_dict[f"{name}_PEN_2_SOLID"] = QPen(color, 2, Qt.SolidLine)
+        obj_dict[f"{name}_BRUSH"] = QBrush(color)
+        
+        # Add transparent variations
+        alpha_155 = QColor(color)
+        alpha_155.setAlpha(155)
+        obj_dict[f"{name}_ALPHA_155_COLOR"] = alpha_155
+        obj_dict[f"{name}_ALPHA_155_BRUSH"] = QBrush(alpha_155)
+        
+        alpha_110 = QColor(color)
+        alpha_110.setAlpha(110)
+        obj_dict[f"{name}_ALPHA_110_COLOR"] = alpha_110
+        obj_dict[f"{name}_ALPHA_110_BRUSH"] = QBrush(alpha_110)
+        
+    obj_dict["NO_BRUSH"] = QBrush(Qt.NoBrush)
+    _CANVAS_COLORS_CACHE[invert] = obj_dict
+    return obj_dict
 
 
 class CanvasRendererMixin:
@@ -74,30 +104,6 @@ class CanvasRendererMixin:
         raw = os.environ.get("ANKI_CANVAS_PAINT_PROFILE", "").strip().lower()
         return raw in {"1", "true", "yes", "on"}
 
-    def _mask_cache_source_rect(self, clip, pixmap):
-        if pixmap is None or pixmap.isNull():
-            return QRect()
-        pixmap_rect = QRect(0, 0, pixmap.width(), pixmap.height())
-        return clip.intersected(pixmap_rect)
-
-    def _draw_mask_cache_layer(self, painter, clip):
-        if self._mask_cache_layer is None or self._mask_cache_layer.isNull():
-            return QRect()
-        offset = self._mask_cache_offset
-        cache_rect = QRect(
-            int(offset.x()),
-            int(offset.y()),
-            self._mask_cache_layer.width(),
-            self._mask_cache_layer.height(),
-        )
-        canvas_intersection = clip.intersected(cache_rect)
-        if canvas_intersection.isEmpty():
-            return QRect()
-        source_rect = canvas_intersection.translated(
-            -int(offset.x()), -int(offset.y())
-        )
-        painter.drawPixmap(canvas_intersection, self._mask_cache_layer, source_rect)
-        return canvas_intersection
 
     def _log_canvas_paint_profile(self, elapsed_ms, clip, pages_drawn, phases):
         if getattr(self, "_mode", "") != "review":
@@ -117,7 +123,7 @@ class CanvasRendererMixin:
             f"clip={clip.width()}x{clip.height()}@{clip.x()},{clip.y()} "
             f"pages_drawn={pages_drawn} "
             f"boxes={len(getattr(self, '_boxes', []) or [])} "
-            f"mask_cache={'yes' if getattr(self, '_mask_cache_layer', None) else 'no'} "
+            f"mask_cache=no "
             f"scale={float(getattr(self, '_scale', 1.0) or 1.0):.4f} "
             f"scaled_cache={cache_entries} "
             f"scale_miss={int((phases or {}).get('scale_miss', 0))} "
@@ -133,38 +139,38 @@ class CanvasRendererMixin:
 
     def paintEvent(self, event):
         """File: editor_ui.py -> Class: OcclusionCanvas -> Fixed paintEvent"""
-        paint_t0 = time.perf_counter()
+        profile = self._canvas_paint_profile_enabled()
+        if profile:
+            paint_t0 = time.perf_counter()
+            phases = {
+                "page_scale_ms": 0.0,
+                "page_draw_ms": 0.0,
+                "mask_ms": 0.0,
+                "boxes_ms": 0.0,
+                "boxes_drawn": 0,
+                "overlay_ms": 0.0,
+                "ink_ms": 0.0,
+                "scale_miss": 0,
+                "mask_clip": "none",
+            }
+        else:
+            paint_t0 = 0.0
+            phases = None
+
         pages_drawn = 0
-        phases = {
-            "page_scale_ms": 0.0,
-            "page_draw_ms": 0.0,
-            "mask_ms": 0.0,
-            "boxes_ms": 0.0,
-            "boxes_drawn": 0,
-            "overlay_ms": 0.0,
-            "ink_ms": 0.0,
-            "scale_miss": 0,
-            "mask_clip": "none",
-        }
         p = QPainter(self)
         clip = event.rect()
-
-        # Viewport check: Rebuild mask cache only when dirty or uninitialized.
-        # We do not force-rebuild on viewport offset shifts, which eliminates scroll lag.
-        if (
-            self._mask_cache_dirty
-            or self._mask_cache_layer is None
-            or self._mask_cache_layer.isNull()
-        ):
-            self._rebuild_mask_cache()
 
         p.fillRect(clip, QColor("#1E1E2E"))
 
         if self._px and not self._px.isNull():
             cached_scale, cached_spx = self._spx_cache.get("_px", (None, None))
+            if cached_spx is not None:
+                self._spx_cache.move_to_end("_px", last=True)
             if cached_scale != self._scale or cached_spx is None:
-                phases["scale_miss"] += 1
-                scale_t0 = time.perf_counter()
+                if profile:
+                    phases["scale_miss"] += 1
+                    scale_t0 = time.perf_counter()
                 transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
                 cached_spx = self._px.scaled(
                     max(int(self._px.width() * self._scale), 1),
@@ -173,10 +179,16 @@ class CanvasRendererMixin:
                     transform_type,
                 )
                 self._spx_cache["_px"] = (self._scale, cached_spx)
-                phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
-            draw_t0 = time.perf_counter()
+                self._spx_cache.move_to_end("_px", last=True)
+                while len(self._spx_cache) > self.SPX_CACHE_MAX:
+                    self._spx_cache.popitem(last=False)
+                if profile:
+                    phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+            if profile:
+                draw_t0 = time.perf_counter()
             p.drawPixmap(0, 0, cached_spx)
-            phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
+            if profile:
+                phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
 
         elif self._pages:
             sep_pen = QPen(QColor("#45475A"), 2)
@@ -191,19 +203,24 @@ class CanvasRendererMixin:
                     break
 
                 cached_scale, cached_spx = self._spx_cache.get(i, (None, None))
+                if cached_spx is not None:
+                    self._spx_cache.move_to_end(i, last=True)
                 cache_hit = (
                     cached_scale == self._scale
                     and cached_spx is not None
                     and not cached_spx.isNull()
                 )
-                scale_t0 = time.perf_counter()
+                if profile:
+                    scale_t0 = time.perf_counter()
                 scaled_page = self._get_scaled_page(i)
-                phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
-                if not cache_hit:
-                    phases["scale_miss"] += 1
-                draw_t0 = time.perf_counter()
+                if profile:
+                    phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+                    if not cache_hit:
+                        phases["scale_miss"] += 1
+                    draw_t0 = time.perf_counter()
                 p.drawPixmap(0, scr_top, scaled_page)
-                phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
+                if profile:
+                    phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
                 pages_drawn += 1
 
                 if i < len(self._pages) - 1:
@@ -211,35 +228,26 @@ class CanvasRendererMixin:
                     p.setPen(sep_pen)
                     p.drawLine(0, sep_y, self.width(), sep_y)
 
-        # ⚡ OPTIMIZATION: Render boxes/masks directly to the screen painter.
-        # Allocating and copying QPixmaps on the fly is extremely slow and causes scroll lag.
-        # Direct QPainter calls are extremely fast and automatically clipped.
-        if False and self._mask_cache_layer and not self._mask_cache_layer.isNull():
-            mask_t0 = time.perf_counter()
-            mask_clip = self._draw_mask_cache_layer(p, clip)
-            phases["mask_ms"] += (time.perf_counter() - mask_t0) * 1000.0
-            if not mask_clip.isEmpty():
-                phases["mask_clip"] = (
-                    f"{mask_clip.width()}x{mask_clip.height()}"
-                    f"@{mask_clip.x()},{mask_clip.y()}"
-                )
-        else:
-            p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.Antialiasing)
+        if profile:
             boxes_t0 = time.perf_counter()
-            for i, b in enumerate(self._boxes):
-                if self._drag_op and (
-                    i == self._selected_idx or i in self._selected_indices
-                ):
-                    continue
-                sr = self._sr(b["rect"])
-                if not clip.intersects(sr.toRect()):
-                    continue
-                self._draw_box(p, i, b)
+        for i, b in enumerate(self._boxes):
+            if self._drag_op and (
+                i == self._selected_idx or i in self._selected_indices
+            ):
+                continue
+            sr = self._sr(b["rect"])
+            if not clip.intersects(sr.toRect()):
+                continue
+            self._draw_box(p, i, b)
+            if profile:
                 phases["boxes_drawn"] += 1
+        if profile:
             phases["boxes_ms"] += (time.perf_counter() - boxes_t0) * 1000.0
 
         p.setRenderHint(QPainter.Antialiasing)
-        overlay_t0 = time.perf_counter()
+        if profile:
+            overlay_t0 = time.perf_counter()
         if self._drag_op == "move" and self._drag_orig_boxes:
             drag_pos = self._drag_current_pos or self._drag_start_pos
             delta = (drag_pos - self._drag_start_pos) / self._scale
@@ -257,18 +265,22 @@ class CanvasRendererMixin:
 
         if self._drawing and not self._live_rect.isEmpty():
             self._draw_live(p)
-        phases["overlay_ms"] += (time.perf_counter() - overlay_t0) * 1000.0
+        if profile:
+            phases["overlay_ms"] += (time.perf_counter() - overlay_t0) * 1000.0
 
-        ink_t0 = time.perf_counter()
+        if profile:
+            ink_t0 = time.perf_counter()
         self._draw_ink_layer(p)
-        phases["ink_ms"] += (time.perf_counter() - ink_t0) * 1000.0
+        if profile:
+            phases["ink_ms"] += (time.perf_counter() - ink_t0) * 1000.0
         p.end()
-        self._log_canvas_paint_profile(
-            (time.perf_counter() - paint_t0) * 1000.0,
-            clip,
-            pages_drawn,
-            phases,
-        )
+        if profile:
+            self._log_canvas_paint_profile(
+                (time.perf_counter() - paint_t0) * 1000.0,
+                clip,
+                pages_drawn,
+                phases,
+            )
 
     def _draw_box(self, p: QPainter, i: int, b: dict):
         sr = self._sr(b["rect"])
@@ -280,32 +292,7 @@ class CanvasRendererMixin:
 
     def _get_canvas_colors(self):
         from cache_manager import get_pdf_invert_setting
-        if get_pdf_invert_setting():
-            return {
-                "C_MASK": "#8E4A35",        # Dark muted brick orange/rust
-                "C_GREEN": "#2E7D32",       # Medium-dark forest green (visible but soft)
-                "C_RED": "#8B0000",         # Dark red
-                "C_ACCENT": "#512DA8",      # Dark purple
-                "C_GROUP": "#5c3f91",       # Dark muted group purple
-                "C_BLUE": "#1565C0",        # Dark muted group blue
-                "C_BORDER": "#555555",      # Muted dark grey border for non-target masks
-                "C_TARGET_BORDER": "#FFFFFF", # Clear white border for target mask
-                "C_TEXT": "#E0E0E0",
-                "C_YELLOW": "#9E9D24"
-            }
-        else:
-            return {
-                "C_MASK": "#8E4A35",        # Dark muted brick orange/rust
-                "C_GREEN": "#2E7D32",       # Medium-dark forest green
-                "C_RED": "#8B0000",         # Dark red
-                "C_ACCENT": "#512DA8",      # Dark purple
-                "C_GROUP": "#5c3f91",       # Dark muted group purple
-                "C_BLUE": "#1565C0",        # Dark muted blue
-                "C_BORDER": "#555555",      # Muted dark grey border
-                "C_TARGET_BORDER": "#1E1E2E",  # Dark border for target mask
-                "C_TEXT": "#E0E0E0",
-                "C_YELLOW": "#9E9D24"
-            }
+        return _get_canvas_colors_objects(get_pdf_invert_setting())
 
     def _draw_box_impl(self, p: QPainter, i: int, b: dict, sr: QRectF):
         cx, cy = sr.center().x(), sr.center().y()
@@ -328,36 +315,50 @@ class CanvasRendererMixin:
 
             if hide_one and not is_target and not is_peek_target:
                 if not revealed:
-                    p.setPen(QPen(QColor(cc["C_GREEN"]), 1, Qt.DotLine))
-                    p.setBrush(Qt.NoBrush)
+                    p.setPen(cc["C_GREEN_PEN_1_DOT"])
+                    p.setBrush(cc["NO_BRUSH"])
                     (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
                 p.restore()
                 return
 
             if not revealed:
-                color = QColor(
-                    cc["C_RED"] if is_peek_target else (cc["C_GREEN"] if is_target else cc["C_MASK"])
-                )
-                border_col = QColor(
-                    cc["C_TARGET_BORDER"] if (is_target or is_peek_target) else cc["C_BORDER"]
-                )
-                p.setBrush(QBrush(color))
-                p.setPen(QPen(border_col, 2))
+                if is_peek_target:
+                    brush = cc["C_RED_BRUSH"]
+                    pen = cc["C_TARGET_BORDER_PEN_2"]
+                elif is_target:
+                    brush = cc["C_GREEN_BRUSH"]
+                    pen = cc["C_TARGET_BORDER_PEN_2"]
+                else:
+                    brush = cc["C_MASK_BRUSH"]
+                    pen = cc["C_BORDER_PEN_2"]
+
+                p.setBrush(brush)
+                p.setPen(pen)
                 (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
             else:
-                p.setPen(QPen(QColor(cc["C_RED"] if is_peek_target else cc["C_GREEN"]), 2))
-                p.setBrush(Qt.NoBrush)
+                p.setPen(cc["C_RED_PEN_2"] if is_peek_target else cc["C_GREEN_PEN_2"])
+                p.setBrush(cc["NO_BRUSH"])
                 (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
         else:
             gid = b.get("group_id", "")
             grouped = bool(gid)
-            fill = QColor(cc["C_GREEN"] if sel else cc["C_BLUE"] if grouped else cc["C_MASK"])
-            fill.setAlpha(155)
-            p.setBrush(QBrush(fill))
-            border_col = QColor(cc["C_GREEN"] if sel else cc["C_BLUE"] if grouped else cc["C_BORDER"])
-            p.setPen(QPen(border_col, 2, Qt.DashLine if not grouped else Qt.SolidLine))
+            if sel:
+                brush = cc["C_GREEN_ALPHA_155_BRUSH"]
+                pen = cc["C_GREEN_PEN_2_DASH"] if not grouped else cc["C_GREEN_PEN_2_SOLID"]
+                pen_text = cc["C_GREEN_PEN_1"]
+            elif grouped:
+                brush = cc["C_BLUE_ALPHA_155_BRUSH"]
+                pen = cc["C_BLUE_PEN_2_DASH"] if not grouped else cc["C_BLUE_PEN_2_SOLID"]
+                pen_text = cc["C_BLUE_PEN_1"]
+            else:
+                brush = cc["C_MASK_ALPHA_155_BRUSH"]
+                pen = cc["C_BORDER_PEN_2_DASH"] if not grouped else cc["C_BORDER_PEN_2_SOLID"]
+                pen_text = cc["C_BORDER_PEN_1"]
+
+            p.setBrush(brush)
+            p.setPen(pen)
             (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
-            p.setPen(QPen(border_col, 1))
+            p.setPen(pen_text)
             p.setFont(self._LABEL_FONT)
             dlbl = (
                 f"[{gid[:4]}] {lbl}" if gid and lbl else f"[{gid[:4]}]" if gid else lbl
@@ -373,17 +374,17 @@ class CanvasRendererMixin:
         if not hps:
             return
         cc = self._get_canvas_colors()
-        p.setPen(QPen(QColor(cc["C_GREEN"]), 1))
-        p.setBrush(QBrush(QColor("#1E1E2E")))
+        p.setPen(cc["C_GREEN_PEN_1"])
+        p.setBrush(cc["C_HANDLE_BG_BRUSH"])
         hr = self._HANDLE_R
         for hpt in hps["resize"]:
             p.drawEllipse(hpt, hr, hr)
         rpt = hps["rotate"]
         top_c = hps["resize"][1]
-        p.setPen(QPen(QColor(cc["C_ACCENT"]), 1))
+        p.setPen(cc["C_ACCENT_PEN_1"])
         p.drawLine(top_c, rpt)
-        p.setBrush(QBrush(QColor(cc["C_ACCENT"])))
-        p.setPen(QPen(QColor("#FFF"), 1))
+        p.setBrush(cc["C_ACCENT_BRUSH"])
+        p.setPen(cc["C_WHITE_PEN_1"])
         p.drawEllipse(rpt, hr + 1, hr + 1)
         p.setFont(self._SMALL_FONT)
         p.drawText(QRectF(rpt.x() - 6, rpt.y() - 6, 12, 12), Qt.AlignCenter, "↻")
@@ -391,10 +392,8 @@ class CanvasRendererMixin:
     def _draw_live(self, p: QPainter):
         sr = self._sr(self._live_rect)
         cc = self._get_canvas_colors()
-        c = QColor(cc["C_ACCENT"])
-        c.setAlpha(110)
-        p.setBrush(QBrush(c))
-        p.setPen(QPen(QColor(cc["C_ACCENT"]), 2))
+        p.setBrush(cc["C_ACCENT_ALPHA_110_BRUSH"])
+        p.setPen(cc["C_ACCENT_PEN_2_SOLID"])
         (p.drawEllipse if self._tool == "ellipse" else p.drawRect)(sr)
 
     def _smooth_points_to_path(self, pts, sc) -> QPainterPath:
@@ -472,5 +471,4 @@ class CanvasRendererMixin:
 
     def _redraw(self):
         """Legacy shim — ReviewScreen calls this after revealing a mask."""
-        self._invalidate_mask_cache()
         self.update()

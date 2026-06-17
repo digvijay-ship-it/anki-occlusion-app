@@ -15,47 +15,13 @@ import time
 import math
 import copy
 
-from cache_manager import MASK_REGISTRY, PIXMAP_REGISTRY
+from cache_manager import PIXMAP_REGISTRY
 
-# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
-from theme_manager import get_palette as _get_palette
-
-_DARK = _get_palette("dark")
-C_BG = _DARK["C_BG"]
-C_SURFACE = _DARK["C_SURFACE"]
-C_CARD = _DARK["C_CARD"]
-C_ACCENT = _DARK["C_ACCENT"]
-C_GREEN = _DARK["C_GREEN"]
-C_RED = _DARK["C_RED"]
-C_YELLOW = _DARK["C_YELLOW"]
-C_TEXT = _DARK["C_TEXT"]
-C_SUBTEXT = _DARK["C_SUBTEXT"]
-C_BORDER = _DARK["C_BORDER"]
-
-
-# Dummy values that were in editor_ui
-PAGE_GAP = 12
-REVEAL_COLOR = "#00000000"  # transparent
-
-
-def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    return abs(lx) <= w / 2 and abs(ly) <= h / 2
-
-
-def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    if rx < 1 or ry < 1:
-        return False
-    return (lx / rx) ** 2 + (ly / ry) ** 2 <= 1
+from .colors import (
+    C_BG, C_SURFACE, C_CARD, C_ACCENT, C_GREEN, C_RED, C_YELLOW,
+    C_TEXT, C_SUBTEXT, C_BORDER, PAGE_GAP, REVEAL_COLOR
+)
+from .geometry import _point_in_rotated_box, _point_in_rotated_ellipse
 
 
 class CanvasInteractionMixin:
@@ -140,7 +106,7 @@ class CanvasInteractionMixin:
                     self._boxes
                 ):
                     self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
-                    self._invalidate_mask_cache()
+
                     self.update()
             elif getattr(self, "_ink_input_kind", None) == "tablet":
                 self._ink_release()
@@ -235,7 +201,6 @@ class CanvasInteractionMixin:
             self._selected_idx = -1
             self._selected_indices = set()
             self._selection_scope = ""
-            self._invalidate_mask_cache()
             self.update()
             return
         gid = self._boxes[hit].get("group_id", "")
@@ -259,7 +224,6 @@ class CanvasInteractionMixin:
             else:
                 self._selected_indices = set()
         self._selected_idx = hit
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -455,7 +419,6 @@ class CanvasInteractionMixin:
             hit = self._hit_box(ip)
             if hit >= 0:
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
-                self._invalidate_mask_cache()
                 self.update()
                 return
             e.ignore()
@@ -483,7 +446,6 @@ class CanvasInteractionMixin:
         if hit >= 0:
             if self._selection_scope and hit in self._selected_indices:
                 self._selected_idx = hit
-                self._invalidate_mask_cache()
                 self.update()
             else:
                 self._selection_scope = ""
@@ -639,7 +601,6 @@ class CanvasInteractionMixin:
                 self._boxes
             ):
                 self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
-                self._invalidate_mask_cache()
                 self.update()
             e.accept()
             return
@@ -658,32 +619,36 @@ class CanvasInteractionMixin:
             r = self._live_rect
             if r.width() > 6 and r.height() > 6:
                 self._push_undo()
-                self._boxes.append(
-                    {
-                        "rect": r,
-                        "shape": (
-                            self._tool if self._tool in ("rect", "ellipse") else "rect"
-                        ),
-                        "angle": 0.0,
-                        "revealed": False,
-                        "label": "",
-                    }
-                )
+                new_box = {
+                    "rect": r,
+                    "shape": (
+                        self._tool if self._tool in ("rect", "ellipse") else "rect"
+                    ),
+                    "angle": 0.0,
+                    "revealed": False,
+                    "label": "",
+                }
+                self._update_box_page_num(new_box)
+                self._boxes.append(new_box)
                 self._selected_idx = len(self._boxes) - 1
-                self._invalidate_mask_cache()
                 self.update()
                 self.boxes_changed.emit(self.get_boxes())
             self._live_rect = QRectF()
-            self._invalidate_mask_cache()
             self.update()
 
         if self._drag_op:
+            if self._drag_op in ("move", "resize"):
+                if self._selected_idx >= 0 and self._selected_idx < len(self._boxes):
+                    self._update_box_page_num(self._boxes[self._selected_idx])
+                if self._drag_orig_boxes:
+                    for i in self._drag_orig_boxes:
+                        if i >= 0 and i < len(self._boxes):
+                            self._update_box_page_num(self._boxes[i])
             self._drag_op = None
             self._drag_handle = -1
             self._drag_orig_box = None
             self._drag_orig_boxes = None
             self._drag_current_pos = None
-            self._invalidate_mask_cache()
             self.boxes_changed.emit(self.get_boxes())
             self.update()
 

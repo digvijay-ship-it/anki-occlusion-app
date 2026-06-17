@@ -1274,13 +1274,12 @@ class ClassicCacheWidget(QFrame):
         root.addWidget(btn_all)
 
     def refresh(self):
-        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE
 
         # Collect all known PDFs
         known = set()
         known.update(COMBINED_CACHE.all_cached_pdfs())
         known.update(PAGE_CACHE.all_cached_pdfs())
-        known.update(MASK_REGISTRY.all_registered_pdfs())
 
         # Clear old entries (keep trailing stretch)
         while self._list_layout.count() > 1:
@@ -1292,10 +1291,9 @@ class ClassicCacheWidget(QFrame):
         for pdf_path in sorted(known):
             disk_b = COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
             ram_b = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
-            mask_b = MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
-            total = disk_b + ram_b + mask_b
+            total = disk_b + ram_b
             total_bytes += total
-            card = self._make_card(pdf_path, disk_b, ram_b, mask_b, total)
+            card = self._make_card(pdf_path, disk_b, ram_b, total)
             self._list_layout.insertWidget(self._list_layout.count() - 1, card)
 
         if not known:
@@ -1309,7 +1307,7 @@ class ClassicCacheWidget(QFrame):
             f"{_fmt_bytes(total_bytes)}  {count} PDF{'s' if count!=1 else ''}"
         )
 
-    def _make_card(self, pdf_path, disk_b, ram_b, mask_b, total_b):
+    def _make_card(self, pdf_path, disk_b, ram_b, total_b):
         card = QFrame()
         card.setStyleSheet(
             f"QFrame{{background:{C_CARD};"
@@ -1348,7 +1346,6 @@ class ClassicCacheWidget(QFrame):
 
         vl.addWidget(_row("💿", _fmt_bytes(disk_b)))
         vl.addWidget(_row("🧠", _fmt_bytes(ram_b)))
-        vl.addWidget(_row("🎭", _fmt_bytes(mask_b)))
 
         # Total + remove button
         hl_bot = QHBoxLayout()
@@ -1372,14 +1369,11 @@ class ClassicCacheWidget(QFrame):
         from cache_manager import (
             PAGE_CACHE,
             COMBINED_CACHE,
-            MASK_REGISTRY,
             PIXMAP_REGISTRY,
         )
 
         COMBINED_CACHE.invalidate(pdf_path)
         PAGE_CACHE.invalidate_pdf(pdf_path)
-        MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
-        MASK_REGISTRY._map.pop(pdf_path, None)
         for label in [
             l for l, (_, _, p) in PIXMAP_REGISTRY._entries.items() if p == pdf_path
         ]:
@@ -1390,13 +1384,11 @@ class ClassicCacheWidget(QFrame):
         from cache_manager import (
             PAGE_CACHE,
             COMBINED_CACHE,
-            MASK_REGISTRY,
             PIXMAP_REGISTRY,
         )
 
         COMBINED_CACHE.clear()
         PAGE_CACHE.clear_ram_only()
-        MASK_REGISTRY._map.clear()
         for label in list(PIXMAP_REGISTRY._entries.keys()):
             PIXMAP_REGISTRY.unregister(label)
         self.refresh()
@@ -1592,12 +1584,11 @@ class DojoCacheWidget(QFrame):
         root.addWidget(fuel_box)
 
     def refresh(self):
-        from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+        from cache_manager import PAGE_CACHE, COMBINED_CACHE
 
         known = set()
         known.update(COMBINED_CACHE.all_cached_pdfs())
         known.update(PAGE_CACHE.all_cached_pdfs())
-        known.update(MASK_REGISTRY.all_registered_pdfs())
 
         ram_b = 0
         disk_b = 0
@@ -1605,7 +1596,6 @@ class DojoCacheWidget(QFrame):
         for pdf_path in known:
             disk_b += COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
             ram_b += PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
-            mask_b += MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
 
         tot_b = ram_b + disk_b + mask_b
 

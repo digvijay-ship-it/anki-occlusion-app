@@ -636,6 +636,8 @@ class ReviewScreen(QWidget):
         self._cache_panel = None
         self._items = []
         self._pdf_cache = {}
+        from collections import OrderedDict
+        self._text_card_cache = OrderedDict()
         self._current_pixmap = None
         from services.pdf_watcher import PdfWatcher
 
@@ -845,7 +847,11 @@ class ReviewScreen(QWidget):
             self._cache_panel.refresh()
 
     def closeEvent(self, e):
-        from cache_manager import MASK_REGISTRY
+        try:
+            from services import recovery_manager
+            recovery_manager.flush()
+        except Exception as ex:
+            print(f"[review_screen] Failed to flush recovery events: {ex}")
 
         # Disconnect all signals originating from this ReviewScreen
         try:
@@ -862,8 +868,6 @@ class ReviewScreen(QWidget):
             except Exception:
                 pass
 
-        MASK_REGISTRY.unregister(self.canvas)
-
         # Clear canvas page/pixmap cache to free QPixmap memory immediately
         if getattr(self, "canvas", None) is not None:
             try:
@@ -878,6 +882,8 @@ class ReviewScreen(QWidget):
         self._current_pixmap = None
         if hasattr(self, "_pdf_cache"):
             self._pdf_cache.clear()
+        if hasattr(self, "_text_card_cache"):
+            self._text_card_cache.clear()
 
         # Unregister from pixmap registry
         try:
@@ -887,7 +893,7 @@ class ReviewScreen(QWidget):
             pass
 
         self._close_bg_prefetch_dialog()
-        self._stop_skeleton_thread()
+        self._stop_skeleton_thread(shutdown=True)
         if (
             hasattr(self, "_pdf_loader_thread")
             and self._pdf_loader_thread
@@ -898,7 +904,7 @@ class ReviewScreen(QWidget):
             self._pdf_loader_thread.wait(1000)
 
         # STEP 4 — stop on-demand thread on close
-        self._stop_ondemand_thread()
+        self._stop_ondemand_thread(shutdown=True)
 
         if hasattr(self, "_pdf_watcher") and self._pdf_watcher is not None:
             self._pdf_watcher.stop_watch()
@@ -2993,14 +2999,22 @@ class ReviewScreen(QWidget):
         if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
-            self._pdf_loader_thread.wait(300)
-            self._pdf_loader_thread = None
+            t = self._pdf_loader_thread
+            if not hasattr(self, "_pending_worker_cleanups"):
+                self._pending_worker_cleanups = []
+            self._pending_worker_cleanups.append(t)
+            t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
+        self._pdf_loader_thread = None
 
         if hasattr(self, "_pdf_ondemand_thread") and self._pdf_ondemand_thread and self._pdf_ondemand_thread.isRunning():
             self._pdf_ondemand_thread.stop()
             self._pdf_ondemand_thread.quit()
-            self._pdf_ondemand_thread.wait(300)
-            self._pdf_ondemand_thread = None
+            t = self._pdf_ondemand_thread
+            if not hasattr(self, "_pending_worker_cleanups"):
+                self._pending_worker_cleanups = []
+            self._pending_worker_cleanups.append(t)
+            t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
+        self._pdf_ondemand_thread = None
             
         self._review_canvas_real_pages = set()
         
@@ -3101,9 +3115,9 @@ class ReviewScreen(QWidget):
         self._keep_floating_timer_on_top()
 
     def _center_on_target(self):
-        # Force a layout update so viewport dimensions are accurate
-        QApplication.processEvents()
+        QTimer.singleShot(0, self._do_center_on_target)
 
+    def _do_center_on_target(self):
         vp = self._canvas_scroll.viewport()
         view_w = vp.width()
         view_h = vp.height()
@@ -3284,6 +3298,10 @@ class ReviewScreen(QWidget):
                 edited[k] = card[k]
                 
         card.update(edited)
+        card_id = card.get("_id")
+        if card_id is not None and hasattr(self, "_text_card_cache"):
+            self._text_card_cache.pop((card_id, True), None)
+            self._text_card_cache.pop((card_id, False), None)
         if self._data:
             store.mark_dirty()
             self._review_data_dirty = True
@@ -3473,6 +3491,14 @@ class ReviewScreen(QWidget):
         apply_annotation_beta_refresh(self, path, changed_pages, return_page)
 
     def _render_text_card_to_pixmap(self, card, is_revealed):
+        card_id = card.get("_id")
+        if card_id is not None and hasattr(self, "_text_card_cache"):
+            cache_key = (card_id, is_revealed)
+            if cache_key in self._text_card_cache:
+                val = self._text_card_cache.pop(cache_key)
+                self._text_card_cache[cache_key] = val
+                return val
+
         import re
         from PyQt5.QtGui import QTextDocument, QPainter, QPixmap, QColor
         from PyQt5.QtCore import QUrl, Qt, QRectF
@@ -3628,6 +3654,13 @@ class ReviewScreen(QWidget):
         painter.translate(40, 40)
         doc.drawContents(painter, QRectF(0, 0, 720, h))
         painter.end()
+
+        if card_id is not None and hasattr(self, "_text_card_cache"):
+            cache_key = (card_id, is_revealed)
+            self._text_card_cache[cache_key] = px
+            if len(self._text_card_cache) > 8:
+                self._text_card_cache.popitem(last=False)
+
         return px
 
     def _reload_current_canvas(self, view_idx=None):
@@ -3890,11 +3923,18 @@ class ReviewScreen(QWidget):
         )
         return result
 
-    def _stop_skeleton_thread(self):
+    def _stop_skeleton_thread(self, shutdown=False):
         if self._skeleton_thread and self._skeleton_thread.isRunning():
             self._skeleton_thread.stop()
             self._skeleton_thread.quit()
-            self._skeleton_thread.wait(500)
+            if shutdown:
+                self._skeleton_thread.wait(500)
+            else:
+                t = self._skeleton_thread
+                if not hasattr(self, "_pending_worker_cleanups"):
+                    self._pending_worker_cleanups = []
+                self._pending_worker_cleanups.append(t)
+                t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
         self._skeleton_thread = None
 
     def _start_review_skeleton_thread(self, path):
@@ -4874,11 +4914,21 @@ class ReviewScreen(QWidget):
         (_show_overlay, _rating_frame.hide) already do so themselves.
         ─────────────────────────────────────────────────────────────────────────
         """
+    def _stop_ondemand_thread(self, shutdown=False):
+        """
+        Stop the on-demand page rendering thread.
+        """
         t = getattr(self, "_ondemand_thread", None)
         if t and t.isRunning():
             t.stop()
             t.quit()
-            t.wait(400)
+            if shutdown:
+                t.wait(400)
+            else:
+                if not hasattr(self, "_pending_worker_cleanups"):
+                    self._pending_worker_cleanups = []
+                self._pending_worker_cleanups.append(t)
+                t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
         requested = set(self.__dict__.pop("_ondemand_requested_pages", set()) or set())
         if requested:
             self.__dict__.setdefault(
@@ -4984,11 +5034,6 @@ class ReviewScreen(QWidget):
         # 1. Load ALL pages
         self.canvas.load_pages(pages)
 
-        # 2. Re-register with Registry for deep cards
-        from cache_manager import MASK_REGISTRY
-
-        MASK_REGISTRY.register(path, self.canvas)
-
         # 3. set_mode FIRST so it doesn't wipe revealed state set below
         self.canvas.set_mode("review")
 
@@ -5062,7 +5107,11 @@ class ReviewScreen(QWidget):
         ):
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
-            self._pdf_loader_thread.wait(300)
+            t = self._pdf_loader_thread
+            if not hasattr(self, "_pending_worker_cleanups"):
+                self._pending_worker_cleanups = []
+            self._pending_worker_cleanups.append(t)
+            t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
 
         self._pdf_render_zoom = choose_pdf_render_zoom(get_pdf_page_count(path))
         profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)

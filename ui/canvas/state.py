@@ -18,50 +18,29 @@ import math
 import copy
 import os
 
-from cache_manager import MASK_REGISTRY, PIXMAP_REGISTRY
+from cache_manager import PIXMAP_REGISTRY
 
-# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
-from theme_manager import get_palette as _get_palette
-
-_DARK = _get_palette("dark")
-C_BG = _DARK["C_BG"]
-C_SURFACE = _DARK["C_SURFACE"]
-C_CARD = _DARK["C_CARD"]
-C_ACCENT = _DARK["C_ACCENT"]
-C_GREEN = _DARK["C_GREEN"]
-C_RED = _DARK["C_RED"]
-C_YELLOW = _DARK["C_YELLOW"]
-C_TEXT = _DARK["C_TEXT"]
-C_SUBTEXT = _DARK["C_SUBTEXT"]
-C_BORDER = _DARK["C_BORDER"]
-
-
-# Dummy values that were in editor_ui
-PAGE_GAP = 12
-REVEAL_COLOR = "#00000000"  # transparent
-
-
-def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    return abs(lx) <= w / 2 and abs(ly) <= h / 2
-
-
-def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    if rx < 1 or ry < 1:
-        return False
-    return (lx / rx) ** 2 + (ly / ry) ** 2 <= 1
+from .colors import (
+    C_BG, C_SURFACE, C_CARD, C_ACCENT, C_GREEN, C_RED, C_YELLOW,
+    C_TEXT, C_SUBTEXT, C_BORDER, PAGE_GAP, REVEAL_COLOR
+)
 
 
 class CanvasStateMixin:
+    def _update_box_page_num(self, box):
+        if not self._page_tops:
+            box["_canvas_page_num"] = 0
+            return
+        r = box["rect"]
+        cy = r.y() + r.height() / 2
+        import bisect
+        idx = bisect.bisect_right(self._page_tops, cy)
+        box["_canvas_page_num"] = max(0, idx - 1)
+
+    def _update_all_box_page_nums(self):
+        for b in self._boxes:
+            self._update_box_page_num(b)
+
     def load_pixmap(self, px: QPixmap):
         """Single-image mode (non-PDF). Clears any page list."""
         self._pages = []
@@ -74,7 +53,6 @@ class CanvasStateMixin:
             self._boxes = []
             self._undo_stack.clear()
             self._redo_stack.clear()
-            self._invalidate_mask_cache()
             self.resize(1, 1)
             self.update()
             return
@@ -83,7 +61,6 @@ class CanvasStateMixin:
         self._scale = 1.0
         self._undo_stack.clear()
         self._redo_stack.clear()
-        self._invalidate_mask_cache()
         self._resize_canvas()
         self.update()
 
@@ -101,6 +78,7 @@ class CanvasStateMixin:
                     top += PAGE_GAP
         self._total_h = top
         self._total_w = max_w
+        self._update_all_box_page_nums()
 
     def load_pages(self, pages: list):
         """File: editor_ui.py -> Class: OcclusionCanvas -> Function: load_pages"""
@@ -123,14 +101,7 @@ class CanvasStateMixin:
             self._spx_cache.clear()
         self._spx_cache_pdf_path = current_pdf
         self._compute_layout()
-        self._invalidate_mask_cache()
         self._resize_canvas()
-
-        # ⚡ NEW: Registry ko inform karo (Requires a path variable)
-        # Agar path available nahi hai toh placeholder use karein
-        if hasattr(self, "_current_pdf_path") and self._current_pdf_path:
-            MASK_REGISTRY.register(self._current_pdf_path, self)
-
         self.update()
 
     def append_pages(self, pages: list):
@@ -140,7 +111,6 @@ class CanvasStateMixin:
             return
         self._pages.extend(new)
         self._compute_layout()
-        self._invalidate_mask_cache()
         self._resize_canvas()
         self.update()
 
@@ -199,6 +169,8 @@ class CanvasStateMixin:
             self._pages[idx] = page_px
 
         cached_scale, cached_spx = self._spx_cache.get(idx, (None, None))
+        if cached_spx is not None:
+            self._spx_cache.move_to_end(idx, last=True)
         if (
             cached_scale == self._scale
             and cached_spx is not None
@@ -210,6 +182,9 @@ class CanvasStateMixin:
         transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
         cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, transform_type)
         self._spx_cache[idx] = (self._scale, cached_spx)
+        self._spx_cache.move_to_end(idx, last=True)
+        while len(self._spx_cache) > self.SPX_CACHE_MAX:
+            self._spx_cache.popitem(last=False)
         self._spx_cache_pdf_path = getattr(self, "_current_pdf_path", "") or ""
         return cached_spx
 
@@ -246,6 +221,8 @@ class CanvasStateMixin:
 
         # Refresh or invalidate scaled cache for this page only.
         cached_scale, _cached_spx = self._spx_cache.get(page_num, (None, None))
+        if _cached_spx is not None:
+            self._spx_cache.move_to_end(page_num, last=True)
         had_scaled_cache = cached_scale is not None
         if had_scaled_cache and dims_match and cached_scale == self._scale:
             sw = max(int(new_w * self._scale), 1)
@@ -255,6 +232,9 @@ class CanvasStateMixin:
                 self._scale,
                 qpx.scaled(sw, sh, Qt.KeepAspectRatio, transform_type),
             )
+            self._spx_cache.move_to_end(page_num, last=True)
+            while len(self._spx_cache) > self.SPX_CACHE_MAX:
+                self._spx_cache.popitem(last=False)
             self._spx_cache_pdf_path = getattr(self, "_current_pdf_path", "") or ""
         else:
             self._spx_cache.pop(page_num, None)
@@ -305,7 +285,6 @@ class CanvasStateMixin:
                 b["rect"] = QRectF(new_x, new_top + new_local_y, new_w_val, new_h_val)
 
             self._resize_canvas()
-            self._invalidate_mask_cache()
 
         else:
             # Fast path — only repaint the dirty page region
@@ -319,68 +298,6 @@ class CanvasStateMixin:
                 self.update(QRect(0, top_scr, self.width(), h_scr))
             else:
                 self.update()
-
-    def _invalidate_mask_cache(self):
-        self._mask_cache_dirty = True
-        if getattr(self, "_mask_cache_rebuild_pending", False):
-            return
-        self._mask_cache_rebuild_pending = True
-        QTimer.singleShot(0, self._rebuild_mask_cache_if_dirty)
-
-    def _rebuild_mask_cache_if_dirty(self):
-        self._mask_cache_rebuild_pending = False
-        if self._mask_cache_dirty:
-            self._rebuild_mask_cache()
-            self.update()
-
-    def _get_viewport_rect(self):
-        """Return the visible viewport rectangle in screen-space coordinates."""
-        sc = self._scroll_area()
-        if sc is not None:
-            vp = sc.viewport()
-            sx = sc.horizontalScrollBar().value()
-            sy = sc.verticalScrollBar().value()
-            from PyQt5.QtCore import QRect
-            return QRect(sx, sy, vp.width(), vp.height())
-        # Fallback: use widget's visible region
-        vr = self.visibleRegion().boundingRect()
-        if vr.isEmpty():
-            w, h = self._canvas_wh()
-            from PyQt5.QtCore import QRect
-            return QRect(0, 0, max(int(w * self._scale), 1), max(int(h * self._scale), 1))
-        return vr
-
-    def _rebuild_mask_cache(self):
-        if not self.has_content():
-            self._mask_cache_layer = None
-            self._mask_cache_dirty = False
-            return
-        # Get viewport rect in screen-space
-        viewport = self._get_viewport_rect()
-        if viewport is None or viewport.width() < 1 or viewport.height() < 1:
-            self._mask_cache_layer = None
-            self._mask_cache_dirty = False
-            return
-        sw, sh = viewport.width(), viewport.height()
-        _QT_MAX_PX = 32767
-        if sh > _QT_MAX_PX or sw > _QT_MAX_PX:
-            self._mask_cache_layer = None
-            self._mask_cache_dirty = False
-            return
-        self._mask_cache_layer = QPixmap(sw, sh)
-        self._mask_cache_layer.fill(Qt.transparent)
-        self._mask_cache_offset = viewport.topLeft()
-        mp = QPainter(self._mask_cache_layer)
-        mp.setRenderHint(QPainter.Antialiasing)
-        mp.translate(-viewport.x(), -viewport.y())
-        for i, b in enumerate(self._boxes):
-            if self._drag_op and i == self._selected_idx:
-                continue
-            box_sr = self._sr(b["rect"])
-            if box_sr.toRect().intersects(viewport):
-                self._draw_box(mp, i, b)
-        mp.end()
-        self._mask_cache_dirty = False
 
     def zoom_in(self):
         self._scale = min(self._scale * 1.10, 8.0)
@@ -406,7 +323,6 @@ class CanvasStateMixin:
 
     def _on_zoom(self):
         # Don't clear _spx_cache here — _get_scaled_page checks scale per entry
-        self._invalidate_mask_cache()
         self._resize_canvas()
         self.update()
         self.zoom_changed.emit(self._scale)
@@ -432,7 +348,6 @@ class CanvasStateMixin:
 
     def set_boxes(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=False) for b in boxes]
-        self._invalidate_mask_cache()
         self.update()
 
     def set_boxes_with_state(self, boxes):
@@ -442,7 +357,6 @@ class CanvasStateMixin:
         if self._mode != "review":
             self._ink_strokes.clear()
             self._ink_current.clear()
-        self._invalidate_mask_cache()
         self.update()
 
     def get_boxes(self):
@@ -476,14 +390,18 @@ class CanvasStateMixin:
             # nikaalte hain. Yeh field lazy loading ke Phase 2 mein use hogi —
             # bina full PDF load kiye pata chalega ki aaj ke due masks kahan hain.
             # Agar _page_tops available nahi (single-image mode) toh page_num = 0.
-            page_num = 0
-            if self._page_tops:
-                cy = r.y() + r.height() / 2  # box ka Y-center (image-space)
-                for pi, top in enumerate(self._page_tops):
-                    if cy >= top:
-                        page_num = pi
-                    else:
-                        break
+            if "_canvas_page_num" in b:
+                page_num = b["_canvas_page_num"]
+            else:
+                page_num = 0
+                if self._page_tops:
+                    cy = r.y() + r.height() / 2  # box ka Y-center (image-space)
+                    for pi, top in enumerate(self._page_tops):
+                        if cy >= top:
+                            page_num = pi
+                        else:
+                            break
+                    b["_canvas_page_num"] = page_num
             d["page_num"] = page_num
 
             result.append(d)
@@ -510,51 +428,42 @@ class CanvasStateMixin:
         else:
             self.setFocusPolicy(Qt.StrongFocus)
             self.setCursor(QCursor(Qt.CrossCursor))
-        self._invalidate_mask_cache()
         self.update()
 
     def set_review_style(self, style: str):
         self._review_mode_style = style
-        self._invalidate_mask_cache()
         self.update()
 
     def reveal_all(self):
         for b in self._boxes:
             b["revealed"] = True
-        self._invalidate_mask_cache()
         self.update()
 
     def set_target_box(self, idx):
         self._target_idx = idx
-        self._invalidate_mask_cache()
         self.update()
 
     def set_target_group(self, gid: str):
         self._target_group_id = gid
-        self._invalidate_mask_cache()
         self.update()
 
     def set_peek_target_box(self, idx):
         self._peek_target_idx = idx
         self._peek_target_group_id = ""
-        self._invalidate_mask_cache()
         self.update()
 
     def set_peek_target_group(self, gid: str):
         self._peek_target_group_id = gid
         self._peek_target_idx = -1
-        self._invalidate_mask_cache()
         self.update()
 
     def clear_peek_target(self):
         self._peek_target_idx = -1
         self._peek_target_group_id = ""
-        self._invalidate_mask_cache()
         self.update()
 
     def set_peek_active(self, active: bool):
         self._peek_active = bool(active)
-        self._invalidate_mask_cache()
         self.update()
 
     def get_target_scaled_rect(self):
@@ -669,7 +578,6 @@ class CanvasStateMixin:
             max(self._selected_indices) if self._selected_indices else -1
         )
         self._selection_scope = "view"
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -689,7 +597,6 @@ class CanvasStateMixin:
             max(self._selected_indices) if self._selected_indices else -1
         )
         self._selection_scope = ""
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -704,7 +611,6 @@ class CanvasStateMixin:
         elif self._selected_idx >= 0:
             self._boxes.pop(self._selected_idx)
             self._selected_idx = -1
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -713,7 +619,6 @@ class CanvasStateMixin:
             self._push_undo()
             self._boxes.pop(idx)
             self._selected_idx = -1
-            self._invalidate_mask_cache()
             self.update()
             self.boxes_changed.emit(self.get_boxes())
 
@@ -724,7 +629,6 @@ class CanvasStateMixin:
         self._push_undo()
         self._boxes = []
         self._selected_idx = -1
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit([])
 
@@ -746,7 +650,6 @@ class CanvasStateMixin:
     def update_label(self, idx, text):
         if 0 <= idx < len(self._boxes):
             self._boxes[idx]["label"] = text
-            self._invalidate_mask_cache()
             self.update()
 
     def group_selected(self):
@@ -765,7 +668,6 @@ class CanvasStateMixin:
         self._push_undo()
         for i in indices:
             self._boxes[i]["group_id"] = gid
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
         self._show_toast(f"⛓ {len(indices)} masks grouped")
@@ -777,7 +679,6 @@ class CanvasStateMixin:
         self._push_undo()
         for i in indices:
             self._boxes[i]["group_id"] = ""
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
         self._show_toast(f"✂ {len(indices)} masks ungrouped")
@@ -807,7 +708,6 @@ class CanvasStateMixin:
         self._selected_idx = -1
         self._selected_indices = set()
         self._selection_scope = ""
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -819,7 +719,6 @@ class CanvasStateMixin:
         self._selected_idx = -1
         self._selected_indices = set()
         self._selection_scope = ""
-        self._invalidate_mask_cache()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 

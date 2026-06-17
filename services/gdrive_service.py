@@ -9,7 +9,7 @@ import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Import storage paths
-sys.path.append(r"C:\Users\Digvijay\Desktop\Anki gs3236208")
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import storage_paths
 
 TOKEN_FILE_NAME = "anki_gdrive_tokens.json"
@@ -97,13 +97,15 @@ class GDriveService:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     self._config = json.load(f)
+                    if not self._config.get("client_secret"):
+                        self._config["client_secret"] = os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
                     return
             except Exception:
                 pass
         # Fall back to default placeholders
         self._config = {
             "client_id": "205261143452-r2tv7nc4ndp2s4ncd4u6n2tfl4a4hjcb.apps.googleusercontent.com",
-            "client_secret": "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"
+            "client_secret": os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
         }
 
     def save_config(self, client_id, client_secret):

@@ -4,6 +4,7 @@ import os
 import tempfile
 import time
 import uuid
+import threading
 from datetime import datetime, timedelta
 
 from storage_paths import (
@@ -16,6 +17,10 @@ from storage_paths import (
 
 RETENTION_DAYS = 30
 SCHEMA_VERSION = 1
+
+_PENDING_EVENTS = []
+_LOCK = threading.Lock()
+_FLUSH_TIMER = None
 
 REVIEW_FIELD_KEYS = (
     "sched_state",
@@ -124,7 +129,9 @@ def _is_old(path, record, days):
     return _record_time(path, record) < datetime.now() - timedelta(days=days)
 
 
-def prune_old_records(days=RETENTION_DAYS):
+def prune_old_records(days=None):
+    if days is None:
+        days = RETENTION_DAYS
     ensure_recovery_dirs()
     deleted = 0
     for folder in (
@@ -474,6 +481,31 @@ def review_event_path(event):
     return os.path.join(current_recovery_pending_events_dir(), f"{stamp}_{event_id}.json")
 
 
+def _write_events(events_list):
+    ensure_recovery_dirs()
+    for ev in events_list:
+        try:
+            _atomic_write_json(review_event_path(ev), ev)
+        except Exception as e:
+            print(f"[recovery_manager] Failed to write recovery event: {e}")
+
+
+def flush_pending_events():
+    global _FLUSH_TIMER
+    with _LOCK:
+        if _FLUSH_TIMER is not None:
+            _FLUSH_TIMER.cancel()
+            _FLUSH_TIMER = None
+        to_write = list(_PENDING_EVENTS)
+        _PENDING_EVENTS.clear()
+    if to_write:
+        _write_events(to_write)
+
+
+def flush():
+    flush_pending_events()
+
+
 def record_review_event(event):
     ensure_recovery_dirs()
     payload = copy.deepcopy(event or {})
@@ -481,7 +513,24 @@ def record_review_event(event):
     payload.setdefault("record_type", "review_event")
     payload.setdefault("event_id", new_event_id())
     payload.setdefault("timestamp", _now_iso())
-    _atomic_write_json(review_event_path(payload), payload)
+    
+    global _FLUSH_TIMER
+    with _LOCK:
+        _PENDING_EVENTS.append(payload)
+        if _FLUSH_TIMER is not None:
+            _FLUSH_TIMER.cancel()
+            _FLUSH_TIMER = None
+        if len(_PENDING_EVENTS) >= 25:
+            to_write = list(_PENDING_EVENTS)
+            _PENDING_EVENTS.clear()
+        else:
+            to_write = []
+            _FLUSH_TIMER = threading.Timer(1.5, flush_pending_events)
+            _FLUSH_TIMER.start()
+
+    if to_write:
+        _write_events(to_write)
+        
     return payload
 
 
@@ -491,6 +540,15 @@ def discard_review_event(event):
         return False
     ensure_recovery_dirs()
     event_id = (event or {}).get("event_id")
+    
+    deleted_from_mem = False
+    with _LOCK:
+        if event_id:
+            initial_len = len(_PENDING_EVENTS)
+            _PENDING_EVENTS[:] = [e for e in _PENDING_EVENTS if e.get("event_id") != event_id]
+            if len(_PENDING_EVENTS) < initial_len:
+                deleted_from_mem = True
+                
     candidates = []
     if event.get("_path"):
         candidates.append(event.get("_path"))
@@ -499,7 +557,7 @@ def discard_review_event(event):
     except Exception:
         pass
 
-    deleted = False
+    deleted = deleted_from_mem
     seen = set()
     for path in candidates:
         if not path or path in seen:
@@ -521,6 +579,7 @@ def discard_review_event(event):
 
 
 def load_pending_review_events():
+    flush()
     ensure_recovery_dirs()
     events = []
     for path in _json_files(current_recovery_pending_events_dir()):

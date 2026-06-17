@@ -90,6 +90,45 @@ class PageSchedulerWorkerTests(unittest.TestCase):
         self.assertEqual(scheduler.pages[1].status, "loaded")
         self.assertEqual(list(scheduler.inject_queue), [1])
 
+    def test_not_done_count_and_completion_tracking(self):
+        scheduler = PageScheduler(MagicMock())
+        scheduler._path = "deck.pdf"
+        scheduler.pages = {
+            0: PageState(status="not_loaded"),
+            1: PageState(status="not_loaded"),
+            2: PageState(status="not_loaded"),
+        }
+        # Initially, self._not_done_count is None.
+        # Check completion triggers initialization
+        scheduler._check_completion()
+        self.assertEqual(scheduler._not_done_count, 3)
+
+        # Transition 0 to loading (still not done)
+        scheduler._update_page_status(0, "loading")
+        self.assertEqual(scheduler._not_done_count, 3)
+
+        # Transition 0 to loaded (done!)
+        scheduler._update_page_status(0, "loaded")
+        self.assertEqual(scheduler._not_done_count, 2)
+
+        # Transition 1 to injected (done!)
+        scheduler._update_page_status(1, "injected")
+        self.assertEqual(scheduler._not_done_count, 1)
+
+        # Transition 1 back to not_loaded (oops, not done again!)
+        scheduler._update_page_status(1, "not_loaded")
+        self.assertEqual(scheduler._not_done_count, 2)
+
+        # Complete the rest
+        scheduler._update_page_status(1, "loaded")
+        scheduler._update_page_status(2, "loaded")
+        self.assertEqual(scheduler._not_done_count, 0)
+        
+        # Verify signal emission on completion
+        scheduler.all_done = MagicMock()
+        scheduler._check_completion()
+        scheduler.all_done.emit.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

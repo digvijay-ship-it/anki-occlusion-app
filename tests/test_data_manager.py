@@ -601,6 +601,67 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertEqual(loaded["decks"][0]["cards"][0]["pdf_path"], "a.pdf")
         self.assertIsNotNone(loaded["decks"][0]["cards"][0].get("_id"))
 
+    def test_card_index_creation_and_lookup(self):
+        store = data_manager.DirtyStore()
+        payload = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Decks Alpha",
+                    "cards": [
+                        {
+                            "_id": 101,
+                            "pdf_path": "a.pdf",
+                            "boxes": []
+                        },
+                        {
+                            "_id": 102,
+                            "pdf_path": "b.pdf",
+                            "boxes": []
+                        }
+                    ],
+                    "children": [
+                        {
+                            "_id": 2,
+                            "name": "Sub Deck",
+                            "cards": [
+                                {
+                                    "_id": 201,
+                                    "pdf_path": "c.pdf",
+                                    "boxes": []
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        # Rebuilding index on set
+        store.set(payload)
+        self.assertEqual(len(store._card_index), 3)
+        
+        # Test lookup by ID
+        card, deck = store.get_card_by_id(101)
+        self.assertIsNotNone(card)
+        self.assertEqual(card["_id"], 101)
+        self.assertEqual(deck["name"], "Decks Alpha")
+
+        card2, deck2 = store.get_card_by_id(201)
+        self.assertIsNotNone(card2)
+        self.assertEqual(card2["_id"], 201)
+        self.assertEqual(deck2["name"], "Sub Deck")
+
+        # Test global find functions use index
+        card3, deck3 = data_manager.find_card_and_deck_by_id(store.get(), 102)
+        self.assertIsNotNone(card3)
+        self.assertEqual(card3["_id"], 102)
+
+        # Test invalid lookup
+        card_none, deck_none = store.get_card_by_id(999)
+        self.assertIsNone(card_none)
+        self.assertIsNone(deck_none)
+
 
 if __name__ == "__main__":
     unittest.main()

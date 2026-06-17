@@ -45,6 +45,7 @@ class RecoveryManagerTests(unittest.TestCase):
                 lambda: str(self.applied),
             ),
             patch.object(recovery_manager, "ensure_recovery_dirs", ensure_dirs),
+            patch.object(recovery_manager, "RETENTION_DAYS", 99999),
         ]
         for patcher in patches:
             patcher.start()
@@ -167,9 +168,7 @@ class RecoveryManagerTests(unittest.TestCase):
             "updates": [{"target": "card_meta", "fields": {"last_reviewed_at": "x"}}],
         }
         recovery_manager.record_review_event(event)
-
         result = recovery_manager.apply_pending_review_events(data)
-
         self.assertEqual(result["applied"], 0)
         self.assertEqual(result["blocked"][0]["status"], "ambiguous")
         self.assertNotIn("last_reviewed_at", data["decks"][0]["cards"][0])
@@ -540,6 +539,82 @@ class RecoveryManagerTests(unittest.TestCase):
         self.assertEqual(startup_summary["skipped_stale_drafts"], 1)
         self.assertEqual(len(manual_summary["drafts"]), 1)
         self.assertTrue(Path(recovery_manager.draft_path("old-add")).exists())
+
+    def test_record_review_event_batched(self):
+        # Clear any existing pending events or timers
+        recovery_manager.flush()
+        
+        event = {
+            "record_type": "review_event",
+            "event_id": "batched-1",
+            "timestamp": "2026-05-20T10:00:00",
+            "quality": 4,
+            "card_locator": {"title": "Test"},
+            "updates": []
+        }
+        
+        # Record event. It should go to memory, not disk.
+        payload = recovery_manager.record_review_event(event)
+        
+        # Verify it's in memory
+        with recovery_manager._LOCK:
+            self.assertEqual(len(recovery_manager._PENDING_EVENTS), 1)
+            self.assertEqual(recovery_manager._PENDING_EVENTS[0]["event_id"], "batched-1")
+            
+        # Verify no file on disk yet
+        self.assertEqual(len(list(self.pending.glob("*.json"))), 0)
+        
+        # Force flush and verify it's written to disk
+        recovery_manager.flush()
+        with recovery_manager._LOCK:
+            self.assertEqual(len(recovery_manager._PENDING_EVENTS), 0)
+        self.assertEqual(len(list(self.pending.glob("*.json"))), 1)
+        
+    def test_record_review_event_force_flush(self):
+        # Clear any existing pending events or timers
+        recovery_manager.flush()
+        
+        # Record 25 events, which should force immediate write to disk
+        for i in range(25):
+            event = {
+                "record_type": "review_event",
+                "event_id": f"event-{i}",
+                "timestamp": "2026-05-20T10:00:00",
+                "quality": 4,
+                "card_locator": {"title": "Test"},
+                "updates": []
+            }
+            recovery_manager.record_review_event(event)
+            
+        # Verify memory is empty and disk has 25 files
+        with recovery_manager._LOCK:
+            self.assertEqual(len(recovery_manager._PENDING_EVENTS), 0)
+        self.assertEqual(len(list(self.pending.glob("*.json"))), 25)
+        
+    def test_discard_review_event_removes_from_memory(self):
+        # Clear any existing pending events or timers
+        recovery_manager.flush()
+        
+        event = {
+            "record_type": "review_event",
+            "event_id": "discard-mem",
+            "timestamp": "2026-05-20T10:00:00",
+            "quality": 4,
+            "card_locator": {"title": "Test"},
+            "updates": []
+        }
+        recovery_manager.record_review_event(event)
+        
+        # Discard it
+        deleted = recovery_manager.discard_review_event(event)
+        self.assertTrue(deleted)
+        
+        # Verify it's no longer in memory
+        with recovery_manager._LOCK:
+            self.assertEqual(len(recovery_manager._PENDING_EVENTS), 0)
+            
+        # Verify not on disk
+        self.assertEqual(len(list(self.pending.glob("*.json"))), 0)
 
 
 if __name__ == "__main__":

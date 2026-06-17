@@ -12,7 +12,7 @@ from PyQt5.QtCore import QEvent, QPointF, QRect, QRectF, Qt
 from PyQt5.QtGui import QColor, QKeyEvent, QMouseEvent, QPixmap
 from PyQt5.QtWidgets import QApplication
 
-from cache_manager import MASK_REGISTRY
+
 from editor_ui import (
     PAGE_GAP,
     OcclusionCanvas,
@@ -43,7 +43,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.addCleanup(self.print_patch.stop)
         self.canvas = OcclusionCanvas()
         self.canvas._show_toast = lambda _msg: None
-        self.addCleanup(MASK_REGISTRY.unregister, self.canvas)
+
 
     def _pixmap(self, w, h):
         px = QPixmap(w, h)
@@ -68,8 +68,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertEqual(self.canvas._page_tops, [0, 100 + PAGE_GAP])
         self.assertEqual(self.canvas._total_h, 100 + PAGE_GAP + 50)
         self.assertEqual(self.canvas._total_w, 100)
-        registered = {str(path).lower() for path in MASK_REGISTRY.all_registered_pdfs()}
-        self.assertTrue(any(path.endswith("deck.pdf") for path in registered))
+
 
     def test_inject_page_replaces_page_and_refreshes_same_size_scaled_cache(self):
         self.canvas.load_pages([self._pixmap(50, 40)])
@@ -129,33 +128,30 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertFalse(scaled.isNull())
         self.assertIn(0, self.canvas._spx_cache)
 
-    def test_mask_cache_source_rect_clips_to_dirty_region(self):
-        pixmap = self._pixmap(100, 80)
-        clipped = self.canvas._mask_cache_source_rect(QRect(90, 70, 50, 50), pixmap)
+    def test_spx_cache_lru_eviction(self):
+        self.canvas.set_mode("review")
+        self.canvas.load_pages([self._pixmap(50, 40)] * 30)
+        
+        # Populate cache up to the limit (24 entries)
+        for i in range(24):
+            self.canvas._get_scaled_page(i)
+        
+        self.assertEqual(len(self.canvas._spx_cache), 24)
+        
+        # Access page 0 to make it most recently used
+        self.canvas._get_scaled_page(0)
+        
+        # Access page 24, which will cause eviction of page 1 (since 0 was moved to end)
+        self.canvas._get_scaled_page(24)
+        
+        self.assertEqual(len(self.canvas._spx_cache), 24)
+        self.assertIn(0, self.canvas._spx_cache)
+        self.assertIn(24, self.canvas._spx_cache)
+        self.assertNotIn(1, self.canvas._spx_cache)
 
-        self.assertEqual(
-            (clipped.x(), clipped.y(), clipped.width(), clipped.height()),
-            (90, 70, 10, 10),
-        )
 
-    def test_mask_cache_invalidation_coalesces_pending_rebuilds(self):
-        with patch("ui.canvas.state.QTimer.singleShot") as single_shot:
-            self.canvas._invalidate_mask_cache()
-            self.canvas._invalidate_mask_cache()
-            self.canvas._invalidate_mask_cache()
 
-        single_shot.assert_called_once()
-        self.assertTrue(self.canvas._mask_cache_rebuild_pending)
 
-        self.canvas._rebuild_mask_cache_if_dirty()
-
-        self.assertFalse(self.canvas._mask_cache_rebuild_pending)
-        self.assertFalse(self.canvas._mask_cache_dirty)
-
-        with patch("ui.canvas.state.QTimer.singleShot") as single_shot:
-            self.canvas._invalidate_mask_cache()
-
-        single_shot.assert_called_once()
 
     def test_canvas_paint_profile_includes_phase_timings(self):
         self.canvas.set_mode("review")

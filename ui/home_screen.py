@@ -1336,11 +1336,10 @@ class HomeScreen(QWidget):
             return
 
         t0 = time.perf_counter()
-        from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+        from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
         import gc
 
         before = len(getattr(PAGE_CACHE, "_cache", {}) or {})
-        mask_pdfs = list(MASK_REGISTRY.all_registered_pdfs())
         pixmap_entries = list(getattr(PIXMAP_REGISTRY, "_entries", {}).items())
         hidden_count = len(pixmap_entries)
         thumb_count = 0
@@ -1360,25 +1359,6 @@ class HomeScreen(QWidget):
             pass
 
         PAGE_CACHE.clear_ram_only()
-
-        for pdf_path in mask_pdfs:
-            canvases = list(getattr(MASK_REGISTRY, "_map", {}).get(pdf_path, []) or [])
-            for canvas in canvases:
-                try:
-                    canvas_count += 1
-                    canvas._mask_cache_layer = None
-                    canvas._mask_cache_dirty = True
-                    if hasattr(canvas, "_spx_cache"):
-                        canvas._spx_cache.clear()
-                    if not canvas.isVisible():
-                        canvas._pages = []
-                        canvas._px = None
-                        canvas._page_tops = []
-                        canvas._total_w = 0
-                        canvas._total_h = 0
-                except RuntimeError:
-                    pass
-            MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
 
         for label, (wref, attr, _path) in pixmap_entries:
             obj = wref()
@@ -1508,10 +1488,9 @@ class HomeScreen(QWidget):
         self._sequential_data = data
 
         def _clear_ram():
-            from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+            from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
 
             PAGE_CACHE.clear_ram_only()
-            MASK_REGISTRY._map.clear()
             for label in list(PIXMAP_REGISTRY._entries.keys()):
                 PIXMAP_REGISTRY.unregister(label)
 
@@ -1586,14 +1565,8 @@ class HomeScreen(QWidget):
             # 3. Explicitly clear high-memory attributes on the canvas and review screen
             if hasattr(rev, "canvas") and rev.canvas is not None:
                 try:
-                    from cache_manager import MASK_REGISTRY
-                    MASK_REGISTRY.unregister(rev.canvas)
-                except Exception:
-                    pass
-                try:
                     rev.canvas._pages = []
                     rev.canvas._px = None
-                    rev.canvas._mask_cache_layer = None
                     if hasattr(rev.canvas, "_spx_cache"):
                         rev.canvas._spx_cache.clear()
                 except Exception:

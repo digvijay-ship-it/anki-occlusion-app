@@ -181,6 +181,81 @@ class JournalDialogFocusTimeTests(unittest.TestCase):
             self.assertEqual(len(saved_texts), 2)
             self.assertTrue(any(t["text"].startswith("User note") for t in saved_texts))
             self.assertTrue(any(t["text"].startswith("\u23f1 Focus today:") for t in saved_texts))
+
+class JournalManagerBackupTests(unittest.TestCase):
+    def setUp(self):
+        import services.journal_manager as jm
+        import tempfile
+        import json
+        from pathlib import Path
+        
+        tmp_root = Path(__file__).resolve().parent / "_tmp"
+        tmp_root.mkdir(exist_ok=True)
+        self.tmpdir = tempfile.TemporaryDirectory(dir=tmp_root)
+        self.addCleanup(self.tmpdir.cleanup)
+        
+        self.test_journal_file = str(Path(self.tmpdir.name) / "test_journal.json")
+        self.backup_dir = str(Path(self.tmpdir.name) / "backups")
+        
+        self.old_jm_file = jm.JOURNAL_FILE
+        jm.JOURNAL_FILE = self.test_journal_file
+        self.addCleanup(setattr, jm, "JOURNAL_FILE", self.old_jm_file)
+
+    def test_save_journal_creates_backup_once_per_day(self):
+        import services.journal_manager as jm
+        import json
+        
+        # Write initial journal file content to allow backing up (size > 4)
+        with open(self.test_journal_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"old_data": True}))
             
+        # Call _save_journal to trigger first backup
+        jm._save_journal({"new_data": 1})
+        
+        # Verify backup was created
+        backups = [f for f in os.listdir(self.backup_dir) if f.startswith("anki_journal.") and f.endswith(".json")]
+        self.assertEqual(len(backups), 1)
+        first_backup = backups[0]
+        
+        # Write another update to trigger backup again (mock size > 4 check)
+        with open(self.test_journal_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"new_data": 1}))
+            
+        # Call _save_journal again
+        jm._save_journal({"new_data": 2})
+        
+        # Verify no new backup was created (still 1 backup)
+        backups_after = [f for f in os.listdir(self.backup_dir) if f.startswith("anki_journal.") and f.endswith(".json")]
+        self.assertEqual(len(backups_after), 1)
+        self.assertEqual(backups_after[0], first_backup)
+
+    def test_save_journal_rotation_limit(self):
+        import services.journal_manager as jm
+        import json
+        
+        # Create backups directory
+        os.makedirs(self.backup_dir, exist_ok=True)
+        
+        # Pre-populate backup directory with 35 dummy backups from different days/times
+        # to test rotation logic (last 30 backups kept)
+        for i in range(35):
+            ts = f"202605{i:02d}_120000"
+            with open(os.path.join(self.backup_dir, f"anki_journal.{ts}.json"), "w") as f:
+                f.write("{}")
+                
+        # Write initial journal file content (size > 4)
+        with open(self.test_journal_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"some_data": True}))
+            
+        # Call _save_journal to trigger backup of today's file and rotation
+        jm._save_journal({"new_data": 1})
+        
+        # Verify backups list rotated to 30 files
+        backups = sorted([
+            f for f in os.listdir(self.backup_dir) 
+            if f.startswith("anki_journal.") and f.endswith(".json")
+        ])
+        self.assertEqual(len(backups), 30)
+
 if __name__ == '__main__':
     unittest.main()

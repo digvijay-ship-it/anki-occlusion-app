@@ -52,10 +52,12 @@ class PageScheduler(QObject):
         self._worker: Optional[PdfOnDemandThread] = None
         self._worker_kind = ""
         self._worker_generation = 0
+        self._pending_workers = []
         self._injected_count = 0
         self._last_visible: tuple[int, int] = (0, 0)
         # ── inject queue as set for O(1) membership + deque for order ─────────
         self._inject_set: set[int] = set()  # mirrors inject_queue for O(1) lookup
+        self._not_done_count: Optional[int] = None
 
         self._inject_timer = QTimer(self)
         self._inject_timer.setInterval(self.INJECT_INTERVAL_MS)
@@ -101,6 +103,9 @@ class PageScheduler(QObject):
                 self.pages[pn] = PageState(
                     status="not_loaded", priority=(0 if pn in due_set else 2)
                 )
+        self._not_done_count = sum(
+            1 for ps in self.pages.values() if ps.status in ("not_loaded", "loading")
+        )
         priority_pages = sorted(
             (pn for pn, ps in self.pages.items() if ps.priority == 0),
             key=lambda p: self.pages[p].priority,
@@ -199,12 +204,21 @@ class PageScheduler(QObject):
             if self._worker.isRunning():
                 self._worker.stop()
                 self._worker.quit()
-                self._worker.wait(800)
+                t = self._worker
+                if hasattr(t, "finished"):
+                    self._pending_workers.append(t)
+                    def cleanup(thread_obj=t):
+                        try:
+                            if thread_obj in self._pending_workers:
+                                self._pending_workers.remove(thread_obj)
+                        except Exception:
+                            pass
+                    t.finished.connect(cleanup)
             self._worker = None
             self._worker_kind = ""
         for ps in self.pages.values():
             if ps.status == "loading":
-                ps.status = "not_loaded"
+                self._update_page_status(ps, "not_loaded")
 
     def _start_worker(self, page_nums: list[int], kind: str) -> None:
         if not page_nums or not self._path:
@@ -214,7 +228,7 @@ class PageScheduler(QObject):
         generation = self._worker_generation
         for pn in page_nums:
             if pn in self.pages:
-                self.pages[pn].status = "loading"
+                self._update_page_status(pn, "loading")
         self._worker = PdfOnDemandThread(self._path, page_nums, zoom=1.5, parent=self)
         self._worker_kind = kind
         self._worker.page_ready.connect(
@@ -236,12 +250,12 @@ class PageScheduler(QObject):
         if isinstance(qpx, QImage):
             qpx = QPixmap.fromImage(qpx)
         if qpx is None or qpx.isNull():
-            self.pages[page_num].status = "not_loaded"
+            self._update_page_status(page_num, "not_loaded")
             self.pages[page_num].pixmap = None
             return
         ps = self.pages[page_num]
         ps.pixmap = qpx
-        ps.status = "loaded"
+        self._update_page_status(ps, "loaded")
         first, last = self._last_visible
         if first <= page_num <= last:
             self._enqueue_if_not_present(page_num)
@@ -256,7 +270,7 @@ class PageScheduler(QObject):
         rendered_set = set(rendered)
         for pn, ps in self.pages.items():
             if ps.status == "loading" and pn not in rendered_set:
-                ps.status = "not_loaded"
+                self._update_page_status(ps, "not_loaded")
         if kind in ("priority", "visible"):
             self._bg_timer.start(300)
         self._check_completion()
@@ -289,12 +303,12 @@ class PageScheduler(QObject):
         ps = self.pages.get(best_pn)
         if ps is None or ps.pixmap is None or ps.pixmap.isNull():
             if ps:
-                ps.status = "not_loaded"
+                self._update_page_status(ps, "not_loaded")
                 ps.pixmap = None
             return
 
         self._canvas.inject_page(best_pn, ps.pixmap)
-        ps.status = "injected"
+        self._update_page_status(ps, "injected")
         self._injected_count += 1
         self.page_injected.emit(best_pn, self._injected_count)
         self._check_completion()
@@ -322,10 +336,29 @@ class PageScheduler(QObject):
     #  INTERNAL — completion detection
     # =========================================================================
 
+    def _update_page_status(self, pn_or_ps: int | PageState, new_status: str) -> None:
+        ps = pn_or_ps if isinstance(pn_or_ps, PageState) else self.pages[pn_or_ps]
+        if self._not_done_count is None:
+            self._not_done_count = sum(
+                1 for p in self.pages.values() if p.status in ("not_loaded", "loading")
+            )
+        old_not_done = ps.status in ("not_loaded", "loading")
+        new_not_done = new_status in ("not_loaded", "loading")
+        if old_not_done != new_not_done:
+            if new_not_done:
+                self._not_done_count += 1
+            else:
+                self._not_done_count -= 1
+        ps.status = new_status
+
     def _check_completion(self) -> None:
         if not self.pages:
             return
-        if any(ps.status in ("not_loaded", "loading") for ps in self.pages.values()):
+        if self._not_done_count is None:
+            self._not_done_count = sum(
+                1 for ps in self.pages.values() if ps.status in ("not_loaded", "loading")
+            )
+        if self._not_done_count > 0:
             return
         self.all_done.emit()
 

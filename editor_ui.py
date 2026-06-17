@@ -121,7 +121,7 @@ from pdf_engine import (
     PdfLoaderThread,
     pdf_page_to_pixmap,
 )
-from cache_manager import PAGE_CACHE, MASK_REGISTRY, PIXMAP_REGISTRY
+from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
 from data_manager import new_box_id
 
 C_GREEN = "#50FA7B"

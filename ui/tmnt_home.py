@@ -1026,17 +1026,15 @@ class TMNTBangaLab(QFrame):
 
     def refresh(self):
         try:
-            from cache_manager import PAGE_CACHE, COMBINED_CACHE, MASK_REGISTRY
+            from cache_manager import PAGE_CACHE, COMBINED_CACHE
 
             known = set()
             known.update(COMBINED_CACHE.all_cached_pdfs())
             known.update(PAGE_CACHE.all_cached_pdfs())
-            known.update(MASK_REGISTRY.all_registered_pdfs())
             ram_b = disk_b = mask_b = 0
             for p in known:
                 disk_b += COMBINED_CACHE.disk_bytes_for_pdf(p)
                 ram_b += PAGE_CACHE.ram_bytes_for_pdf(p)
-                mask_b += MASK_REGISTRY.mask_bytes_for_pdf(p)
         except Exception:
             ram_b = disk_b = mask_b = 0
 
@@ -1063,13 +1061,11 @@ class TMNTBangaLab(QFrame):
             from cache_manager import (
                 PAGE_CACHE,
                 COMBINED_CACHE,
-                MASK_REGISTRY,
                 PIXMAP_REGISTRY,
             )
 
             COMBINED_CACHE.clear()
             PAGE_CACHE.clear_ram_only()
-            MASK_REGISTRY._map.clear()
             for label in list(PIXMAP_REGISTRY._entries.keys()):
                 PIXMAP_REGISTRY.unregister(label)
             self.refresh()

@@ -17,47 +17,13 @@ import math
 import copy
 import os
 
-from cache_manager import MASK_REGISTRY, PIXMAP_REGISTRY
+from collections import OrderedDict
+from cache_manager import PIXMAP_REGISTRY
 
-# ── Theme constants — single source of truth is theme_manager.PALETTES["dark"] ──
-from theme_manager import get_palette as _get_palette
-
-_DARK = _get_palette("dark")
-C_BG = _DARK["C_BG"]
-C_SURFACE = _DARK["C_SURFACE"]
-C_CARD = _DARK["C_CARD"]
-C_ACCENT = _DARK["C_ACCENT"]
-C_GREEN = _DARK["C_GREEN"]
-C_RED = _DARK["C_RED"]
-C_YELLOW = _DARK["C_YELLOW"]
-C_TEXT = _DARK["C_TEXT"]
-C_SUBTEXT = _DARK["C_SUBTEXT"]
-C_BORDER = _DARK["C_BORDER"]
-
-
-# Dummy values that were in editor_ui
-PAGE_GAP = 12
-REVEAL_COLOR = "#00000000"  # transparent
-
-
-def _point_in_rotated_box(px, py, cx, cy, w, h, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    return abs(lx) <= w / 2 and abs(ly) <= h / 2
-
-
-def _point_in_rotated_ellipse(px, py, cx, cy, rx, ry, angle_deg):
-    rad = math.radians(-angle_deg)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    dx, dy = px - cx, py - cy
-    lx = dx * cos_a - dy * sin_a
-    ly = dx * sin_a + dy * cos_a
-    if rx < 1 or ry < 1:
-        return False
-    return (lx / rx) ** 2 + (ly / ry) ** 2 <= 1
+from .colors import (
+    C_BG, C_SURFACE, C_CARD, C_ACCENT, C_GREEN, C_RED, C_YELLOW,
+    C_TEXT, C_SUBTEXT, C_BORDER, PAGE_GAP, REVEAL_COLOR
+)
 
 
 from .state import CanvasStateMixin
@@ -121,11 +87,6 @@ class OcclusionCanvas(
         self._undo_stack = _deque(maxlen=100)
         self._redo_stack = _deque(maxlen=100)
 
-        # ── mask GPU cache ────────────────────────────────────────────────────
-        self._mask_cache_layer = None  # QPixmap
-        self._mask_cache_dirty = True
-        self._mask_cache_rebuild_pending = False
-        self._mask_cache_offset = QPointF(0, 0)
 
         # ── ink layer ─────────────────────────────────────────────────────────
         self._ink_active = False
@@ -153,7 +114,8 @@ class OcclusionCanvas(
 
         # ── per-page scaled pixmap cache ──────────────────────────────────────
         # dict: page_idx → (scale_at_cache_time, QPixmap)
-        self._spx_cache = {}
+        self._spx_cache = OrderedDict()
+        self.SPX_CACHE_MAX = 24
 
         # Cache paint profile environment variable to avoid os.environ lookups during hot paintEvent calls
         self._paint_profile_enabled = (

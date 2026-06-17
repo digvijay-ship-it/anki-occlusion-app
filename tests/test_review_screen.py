@@ -1113,6 +1113,64 @@ class ReviewScreenSummaryToggleTests(unittest.TestCase):
             self.assertTrue(screen._show_summary_popup)
             settings_instance.setValue.assert_called_with("review/show_summary_popup", True)
 
+    def test_text_card_rendering_pixmap_cache(self):
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"):
+            
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            screen.__init__([])
+            self.assertEqual(len(screen._text_card_cache), 0)
+            
+            card = {
+                "_id": 12345,
+                "card_type": "text",
+                "question": "What is 2+2?",
+                "answer": "4",
+                "notes": ""
+            }
+            
+            # First render - miss
+            px1 = screen._render_text_card_to_pixmap(card, False)
+            self.assertIsNotNone(px1)
+            self.assertEqual(len(screen._text_card_cache), 1)
+            self.assertIn((12345, False), screen._text_card_cache)
+            
+            # Second render - hit
+            px2 = screen._render_text_card_to_pixmap(card, False)
+            self.assertIs(px1, px2)
+            
+            # Render revealed - miss
+            px3 = screen._render_text_card_to_pixmap(card, True)
+            self.assertIsNotNone(px3)
+            self.assertEqual(len(screen._text_card_cache), 2)
+            
+            # Simulate edit card
+            from PyQt5.QtWidgets import QDialog
+            dlg = MagicMock()
+            dlg.get_card.return_value = {
+                "_id": 12345,
+                "card_type": "text",
+                "question": "What is 3+3?",
+                "answer": "6",
+                "notes": ""
+            }
+            screen._rebuild_queue = MagicMock()
+            screen._load_item = MagicMock()
+            screen._finish_edit_current_text_card(dlg, card, QDialog.Accepted)
+            
+            # Cache should be cleared
+            self.assertNotIn((12345, False), screen._text_card_cache)
+            self.assertNotIn((12345, True), screen._text_card_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

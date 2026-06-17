@@ -241,28 +241,6 @@ class DiskCombinedCacheTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_mask_registry_tracks_and_invalidates_canvas_layers(self):
-        registry = cache_manager._MaskRegistry()
-
-        class FakeCanvas:
-            def __init__(self):
-                self._mask_cache_layer = QPixmap(5, 6)
-                self._mask_cache_layer.fill()
-                self._mask_cache_dirty = False
-                self.updated = False
-
-            def update(self):
-                self.updated = True
-
-        canvas = FakeCanvas()
-        registry.register("doc.pdf", canvas)
-
-        self.assertEqual(registry.mask_bytes_for_pdf("doc.pdf"), 5 * 6 * 4)
-        registry.invalidate_masks_for_pdf("doc.pdf")
-        self.assertIsNone(canvas._mask_cache_layer)
-        self.assertTrue(canvas._mask_cache_dirty)
-        self.assertTrue(canvas.updated)
-
     def test_pixmap_registry_reports_bytes_and_cleans_dead_entries(self):
         registry = cache_manager._PixmapRegistry()
 

@@ -20,28 +20,7 @@ SIGNALS = OcrSignals()
 _net = None
 _net_lock = threading.Lock()
 
-# Subprocess variables kept for test compatibility
-_worker_process = None
-_worker_ready = False
-_worker_started = False
-
-def _reset_worker_state(proc=None):
-    global _worker_process, _worker_ready, _worker_started
-    p = proc if proc is not None else _worker_process
-    if proc is None or _worker_process is proc:
-        _worker_process = None
-    _worker_ready = False
-    _worker_started = False
-    if p is not None:
-        try:
-            p.terminate()
-        except Exception:
-            pass
-
-def _ensure_worker_started():
-    global _worker_started
-    _worker_started = True
-    warm_up()
+_warmup_done = False
 
 def warm_up():
     """Eager-loads the ONNX model using OpenCV DNN."""
@@ -75,22 +54,40 @@ def is_ready() -> bool:
     with _net_lock:
         return _net is not None
 
-def ocr_number(pil_img, _retried=False) -> str:
-    global _net
-    
-    # ── Test compatibility hook ──
-    # If a test mock process is injected, simulate the old subprocess mock
-    global _worker_process, _worker_ready, _worker_started
-    if _worker_process is not None:
-        try:
-            # Trigger broken pipe / exception to satisfy dead worker test
-            _worker_process.stdin.write.side_effect
-            raise BrokenPipeError("closed")
-        except Exception:
-            _reset_worker_state()
-            return ""
+def preprocess_digit_image(pil_img) -> np.ndarray | None:
+    """
+    Extracts, pads, and resizes individual digit contours from a PIL image
+    into a batch of normalized 28x28x1 float32 numpy arrays.
+    """
+    img_gray = np.array(ImageOps.invert(pil_img.convert("L")))
+    _, thresh = cv2.threshold(img_gray, 50, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[0])
 
-    warm_up()
+    batch = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        if w * h < 25:
+            continue
+        digit = thresh[y : y + h, x : x + w]
+        side = max(w, h)
+        pad_x, pad_y = (side - w) // 2, (side - h) // 2
+        square = np.pad(
+            digit, ((pad_y, side - h - pad_y), (pad_x, side - w - pad_x)), "constant"
+        )
+        resized = cv2.resize(square, (20, 20), interpolation=cv2.INTER_AREA)
+        final = np.pad(resized, ((4, 4), (4, 4)), "constant").astype("float32") / 255.0
+        batch.append(final.reshape(28, 28, 1))
+
+    if not batch:
+        return None
+    return np.array(batch, dtype=np.float32)
+
+def ocr_number(pil_img, _retried=False) -> str:
+    global _net, _warmup_done
+    if not _warmup_done:
+        warm_up()
+        _warmup_done = True
     
     with _net_lock:
         if _net is None:
@@ -98,30 +95,9 @@ def ocr_number(pil_img, _retried=False) -> str:
             return ""
 
     try:
-        img_gray = np.array(ImageOps.invert(pil_img.convert("L")))
-        _, thresh = cv2.threshold(img_gray, 50, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[0])
-
-        batch = []
-        for c in contours:
-            x, y, w, h = cv2.boundingRect(c)
-            if w * h < 25:
-                continue
-            digit = thresh[y : y + h, x : x + w]
-            side = max(w, h)
-            pad_x, pad_y = (side - w) // 2, (side - h) // 2
-            square = np.pad(
-                digit, ((pad_y, side - h - pad_y), (pad_x, side - w - pad_x)), "constant"
-            )
-            resized = cv2.resize(square, (20, 20), interpolation=cv2.INTER_AREA)
-            final = np.pad(resized, ((4, 4), (4, 4)), "constant").astype("float32") / 255.0
-            batch.append(final.reshape(28, 28, 1))
-
-        if not batch:
+        batch_arr = preprocess_digit_image(pil_img)
+        if batch_arr is None:
             return ""
-
-        batch_arr = np.array(batch, dtype=np.float32)
         
         with _net_lock:
             _net.setInput(batch_arr)

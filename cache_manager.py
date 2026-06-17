@@ -932,90 +932,6 @@ def _canonical_pdf_path(path: str) -> str:
         return str(path)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MASK CACHE REGISTRY
-#  OcclusionCanvas instances register themselves here so we can query and
-#  clear their _mask_cache_layer from outside.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class _MaskRegistry:
-    """
-    Global registry of live OcclusionCanvas instances, keyed by pdf_path.
-    Canvas calls register(pdf_path, self) on load_pixmap / set_boxes.
-    """
-
-    def __init__(self):
-        import weakref
-
-        self._weakref = weakref
-        self._map = {}  # pdf_path -> WeakSet[OcclusionCanvas]
-
-    def _prune_empty(self):
-        for path, canvases in list(self._map.items()):
-            if not canvases:
-                del self._map[path]
-
-    def register(self, pdf_path: str, canvas):
-        if not pdf_path or canvas is None:
-            return
-        pdf_path = _canonical_pdf_path(pdf_path)
-        # A canvas can switch PDFs across editor/review sessions. Move it to the
-        # new bucket first so old pdf_path entries do not keep reporting/storing it.
-        self.unregister(canvas)
-        canvases = self._map.get(pdf_path)
-        if canvases is None:
-            canvases = self._weakref.WeakSet()
-            self._map[pdf_path] = canvases
-        canvases.add(canvas)
-        self._prune_empty()
-
-    def unregister(self, canvas):
-        for path, canvases in list(self._map.items()):
-            canvases.discard(canvas)
-        self._prune_empty()
-
-    def mask_bytes_for_pdf(self, pdf_path: str) -> int:
-        pdf_path = _canonical_pdf_path(pdf_path)
-        total = 0
-        canvases = self._map.get(pdf_path)
-        if not canvases:
-            return 0
-        for canvas in list(canvases):
-            try:
-                layer = getattr(canvas, "_mask_cache_layer", None)
-                if layer and not layer.isNull():
-                    total += layer.width() * layer.height() * 4
-            except RuntimeError:
-                pass
-        self._prune_empty()
-        return total
-
-    def invalidate_masks_for_pdf(self, pdf_path: str):
-        """Force all canvases showing this PDF to rebuild their mask layer."""
-        pdf_path = _canonical_pdf_path(pdf_path)
-        canvases = self._map.get(pdf_path)
-        if not canvases:
-            return
-        dead = []
-        for canvas in list(canvases):
-            try:
-                canvas._mask_cache_layer = None
-                canvas._mask_cache_dirty = True
-                canvas.update()
-            except RuntimeError:
-                dead.append(canvas)
-        if dead:
-            for canvas in dead:
-                canvases.discard(canvas)
-        self._prune_empty()
-
-    def all_registered_pdfs(self) -> set:
-        self._prune_empty()
-        return set(self._map.keys())
-
-
-MASK_REGISTRY = _MaskRegistry()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1267,7 +1183,6 @@ class CacheManagerPanel(QWidget):
         known = set()
         known.update(COMBINED_CACHE.all_cached_pdfs())
         known.update(PAGE_CACHE.all_cached_pdfs())
-        known.update(MASK_REGISTRY.all_registered_pdfs())
         known.update(PIXMAP_REGISTRY.all_registered_pdfs())
 
         # Clear old cards
@@ -1281,23 +1196,22 @@ class CacheManagerPanel(QWidget):
         for pdf_path in sorted(known):
             disk_b = COMBINED_CACHE.disk_bytes_for_pdf(pdf_path)
             ram_b = PAGE_CACHE.ram_bytes_for_pdf(pdf_path)
-            mask_b = MASK_REGISTRY.mask_bytes_for_pdf(pdf_path)
             hidden_b = PIXMAP_REGISTRY.bytes_for_pdf(pdf_path)
             hidden_detail = PIXMAP_REGISTRY.breakdown(pdf_path)
-            total = disk_b + ram_b + mask_b + hidden_b
+            total = disk_b + ram_b + hidden_b
 
             # Only show PDFs that are actually holding RAM right now.
             # disk_b is excluded from this check — disk cache persists
             # after Ctrl+C RAM clear, so a PDF with only disk_b > 0
             # is not consuming any active memory and should not appear.
-            active_ram = ram_b + mask_b + hidden_b
+            active_ram = ram_b + hidden_b
             if active_ram == 0:
                 continue
 
             total_bytes += total
             visible_count += 1
             card = self._make_card(
-                pdf_path, disk_b, ram_b, mask_b, hidden_b, hidden_detail, total
+                pdf_path, disk_b, ram_b, hidden_b, hidden_detail, total
             )
             self._list_layout.insertWidget(self._list_layout.count() - 1, card)
 
@@ -1316,7 +1230,7 @@ class CacheManagerPanel(QWidget):
         )
 
     def _make_card(
-        self, pdf_path, disk_b, ram_b, mask_b, hidden_b, hidden_detail, total_b
+        self, pdf_path, disk_b, ram_b, hidden_b, hidden_detail, total_b
     ) -> QFrame:
         card = QFrame()
         card.setObjectName("card")
@@ -1348,7 +1262,6 @@ class CacheManagerPanel(QWidget):
 
         vl.addLayout(_row("💿", "Disk  (rendered pages)", _fmt_bytes(disk_b)))
         vl.addLayout(_row("🧠", "RAM   (page pixmaps)", _fmt_bytes(ram_b)))
-        vl.addLayout(_row("🎭", "GPU   (mask layer)", _fmt_bytes(mask_b)))
 
         # Hidden pixmaps — show each one individually
         _HIDDEN_LABEL_MAP = [
@@ -1405,13 +1318,9 @@ class CacheManagerPanel(QWidget):
     def _remove_pdf(self, pdf_path: str):
         COMBINED_CACHE.invalidate(pdf_path)
         PAGE_CACHE.invalidate_pdf(pdf_path)
-        MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
         self.refresh()
 
     def _clear_all(self):
         COMBINED_CACHE.clear()
         PAGE_CACHE.clear_ram_only()
-        # Invalidate all registered mask caches
-        for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):
-            MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
         self.refresh()

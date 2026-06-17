@@ -48,8 +48,19 @@ def _save_journal(data: dict):
             try:
                 backup_dir = os.path.join(os.path.dirname(JOURNAL_FILE), "backups")
                 os.makedirs(backup_dir, exist_ok=True)
-                ts = time.strftime("%Y%m%d_%H%M%S")
-                shutil.copy2(JOURNAL_FILE, os.path.join(backup_dir, f"anki_journal.{ts}.json"))
+                
+                # Check if a backup for the current day already exists
+                today_prefix = f"anki_journal.{time.strftime('%Y%m%d')}_"
+                has_today_backup = False
+                if os.path.exists(backup_dir):
+                    for f in os.listdir(backup_dir):
+                        if f.startswith(today_prefix) and f.endswith(".json"):
+                            has_today_backup = True
+                            break
+
+                if not has_today_backup:
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    shutil.copy2(JOURNAL_FILE, os.path.join(backup_dir, f"anki_journal.{ts}.json"))
                 
                 # Keep last 30 backups to save disk space
                 backups = sorted([

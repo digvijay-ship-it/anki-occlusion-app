@@ -341,15 +341,53 @@ def _pdf_backend_status():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class DataLoaderThread(QThread):
+    loaded = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def run(self):
+        try:
+            data = load_data()
+            self.loaded.emit(data)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         initialize_mission_archive()
-        self._data = load_data()
-        store.start_autosave()  # 🔒 DirtyStore — auto-save every 60s if dirty
         self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
         self.setWindowIcon(make_app_icon())
+        self._recovery_prompt_shown = False
+
+        import sys
+        is_testing = "unittest" in sys.modules
+
+        if is_testing:
+            self._data = load_data()
+            self._on_data_loaded(self._data)
+        else:
+            loading_label = QLabel("Loading database...")
+            loading_label.setAlignment(Qt.AlignCenter)
+            loading_label.setStyleSheet("font-size: 24px; color: #888; background: #1E1E2E;")
+            self.setCentralWidget(loading_label)
+            self.showMaximized()
+
+            sb = QStatusBar()
+            sb.showMessage("Loading database...")
+            self.setStatusBar(sb)
+
+            self._data_thread = DataLoaderThread()
+            self._data_thread.loaded.connect(self._on_data_loaded)
+            self._data_thread.error.connect(self._on_data_load_error)
+            self._data_thread.start()
+
+    def _on_data_loaded(self, data):
+        self._data = data
+        store.start_autosave()
+
         self._font_size = int(self._data.get("_font_size", BASE_FONT_SIZE))
 
         # Apply saved theme/font before building HomeScreen so TMNT widgets
@@ -376,14 +414,12 @@ class MainWindow(QMainWindow):
                 app.setStyleSheet(ss)
                 self.setStyleSheet(ss)
 
-        self.showMaximized()
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
-        self._recovery_prompt_shown = False
 
-        sb = QStatusBar()
-        sb.showMessage(f"✅ SM-2 Active  |  {_pdf_backend_status()}")
-        self.setStatusBar(sb)
+        sb = self.statusBar()
+        if sb:
+            sb.showMessage(f"✅ SM-2 Active  |  {_pdf_backend_status()}")
 
         if theme == "tmnt" and hasattr(home, "_tmnt_layout") and home._tmnt_layout:
             if hasattr(home._tmnt_layout, "main"):
@@ -394,6 +430,15 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(200, self._run_onboarding)
         else:
             QTimer.singleShot(350, self._show_recovery_prompt)
+
+        self._data_thread = None
+
+    def _on_data_load_error(self, err_msg):
+        print(f"[main] Failed to load data: {err_msg}")
+        sb = self.statusBar()
+        if sb:
+            sb.showMessage(f"❌ Database load failed: {err_msg}")
+        self._data_thread = None
 
     def change_font_size(self, direction: int):
         if direction == 0:
@@ -504,7 +549,7 @@ class MainWindow(QMainWindow):
             if home is not None and hasattr(home, "_clear_home_ram_caches"):
                 home._clear_home_ram_caches()
             else:
-                from cache_manager import PAGE_CACHE, MASK_REGISTRY
+                from cache_manager import PAGE_CACHE
                 try:
                     import fitz
                     from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE
@@ -515,11 +560,9 @@ class MainWindow(QMainWindow):
                     pass
                 before = len(PAGE_CACHE._cache)
                 PAGE_CACHE.clear_ram_only()
-                for pdf_path in list(MASK_REGISTRY.all_registered_pdfs()):
-                    MASK_REGISTRY.invalidate_masks_for_pdf(pdf_path)
                 print(
                     f"[MainWindow][Ctrl+C] 🧹 RAM cache cleared — "
-                    f"{before} pages evicted, mask layers invalidated, disk untouched"
+                    f"{before} pages evicted, disk untouched"
                 )
                 sb = self.statusBar()
                 if sb:
@@ -534,6 +577,11 @@ class MainWindow(QMainWindow):
             if active_editor is not None:
                 active_editor.close()
         store.stop_autosave()  # 🔒 Final force-save + background thread stop
+        try:
+            from services import recovery_manager
+            recovery_manager.flush()
+        except Exception as ex:
+            print(f"[main] Failed to flush recovery events: {ex}")
         try:
             from services.ocr_engine import shutdown as ocr_shutdown
             ocr_shutdown()

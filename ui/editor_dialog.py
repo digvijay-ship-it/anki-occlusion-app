@@ -1312,17 +1312,31 @@ class CardEditorDialog(QDialog):
         self._load_pdf_direct(abs_path)
         self._write_recovery_checkpoint("pdf_loaded")
 
-    def _stop_pdf_threads(self):
+    def _stop_pdf_threads(self, shutdown=False):
         """Stop any running PDF render thread."""
         if self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
             self._pdf_loader_thread.stop()
             self._pdf_loader_thread.quit()
-            self._pdf_loader_thread.wait(500)
+            if shutdown:
+                self._pdf_loader_thread.wait(500)
+            else:
+                t = self._pdf_loader_thread
+                if not hasattr(self, "_pending_worker_cleanups"):
+                    self._pending_worker_cleanups = []
+                self._pending_worker_cleanups.append(t)
+                t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
         self._pdf_loader_thread = None
         if self._pdf_ondemand_thread and self._pdf_ondemand_thread.isRunning():
             self._pdf_ondemand_thread.stop()
             self._pdf_ondemand_thread.quit()
-            self._pdf_ondemand_thread.wait(500)
+            if shutdown:
+                self._pdf_ondemand_thread.wait(500)
+            else:
+                t = self._pdf_ondemand_thread
+                if not hasattr(self, "_pending_worker_cleanups"):
+                    self._pending_worker_cleanups = []
+                self._pending_worker_cleanups.append(t)
+                t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
         self._pdf_ondemand_thread = None
         self._editor_pending_visible_request = None
         self._editor_render_inflight_pages = set()
@@ -2414,7 +2428,6 @@ class CardEditorDialog(QDialog):
         self.canvas._boxes = []
         self.canvas._selected_idx = -1
         self.canvas._selected_indices = set()
-        self.canvas._invalidate_mask_cache()
         self.canvas.update()
 
         # Stop watch/threads
@@ -2450,8 +2463,6 @@ class CardEditorDialog(QDialog):
         return self.card
 
     def closeEvent(self, e):
-        from cache_manager import MASK_REGISTRY
-
         if getattr(self, "_card_saved_once", False):
             self.accept()
             e.accept()
@@ -2461,15 +2472,12 @@ class CardEditorDialog(QDialog):
             e.ignore()
             return
         self._recovery_timer.stop()
-        MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
-        self._stop_pdf_threads()
+        self._stop_pdf_threads(shutdown=True)
         self._stop_ocr_thread()
         super().closeEvent(e)
 
     def reject(self):
-        from cache_manager import MASK_REGISTRY
-
         if getattr(self, "_card_saved_once", False):
             self.accept()
             return
@@ -2477,20 +2485,17 @@ class CardEditorDialog(QDialog):
         if not self._confirm_recovery_close():
             return
         self._recovery_timer.stop()
-        MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
-        self._stop_pdf_threads()
+        self._stop_pdf_threads(shutdown=True)
         self._stop_ocr_thread()
         super().reject()
 
     def accept(self):
-        from cache_manager import MASK_REGISTRY
         from perf_utils import invalidate_deck_stats
 
         invalidate_deck_stats()
         self._recovery_accepted = True
         self._recovery_timer.stop()
-        MASK_REGISTRY.unregister(self.canvas)
         self._stop_watch()
         self._stop_ocr_thread()
         super().accept()
