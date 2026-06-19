@@ -771,7 +771,7 @@ QPushButton#sidebar_foot_icon {{
     padding: 0px;
 }}
 
-/* Tree items — ninja style */
+/* Tree items — retro style */
 QTreeWidget {{
     background: transparent;
     border: none;
