@@ -2829,7 +2829,8 @@ class TMNTTopBar(QFrame):
 
         app = QApplication.instance()
         theme_name = getattr(app, "_active_theme", "tmnt")
-        if theme_name not in ("tmnt", "manhattan"):
+        from theme_manager import is_retro_theme
+        if not is_retro_theme(theme_name):
             theme_name = "tmnt"
 
         # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping

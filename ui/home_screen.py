@@ -184,6 +184,7 @@ from theme_manager import (
     get_palette as _get_palette,
     get_palette,
     normalize_theme,
+    is_retro_theme,
     NINJA_THEME_ENABLED,
 )
 
@@ -1269,7 +1270,7 @@ class HomeScreen(QWidget):
         L.addWidget(self._body_stack, stretch=1)
 
         # Activate correct body for saved theme
-        if self._current_theme in ("tmnt", "manhattan") and self._ensure_tmnt_layout():
+        if is_retro_theme(self._current_theme) and self._ensure_tmnt_layout():
             self.top_frame.hide()
             self._body_stack.setCurrentWidget(self._tmnt_layout)
             QTimer.singleShot(
@@ -1462,7 +1463,7 @@ class HomeScreen(QWidget):
         rev.cancelled.connect(_on_cancelled)
         rev.undo_requested_when_empty.connect(self._handle_sequential_undo)
 
-        if self._current_theme in ("tmnt", "manhattan") and self._ensure_tmnt_layout():
+        if is_retro_theme(self._current_theme) and self._ensure_tmnt_layout():
             # TMNT: push review into body stack slot 2
             self._pre_review_tmnt = True
             self.top_frame.hide()
@@ -1640,7 +1641,7 @@ class HomeScreen(QWidget):
         jw.closed.connect(self._hide_journal)
         self._journal_widget = jw
 
-        if self.__dict__.get("_current_theme") in ("tmnt", "manhattan") and self.__dict__.get("_tmnt_layout"):
+        if is_retro_theme(self.__dict__.get("_current_theme")) and self.__dict__.get("_tmnt_layout"):
             self._pre_journal_tmnt = True
             self.top_frame.hide()
             self._body_stack.addWidget(jw)
@@ -1713,7 +1714,7 @@ class HomeScreen(QWidget):
             threading.Thread(target=ocr_warm_up, daemon=True).start()
         except Exception as e:
             print(f"[MathTrainer] Failed to warm up OCR worker: {e}")
-        if self._current_theme in ("tmnt", "manhattan") and self._tmnt_layout:
+        if is_retro_theme(self._current_theme) and self._tmnt_layout:
             self._pre_math_tmnt = True
             self.top_frame.hide()
             self._body_stack.addWidget(mt)
@@ -2242,7 +2243,7 @@ class HomeScreen(QWidget):
 
     def _toggle_theme(self, index=None):
         t0 = time.perf_counter()
-        from theme_manager import build_stylesheet, normalize_theme
+        from theme_manager import build_stylesheet, normalize_theme, is_retro_theme
         from PyQt5.QtGui import QFont
 
         if isinstance(index, int) and not isinstance(index, bool):
@@ -2275,7 +2276,7 @@ class HomeScreen(QWidget):
         win = self.window()
         current_size = self._data.get("_font_size", BASE_FONT_SIZE)
 
-        if self._current_theme in ("tmnt", "manhattan") and self._ensure_tmnt_layout():
+        if is_retro_theme(self._current_theme) and self._ensure_tmnt_layout():
             # ── Swap to TMNT/Manhattan full layout ────────────────────────────
             if (
                 self._classic_settings_panel is not None
