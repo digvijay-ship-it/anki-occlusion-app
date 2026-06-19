@@ -1562,8 +1562,6 @@ class ReviewScreen(QWidget):
                 pass
             if not is_text:
                 self._trigger_center_fit()
-        elif key == Qt.Key_D and not e.isAutoRepeat():
-            self._debug_report("D key (manual)")
         elif shortcut_manager.event_matches(e, "review.undo"):
             self._review_undo()
         elif shortcut_manager.event_matches(e, "review.redo"):
@@ -1632,6 +1630,8 @@ class ReviewScreen(QWidget):
                 self._was_ink_active_before_ctrl = True
                 self.canvas.ink_set_active(False)
                 self._update_ink_hint()
+        elif key == Qt.Key_D and not e.isAutoRepeat():
+            self._debug_report("D key (manual)")
         else:
             super().keyPressEvent(e)
 

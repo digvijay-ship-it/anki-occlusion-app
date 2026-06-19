@@ -32,7 +32,7 @@ from PyQt5.QtCore import (
     QMimeData,
     QUrl,
 )
-from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QDesktopServices, QKeySequence
 from sm2_engine import sm2_init
 from data_manager import new_box_id
 from services import recovery_manager, shortcut_manager
@@ -456,11 +456,15 @@ class CardEditorDialog(QDialog):
         sc.verticalScrollBar().valueChanged.connect(self._on_scroll_pdf_page_changed)
         main_row.addWidget(sc, stretch=1)
         self._sc = sc
-        self._sc_prev_page = QShortcut(Qt.Key_Left, self)
+        self._sc_prev_page = QShortcut(
+            QKeySequence(shortcut_manager.shortcut_text("review.prev_page")), self
+        )
         self._sc_prev_page.setContext(Qt.WidgetWithChildrenShortcut)
         self._sc_prev_page.setAutoRepeat(False)
         self._sc_prev_page.activated.connect(self._go_prev_page)
-        self._sc_next_page = QShortcut(Qt.Key_Right, self)
+        self._sc_next_page = QShortcut(
+            QKeySequence(shortcut_manager.shortcut_text("review.next_page")), self
+        )
         self._sc_next_page.setContext(Qt.WidgetWithChildrenShortcut)
         self._sc_next_page.setAutoRepeat(False)
         self._sc_next_page.activated.connect(self._go_next_page)
@@ -987,30 +991,46 @@ class CardEditorDialog(QDialog):
     def keyPressEvent(self, e):
         key = e.key()
         mods = e.modifiers()
-        if key == Qt.Key_F11:
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        
+        # Ctrl+? toggle to open shortcuts dialog
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
+            from ui.shortcut_dialog import ShortcutSettingsDialog
+            dlg = ShortcutSettingsDialog(self)
+            dlg.exec_()
+            e.accept()
+            return
+
+        if shortcut_manager.event_matches(e, "review.fullscreen"):
             if self.isFullScreen():
                 self.showMaximized()
             else:
                 self.showFullScreen()
-        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
+        elif shortcut_manager.event_matches(e, "review.undo"):
             self.canvas.undo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_Y:
+        elif shortcut_manager.event_matches(e, "review.redo"):
             self.canvas.redo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_S:
+        elif shortcut_manager.event_matches(e, "home.save"):
             self._save()
-        elif mods & Qt.ControlModifier and key == Qt.Key_E:
+        elif shortcut_manager.event_matches(e, "review.open_pdf"):
             self._open_in_reader()
-        elif mods & Qt.ControlModifier and key == Qt.Key_L:
+        elif shortcut_manager.event_matches(e, "review.open_folder"):
             self._reveal_current_pdf_in_folder()
-        elif mods & Qt.ControlModifier and key == Qt.Key_T:
+        elif shortcut_manager.event_matches(e, "review.annotate"):
             self._open_annotation_beta()
         elif mods & Qt.ControlModifier and key == Qt.Key_V:
             self._paste_image()
-        elif key == Qt.Key_L and not mods and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.copy_pdf") and not e.isAutoRepeat():
             self._copy_current_pdf_file_to_clipboard()
-        elif key == Qt.Key_Left and not mods and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.prev_page") and not e.isAutoRepeat():
             self._go_prev_page()
-        elif key == Qt.Key_Right and not mods and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.next_page") and not e.isAutoRepeat():
             self._go_next_page()
         elif shortcut_manager.event_matches(e, "review.pdf_contrast") and not e.isAutoRepeat():
             self._toggle_pdf_contrast()

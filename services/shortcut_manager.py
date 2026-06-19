@@ -108,12 +108,17 @@ def _event_sequence_texts(event) -> set[str]:
     if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta):
         return set()
     mods = int(event.modifiers())
+    mods &= int(Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
     texts = {
         QKeySequence(mods | int(key)).toString(QKeySequence.PortableText)
     }
     if key in (Qt.Key_Equal, Qt.Key_Plus) and event.modifiers() & Qt.ControlModifier:
         texts.add("Ctrl++")
         texts.add("Ctrl+=")
+    if key == Qt.Key_Question and (mods & Qt.ControlModifier):
+        texts.add("Ctrl+?")
+    if key == Qt.Key_Slash and (mods & Qt.ControlModifier) and (mods & Qt.ShiftModifier):
+        texts.add("Ctrl+?")
     return {_normalise_sequence(text) for text in texts if text}
 
 

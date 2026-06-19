@@ -2398,6 +2398,21 @@ class JournalDialog(QDialog):
     def keyPressEvent(self, e):
         """Global shortcuts — P=Pen, E=Eraser, T=Text, C=Color."""
         key = e.key()
+        mods = e.modifiers()
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
+            from ui.shortcut_dialog import ShortcutSettingsDialog
+            dlg = ShortcutSettingsDialog(self)
+            dlg.exec_()
+            e.accept()
+            return
+
         # Don't intercept if canvas is in text mode and has active text
         if self._canvas._mode == MODE_TEXT and self._canvas._text_pos is not None:
             super().keyPressEvent(e)

@@ -131,3 +131,19 @@ class ShortcutSettingsDialog(QDialog):
             seq = edit.keySequence().toString(QKeySequence.PortableText)
             shortcut_manager.set_shortcut(action_id, seq)
         self.accept()
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        mods = e.modifiers()
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
+            self.reject()
+            e.accept()
+            return
+        super().keyPressEvent(e)

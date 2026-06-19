@@ -266,3 +266,21 @@ class TextCardEditorDialog(QDialog):
         
     def clear_recovery_draft(self):
         pass
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        mods = e.modifiers()
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
+            from ui.shortcut_dialog import ShortcutSettingsDialog
+            dlg = ShortcutSettingsDialog(self)
+            dlg.exec_()
+            e.accept()
+            return
+        super().keyPressEvent(e)

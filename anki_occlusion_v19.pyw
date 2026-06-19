@@ -682,8 +682,32 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, e):
         key = e.key()
         mods = e.modifiers()
-        if key == Qt.Key_Escape:
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        
+        # Ctrl+? toggle to open shortcuts dialog
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
             home = self.centralWidget()
+            if home is not None and hasattr(home, "_show_shortcuts"):
+                home._show_shortcuts()
+                e.accept()
+                return
+
+        from services import shortcut_manager
+        home = self.centralWidget()
+        
+        # 3. Active Review Screen - check dynamically
+        if home is not None and getattr(home, "_active_review", None) is not None and shortcut_manager.event_matches(e, "review.cancel"):
+            home._active_review.cancelled.emit()
+            e.accept()
+            return
+
+        if key == Qt.Key_Escape:
             if home is not None:
                 # 1. Classic Settings Panel
                 if getattr(home, "_classic_settings_panel", None) is not None and home._classic_settings_panel.isVisible():
@@ -703,11 +727,6 @@ class MainWindow(QMainWindow):
                     if panels_closed:
                         e.accept()
                         return
-                # 3. Active Review Screen
-                if getattr(home, "_active_review", None) is not None:
-                    home._active_review.cancelled.emit()
-                    e.accept()
-                    return
                 # 4. Math Trainer Page
                 if getattr(home, "_math_trainer", None) is not None:
                     home._math_trainer.go_back()
