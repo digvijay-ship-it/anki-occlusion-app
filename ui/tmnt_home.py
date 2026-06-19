@@ -2965,63 +2965,73 @@ class TMNTTopBar(QFrame):
         self.bgm_widget.clicked.connect(self.bgm_toggle)
         right_l.addWidget(self.bgm_widget, 0, Qt.AlignVCenter)
 
-        mentor = QFrame()
-        mentor.setFixedSize(_px(244, self._scale), _px(42, self._scale))
-        mentor.setStyleSheet(
-            _scale_ss(
-                f"""
-            QFrame {{
-                background: {T_PANEL};
-                border: 1px solid {T_PURPLE};
-                border-radius: 4px;
-            }}
-            QLabel {{ background: transparent; border: none; }}
-        """,
-                self._scale,
-            )
-        )
-        ml = QHBoxLayout(mentor)
-        ml.setContentsMargins(
-            _px(8, self._scale),
-            _px(4, self._scale),
-            _px(8, self._scale),
-            _px(4, self._scale),
-        )
-        ml.setSpacing(_px(8, self._scale))
+        app = QApplication.instance()
+        theme_name = getattr(app, "_active_theme", "tmnt")
 
-        av = QLabel("◎")
-        av.setFixedSize(_px(28, self._scale), _px(28, self._scale))
-        av.setAlignment(Qt.AlignCenter)
-        av.setStyleSheet(
-            _scale_ss(
-                f"font-size: 16px; color: {T_PURPLE}; background: rgba(176,136,249,0.10); "
-                f"border: 1px solid #5b616d; border-radius: 14px;",
-                self._scale,
+        if theme_name == "arcanum":
+            from arcane_assets import ArcaneAssets
+            mentor = ArcaneAssets.get_instance().get_archmage_widget(scale=self._scale)
+            mentor.setFixedSize(_px(244, self._scale), _px(42, self._scale))
+            self.quote_lbl = mentor.quote_lbl
+            self.name_lbl = mentor.name_lbl
+        else:
+            mentor = QFrame()
+            mentor.setFixedSize(_px(244, self._scale), _px(42, self._scale))
+            mentor.setStyleSheet(
+                _scale_ss(
+                    f"""
+                QFrame {{
+                    background: {T_PANEL};
+                    border: 1px solid {T_PURPLE};
+                    border-radius: 4px;
+                }}
+                QLabel {{ background: transparent; border: none; }}
+            """,
+                    self._scale,
+                )
             )
-        )
-        ml.addWidget(av)
+            ml = QHBoxLayout(mentor)
+            ml.setContentsMargins(
+                _px(8, self._scale),
+                _px(4, self._scale),
+                _px(8, self._scale),
+                _px(4, self._scale),
+            )
+            ml.setSpacing(_px(8, self._scale))
 
-        self.quote_lbl = QLabel(MENTOR_QUOTES[0][0])
-        self.quote_lbl.setStyleSheet(
-            _scale_ss(
-                f"color: {T_PURPLE}; font-size: 8px; font-weight: 900; "
-                f"font-family: {T_MONO};",
-                self._scale,
+            av = QLabel("◎")
+            av.setFixedSize(_px(28, self._scale), _px(28, self._scale))
+            av.setAlignment(Qt.AlignCenter)
+            av.setStyleSheet(
+                _scale_ss(
+                    f"font-size: 16px; color: {T_PURPLE}; background: rgba(176,136,249,0.10); "
+                    f"border: 1px solid #5b616d; border-radius: 14px;",
+                    self._scale,
+                )
             )
-        )
-        self.name_lbl = QLabel(MENTOR_QUOTES[0][1])
-        self.name_lbl.setStyleSheet(
-            _scale_ss(
-                f"color: {T_SUBTEXT}; font-size: 9px; font-family: {T_MONO};",
-                self._scale,
+            ml.addWidget(av)
+
+            self.quote_lbl = QLabel(MENTOR_QUOTES[0][0])
+            self.quote_lbl.setStyleSheet(
+                _scale_ss(
+                    f"color: {T_PURPLE}; font-size: 8px; font-weight: 900; "
+                    f"font-family: {T_MONO};",
+                    self._scale,
+                )
             )
-        )
-        q_col = QVBoxLayout()
-        q_col.setContentsMargins(0, 0, 0, 0)
-        q_col.setSpacing(_px(1, self._scale))
-        q_col.addWidget(self.quote_lbl)
-        q_col.addWidget(self.name_lbl)
-        ml.addLayout(q_col)
+            self.name_lbl = QLabel(MENTOR_QUOTES[0][1])
+            self.name_lbl.setStyleSheet(
+                _scale_ss(
+                    f"color: {T_SUBTEXT}; font-size: 9px; font-family: {T_MONO};",
+                    self._scale,
+                )
+            )
+            q_col = QVBoxLayout()
+            q_col.setContentsMargins(0, 0, 0, 0)
+            q_col.setSpacing(_px(1, self._scale))
+            q_col.addWidget(self.quote_lbl)
+            q_col.addWidget(self.name_lbl)
+            ml.addLayout(q_col)
         right_l.addWidget(mentor, 0, Qt.AlignVCenter)
         L.addWidget(right, 1)
 
@@ -4000,6 +4010,9 @@ class TMNTTopBar(QFrame):
         self._brand_flicker_idx += 1
 
     def _rotate_quote(self):
+        app = QApplication.instance()
+        if getattr(app, "_active_theme", "classic") == "arcanum":
+            return
         self._quote_idx = (self._quote_idx + 1) % len(MENTOR_QUOTES)
         q, n = MENTOR_QUOTES[self._quote_idx]
         self.quote_lbl.setText(q)
