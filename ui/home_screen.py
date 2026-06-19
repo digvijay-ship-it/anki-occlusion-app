@@ -1211,7 +1211,12 @@ class HomeScreen(QWidget):
         # Theme Toggle Button
         saved_theme = self._data.get("_theme", "classic")
         self._current_theme = normalize_theme(saved_theme)
-        _next_lbl = {"classic": "🐢 TMNT MODE", "tmnt": "🎮 MANHATTAN", "manhattan": "📚 CLASSIC MODE"}
+        _next_lbl = {
+            "classic": "🐢 TMNT MODE",
+            "tmnt": "🎮 MANHATTAN",
+            "manhattan": "🔮 ARCANUM",
+            "arcanum": "📚 CLASSIC MODE",
+        }
         btn_text = _next_lbl.get(self._current_theme, "🐢 TMNT MODE")
         self._btn_theme = _topbtn(btn_text, "Switch Theme")
         self._btn_theme.clicked.connect(self._toggle_theme)
@@ -1882,11 +1887,11 @@ class HomeScreen(QWidget):
         
         from PyQt5.QtWidgets import QComboBox
         self._btn_theme = QComboBox()
-        self._btn_theme.addItems(["📚 CLASSIC MODE", "🐢 TMNT MODE", "🎮 MANHATTAN"])
+        self._btn_theme.addItems(["📚 CLASSIC MODE", "🐢 TMNT MODE", "🎮 MANHATTAN", "🔮 ARCANUM"])
         self._btn_theme.setCursor(Qt.PointingHandCursor)
         self._btn_theme.setObjectName("font_btn")
         
-        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2}
+        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2, "arcanum": 3}
         self._btn_theme.setCurrentIndex(_theme_to_idx.get(self._current_theme, 0))
         self._btn_theme.currentIndexChanged.connect(self._toggle_theme)
         theme_layout.addWidget(self._btn_theme, 0, Qt.AlignRight)
@@ -2241,10 +2246,15 @@ class HomeScreen(QWidget):
         from PyQt5.QtGui import QFont
 
         if isinstance(index, int) and not isinstance(index, bool):
-            _idx_to_theme = {0: "classic", 1: "tmnt", 2: "manhattan"}
+            _idx_to_theme = {0: "classic", 1: "tmnt", 2: "manhattan", 3: "arcanum"}
             self._current_theme = normalize_theme(_idx_to_theme.get(index, "classic"))
         else:
-            _cycle = {"classic": "tmnt", "tmnt": "manhattan", "manhattan": "classic"}
+            _cycle = {
+                "classic": "tmnt",
+                "tmnt": "manhattan",
+                "manhattan": "arcanum",
+                "arcanum": "classic",
+            }
             self._current_theme = normalize_theme(
                 _cycle.get(self._current_theme, "classic")
             )
@@ -2253,7 +2263,7 @@ class HomeScreen(QWidget):
         store.mark_dirty()
 
         # Synchronize classic dropdown state if it exists
-        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2}
+        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2, "arcanum": 3}
         idx = _theme_to_idx.get(self._current_theme, 0)
         from PyQt5.QtWidgets import QComboBox
         if hasattr(self, "_btn_theme") and isinstance(self._btn_theme, QComboBox):
@@ -2279,7 +2289,12 @@ class HomeScreen(QWidget):
 
             if app:
                 app._active_theme = self._current_theme
-                font_name = "Courier New" if self._current_theme == "manhattan" else "Roboto Mono"
+                if self._current_theme == "manhattan":
+                    font_name = "Courier New"
+                elif self._current_theme == "arcanum":
+                    font_name = "Cinzel"
+                else:
+                    font_name = "Roboto Mono"
                 app.setFont(QFont(font_name, current_size))
                 ss = build_stylesheet(self._current_theme, current_size)
                 app.setStyleSheet(ss)

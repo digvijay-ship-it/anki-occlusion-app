@@ -3223,7 +3223,7 @@ class TMNTTopBar(QFrame):
         from PyQt5.QtWidgets import QComboBox
         from theme_manager import normalize_theme
         self._btn_theme = QComboBox()
-        self._btn_theme.addItems(["📚 CLASSIC THEME", "🐢 TMNT THEME", "🎮 MANHATTAN"])
+        self._btn_theme.addItems(["📚 CLASSIC THEME", "🐢 TMNT THEME", "🎮 MANHATTAN", "🔮 ARCANUM"])
         self._btn_theme.setCursor(Qt.PointingHandCursor)
         self._btn_theme.setStyleSheet(
             _scale_ss(
@@ -3248,7 +3248,7 @@ class TMNTTopBar(QFrame):
                 self._scale,
             )
         )
-        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2}
+        _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2, "arcanum": 3}
         saved_theme = self._data.get("_theme", "classic")
         self._btn_theme.setCurrentIndex(_theme_to_idx.get(normalize_theme(saved_theme), 0))
         self._btn_theme.currentIndexChanged.connect(self.btn_theme_clicked.emit)
