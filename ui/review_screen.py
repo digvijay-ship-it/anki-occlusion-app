@@ -288,7 +288,9 @@ DOJO = {
 def _is_dojo() -> bool:
     """Return True if the Ninja Dojo theme is currently active."""
     app = QApplication.instance()
-    return getattr(app, "_active_theme", "classic") in ["dojo", "tmnt", "manhattan"]
+    theme = getattr(app, "_active_theme", "classic")
+    from theme_manager import is_retro_theme
+    return is_retro_theme(theme) or theme == "dojo"
 
 
 def _tc(classic_val: str, dojo_val: str) -> str:
@@ -630,7 +632,8 @@ class ReviewScreen(QWidget):
             
             # Play a short powerUp entry sound if in retro theme
             theme = getattr(QApplication.instance(), "_active_theme", "classic")
-            if theme in ("tmnt", "manhattan") and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}:
+            from theme_manager import is_retro_theme
+            if is_retro_theme(theme) and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}:
                 from data_manager import store
                 vol = store.get().get("_volume", 40) / 100.0
                 self._snd_power.setVolume(vol)
@@ -1992,7 +1995,8 @@ class ReviewScreen(QWidget):
                     f"border-radius:3px;}}"
                 )
             self._prog_timer.timeout.connect(_animate_prog)
-            if theme in ("tmnt", "manhattan") and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}:
+            from theme_manager import is_retro_theme
+            if is_retro_theme(theme) and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}:
                 self._prog_timer.start(40)
         else:
             self.prog.setStyleSheet(
@@ -2753,7 +2757,8 @@ class ReviewScreen(QWidget):
         # CRT and Particle Burst overlays
         self.crt = None
         self.burst = None
-        if theme in ("tmnt", "manhattan"):
+        from theme_manager import is_retro_theme
+        if is_retro_theme(theme):
             self.crt = CRTOverlay(self)
             self.burst = ParticleBurstOverlay(self)
 

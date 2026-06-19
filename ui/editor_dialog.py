@@ -170,7 +170,8 @@ class CardEditorDialog(QDialog):
         # Instantiate CRT overlay if theme is retro
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         self.crt = None
-        if theme in ("tmnt", "manhattan"):
+        from theme_manager import is_retro_theme
+        if is_retro_theme(theme):
             self.crt = CRTOverlay(self)
             self.crt.trigger_boot_flicker()
 

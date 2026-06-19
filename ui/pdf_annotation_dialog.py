@@ -810,7 +810,8 @@ class PdfAnnotationDialog(QDialog):
         # Instantiate CRT overlay if theme is retro
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         self.crt = None
-        if theme in ("tmnt", "manhattan"):
+        from theme_manager import is_retro_theme
+        if is_retro_theme(theme):
             self.crt = CRTOverlay(self)
             self.crt.trigger_boot_flicker()
 
@@ -942,7 +943,12 @@ class PdfAnnotationDialog(QDialog):
         accent = p.get("C_ACCENT", "#7C6AF7")
         text = p.get("C_TEXT", "#CDD6F4")
         font_name = p.get("body_font", "'Segoe UI'")
-        radius = "0px" if theme in ("dojo", "tmnt", "manhattan") else "6px"
+        from theme_manager import is_retro_theme
+        radius = (
+            "0px" if theme in ("dojo", "tmnt", "manhattan")
+            else "4px" if theme == "arcanum"
+            else "6px"
+        )
 
         self.setStyleSheet(
             f"QDialog{{background:{bg};color:{text};}}"

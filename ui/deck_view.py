@@ -601,7 +601,8 @@ class DeckView(QWidget):
         theme = getattr(self, "_theme", "classic")
         scale = getattr(self, "_font_size_val", 11) / 11.0
 
-        if theme in ("dojo", "tmnt", "manhattan"):
+        from theme_manager import is_retro_theme
+        if is_retro_theme(theme) or theme == "dojo":
             text = "🔖 UNMASKED QUESTIONS" if bookmarked else "🔖 BOOKMARK DECK"
             self.btn_bookmark.setText(text)
             self.btn_bookmark.setToolTip("Remove bookmark (unmasked signal)" if bookmarked else "Add bookmark (mark as having unmasked questions)")

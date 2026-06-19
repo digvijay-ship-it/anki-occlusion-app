@@ -417,7 +417,8 @@ class MathTrainerPage(QWidget):
         theme = getattr(app, "_active_theme", "classic")
         self.crt = None
         self.burst = None
-        if theme in ("tmnt", "manhattan"):
+        from theme_manager import is_retro_theme
+        if is_retro_theme(theme):
             self.crt = CRTOverlay(self)
             self.burst = ParticleBurstOverlay(self)
 

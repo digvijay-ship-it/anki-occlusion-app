@@ -35,7 +35,9 @@ DOJO = {
 
 def _is_dojo() -> bool:
     app = QApplication.instance()
-    return getattr(app, "_active_theme", "classic") in ["dojo", "tmnt"]
+    theme = getattr(app, "_active_theme", "classic")
+    from theme_manager import is_retro_theme
+    return is_retro_theme(theme) or theme == "dojo"
 
 class ReviewSessionSummaryDialog(QDialog):
     def __init__(self, rs, parent=None):
@@ -63,7 +65,8 @@ class ReviewSessionSummaryDialog(QDialog):
         font = palette["header_font"]
         body_font = palette["body_font"]
 
-        dojo = theme_mode in ["dojo", "tmnt", "manhattan"]
+        from theme_manager import is_retro_theme
+        dojo = is_retro_theme(theme_mode) or theme_mode == "dojo"
 
         # Calculate hover/pressed colors dynamically based on accent
         q_accent = QColor(accent)
@@ -114,12 +117,15 @@ class ReviewSessionSummaryDialog(QDialog):
         if dojo:
             if theme_mode == "manhattan":
                 title_text = "🐢  STAGE CLEAR"
+            elif theme_mode == "arcanum":
+                title_text = "🔮  RITUAL COMPLETE"
             elif theme_mode == "tmnt":
                 title_text = "🐢  MISSION COMPLETE"
             else:
                 title_text = "🥷  MISSION COMPLETE"
             title = QLabel(title_text)
-            title.setFont(QFont(font, 16, QFont.Normal if theme_mode == "manhattan" else QFont.Bold))
+            font_weight = QFont.Normal if theme_mode == "manhattan" else QFont.Bold
+            title.setFont(QFont(font, 16, font_weight))
             title.setAlignment(Qt.AlignCenter)
             title.setStyleSheet(
                 f"color:{accent};background:transparent;"
@@ -331,7 +337,11 @@ class ReviewSessionSummaryDialog(QDialog):
 
         # Ninja motivational quote for dojo
         if dojo and retention >= 80:
-            q_lbl = QLabel('"COWABUNGA! EXCELLENT WORK, NINJA."')
+            if theme_mode == "arcanum":
+                quote_text = '"THE STARS ALIGN. EXCELLENT CASTING, ARCHMAGE."'
+            else:
+                quote_text = '"COWABUNGA! EXCELLENT WORK, NINJA."'
+            q_lbl = QLabel(quote_text)
             q_lbl.setAlignment(Qt.AlignCenter)
             q_lbl.setWordWrap(True)
             q_lbl.setStyleSheet(
@@ -343,7 +353,7 @@ class ReviewSessionSummaryDialog(QDialog):
         # Close button
         btn = QPushButton("CLOSE" if dojo else "Close")
         if dojo:
-            weight_str = "normal" if theme_mode == "manhattan" else "900"
+            weight_str = "normal" if theme_mode == "manhattan" else "bold" if theme_mode == "arcanum" else "900"
             v_pad = "0px" if theme_mode == "manhattan" else "8px"
             btn.setStyleSheet(
                 f"QPushButton {{"

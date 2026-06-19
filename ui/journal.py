@@ -76,9 +76,11 @@ def _is_ninja() -> bool:
     """Return True when the app is running in Ninja/Dojo mode."""
     try:
         from PyQt5.QtWidgets import QApplication
+        from theme_manager import is_retro_theme
 
         app = QApplication.instance()
-        return getattr(app, "_active_theme", "classic") in ("dojo", "tmnt", "manhattan")
+        theme = getattr(app, "_active_theme", "classic")
+        return is_retro_theme(theme) or theme == "dojo"
     except Exception:
         return False
 
