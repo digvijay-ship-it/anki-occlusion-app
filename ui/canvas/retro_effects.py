@@ -11,6 +11,7 @@ import weakref
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, QTime
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush
+from theme_manager import is_retro_theme
 
 # Weak registry to dynamically control running widgets when animations are toggled
 _active_retro_widgets = weakref.WeakSet()
@@ -155,6 +156,16 @@ class OozeParticle:
         self.speed = speed
         self.color = color
 
+class EmberMote:
+    """Warm spark drifting upward (candlelight). Used by ARCANUM."""
+    def __init__(self, x, y, size, speed, color):
+        self.x = x
+        self.y = y
+        self.size = size
+        self.speed = speed      # negative = upward
+        self.color = color
+        self.life = random.uniform(0.6, 1.0)
+
 class RetroParticlePanel(QWidget):
     def __init__(self, parent=None, is_ooze=True):
         super().__init__(parent)
@@ -173,9 +184,17 @@ class RetroParticlePanel(QWidget):
             from PyQt5.QtWidgets import QApplication
             app = QApplication.instance()
             theme = getattr(app, "_active_theme", "classic")
-            return theme in ("tmnt", "manhattan")
+            return is_retro_theme(theme)
         except Exception:
             return True
+
+    def _is_ember_theme(self):
+        try:
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            return getattr(app, "_active_theme", "classic") == "arcanum"
+        except Exception:
+            return False
 
     def sync_timer(self):
         should_run = self.isVisible() and _home_animations_enabled() and self._is_theme_active()
@@ -210,11 +229,26 @@ class RetroParticlePanel(QWidget):
         w = max(10, self.width())
         h = max(10, self.height())
         # Dense particles for sewer ooze, light pizza rain
-        count = 16 if self.is_ooze else 8
+        if self._is_ember_theme():
+            count = 20
+        else:
+            count = 16 if self.is_ooze else 8
         for _ in range(count):
             self.particles.append(self.create_particle(random.randint(0, h)))
 
     def create_particle(self, start_y=0):
+        if self._is_ember_theme():
+            colors = [QColor("#F0A35E"), QColor("#F4D35E"), QColor("#FF5C7A")]
+            color = random.choice(colors)
+            color.setAlpha(random.randint(80, 200))
+            return EmberMote(
+                x=random.randint(0, max(10, self.width())),
+                y=start_y,
+                size=random.randint(2, 5),
+                speed=random.uniform(-1.5, -0.4),
+                color=color
+            )
+
         # Manhattan project colors: Green/Ooze, Pizza Orange, Accent Cyan
         if self.is_ooze:
             colors = [QColor("#39ff14"), QColor("#00f0ff"), QColor("#32cd32")]
@@ -238,12 +272,23 @@ class RetroParticlePanel(QWidget):
             return
         w = max(10, self.width())
         h = max(10, self.height())
+        is_ember = self._is_ember_theme()
         for p in self.particles:
-            p.y += p.speed
-            if p.y > h:
-                p.y = 0
-                p.x = random.randint(0, w)
-                p.speed = random.uniform(0.6, 2.0)
+            if is_ember:
+                p.y += p.speed
+                p.life -= 0.015
+                if p.y < 0 or p.life <= 0:
+                    p.y = h
+                    p.x = random.randint(0, w)
+                    p.speed = random.uniform(-1.5, -0.4)
+                    p.life = random.uniform(0.6, 1.0)
+                    p.color.setAlpha(random.randint(80, 200))
+            else:
+                p.y += p.speed
+                if p.y > h:
+                    p.y = 0
+                    p.x = random.randint(0, w)
+                    p.speed = random.uniform(0.6, 2.0)
         self.update()
 
     def paintEvent(self, event):
@@ -253,8 +298,14 @@ class RetroParticlePanel(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False) # crisp arcade pixel edges
+        is_ember = self._is_ember_theme()
         for p in self.particles:
-            painter.fillRect(int(p.x), int(p.y), p.size, p.size, p.color)
+            if is_ember:
+                c = QColor(p.color)
+                c.setAlpha(int(c.alpha() * max(0.0, min(1.0, p.life))))
+                painter.fillRect(int(p.x), int(p.y), p.size, p.size, c)
+            else:
+                painter.fillRect(int(p.x), int(p.y), p.size, p.size, p.color)
 
 
 # ── Explosive Particle Burst Overlay ─────────────────────────────────────────
@@ -287,7 +338,7 @@ class ParticleBurstOverlay(QWidget):
             from PyQt5.QtWidgets import QApplication
             app = QApplication.instance()
             theme = getattr(app, "_active_theme", "classic")
-            return theme in ("tmnt", "manhattan")
+            return is_retro_theme(theme)
         except Exception:
             return True
 
@@ -321,7 +372,16 @@ class ParticleBurstOverlay(QWidget):
         elif color_tone == "red":
             colors = [QColor("#ff0055"), QColor("#ff4d4d"), QColor("#ffa200")]
         else: # cyan / purple / perfect
-            colors = [QColor("#00f0ff"), QColor("#a86cff"), QColor("#ffffff")]
+            try:
+                from PyQt5.QtWidgets import QApplication
+                app = QApplication.instance()
+                theme = getattr(app, "_active_theme", "classic")
+            except Exception:
+                theme = "classic"
+            if theme == "arcanum":
+                colors = [QColor("#5FEAD0"), QColor("#A78BFA"), QColor("#EDE6D6")]
+            else:
+                colors = [QColor("#00f0ff"), QColor("#a86cff"), QColor("#ffffff")]
 
         for _ in range(count):
             angle = random.uniform(0, 2 * math.pi)
@@ -405,7 +465,7 @@ class OozeDripWidget(QWidget):
             from PyQt5.QtWidgets import QApplication
             app = QApplication.instance()
             theme = getattr(app, "_active_theme", "classic")
-            return theme in ("tmnt", "manhattan")
+            return is_retro_theme(theme)
         except Exception:
             return True
 
@@ -468,8 +528,20 @@ class OozeDripWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
         
-        # Draw dynamic green slime drips along the top edge
-        pen = QPen(QColor("#39ff14"))
+        # Get active theme color
+        try:
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            theme = getattr(app, "_active_theme", "classic")
+        except Exception:
+            theme = "classic"
+            
+        if theme == "arcanum":
+            drip_color = QColor("#5FEAD0")
+        else:
+            drip_color = QColor("#39ff14")
+            
+        pen = QPen(drip_color)
         pen.setWidth(4)
         painter.setPen(pen)
         
@@ -477,4 +549,4 @@ class OozeDripWidget(QWidget):
             # Draw a thick blocky line down
             painter.drawLine(d.x, 0, d.x, int(d.length))
             # Draw a dripping drop pixel at the tip
-            painter.fillRect(d.x - 2, int(d.length) - 1, 5, 4, QColor("#39ff14"))
+            painter.fillRect(d.x - 2, int(d.length) - 1, 5, 4, drip_color)
