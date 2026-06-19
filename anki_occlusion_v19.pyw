@@ -52,6 +52,7 @@ APP_START_TIME = time.perf_counter()
 
 import sys
 import os
+import re
 import traceback
 from datetime import datetime
 
@@ -59,6 +60,34 @@ from datetime import datetime
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
+
+_LOG_FILE_HANDLE = None
+
+def _scrub_traceback(tb_text: str) -> str:
+    # Redact bearer tokens
+    tb_text = re.sub(r'ya29\.[A-Za-z0-9_-]+', '[REDACTED BEARER TOKEN]', tb_text)
+    # Redact client_secret value, e.g. client_secret='xyz' or client_secret: "xyz"
+    tb_text = re.sub(
+        r'(client_secret[\'"]?\s*[:=]\s*[\'"])[^\'"]+([\'"])',
+        r'\1[REDACTED SECRET]\2',
+        tb_text,
+        flags=re.IGNORECASE
+    )
+    # Redact Authorization header values, e.g. Authorization: Bearer xyz
+    tb_text = re.sub(
+        r'(authorization[\'"]?\s*[:=]\s*[\'"]Bearer\s+)[^\'"]+([\'"])',
+        r'\1[REDACTED BEARER TOKEN]\2',
+        tb_text,
+        flags=re.IGNORECASE
+    )
+    # Redact client secret from JSON/dict output, e.g. "client_secret": "xyz"
+    tb_text = re.sub(
+        r'("client_secret"\s*:\s*")[^"]+(")',
+        r'\1[REDACTED SECRET]\2',
+        tb_text,
+        flags=re.IGNORECASE
+    )
+    return tb_text
 
 def setup_logging():
     try:
@@ -81,7 +110,9 @@ def setup_logging():
                 pass
             
         mode = "w" if rotated or not os.path.exists(log_file_path) else "a"
+        global _LOG_FILE_HANDLE
         log_file = open(log_file_path, mode, encoding="utf-8", buffering=1)
+        _LOG_FILE_HANDLE = log_file
         log_file.write(f"\n--- App Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         
         class TeeStream:
@@ -110,7 +141,24 @@ def setup_logging():
             if issubclass(exc_type, KeyboardInterrupt):
                 sys.__excepthook__(exc_type, exc_value, exc_traceback)
                 return
+
+            # Try to scrub f_locals from stack frames
+            tb = exc_traceback
+            while tb:
+                try:
+                    frame = tb.tb_frame
+                    for key in list(frame.f_locals.keys()):
+                        if any(k in key.lower() for k in ("secret", "token", "auth", "password", "key")):
+                            try:
+                                frame.f_locals[key] = "[REDACTED]"
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                tb = tb.tb_next
+
             err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            err_msg = _scrub_traceback(err_msg)
             sys.stderr.write("CRITICAL UNHANDLED EXCEPTION:\n" + err_msg + "\n")
             
         sys.excepthook = handle_exception
@@ -704,6 +752,19 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(e)
 
     def closeEvent(self, e):
+        if hasattr(self, "_data_thread") and self._data_thread is not None:
+            try:
+                if self._data_thread.isRunning():
+                    if hasattr(self._data_thread, "stop"):
+                        self._data_thread.stop()
+                    else:
+                        self._data_thread.quit()
+                    self._data_thread.wait(2000)
+            except Exception as ex:
+                print(f"[main] Error joining data thread: {ex}")
+            finally:
+                self._data_thread = None
+
         home = self.centralWidget()
         if home is not None:
             active_editor = getattr(home, "_active_editor", None)
@@ -720,6 +781,14 @@ class MainWindow(QMainWindow):
             ocr_shutdown()
         except Exception:
             pass
+
+        global _LOG_FILE_HANDLE
+        if _LOG_FILE_HANDLE is not None:
+            try:
+                _LOG_FILE_HANDLE.close()
+                _LOG_FILE_HANDLE = None
+            except Exception:
+                pass
         super().closeEvent(e)
 
 

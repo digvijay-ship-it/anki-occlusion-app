@@ -98,6 +98,12 @@ class ReviewSchedulingTests(unittest.TestCase):
         self.assertEqual(updated["sched_step"], 0)
         self.assertEqual(updated["sm2_ease"], 2.1)
 
+    @patch("sm2_engine.random.randint", return_value=0)
+    def test_review_easy_clamped_to_max_interval(self, _mock_randint):
+        card = self._review_card(interval=120, ease=2.5)
+        updated = sm2_engine.sched_update(card, 5)
+        self.assertLessEqual(updated["sm2_interval"], sm2_engine.MAX_INTERVAL)
+
 
 class DueLogicTests(unittest.TestCase):
     def test_learning_card_rated_today_is_due_today_even_if_due_time_is_future(self):

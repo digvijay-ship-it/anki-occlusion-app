@@ -269,6 +269,10 @@ class DirtyStoreTests(unittest.TestCase):
             else:
                 self.fail("save_soon did not flush the trailing dirty payload")
 
+        if store._save_thread and store._save_thread.is_alive():
+            store._save_thread.join(timeout=2.0)
+        if store._save_timer is not None:
+            store._save_timer.cancel()
         self.assertFalse(store.is_dirty())
 
     def test_save_soon_can_delay_background_save_from_now(self):
@@ -661,6 +665,81 @@ class SQLiteStorageTests(unittest.TestCase):
         card_none, deck_none = store.get_card_by_id(999)
         self.assertIsNone(card_none)
         self.assertIsNone(deck_none)
+
+    def test_sqlite_save_malformed_rect(self):
+        store = data_manager.DirtyStore()
+        payload = {
+            "decks": [
+                {
+                    "_id": 9,
+                    "name": "Test Deck",
+                    "cards": [
+                        {
+                            "_id": 999,
+                            "pdf_path": "a.pdf",
+                            "image_path": "a.png",
+                            "boxes": [
+                                {
+                                    "box_id": "malformed_box",
+                                    "rect": [10.0, 20.0],
+                                    "page_num": 0,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        with patch.object(data_manager, "DATA_FILE", str(self.db_file)):
+            store.set(payload)
+            store.save_force()
+            
+            new_store = data_manager.DirtyStore()
+            loaded = new_store.load()
+            box = loaded["decks"][0]["cards"][0]["boxes"][0]
+            self.assertEqual(box["rect"], [10.0, 20.0, 0.0, 0.0])
+
+    def test_find_duplicate_card_no_disk_reads_when_hashes_present(self):
+        # Setup a card with hashes already populated
+        card = {
+            "_id": 123,
+            "image_path": "test_image.png",
+            "file_hash": "existing_sha",
+            "visual_hash": "existing_dhash",
+            "title": "My Title",
+            "boxes": []
+        }
+        payload = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Test Deck",
+                    "cards": [card]
+                }
+            ]
+        }
+        local_store = data_manager.DirtyStore()
+        local_store.set(payload)
+        
+        with patch("data_manager.store", local_store):
+            with patch("data_manager.compute_file_sha256") as mock_sha, \
+                 patch("data_manager.compute_image_dhash") as mock_dhash:
+                
+                # 1. Test match by sha-256
+                res_card, res_deck = data_manager.find_duplicate_card(
+                    local_store.get(), "existing_sha", None, "My Title"
+                )
+                self.assertEqual(res_card["_id"], 123)
+                mock_sha.assert_not_called()
+                mock_dhash.assert_not_called()
+                
+                # 2. Test match by visual hash
+                res_card, res_deck = data_manager.find_duplicate_card(
+                    local_store.get(), None, "existing_dhash", "My Title"
+                )
+                self.assertEqual(res_card["_id"], 123)
+                mock_sha.assert_not_called()
+                mock_dhash.assert_not_called()
 
 
 if __name__ == "__main__":

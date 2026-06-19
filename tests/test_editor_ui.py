@@ -72,7 +72,7 @@ class OcclusionCanvasTests(unittest.TestCase):
 
     def test_inject_page_replaces_page_and_refreshes_same_size_scaled_cache(self):
         self.canvas.load_pages([self._pixmap(50, 40)])
-        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+        self.canvas._spx_cache[0] = (1.0, Qt.SmoothTransformation, self._pixmap(50, 40))
 
         replacement = self._pixmap(50, 40)
         self.canvas.inject_page(0, replacement)
@@ -82,7 +82,7 @@ class OcclusionCanvasTests(unittest.TestCase):
 
     def test_inject_page_clears_scaled_cache_when_dimensions_change(self):
         self.canvas.load_pages([self._pixmap(50, 40)])
-        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+        self.canvas._spx_cache[0] = (1.0, Qt.SmoothTransformation, self._pixmap(50, 40))
 
         self.canvas.inject_page(0, self._pixmap(60, 40))
 
@@ -92,7 +92,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.canvas.set_mode("review")
         self.canvas._current_pdf_path = "deck.pdf"
         self.canvas.load_pages([self._pixmap(50, 40)])
-        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+        self.canvas._spx_cache[0] = (1.0, Qt.SmoothTransformation, self._pixmap(50, 40))
 
         self.canvas.load_pages([self._pixmap(60, 50)])
 
@@ -102,7 +102,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.canvas.set_mode("review")
         self.canvas._current_pdf_path = "deck.pdf"
         self.canvas.load_pages([self._pixmap(50, 40)])
-        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+        self.canvas._spx_cache[0] = (1.0, Qt.SmoothTransformation, self._pixmap(50, 40))
         self.canvas._spx_cache_pdf_path = "deck.pdf"
 
         self.canvas.load_pages([self._pixmap(50, 40)])
@@ -113,7 +113,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.canvas.set_mode("review")
         self.canvas._current_pdf_path = "deck.pdf"
         self.canvas.load_pages([self._pixmap(50, 40)])
-        self.canvas._spx_cache[0] = (1.0, self._pixmap(50, 40))
+        self.canvas._spx_cache[0] = (1.0, Qt.SmoothTransformation, self._pixmap(50, 40))
 
         self.canvas.inject_page(0, self._pixmap(50, 40))
 

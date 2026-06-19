@@ -238,7 +238,7 @@ def sched_update(c, quality):
             easy_iv_raw = min(easy_iv_raw, round(good_iv_raw * 1.8))
 
             # ⚡ ALGORITHMIC ENFORCEMENT: Easy > Good
-            easy_iv_raw = max(easy_iv_raw, good_iv_raw + 1)
+            easy_iv_raw = min(MAX_INTERVAL, max(easy_iv_raw, good_iv_raw + 1))
 
             easy_iv = _fuzz_interval(easy_iv_raw, seed_val)
             good_iv_for_order = _fuzz_interval(good_iv_raw, seed_val)

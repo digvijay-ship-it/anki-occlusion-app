@@ -268,6 +268,9 @@ class PageScheduler(QObject):
         self._worker_kind = ""
         # Reset any pages stuck in "loading" — O(rendered) not O(total_pages)
         rendered_set = set(rendered)
+        if not rendered_set:
+            loading_count = sum(1 for ps in self.pages.values() if ps.status == "loading")
+            print(f"[DEBUG][scheduler] batch_done empty — resetting {loading_count} loading pages")
         for pn, ps in self.pages.items():
             if ps.status == "loading" and pn not in rendered_set:
                 self._update_page_status(ps, "not_loaded")
@@ -282,6 +285,13 @@ class PageScheduler(QObject):
     def _enqueue_if_not_present(self, page_num: int) -> None:
         # O(1) check via _inject_set instead of O(n) scan of deque
         if page_num not in self._inject_set:
+            if len(self.inject_queue) >= 64:
+                worst_pn = max(
+                    self.inject_queue,
+                    key=lambda pn: (self.pages[pn].priority if pn in self.pages else 999),
+                )
+                self.inject_queue.remove(worst_pn)
+                self._inject_set.discard(worst_pn)
             self.inject_queue.append(page_num)
             self._inject_set.add(page_num)
 

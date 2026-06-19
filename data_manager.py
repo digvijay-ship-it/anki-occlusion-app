@@ -81,6 +81,7 @@ class DirtyStore:
         self._latest_save_request_seq = 0
         self._last_async_save_ts = 0.0
         self._card_index = {}
+        self._sqlite_initialized_paths = set()
 
     # ── Load / Get / Set ──────────────────────────────────────────────────────
 
@@ -219,7 +220,6 @@ class DirtyStore:
         conn.close()
 
     def _save_to_sqlite(self, db_path, data):
-        self._init_sqlite(db_path)
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("PRAGMA foreign_keys = OFF;")
@@ -333,7 +333,10 @@ class DirtyStore:
                 except (ValueError, TypeError):
                     continue
                     
-                rect = box.get("rect", [0, 0, 0, 0])
+                rect = list(box.get("rect") or [0, 0, 0, 0])
+                if len(rect) < 4:
+                    rect = rect + [0] * (4 - len(rect))
+                rect = rect[:4]
                 rect_x, rect_y, rect_w, rect_h = rect[0], rect[1], rect[2], rect[3]
                 page_num = box.get("page_num", 0)
                 group_id = box.get("group_id")
@@ -556,6 +559,7 @@ class DirtyStore:
             os.makedirs(db_dir, exist_ok=True)
             
         self._init_sqlite(db_path)
+        self._sqlite_initialized_paths.add(db_path)
         
         # Check if we should migrate legacy JSON
         legacy_json_path = self._get_legacy_json_path()
@@ -619,20 +623,12 @@ class DirtyStore:
         with self._lock:
             if not self._dirty:
                 return False
-            if DATA_FILE.endswith(".json"):
-                snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
-                snapshot_summary = DirtyStore._data_summary(self._data)
-            else:
-                snapshot_text = None
-                snapshot_summary = None
             self._save_seq += 1
             save_seq = self._save_seq
             self._latest_save_request_seq = save_seq
             self._dirty = False
         try:
-            return self._write_snapshot_to_disk(
-                save_seq, snapshot_text, snapshot_summary
-            )
+            return self._write_snapshot_to_disk(save_seq)
         except Exception:
             with self._lock:
                 self._dirty = True
@@ -641,12 +637,6 @@ class DirtyStore:
     def save_force(self, async_save=False):
         """Force write regardless of dirty flag (use on app exit, or async in UI)."""
         with self._lock:
-            if DATA_FILE.endswith(".json"):
-                snapshot_text = json.dumps(self._data, ensure_ascii=False, indent=2)
-                snapshot_summary = DirtyStore._data_summary(self._data)
-            else:
-                snapshot_text = None
-                snapshot_summary = None
             self._save_seq += 1
             save_seq = self._save_seq
             self._latest_save_request_seq = save_seq
@@ -655,7 +645,7 @@ class DirtyStore:
         if async_save:
             def _bg_write():
                 try:
-                    self._write_snapshot_to_disk(save_seq, snapshot_text, snapshot_summary)
+                    self._write_snapshot_to_disk(save_seq)
                 except Exception as e:
                     print(f"[data_manager] Async save_force failed: {e}")
                     with self._lock:
@@ -663,31 +653,39 @@ class DirtyStore:
             threading.Thread(target=_bg_write, daemon=True, name="DirtyStore-AsyncSaveForce").start()
         else:
             try:
-                self._write_snapshot_to_disk(save_seq, snapshot_text, snapshot_summary)
+                self._write_snapshot_to_disk(save_seq)
             except Exception:
                 with self._lock:
                     self._dirty = True
                 raise
 
-    def _write_snapshot_to_disk(self, save_seq, snapshot_text, snapshot_summary):
+    def _write_snapshot_to_disk(self, save_seq):
         with self._write_lock:
             with self._lock:
                 if save_seq < self._latest_save_request_seq:
                     return False
+                import copy
+                data_snapshot = copy.deepcopy(self._data)
             
             db_path = self._get_db_path()
             db_dir = os.path.dirname(db_path)
             if db_dir:
                 os.makedirs(db_dir, exist_ok=True)
                 
+            if db_path not in self._sqlite_initialized_paths:
+                self._init_sqlite(db_path)
+                self._sqlite_initialized_paths.add(db_path)
+
             # Perform SQLite backup if needed
             self._backup_db_file(db_path)
             
             # Save data to SQLite
-            self._save_to_sqlite(db_path, self._data)
+            self._save_to_sqlite(db_path, data_snapshot)
             
             # JSON Compatibility Mode
-            if DATA_FILE.endswith(".json") and snapshot_text is not None:
+            if DATA_FILE.endswith(".json"):
+                snapshot_text = json.dumps(data_snapshot, ensure_ascii=False, indent=2)
+                snapshot_summary = DirtyStore._data_summary(data_snapshot)
                 self._write_serialized_to_disk(snapshot_text, snapshot_summary)
                 
             # Asynchronous Google Drive Sync (Runs in a background thread)
@@ -854,7 +852,10 @@ class DirtyStore:
     @staticmethod
     def _write_to_disk(data):
         db_path = DATA_FILE[:-5] + ".db" if DATA_FILE.endswith(".json") else DATA_FILE
-        DirtyStore()._save_to_sqlite(db_path, data)
+        store = DirtyStore()
+        store._init_sqlite(db_path)
+        store._sqlite_initialized_paths.add(db_path)
+        store._save_to_sqlite(db_path, data)
         if DATA_FILE.endswith(".json"):
             serialized_text = json.dumps(data, ensure_ascii=False, indent=2)
             new_summary = DirtyStore._data_summary(data)
@@ -1119,38 +1120,42 @@ def find_duplicate_card(data: dict, file_sha: str, dhash: str, title: str, targe
         
     normalized_title = title.strip().lower() if title else ""
     is_default_title = normalized_title in ("", "untitled", "pasted image")
-    
-    lazy_cache_updated = [False]
 
     if data is store.get():
         with store._lock:
             if not hasattr(store, "_card_index") or store._card_index is None:
                 store._rebuild_card_index()
-            card_items = list(store._card_index.values())
+            # Snapshot primitive fields to minimize work done under the lock
+            card_items = []
+            for card_id, (card, deck) in store._card_index.items():
+                card_items.append((
+                    card,
+                    deck,
+                    card.get("file_hash"),
+                    card.get("visual_hash"),
+                    card.get("image_path") or card.get("pdf_path"),
+                    bool(card.get("image_path")),
+                    card.get("title", "")
+                ))
         
-        for card, deck in card_items:
+        for card, deck, c_sha, c_dhash, path, is_image, card_title in card_items:
             # 1. Check exact byte hash (SHA-256)
-            c_sha = card.get("file_hash")
-            path = card.get("image_path") or card.get("pdf_path")
-            
             # Lazy load SHA-256
-            if not c_sha and path:
+            if file_sha and not c_sha and path:
                 from storage_paths import resolve_asset_path
                 abs_path = resolve_asset_path(path)
                 if os.path.exists(abs_path):
                     c_sha = compute_file_sha256(abs_path)
                     if c_sha:
-                        card["file_hash"] = c_sha
-                        lazy_cache_updated[0] = True
+                        with store._lock:
+                            card["file_hash"] = c_sha
+                            store.mark_dirty()
                         
             if file_sha and c_sha == file_sha:
-                if lazy_cache_updated[0]:
-                    store.mark_dirty()
                 return card, deck
                 
             # 2. Check visual similarity (dHash) for image cards
-            if dhash and card.get("image_path"):
-                c_dhash = card.get("visual_hash")
+            if dhash and is_image:
                 # Lazy load dHash
                 if not c_dhash and path:
                     from storage_paths import resolve_asset_path
@@ -1158,35 +1163,33 @@ def find_duplicate_card(data: dict, file_sha: str, dhash: str, title: str, targe
                     if os.path.exists(abs_path):
                         c_dhash = compute_image_dhash(abs_path)
                         if c_dhash:
-                            card["visual_hash"] = c_dhash
-                            lazy_cache_updated[0] = True
+                            with store._lock:
+                                card["visual_hash"] = c_dhash
+                                store.mark_dirty()
                             
                 if c_dhash and hamming_distance(dhash, c_dhash) <= 2:
-                    if lazy_cache_updated[0]:
-                        store.mark_dirty()
                     return card, deck
                     
             # 3. Check title duplicate (only in target deck if specified)
             if not is_default_title:
-                c_title = card.get("title", "").strip().lower()
-                if c_title == normalized_title:
+                c_title_norm = card_title.strip().lower()
+                if c_title_norm == normalized_title:
                     if target_deck_id is None or deck.get("_id") == target_deck_id:
-                        if lazy_cache_updated[0]:
-                            store.mark_dirty()
                         return card, deck
-        if lazy_cache_updated[0]:
-            store.mark_dirty()
         return None, None
+
+    # Fallback path for arbitrary dictionaries (not store.get())
+    lazy_cache_updated = [False]
 
     def _walk(decks):
         for deck in decks:
-            for card in deck.get("cards", []):
+            for card in deck.get("cards", []) or []:
                 # 1. Check exact byte hash (SHA-256)
                 c_sha = card.get("file_hash")
                 path = card.get("image_path") or card.get("pdf_path")
                 
                 # Lazy load SHA-256
-                if not c_sha and path:
+                if file_sha and not c_sha and path:
                     from storage_paths import resolve_asset_path
                     abs_path = resolve_asset_path(path)
                     if os.path.exists(abs_path):

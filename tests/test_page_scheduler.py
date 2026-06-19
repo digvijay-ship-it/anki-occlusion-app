@@ -129,6 +129,24 @@ class PageSchedulerWorkerTests(unittest.TestCase):
         scheduler._check_completion()
         scheduler.all_done.emit.assert_called_once()
 
+    def test_enqueue_queue_capping(self):
+        scheduler = PageScheduler(MagicMock())
+        scheduler._path = "deck.pdf"
+        scheduler.pages = {i: PageState() for i in range(100)}
+        for i in range(100):
+            scheduler.pages[i].priority = i
+        
+        for i in range(64):
+            scheduler._enqueue_if_not_present(i)
+        
+        self.assertEqual(len(scheduler.inject_queue), 64)
+        self.assertIn(63, scheduler._inject_set)
+        
+        scheduler._enqueue_if_not_present(64)
+        self.assertEqual(len(scheduler.inject_queue), 64)
+        self.assertNotIn(63, scheduler._inject_set)
+        self.assertIn(64, scheduler._inject_set)
+
 
 if __name__ == "__main__":
     unittest.main()

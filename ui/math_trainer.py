@@ -109,9 +109,11 @@ class MathScratchpad(QWidget):
             self._backing_store.fill(Qt.transparent)
         self.update()
 
-    def _draw_segment_to_backing_store(self, p0, p1):
+    def _redraw_backing_store(self):
         if self._backing_store is None or self._backing_store.isNull():
             self._init_backing_store()
+        self._backing_store.fill(Qt.transparent)
+        
         p = QPainter(self._backing_store)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(
@@ -123,7 +125,18 @@ class MathScratchpad(QWidget):
                 Qt.RoundJoin,
             )
         )
-        p.drawLine(QPointF(p0), QPointF(p1))
+        
+        from ui.canvas.geometry import smooth_points_to_path
+        
+        for stroke in self._strokes:
+            if len(stroke) >= 2:
+                path = smooth_points_to_path(stroke, scale=1.0)
+                p.drawPath(path)
+                
+        if len(self._current) >= 2:
+            path = smooth_points_to_path(self._current, scale=1.0)
+            p.drawPath(path)
+            
         p.end()
 
     def paintEvent(self, e):
@@ -156,15 +169,8 @@ class MathScratchpad(QWidget):
             self._idle_timer.stop()
             self._current.append(e.localPos())
             if len(self._current) >= 2:
-                p0, p1 = self._current[-2], self._current[-1]
-                self._draw_segment_to_backing_store(p0, p1)
-                
-                pen_w = self._pen_width + 10
-                x0 = int(math.floor(min(p0.x(), p1.x()) - pen_w))
-                y0 = int(math.floor(min(p0.y(), p1.y()) - pen_w))
-                x1 = int(math.ceil(max(p0.x(), p1.x()) + pen_w))
-                y1 = int(math.ceil(max(p0.y(), p1.y()) + pen_w))
-                self.update(QRect(x0, y0, x1 - x0, y1 - y0))
+                self._redraw_backing_store()
+                self.update()
             e.accept()
         else:
             super().mouseMoveEvent(e)
@@ -174,6 +180,7 @@ class MathScratchpad(QWidget):
             if len(self._current) >= 2:
                 self._strokes.append(list(self._current))
             self._current = []
+            self._redraw_backing_store()
             self._idle_timer.start()
             self.update()
             e.accept()

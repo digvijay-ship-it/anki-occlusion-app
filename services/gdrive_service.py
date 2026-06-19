@@ -24,7 +24,24 @@ class OAuthReceiverHandler(BaseHTTPRequestHandler):
         query = urllib.parse.urlparse(self.path).query
         params = urllib.parse.parse_qs(query)
         code = params.get("code", [None])[0]
+        state = params.get("state", [None])[0]
         
+        # Verify CSRF state token
+        expected_state = getattr(self.server, "oauth_state", None)
+        if expected_state and state != expected_state:
+            self.send_response(400)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("""
+                <html>
+                <body style="font-family: 'Segoe UI', Arial, sans-serif; text-align: center; padding-top: 100px; background-color: #1E1E2E; color: #F38BA8; line-height: 1.6;">
+                    <h2 style="font-size: 28px;">❌ CSRF State Verification Failed</h2>
+                    <p style="font-size: 16px;">The state token returned by Google did not match. This could indicate a CSRF attack.</p>
+                </body>
+                </html>
+            """.encode("utf-8"))
+            return
+
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
@@ -89,6 +106,10 @@ class GDriveService:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._tokens, f, indent=2)
+            try:
+                os.chmod(path, 0o600)
+            except Exception as e:
+                print(f"[GDriveService] Failed to set token permissions: {e}")
         except Exception as e:
             print(f"[GDriveService] Failed to save tokens: {e}")
 
@@ -163,10 +184,17 @@ class GDriveService:
         # 1. Start local receiver
         server = HTTPServer(("localhost", port), OAuthReceiverHandler)
         server.auth_code = None
-        server.timeout = 120.0  # 2 minute timeout
+        server.timeout = 0.5
+        server.running = True
+
+        import secrets
+        state = secrets.token_urlsafe(16)
+        server.oauth_state = state
 
         def _run():
-            server.handle_request()
+            start_time = time.time()
+            while server.running and not server.auth_code and (time.time() - start_time < 120.0):
+                server.handle_request()
             server.server_close()
 
         threading.Thread(target=_run, daemon=True, name="GDrive-OAuthReceiver").start()
@@ -183,7 +211,8 @@ class GDriveService:
             "response_type=code&"
             f"scope={urllib.parse.quote(scope)}&"
             "access_type=offline&"
-            "prompt=consent"
+            "prompt=consent&"
+            f"state={urllib.parse.quote(state)}"
         )
         return auth_url, server
 
@@ -335,11 +364,15 @@ class GDriveService:
             print(f"[GDriveService] Exception during file upload: {e}")
         return False
 
+    def _escape_drive_query(self, value: str) -> str:
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+
     def _get_or_create_backups_folder(self, headers):
         folder_name = "Anki Occlusion Backups"
+        escaped_folder_name = self._escape_drive_query(folder_name)
         
         # Search for folder
-        query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        query = f"name = '{escaped_folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         url = f"https://www.googleapis.com/drive/v3/files?q={urllib.parse.quote(query)}&fields=files(id)"
         
         try:
@@ -363,7 +396,8 @@ class GDriveService:
         return None
 
     def _find_file_in_folder(self, headers, filename, folder_id):
-        query = f"name = '{filename}' and '{folder_id}' in parents and trashed = false"
+        escaped_filename = self._escape_drive_query(filename)
+        query = f"name = '{escaped_filename}' and '{folder_id}' in parents and trashed = false"
         url = f"https://www.googleapis.com/drive/v3/files?q={urllib.parse.quote(query)}&fields=files(id)"
         try:
             r = requests.get(url, headers=headers, timeout=15)

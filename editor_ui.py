@@ -76,6 +76,7 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QFrame,
     QScrollArea,
+    QAbstractScrollArea,
     QMessageBox,
     QFileDialog,
     QFormLayout,
@@ -308,6 +309,10 @@ class _ZoomableScrollArea(QScrollArea):
         self.setFocusPolicy(Qt.StrongFocus)
         self.viewport().installEventFilter(self)
 
+        # Snappy single-step for keyboard arrows / scrollbar arrow buttons
+        self.verticalScrollBar().setSingleStep(40)
+        self.horizontalScrollBar().setSingleStep(40)
+
         # ── Scroll debounce timer — avoids firing on every pixel of scroll ───
         self._scroll_debounce = QTimer(self)
         self._scroll_debounce.setSingleShot(True)
@@ -355,9 +360,9 @@ class _ZoomableScrollArea(QScrollArea):
         self._last_viewport_size = viewport_now
         self._scroll_debounce.start()
 
-        last_emit = self._last_visible_emit_ts
-        if last_emit is None or (now - last_emit) * 1000.0 >= 100.0:
-            self._emit_visible_pages()
+        # Visible-page detection is deferred to _scroll_debounce (150ms after
+        # motion stops) — see _emit_visible_pages. Doing it eagerly here runs
+        # set-rebuilds + cache probes on the GUI thread every pixel of scroll.
 
     def _on_scroll_range_changed(self, minimum, maximum):
         prev = self._last_scroll_range
@@ -465,8 +470,43 @@ class _ZoomableScrollArea(QScrollArea):
     def wheelEvent(self, e):
         if (e.modifiers() & Qt.ControlModifier) and self._canvas:
             self._canvas.wheelEvent(e)
-        else:
-            super().wheelEvent(e)
+            return
+
+        # 1. Touchpads sending high-precision PIXEL deltas (typically macOS/some Windows Precision Touchpads)
+        pd = e.pixelDelta()
+        if pd is not None and not pd.isNull():
+            # Amplify pixel-delta scrolling so it matches native scroll feel.
+            _PIXEL_SCROLL_GAIN = 1.5
+            dy = int(round(pd.y() * _PIXEL_SCROLL_GAIN))
+            dx = int(round(pd.x() * _PIXEL_SCROLL_GAIN))
+            if dy != 0:
+                vbar = self.verticalScrollBar()
+                vbar.setValue(vbar.value() - dy)
+            if dx != 0:
+                hbar = self.horizontalScrollBar()
+                hbar.setValue(hbar.value() - dx)
+            e.accept()
+            return
+
+        # 2. Fallback to angleDelta (standard mouse wheel, and trackpads on Windows where pixelDelta is null)
+        ad = e.angleDelta()
+        if ad is not None and not ad.isNull():
+            # Standard mouse wheel scrolls in 120-unit ticks.
+            # Map 120 units to 80 pixels for a snappy, responsive feel.
+            # For touchpads sending small step deltas, it scales down proportionally and smoothly.
+            _ANGLE_SCROLL_MULTIPLIER = 80.0 / 120.0
+            dy = int(round(ad.y() * _ANGLE_SCROLL_MULTIPLIER))
+            dx = int(round(ad.x() * _ANGLE_SCROLL_MULTIPLIER))
+            if dy != 0:
+                vbar = self.verticalScrollBar()
+                vbar.setValue(vbar.value() - dy)
+            if dx != 0:
+                hbar = self.horizontalScrollBar()
+                hbar.setValue(hbar.value() - dx)
+            e.accept()
+            return
+
+        super().wheelEvent(e)
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_H and not e.isAutoRepeat():

@@ -91,6 +91,7 @@ class OcclusionCanvas(
         # ── ink layer ─────────────────────────────────────────────────────────
         self._ink_active = False
         self._ink_strokes = []
+        self._stroke_seq = 0
         self._ink_current = []
         self._ink_color_idx = 0
         self._ink_colors = ["#FF4444", "#FFD700", "#00FFFF", "#FFFFFF"]

@@ -404,21 +404,12 @@ class PdfAnnotationCanvas(QWidget):
         if len(pts) < 2:
             return
         top = self._page_tops[page_num] * self._scale
-        path = QPainterPath()
-        path.moveTo(pts[0].x() * self._scale, top + pts[0].y() * self._scale)
-        for idx in range(1, len(pts) - 1):
-            mid = QPointF(
-                (pts[idx].x() + pts[idx + 1].x()) / 2.0,
-                (pts[idx].y() + pts[idx + 1].y()) / 2.0,
-            )
-            path.quadTo(
-                pts[idx].x() * self._scale,
-                top + pts[idx].y() * self._scale,
-                mid.x() * self._scale,
-                top + mid.y() * self._scale,
-            )
-        last = pts[-1]
-        path.lineTo(last.x() * self._scale, top + last.y() * self._scale)
+        from ui.canvas.geometry import smooth_points_to_path
+        path = smooth_points_to_path(
+            pts,
+            scale=self._scale,
+            offset=QPointF(0.0, top),
+        )
         pen_color = QColor(color or ("#FFD54A" if tool == "highlight" else "#FF4444"))
         painter.save()
         painter.setOpacity(float(opacity))
@@ -717,6 +708,71 @@ class PdfAnnotationCanvas(QWidget):
         self._selected_image_page = None
         self._selected_image_id = None
         self.update()
+
+    def _tablet_pos(self, e):
+        for name in ("posF", "position", "pos"):
+            attr = getattr(e, name, None)
+            if attr is None:
+                continue
+            try:
+                value = attr()
+            except TypeError:
+                value = attr
+            return QPointF(value)
+        return QPointF()
+
+    def tabletEvent(self, e):
+        if self._tool == "image":
+            e.ignore()
+            return
+
+        from PyQt5.QtCore import QEvent
+        et = e.type()
+        
+        if et == QEvent.TabletPress:
+            page_num, point = self._page_info_for_pos(self._tablet_pos(e))
+            if page_num is None:
+                e.ignore()
+                return
+            if self._tool == "erase":
+                self._erase_active = True
+                self.erase_dragged.emit(page_num, point)
+                e.accept()
+                return
+            self._drawing_page = page_num
+            self._live_tool = self._tool
+            self._live_points = [point]
+            self.update()
+            e.accept()
+            
+        elif et == QEvent.TabletMove:
+            page_num, point = self._page_info_for_pos(self._tablet_pos(e))
+            if self._tool == "erase" and self._erase_active and page_num is not None:
+                self.erase_dragged.emit(page_num, point)
+                e.accept()
+                return
+            if self._drawing_page is None or page_num != self._drawing_page:
+                e.ignore()
+                return
+            self._live_points.append(point)
+            self.update()
+            e.accept()
+            
+        elif et == QEvent.TabletRelease:
+            if self._tool == "erase":
+                self._erase_active = False
+                e.accept()
+                return
+            if self._drawing_page is not None and len(self._live_points) >= 2:
+                self.stroke_finished.emit(
+                    self._drawing_page, self._live_tool, list(self._live_points)
+                )
+            self._drawing_page = None
+            self._live_points = []
+            self.update()
+            e.accept()
+        else:
+            e.ignore()
 
 
 class PdfAnnotationDialog(QDialog):

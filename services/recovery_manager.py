@@ -70,19 +70,24 @@ def _atomic_write_json(path, payload):
         _replace_file_with_retry(tmp, path)
     except Exception:
         try:
+            os.close(fd)
+        except Exception:
+            pass
+        try:
             os.unlink(tmp)
         except Exception:
             pass
         raise
 
 
-def _replace_file_with_retry(src, dst, attempts=8, delay=0.05):
+def _replace_file_with_retry(src, dst, attempts=3, delay=0.05):
     for attempt in range(attempts):
         try:
             os.replace(src, dst)
             return
         except PermissionError:
             if attempt == attempts - 1:
+                print(f"[recovery] replace failed after {attempts} attempts: {dst}")
                 raise
             time.sleep(delay * (attempt + 1))
 

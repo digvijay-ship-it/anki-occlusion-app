@@ -48,6 +48,8 @@ class CanvasStateMixin:
         self._total_h = 0
         self._total_w = 0
         self._spx_cache.clear()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         if px is None or px.isNull():
             self._px = None
             self._boxes = []
@@ -102,6 +104,8 @@ class CanvasStateMixin:
         self._spx_cache_pdf_path = current_pdf
         self._compute_layout()
         self._resize_canvas()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         self.update()
 
     def append_pages(self, pages: list):
@@ -168,20 +172,21 @@ class CanvasStateMixin:
             page_px = QPixmap.fromImage(page_px)
             self._pages[idx] = page_px
 
-        cached_scale, cached_spx = self._spx_cache.get(idx, (None, None))
+        transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
+        cached_scale, cached_tt, cached_spx = self._spx_cache.get(idx, (None, None, None))
         if cached_spx is not None:
             self._spx_cache.move_to_end(idx, last=True)
         if (
             cached_scale == self._scale
+            and cached_tt == transform_type
             and cached_spx is not None
             and not cached_spx.isNull()
         ):
             return cached_spx
         sw = max(int(page_px.width() * self._scale), 1)
         sh = max(int(page_px.height() * self._scale), 1)
-        transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
         cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, transform_type)
-        self._spx_cache[idx] = (self._scale, cached_spx)
+        self._spx_cache[idx] = (self._scale, transform_type, cached_spx)
         self._spx_cache.move_to_end(idx, last=True)
         while len(self._spx_cache) > self.SPX_CACHE_MAX:
             self._spx_cache.popitem(last=False)
@@ -220,7 +225,7 @@ class CanvasStateMixin:
         self._pages[page_num] = qpx
 
         # Refresh or invalidate scaled cache for this page only.
-        cached_scale, _cached_spx = self._spx_cache.get(page_num, (None, None))
+        cached_scale, _cached_tt, _cached_spx = self._spx_cache.get(page_num, (None, None, None))
         if _cached_spx is not None:
             self._spx_cache.move_to_end(page_num, last=True)
         had_scaled_cache = cached_scale is not None
@@ -230,6 +235,7 @@ class CanvasStateMixin:
             transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
             self._spx_cache[page_num] = (
                 self._scale,
+                transform_type,
                 qpx.scaled(sw, sh, Qt.KeepAspectRatio, transform_type),
             )
             self._spx_cache.move_to_end(page_num, last=True)
@@ -332,8 +338,12 @@ class CanvasStateMixin:
         self._smooth_timer.start(300)  # switch to smooth quality after zoom settles
 
     def _apply_smooth(self):
-        """Clear fast-scaled cache and repaint with SmoothTransformation."""
-        self._spx_cache.clear()
+        """Fast-zoom settled: repaint so cached pages re-evaluate quality.
+
+        No cache wipe needed — entries are now keyed by transform type, so
+        stale FastTransformation pixmaps miss lazily on the next paint and
+        get replaced with SmoothTransformation versions one page at a time.
+        """
         self.update()
 
     def set_tool(self, tool: str):
@@ -348,6 +358,8 @@ class CanvasStateMixin:
 
     def set_boxes(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=False) for b in boxes]
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         self.update()
 
     def set_boxes_with_state(self, boxes):
@@ -357,6 +369,8 @@ class CanvasStateMixin:
         if self._mode != "review":
             self._ink_strokes.clear()
             self._ink_current.clear()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         self.update()
 
     def get_boxes(self):
@@ -708,6 +722,9 @@ class CanvasStateMixin:
         self._selected_idx = -1
         self._selected_indices = set()
         self._selection_scope = ""
+        self._update_all_box_page_nums()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 
@@ -719,6 +736,9 @@ class CanvasStateMixin:
         self._selected_idx = -1
         self._selected_indices = set()
         self._selection_scope = ""
+        self._update_all_box_page_nums()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
         self.update()
         self.boxes_changed.emit(self.get_boxes())
 

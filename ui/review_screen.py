@@ -121,7 +121,7 @@ from data_manager import (
 from perf_utils import get_pdf_page_count, perf_log
 from storage_paths import resolve_asset_path
 
-import sys, os, copy, uuid, math, time
+import sys, os, copy, uuid, math, time, re
 from datetime import datetime, date, timedelta
 
 
@@ -192,7 +192,12 @@ from PyQt5.QtGui import (
     QDrag,
     QDesktopServices,
     QKeySequence,
+    QTextDocument,
 )
+
+_RE_IMG_SRC = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+_RE_IMG = re.compile(r'<img\s+[^>]+>', re.IGNORECASE)
+_RE_FONT_SIZE = re.compile(r'font-size\s*:\s*[^;\'"]+;?', re.IGNORECASE)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  THEME
@@ -663,6 +668,7 @@ class ReviewScreen(QWidget):
         self._pending_skeleton_result = None
         self._review_defer_visible_until_centered = False
         self._background_fill_state = None
+        self._bg_remaining = None
         self._ondemand_kind = None
         self._ondemand_thread = None
         self._bg_pending_inserts = {}
@@ -905,8 +911,19 @@ class ReviewScreen(QWidget):
         # STEP 4 — stop on-demand thread on close
         self._stop_ondemand_thread(shutdown=True)
 
+        if hasattr(self, "_pending_worker_cleanups") and self._pending_worker_cleanups:
+            for t in list(self._pending_worker_cleanups):
+                try:
+                    if t.isRunning():
+                        t.wait(2000)
+                except Exception:
+                    pass
+            self._pending_worker_cleanups.clear()
+
         if hasattr(self, "_pdf_watcher") and self._pdf_watcher is not None:
             self._pdf_watcher.stop_watch()
+            self._pdf_watcher.get_current_page_cb = None
+            self._pdf_watcher.get_hint_cb = None
 
         # Stop timer and write focus time to today's journal
         if self._stimer:
@@ -1005,6 +1022,7 @@ class ReviewScreen(QWidget):
         bg_path, bg_already_rendered, bg_total = bg_state
         if getattr(self, "_canvas_pdf_path", None) != bg_path:
             self._background_fill_state = None
+            self._bg_remaining = None
             return
         self._start_background_fill(bg_path, bg_already_rendered, bg_total)
 
@@ -1134,8 +1152,9 @@ class ReviewScreen(QWidget):
             session_label.setText(self._stimer.label_session.text())
         if today_label is not None:
             today_label.setText(self._stimer.label_today.text())
-        self._sync_floating_queue_count()
-        self._sync_queue_timer_count()
+        count = self._active_queue_count()
+        self._sync_floating_queue_count(total=count)
+        self._sync_queue_timer_count(total=count)
         self._reposition_floating_timer()
 
     def _set_floating_timer_sync_enabled(self, enabled: bool):
@@ -2996,23 +3015,17 @@ class ReviewScreen(QWidget):
         
         # Stop loading threads
         if hasattr(self, "_pdf_loader_thread") and self._pdf_loader_thread and self._pdf_loader_thread.isRunning():
-            self._pdf_loader_thread.stop()
-            self._pdf_loader_thread.quit()
             t = self._pdf_loader_thread
-            if not hasattr(self, "_pending_worker_cleanups"):
-                self._pending_worker_cleanups = []
-            self._pending_worker_cleanups.append(t)
-            t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
+            self._add_thread_to_cleanups(t)
+            t.stop()
+            t.quit()
         self._pdf_loader_thread = None
 
         if hasattr(self, "_pdf_ondemand_thread") and self._pdf_ondemand_thread and self._pdf_ondemand_thread.isRunning():
-            self._pdf_ondemand_thread.stop()
-            self._pdf_ondemand_thread.quit()
             t = self._pdf_ondemand_thread
-            if not hasattr(self, "_pending_worker_cleanups"):
-                self._pending_worker_cleanups = []
-            self._pending_worker_cleanups.append(t)
-            t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
+            self._add_thread_to_cleanups(t)
+            t.stop()
+            t.quit()
         self._pdf_ondemand_thread = None
             
         self._review_canvas_real_pages = set()
@@ -3498,9 +3511,6 @@ class ReviewScreen(QWidget):
                 self._text_card_cache[cache_key] = val
                 return val
 
-        import re
-        from PyQt5.QtGui import QTextDocument, QPainter, QPixmap, QColor
-        from PyQt5.QtCore import QUrl, Qt, QRectF
         from ui.text_review_widget import get_base_url
         from theme_manager import get_palette
 
@@ -3579,8 +3589,7 @@ class ReviewScreen(QWidget):
             if not html_content:
                 return ""
             # Find all image sources
-            img_pattern = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
-            sources = img_pattern.findall(html_content)
+            sources = _RE_IMG_SRC.findall(html_content)
             
             base_url = get_base_url()
             base_path = ""
@@ -3619,9 +3628,9 @@ class ReviewScreen(QWidget):
                 tag = tag[:-1] + ' width="720">'
                 return tag
                 
-            cleaned = re.compile(r'<img\s+[^>]+>', re.IGNORECASE).sub(clean_and_resize_img_tags, html_content)
+            cleaned = _RE_IMG.sub(clean_and_resize_img_tags, html_content)
             # Clean inline font-size to allow default css style scaling
-            cleaned = re.sub(r'font-size\s*:\s*[^;\'"]+;?', '', cleaned, flags=re.IGNORECASE)
+            cleaned = _RE_FONT_SIZE.sub('', cleaned)
             return cleaned
 
         q_html = process_html_images(q_html)
@@ -3922,18 +3931,34 @@ class ReviewScreen(QWidget):
         )
         return result
 
+    def _add_thread_to_cleanups(self, t):
+        if not hasattr(self, "_pending_worker_cleanups") or self._pending_worker_cleanups is None:
+            self._pending_worker_cleanups = []
+        try:
+            self._pending_worker_cleanups = [x for x in self._pending_worker_cleanups if not x.isFinished()]
+        except Exception:
+            pass
+        if len(self._pending_worker_cleanups) >= 16:
+            self._pending_worker_cleanups.pop(0)
+        
+        self._pending_worker_cleanups.append(t)
+        t.finished.connect(
+            lambda obj=t: self._pending_worker_cleanups.remove(obj)
+            if (hasattr(self, "_pending_worker_cleanups") and self._pending_worker_cleanups and obj in self._pending_worker_cleanups)
+            else None
+        )
+
     def _stop_skeleton_thread(self, shutdown=False):
         if self._skeleton_thread and self._skeleton_thread.isRunning():
-            self._skeleton_thread.stop()
-            self._skeleton_thread.quit()
+            t = self._skeleton_thread
             if shutdown:
-                self._skeleton_thread.wait(500)
+                t.stop()
+                t.quit()
+                t.wait(500)
             else:
-                t = self._skeleton_thread
-                if not hasattr(self, "_pending_worker_cleanups"):
-                    self._pending_worker_cleanups = []
-                self._pending_worker_cleanups.append(t)
-                t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
+                self._add_thread_to_cleanups(t)
+                t.stop()
+                t.quit()
         self._skeleton_thread = None
 
     def _start_review_skeleton_thread(self, path):
@@ -4077,6 +4102,7 @@ class ReviewScreen(QWidget):
 
         if not to_render:
             self._background_fill_state = None
+            self._bg_remaining = None
             self._ondemand_kind = None
             return
 
@@ -4129,6 +4155,7 @@ class ReviewScreen(QWidget):
             )
             return
         self._background_fill_state = None
+        self._bg_remaining = None
         self._ondemand_kind = None
         pending = self._pending_visible_request
         self._pending_visible_request = None
@@ -4320,6 +4347,7 @@ class ReviewScreen(QWidget):
         if not remaining:
             self._safe_canvas_toast(f"PDF ready: {total_pages} pages")
             self._background_fill_state = None
+            self._bg_remaining = None
             self._ondemand_kind = None
             self._bg_accept_mode = True
             self._sync_bg_prefetch_dialog(path, total_pages, done=True)
@@ -4330,11 +4358,13 @@ class ReviewScreen(QWidget):
         remaining_slots = max(0, self._BG_FILL_WINDOW - len(background_done))
         if remaining_slots <= 0:
             self._background_fill_state = None
+            self._bg_remaining = None
             self._ondemand_kind = None
             return
 
         windowed = remaining[: min(self._BG_FILL_BATCH, remaining_slots)]
         next_rendered = sorted(set(already_rendered) | set(windowed))
+        self._bg_remaining = set(remaining)
 
         self._stop_ondemand_thread()
         self._ondemand_kind = "background"
@@ -4393,6 +4423,7 @@ class ReviewScreen(QWidget):
         if path != getattr(self, "_canvas_pdf_path", None):
             print(f"[DEBUG][review_bg] batch_skip reason=stale_path path={path}")
             self._background_fill_state = None
+            self._bg_remaining = None
             self._ondemand_kind = None
             return
         combined = sorted(set(already_rendered) | set(rendered))
@@ -4400,32 +4431,28 @@ class ReviewScreen(QWidget):
         canvas_real = set(self.__dict__.get("_review_canvas_real_pages", set()) or set())
         pending_bg = set((self.__dict__.get("_bg_pending_inserts", {}) or {}).keys())
         scan_t0 = time.perf_counter()
-        cached_indices = set(PAGE_CACHE.cached_page_indices(path, total_pages, variant=self._pdf_render_zoom))
-        cache_probes = 0
-        cache_hits = 0
-        remaining = []
-        for pn in range(total_pages):
-            cache_probes += 1
-            if pn in cached_indices:
-                cache_hits += 1
-                continue
-            if pn in combined or pn in canvas_real or pn in pending_bg:
-                continue
-            remaining.append(pn)
+
+        rendered_set = set(rendered)
+        if getattr(self, "_bg_remaining", None) is not None:
+            self._bg_remaining.difference_update(rendered_set)
+            self._bg_remaining.difference_update(canvas_real)
+            self._bg_remaining.difference_update(pending_bg)
+
+        has_remaining = bool(self._bg_remaining) if getattr(self, "_bg_remaining", None) is not None else False
+        remaining_count = len(self._bg_remaining) if getattr(self, "_bg_remaining", None) is not None else 0
+
         perf_log(
             "review_bg_batch_remaining_scan",
             file=os.path.basename(path),
             total_pages=total_pages,
-            cache_probes=cache_probes,
-            cache_hits=cache_hits,
-            remaining=len(remaining),
+            remaining=remaining_count,
             combined=len(combined),
             canvas_real=len(canvas_real),
             pending_bg=len(pending_bg),
             elapsed_ms=round((time.perf_counter() - scan_t0) * 1000.0, 3),
         )
 
-        if remaining:
+        if has_remaining:
             self._background_fill_state = (path, combined, total_pages)
             self._ondemand_kind = None
             self._sync_bg_prefetch_dialog(path, total_pages, done=False)
@@ -4433,13 +4460,14 @@ class ReviewScreen(QWidget):
                 "[DEBUG][review_bg] "
                 f"batch_done rendered={self._fmt_review_pages(rendered)} "
                 f"requested={self._fmt_review_pages(requested)} "
-                f"remaining={len(remaining)}"
+                f"remaining={remaining_count}"
             )
             if self._ui_idle_timer is not None:
                 self._ui_idle_timer.start(self._BG_FILL_DELAY_MS)
             return
 
         self._background_fill_state = None
+        self._bg_remaining = None
         self._ondemand_kind = None
         self._bg_accept_mode = True
         self._sync_bg_prefetch_dialog(path, total_pages, done=True)
@@ -4919,23 +4947,21 @@ class ReviewScreen(QWidget):
         """
         t = getattr(self, "_ondemand_thread", None)
         if t and t.isRunning():
-            t.stop()
-            t.quit()
             if shutdown:
+                t.stop()
+                t.quit()
                 t.wait(400)
             else:
-                if not hasattr(self, "_pending_worker_cleanups"):
-                    self._pending_worker_cleanups = []
-                self._pending_worker_cleanups.append(t)
-                t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
+                self._add_thread_to_cleanups(t)
+                t.stop()
+                t.quit()
         requested = set(self.__dict__.pop("_ondemand_requested_pages", set()) or set())
         if requested:
             self.__dict__.setdefault(
                 "_review_render_inflight_pages", set()
             ).difference_update(requested)
         requests = self.__dict__.setdefault("_ondemand_request_pages_by_thread", {})
-        if t:
-            requests.pop(id(t), None)
+        requests.clear()
         # Always clear the reference so the next start gets a fresh thread
         self._ondemand_thread = None
 
@@ -4988,7 +5014,18 @@ class ReviewScreen(QWidget):
             self.canvas.set_mode("review")
             self.canvas.set_target_group(gid)
         elif box_idx is None:
-            self.canvas.set_boxes(boxes)
+            display_boxes = [
+                {
+                    "rect": b["rect"],
+                    "label": b.get("label", ""),
+                    "shape": b.get("shape", "rect"),
+                    "angle": b.get("angle", 0.0),
+                    "group_id": b.get("group_id", ""),
+                    "revealed": False,
+                }
+                for i, b in enumerate(boxes)
+            ]
+            self.canvas.set_boxes_with_state(display_boxes)
             self.canvas.set_target_box(-1)
             self.canvas.set_mode("review")
         else:
@@ -5104,13 +5141,10 @@ class ReviewScreen(QWidget):
             and self._pdf_loader_thread
             and self._pdf_loader_thread.isRunning()
         ):
-            self._pdf_loader_thread.stop()
-            self._pdf_loader_thread.quit()
             t = self._pdf_loader_thread
-            if not hasattr(self, "_pending_worker_cleanups"):
-                self._pending_worker_cleanups = []
-            self._pending_worker_cleanups.append(t)
-            t.finished.connect(lambda obj=t: self._pending_worker_cleanups.remove(obj) if obj in self._pending_worker_cleanups else None)
+            self._add_thread_to_cleanups(t)
+            t.stop()
+            t.quit()
 
         self._pdf_render_zoom = choose_pdf_render_zoom(get_pdf_page_count(path))
         profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)

@@ -2785,6 +2785,8 @@ class HomeScreen(QWidget):
             
             progress.exec_()
             timer.stop()
+            if not server.auth_code:
+                server.running = False
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not initiate OAuth login: {e}")
 

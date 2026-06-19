@@ -31,12 +31,13 @@ import time
 import math
 import hashlib 
 import copy
+import threading
 from collections import OrderedDict
 
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QRunnable, QThreadPool, QObject
 from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter
 
-from cache_manager import PAGE_CACHE
+from cache_manager import PAGE_CACHE, get_pdf_invert_setting
 from perf_utils import perf_log
 
 # PyMuPDF
@@ -58,6 +59,7 @@ PDF_LEGACY_BOX_ZOOM = 1.5
 # Skeleton placeholder color — dark grey, matches app background
 SKELETON_COLOR = "#2A2A3E"
 SKELETON_CACHE_MAX = 8
+_SKELETON_CACHE_LOCK = threading.Lock()
 _SKELETON_CACHE = OrderedDict()
 _SKELETON_DIMS_CACHE = OrderedDict()
 _SKELETON_PLACEHOLDER_CACHE = OrderedDict()
@@ -377,17 +379,22 @@ def _get_skeleton_placeholder(w_px: int, h_px: int) -> QPixmap:
     placeholder hundreds of times for documents whose pages share dimensions.
     """
     key = (int(w_px), int(h_px))
-    cached = _SKELETON_PLACEHOLDER_CACHE.get(key)
-    if cached is not None:
-        _SKELETON_PLACEHOLDER_CACHE.move_to_end(key)
-        return cached
+    with _SKELETON_CACHE_LOCK:
+        cached = _SKELETON_PLACEHOLDER_CACHE.get(key)
+        if cached is not None:
+            _SKELETON_PLACEHOLDER_CACHE.move_to_end(key)
+            return cached
 
     qpx = QPixmap(key[0], key[1])
     qpx.fill(QColor(SKELETON_COLOR))
-    _SKELETON_PLACEHOLDER_CACHE[key] = qpx
-    _SKELETON_PLACEHOLDER_CACHE.move_to_end(key)
-    while len(_SKELETON_PLACEHOLDER_CACHE) > _SKELETON_PLACEHOLDER_CACHE_MAX:
-        _SKELETON_PLACEHOLDER_CACHE.popitem(last=False)
+    with _SKELETON_CACHE_LOCK:
+        cached = _SKELETON_PLACEHOLDER_CACHE.get(key)
+        if cached is not None:
+            return cached
+        _SKELETON_PLACEHOLDER_CACHE[key] = qpx
+        _SKELETON_PLACEHOLDER_CACHE.move_to_end(key)
+        while len(_SKELETON_PLACEHOLDER_CACHE) > _SKELETON_PLACEHOLDER_CACHE_MAX:
+            _SKELETON_PLACEHOLDER_CACHE.popitem(last=False)
     return qpx
 
 
@@ -512,10 +519,6 @@ def _compute_pdf_skeleton_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResul
                 doc.close()
             except Exception:
                 pass
-        try:
-            fitz.TOOLS.store_shrink(100)
-        except Exception:
-            pass
 
 
 def load_pdf_page_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
@@ -532,27 +535,30 @@ def load_pdf_page_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
         cache_key = _skeleton_cache_key(path, zoom)
     except Exception:
         return _compute_pdf_skeleton_dims(path, zoom=zoom)
-    cached = _SKELETON_DIMS_CACHE.get(cache_key)
-    if cached is not None:
-        _SKELETON_DIMS_CACHE.move_to_end(cache_key)
-        return _clone_skeleton_result(cached)
+    with _SKELETON_CACHE_LOCK:
+        cached = _SKELETON_DIMS_CACHE.get(cache_key)
+        if cached is not None:
+            _SKELETON_DIMS_CACHE.move_to_end(cache_key)
+            return _clone_skeleton_result(cached)
     result = _compute_pdf_skeleton_dims(path, zoom=zoom)
     if not result.error:
-        _SKELETON_DIMS_CACHE[cache_key] = result
-        _SKELETON_DIMS_CACHE.move_to_end(cache_key)
-        while len(_SKELETON_DIMS_CACHE) > SKELETON_CACHE_MAX:
-            _SKELETON_DIMS_CACHE.popitem(last=False)
+        with _SKELETON_CACHE_LOCK:
+            _SKELETON_DIMS_CACHE[cache_key] = result
+            _SKELETON_DIMS_CACHE.move_to_end(cache_key)
+            while len(_SKELETON_DIMS_CACHE) > SKELETON_CACHE_MAX:
+                _SKELETON_DIMS_CACHE.popitem(last=False)
     return _clone_skeleton_result(result)
 
 
 def invalidate_pdf_skeleton(path: str):
     abs_path = os.path.abspath(path)
-    keys = [k for k in _SKELETON_CACHE if k[0] == abs_path]
-    for key in keys:
-        del _SKELETON_CACHE[key]
-    dim_keys = [k for k in _SKELETON_DIMS_CACHE if k[0] == abs_path]
-    for key in dim_keys:
-        del _SKELETON_DIMS_CACHE[key]
+    with _SKELETON_CACHE_LOCK:
+        keys = [k for k in _SKELETON_CACHE if k[0] == abs_path]
+        for key in keys:
+            del _SKELETON_CACHE[key]
+        dim_keys = [k for k in _SKELETON_DIMS_CACHE if k[0] == abs_path]
+        for key in dim_keys:
+            del _SKELETON_DIMS_CACHE[key]
 
 
 def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
@@ -585,10 +591,11 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
     doc = None
     try:
         cache_key = _skeleton_cache_key(path, zoom)
-        cached = _SKELETON_CACHE.get(cache_key)
-        if cached is not None:
-            _SKELETON_CACHE.move_to_end(cache_key)
-            return _clone_skeleton_result(cached)
+        with _SKELETON_CACHE_LOCK:
+            cached = _SKELETON_CACHE.get(cache_key)
+            if cached is not None:
+                _SKELETON_CACHE.move_to_end(cache_key)
+                return _clone_skeleton_result(cached)
 
         doc = fitz.open(path)
 
@@ -615,10 +622,11 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 
         result = PdfSkeletonResult(placeholders, page_dims, total, None)
         if cache_key is not None:
-            _SKELETON_CACHE[cache_key] = result
-            _SKELETON_CACHE.move_to_end(cache_key)
-            while len(_SKELETON_CACHE) > SKELETON_CACHE_MAX:
-                _SKELETON_CACHE.popitem(last=False)
+            with _SKELETON_CACHE_LOCK:
+                _SKELETON_CACHE[cache_key] = result
+                _SKELETON_CACHE.move_to_end(cache_key)
+                while len(_SKELETON_CACHE) > SKELETON_CACHE_MAX:
+                    _SKELETON_CACHE.popitem(last=False)
         return _clone_skeleton_result(result)
 
     except Exception as ex:
@@ -629,10 +637,6 @@ def load_pdf_skeleton(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
                 doc.close()
             except Exception:
                 pass
-        try:
-            fitz.TOOLS.store_shrink(100)
-        except Exception:
-            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -672,7 +676,6 @@ def pdf_page_to_image(page, mat, clip=None, show_annots: bool = True) -> QImage:
         pix.stride,
         QImage.Format_RGB888,
     ).copy()
-    from cache_manager import get_pdf_invert_setting
     if get_pdf_invert_setting():
         qimg.invertPixels(QImage.InvertRgb)
     return qimg
@@ -790,11 +793,13 @@ class PdfOnDemandThread(QObject):
         if not PDF_SUPPORT:
             msg = "PyMuPDF not installed - run: pip install pymupdf"
             self.error.emit(msg)
+            self.batch_done.emit([])
             return
 
         if not os.path.exists(self._path):
             msg = f"File not found: {self._path}"
             self.error.emit(msg)
+            self.batch_done.emit([])
             return
 
         if not self._page_nums:
@@ -809,6 +814,7 @@ class PdfOnDemandThread(QObject):
             if doc.is_encrypted:
                 msg = "PDF is password-protected"
                 self.error.emit(msg)
+                self.batch_done.emit([])
                 return
 
             total_in_doc = len(doc)
@@ -828,6 +834,7 @@ class PdfOnDemandThread(QObject):
                         requested=len(self._page_nums),
                         elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
                     )
+                    self.batch_done.emit(rendered)
                     return
 
                 if page_num < 0 or page_num >= total_in_doc:
@@ -895,6 +902,7 @@ class PdfOnDemandThread(QObject):
         except Exception as ex:
             print(f"[pdf_render] fatal render error: {ex}")
             self.error.emit(str(ex))
+            self.batch_done.emit([])
         finally:
             if doc is not None:
                 try:
@@ -936,10 +944,6 @@ def render_pdf_pages(path: str, page_nums, zoom: float = PDF_RENDER_ZOOM, cache_
                 doc.close()
             except Exception:
                 pass
-        try:
-            fitz.TOOLS.store_shrink(100)
-        except Exception:
-            pass
 
 
 def render_pdf_pages_from_doc(doc, path: str, page_nums, zoom: float = PDF_RENDER_ZOOM, cache_variant: str | None = None, show_annots: bool = True) -> dict:
@@ -982,10 +986,6 @@ def update_page_hashes(path: str, page_nums=None, zoom: float = PDF_HASH_ZOOM):
                 doc.close()
             except Exception:
                 pass
-        try:
-            fitz.TOOLS.store_shrink(100)
-        except Exception:
-            pass
 
 def get_changed_pages(path: str):
     if not PDF_SUPPORT or not os.path.exists(path):
@@ -1030,10 +1030,6 @@ def get_changed_pages(path: str):
                 doc.close()
             except Exception:
                 pass
-        try:
-            fitz.TOOLS.store_shrink(100)
-        except Exception:
-            pass
     
 class PdfLoaderThread(QObject):
     # Emitted every CHUNK_SIZE pages:  (pages_so_far, loaded_count, total_count)
@@ -1044,6 +1040,7 @@ class PdfLoaderThread(QObject):
     error = pyqtSignal(str)
     finished = pyqtSignal()
     started = pyqtSignal()
+    batch_done = pyqtSignal(list)
 
     def __init__(self, path: str, zoom: float = PDF_RENDER_ZOOM,
                  chunk_size: int = CHUNK_SIZE, use_cache: bool = True,
@@ -1105,12 +1102,14 @@ class PdfLoaderThread(QObject):
         fname = os.path.basename(self._path)
         if not PDF_SUPPORT:
             self.done.emit([], "PyMuPDF not installed — run: pip install pymupdf")
+            self.batch_done.emit([])
             return
         doc = None
         try:
             doc = fitz.open(self._path)
             if doc.is_encrypted:
                 self.done.emit([], "PDF is password-protected.")
+                self.batch_done.emit([])
                 return
 
             total = len(doc)
@@ -1138,6 +1137,7 @@ class PdfLoaderThread(QObject):
 
             for page_num in range(total):
                 if self._stop_flag:
+                    self.batch_done.emit([])
                     return
 
                 # Cache hit?
@@ -1182,6 +1182,7 @@ class PdfLoaderThread(QObject):
                     last_emitted = loaded
 
             if self._stop_flag:
+                self.batch_done.emit([])
                 return
 
             # Final emit (catches leftover pages not in last chunk)
@@ -1200,6 +1201,7 @@ class PdfLoaderThread(QObject):
                 elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
             )
             self.done.emit(list(pages), None)
+            self.batch_done.emit(list(range(total)))
 
         except Exception as ex:
             perf_log(
@@ -1209,6 +1211,7 @@ class PdfLoaderThread(QObject):
                 elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
             )
             self.done.emit([], str(ex))
+            self.batch_done.emit([])
         finally:
             if doc is not None:
                 try:

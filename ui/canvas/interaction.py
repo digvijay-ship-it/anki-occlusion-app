@@ -24,6 +24,28 @@ from .colors import (
 from .geometry import _point_in_rotated_box, _point_in_rotated_ellipse
 
 
+class StrokeList(list):
+    def __init__(self, seq=None):
+        super().__init__(seq or [])
+        self._path_key = None
+
+    def __getitem__(self, key):
+        if key == "_path_key":
+            return self._path_key
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        if key == "_path_key":
+            self._path_key = value
+        else:
+            super().__setitem__(key, value)
+
+    def get(self, key, default=None):
+        if key == "_path_key":
+            return self._path_key if self._path_key is not None else default
+        return default
+
+
 class CanvasInteractionMixin:
     _STYLUS_SUPPRESS_WINDOW_S = 0.35
     _INK_MASK_TAP_THRESHOLD_S = 0.22
@@ -116,6 +138,8 @@ class CanvasInteractionMixin:
         return False
 
     def _is_recent_stylus_mouse_event(self, e) -> bool:
+        if getattr(self, "_mode", None) != "review":
+            return False
         last_event = float(getattr(self, "_last_tablet_event_time", 0.0) or 0.0)
         last_move = float(getattr(self, "_last_tablet_move_time", 0.0) or 0.0)
         now = time.monotonic()
@@ -294,7 +318,10 @@ class CanvasInteractionMixin:
         if self._ink_strokes:
             stroke = self._ink_strokes.pop()
             if hasattr(self, "_ink_path_cache"):
-                self._ink_path_cache.pop(id(stroke), None)
+                stroke_id = stroke.get("_path_key") if hasattr(stroke, "get") else getattr(stroke, "_path_key", None)
+                if stroke_id is None:
+                    stroke_id = id(stroke)
+                self._ink_path_cache.pop(stroke_id, None)
             self.update()
 
     @property
@@ -329,7 +356,12 @@ class CanvasInteractionMixin:
 
     def _ink_release(self):
         if len(self._ink_current) >= 2:
-            self._ink_strokes.append(list(self._ink_current))
+            if not hasattr(self, "_stroke_seq"):
+                self._stroke_seq = 0
+            self._stroke_seq += 1
+            stroke = StrokeList(self._ink_current)
+            stroke._path_key = self._stroke_seq
+            self._ink_strokes.append(stroke)
             # Compute bounding box of completed stroke for dirty-rect update
             pts = self._ink_current[1:]  # skip color element
             if pts:

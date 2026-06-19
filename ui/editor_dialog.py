@@ -2331,6 +2331,24 @@ class CardEditorDialog(QDialog):
             f"pdf_zoom={self.card.get('_pdf_box_render_zoom', 'none')} "
             f"t={(time.perf_counter() - save_t0) * 1000:.1f}ms"
         )
+        # Precompute hashes if they are missing
+        path = self.card.get("image_path") or self.card.get("pdf_path")
+        if path:
+            import os
+            from storage_paths import resolve_asset_path
+            abs_path = resolve_asset_path(path)
+            if os.path.exists(abs_path):
+                if not self.card.get("file_hash"):
+                    from data_manager import compute_file_sha256
+                    h = compute_file_sha256(abs_path)
+                    if h:
+                        self.card["file_hash"] = h
+                if self.card.get("image_path") and not self.card.get("visual_hash"):
+                    from data_manager import compute_image_dhash
+                    vh = compute_image_dhash(abs_path)
+                    if vh:
+                        self.card["visual_hash"] = vh
+
         self._write_recovery_checkpoint("save_card")
 
         # Save to database/deck

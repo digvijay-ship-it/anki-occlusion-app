@@ -29,6 +29,8 @@ from .colors import (
 C_MASK = "#F7916A"
 C_GROUP = "#BD93F9"
 
+_C_BG_CANVAS = QColor("#1E1E2E")
+_SEP_PEN = QPen(QColor("#45475A"), 2)
 
 _CANVAS_COLORS_CACHE = {}
 
@@ -160,25 +162,26 @@ class CanvasRendererMixin:
         pages_drawn = 0
         p = QPainter(self)
         clip = event.rect()
+        cc = self._get_canvas_colors()
 
-        p.fillRect(clip, QColor("#1E1E2E"))
+        p.fillRect(clip, _C_BG_CANVAS)
 
         if self._px and not self._px.isNull():
-            cached_scale, cached_spx = self._spx_cache.get("_px", (None, None))
+            transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
+            cached_scale, cached_tt, cached_spx = self._spx_cache.get("_px", (None, None, None))
             if cached_spx is not None:
                 self._spx_cache.move_to_end("_px", last=True)
-            if cached_scale != self._scale or cached_spx is None:
+            if cached_scale != self._scale or cached_tt != transform_type or cached_spx is None:
                 if profile:
                     phases["scale_miss"] += 1
                     scale_t0 = time.perf_counter()
-                transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
                 cached_spx = self._px.scaled(
                     max(int(self._px.width() * self._scale), 1),
                     max(int(self._px.height() * self._scale), 1),
                     Qt.KeepAspectRatio,
                     transform_type,
                 )
-                self._spx_cache["_px"] = (self._scale, cached_spx)
+                self._spx_cache["_px"] = (self._scale, transform_type, cached_spx)
                 self._spx_cache.move_to_end("_px", last=True)
                 while len(self._spx_cache) > self.SPX_CACHE_MAX:
                     self._spx_cache.popitem(last=False)
@@ -191,7 +194,6 @@ class CanvasRendererMixin:
                 phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
 
         elif self._pages:
-            sep_pen = QPen(QColor("#45475A"), 2)
             for i, page_px in enumerate(self._pages):
                 scr_top = int(self._page_tops[i] * self._scale)
                 scr_h = int(page_px.height() * self._scale)
@@ -202,11 +204,13 @@ class CanvasRendererMixin:
                 if scr_top > clip.bottom():
                     break
 
-                cached_scale, cached_spx = self._spx_cache.get(i, (None, None))
+                transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
+                cached_scale, cached_tt, cached_spx = self._spx_cache.get(i, (None, None, None))
                 if cached_spx is not None:
                     self._spx_cache.move_to_end(i, last=True)
                 cache_hit = (
                     cached_scale == self._scale
+                    and cached_tt == transform_type
                     and cached_spx is not None
                     and not cached_spx.isNull()
                 )
@@ -225,7 +229,7 @@ class CanvasRendererMixin:
 
                 if i < len(self._pages) - 1:
                     sep_y = scr_bot + int(PAGE_GAP * self._scale) // 2
-                    p.setPen(sep_pen)
+                    p.setPen(_SEP_PEN)
                     p.drawLine(0, sep_y, self.width(), sep_y)
 
         p.setRenderHint(QPainter.Antialiasing)
@@ -239,7 +243,7 @@ class CanvasRendererMixin:
             sr = self._sr(b["rect"])
             if not clip.intersects(sr.toRect()):
                 continue
-            self._draw_box(p, i, b)
+            self._draw_box(p, i, b, cc)
             if profile:
                 phases["boxes_drawn"] += 1
         if profile:
@@ -259,12 +263,12 @@ class CanvasRendererMixin:
                     orig_box["rect"].height(),
                 )
                 if clip.intersects(self._sr(live_rect).toRect()):
-                    self._draw_box_at_rect(p, i, orig_box, live_rect)
+                    self._draw_box_at_rect(p, i, orig_box, live_rect, cc)
         elif self._drag_op and self._selected_idx >= 0:
-            self._draw_box(p, self._selected_idx, self._boxes[self._selected_idx])
+            self._draw_box(p, self._selected_idx, self._boxes[self._selected_idx], cc)
 
         if self._drawing and not self._live_rect.isEmpty():
-            self._draw_live(p)
+            self._draw_live(p, cc)
         if profile:
             phases["overlay_ms"] += (time.perf_counter() - overlay_t0) * 1000.0
 
@@ -282,19 +286,19 @@ class CanvasRendererMixin:
                 phases,
             )
 
-    def _draw_box(self, p: QPainter, i: int, b: dict):
+    def _draw_box(self, p: QPainter, i: int, b: dict, cc=None):
         sr = self._sr(b["rect"])
-        self._draw_box_impl(p, i, b, sr)
+        self._draw_box_impl(p, i, b, sr, cc)
 
-    def _draw_box_at_rect(self, p: QPainter, i: int, b: dict, rect: QRectF):
+    def _draw_box_at_rect(self, p: QPainter, i: int, b: dict, rect: QRectF, cc=None):
         sr = self._sr(rect)
-        self._draw_box_impl(p, i, b, sr)
+        self._draw_box_impl(p, i, b, sr, cc)
 
     def _get_canvas_colors(self):
         from cache_manager import get_pdf_invert_setting
         return _get_canvas_colors_objects(get_pdf_invert_setting())
 
-    def _draw_box_impl(self, p: QPainter, i: int, b: dict, sr: QRectF):
+    def _draw_box_impl(self, p: QPainter, i: int, b: dict, sr: QRectF, cc=None):
         cx, cy = sr.center().x(), sr.center().y()
         ang = b.get("angle", 0.0)
         lbl = b.get("label") or f"#{i+1}"
@@ -306,7 +310,8 @@ class CanvasRendererMixin:
         p.rotate(ang)
         local = QRectF(-sr.width() / 2, -sr.height() / 2, sr.width(), sr.height())
 
-        cc = self._get_canvas_colors()
+        if cc is None:
+            cc = self._get_canvas_colors()
         if self._mode == "review":
             revealed = b.get("revealed", False)
             is_target = self._is_current_target(i, b)
@@ -367,13 +372,14 @@ class CanvasRendererMixin:
 
         p.restore()
         if self._mode == "edit" and i == self._selected_idx:
-            self._draw_handles(p, i)
+            self._draw_handles(p, i, cc)
 
-    def _draw_handles(self, p: QPainter, idx: int):
+    def _draw_handles(self, p: QPainter, idx: int, cc=None):
         hps = self._handle_positions(idx)
         if not hps:
             return
-        cc = self._get_canvas_colors()
+        if cc is None:
+            cc = self._get_canvas_colors()
         p.setPen(cc["C_GREEN_PEN_1"])
         p.setBrush(cc["C_HANDLE_BG_BRUSH"])
         hr = self._HANDLE_R
@@ -389,41 +395,17 @@ class CanvasRendererMixin:
         p.setFont(self._SMALL_FONT)
         p.drawText(QRectF(rpt.x() - 6, rpt.y() - 6, 12, 12), Qt.AlignCenter, "↻")
 
-    def _draw_live(self, p: QPainter):
+    def _draw_live(self, p: QPainter, cc=None):
         sr = self._sr(self._live_rect)
-        cc = self._get_canvas_colors()
+        if cc is None:
+            cc = self._get_canvas_colors()
         p.setBrush(cc["C_ACCENT_ALPHA_110_BRUSH"])
         p.setPen(cc["C_ACCENT_PEN_2_SOLID"])
         (p.drawEllipse if self._tool == "ellipse" else p.drawRect)(sr)
 
     def _smooth_points_to_path(self, pts, sc) -> QPainterPath:
-        path = QPainterPath()
-        if not pts:
-            return path
-        
-        # Scale points to screen space
-        spts = [QPointF(pt.x() * sc, pt.y() * sc) for pt in pts]
-        
-        path.moveTo(spts[0])
-        if len(spts) == 1:
-            return path
-        if len(spts) == 2:
-            path.lineTo(spts[1])
-            return path
-            
-        p0 = spts[0]
-        p1 = spts[1]
-        first_mid = QPointF((p0.x() + p1.x()) / 2.0, (p0.y() + p1.y()) / 2.0)
-        path.lineTo(first_mid)
-        
-        for i in range(1, len(spts) - 1):
-            curr = spts[i]
-            nxt = spts[i + 1]
-            mid = QPointF((curr.x() + nxt.x()) / 2.0, (curr.y() + nxt.y()) / 2.0)
-            path.quadTo(curr, mid)
-            
-        path.lineTo(spts[-1])
-        return path
+        from .geometry import smooth_points_to_path
+        return smooth_points_to_path(pts, scale=sc)
 
     def _draw_ink_layer(self, p: QPainter):
         if not self._ink_strokes and not self._ink_current:
@@ -446,8 +428,10 @@ class CanvasRendererMixin:
             if not pts:
                 continue
             
-            # Cache check by object id and scale
-            stroke_id = id(stroke)
+            # Cache check by stable key and scale
+            stroke_id = stroke.get("_path_key") if hasattr(stroke, "get") else getattr(stroke, "_path_key", None)
+            if stroke_id is None:
+                stroke_id = id(stroke)
             cached_scale, path = self._ink_path_cache.get(stroke_id, (None, None))
             if cached_scale != sc or path is None:
                 path = self._smooth_points_to_path(pts, sc)
