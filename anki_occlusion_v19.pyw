@@ -281,6 +281,8 @@ def load_custom_fonts():
     font_paths = [
         app_resource_path("assets", "fonts", "PressStart2P-Regular.ttf"),
         app_resource_path("assets", "fonts", "RobotoMono-Regular.ttf"),
+        app_resource_path("assets", "fonts", "Cinzel-Regular.ttf"),
+        app_resource_path("assets", "fonts", "Cinzel-Bold.ttf"),
     ]
     print(
         f"[DEBUG][packaging] font_probe frozen={getattr(sys, 'frozen', False)} "
@@ -456,6 +458,8 @@ class MainWindow(QMainWindow):
             else:
                 if theme == "tmnt":
                     app.setFont(QFont("Roboto Mono", self._font_size))
+                elif theme == "arcanum":
+                    app.setFont(QFont("Cinzel", self._font_size))
                 else:
                     app.setFont(QFont(NARUTO_FONT_FAMILY, self._font_size))
                 ss = build_stylesheet(theme, self._font_size)
@@ -644,6 +648,8 @@ class MainWindow(QMainWindow):
         else:
             if theme == "tmnt":
                 app.setFont(QFont("Roboto Mono", self._font_size))
+            elif theme == "arcanum":
+                app.setFont(QFont("Cinzel", self._font_size))
             ss = build_stylesheet(theme, self._font_size)
             app.setStyleSheet(ss)
             self.setStyleSheet(ss)
