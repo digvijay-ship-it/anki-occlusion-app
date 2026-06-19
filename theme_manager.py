@@ -19,6 +19,13 @@ def is_theme_enabled(mode="classic"):
     return _raw_mode(mode) not in DISABLED_THEMES
 
 
+def is_retro_theme(mode="classic"):
+    """True for themes that share the rich 3-column dashboard, retro effects,
+    and glowing CTA. Single source of truth — all theme-family checks should
+    route through here instead of hand-maintaining tuples."""
+    return _raw_mode(mode) in {"tmnt", "manhattan", "arcanum"}
+
+
 # ── Color Palettes ────────────────────────────────────────────────────────────
 
 PALETTES = {
@@ -104,6 +111,22 @@ PALETTES = {
         "header_font": "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif",
         "body_font": "'Courier New', monospace",
     },
+    "arcanum": {
+        "C_BG":      "#0E0B1A",
+        "C_SURFACE": "#15122A",
+        "C_CARD":    "#1F1B38",
+        "C_ACCENT":  "#5FEAD0",
+        "C_PURPLE":  "#A78BFA",
+        "C_ORANGE":  "#F0A35E",
+        "C_GREEN":   "#6FE7A8",
+        "C_RED":     "#FF5C7A",
+        "C_YELLOW":  "#F4D35E",
+        "C_TEXT":    "#EDE6D6",
+        "C_SUBTEXT": "#8E86B0",
+        "C_BORDER":  "#2A2545",
+        "header_font": "'Cinzel', 'Palatino Linotype', serif",
+        "body_font":   "'Cinzel', 'Palatino Linotype', serif",
+    },
 }
 
 # ── Label Mappings ────────────────────────────────────────────────────────────
@@ -186,6 +209,32 @@ LABELS = {
         "DASH_MISS": "DUE COMBATS",
         "DASH_NEW": "NEW TRAINING",
         "DASH_BATTLES": "STAGES CLEARED",
+    },
+    "arcanum": {
+        "APP_TITLE": "ANKI OCCLUSION",
+        "SUBTITLE": "SM-2 • OCCLUSION • ARCANE ACADEMY",
+        "SIDEBAR_HDR": "Grimoires",
+        "BTN_NEW_TOP": "＋ GRIMOIRE",
+        "BTN_NEW_SUB": "＋ CHAPTER",
+        "BTN_ADD": "🔮 FORGE SPELL",
+        "BTN_ADD_TEXT": "📜 INSCRIBE SCROLL",
+        "BTN_DUE": "🔮 BEGIN RITUAL",
+        "BTN_ALL": "▶ CAST ALL",
+        "BTN_EDIT": "✏ Edit Spell",
+        "BTN_SELECTED": "▶ Cast Selected",
+        "BTN_JOURNAL": "📓 Chronicle",
+        "BTN_SHORTCUTS": "⌨ Glyph Keys",
+        "STAT_SCROLLS": "Spells",
+        "STAT_DUE": "Due",
+        "STAT_REVIEWS": "Castings",
+        "VAULT_TITLE": "🔮 ARCANE VAULT",
+        "BTN_CLEAR_VAULT": "🧹 Purge Vault",
+        "STATUS_READY": "Arcane Engine Ready",
+        "DASH_TITLE": "SELECT GRIMOIRE",
+        "DASH_SUB": "The vault of memory opens at midnight.",
+        "DASH_MISS": "PENDING INCANTATIONS",
+        "DASH_NEW": "NEW SPELLS",
+        "DASH_BATTLES": "RITUALS COMPLETE",
     },
 }
 
@@ -307,11 +356,27 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
     elif mode == "manhattan":
         hf = "'Press Start 2P', " + hf
         bf = "'Courier New', " + bf
+    elif mode == "arcanum":
+        hf = "'Cinzel', " + hf
+        bf = "'Cinzel', " + bf
 
     # UI Constants
-    btn_radius = "0px" if mode in ("dojo", "manhattan") else "6px"
-    btn_border = "3px" if mode == "manhattan" else ("2px" if mode == "dojo" else "1px")
-    btn_padding = "0px 20px" if mode == "manhattan" else ("10px 20px" if mode == "dojo" else "6px 14px")
+    btn_radius = (
+        "0px" if mode in ("dojo", "manhattan")
+        else "4px" if mode == "arcanum"
+        else "6px"
+    )
+    btn_border = (
+        "3px" if mode == "manhattan"
+        else "2px" if mode in ("dojo", "arcanum")
+        else "1px"
+    )
+    btn_padding = (
+        "0px 20px" if mode == "manhattan"
+        else "10px 20px" if mode == "dojo"
+        else "8px 18px" if mode == "arcanum"
+        else "6px 14px"
+    )
 
     raised = (
         f"border-bottom: 4px solid rgba(0,0,0,0.6);"
@@ -319,7 +384,11 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
         else (
             f"border-bottom: 3px solid rgba(0,0,0,0.5);"
             if mode == "dojo"
-            else "border-bottom: 2px solid rgba(0,0,0,0.15);"
+            else (
+                f"border-bottom: 2px solid rgba(0,0,0,0.4);"
+                if mode == "arcanum"
+                else "border-bottom: 2px solid rgba(0,0,0,0.15);"
+            )
         )
     )
 
@@ -380,7 +449,7 @@ QPushButton {{
     letter-spacing: {'2px' if mode in ('dojo', 'manhattan') else '0px'};
 }}
 QPushButton:hover {{
-    background: { 'rgba(0, 240, 255, 0.15)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.1)' };
+    background: { 'rgba(240, 163, 94, 0.12)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.15)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.1)') };
 }}
 
 /* Dominant CTA - START TRAINING */
@@ -720,13 +789,13 @@ QTreeWidget::item {{
     color: {p['C_SUBTEXT']};
 }}
 QTreeWidget::item:selected {{
-    background: { 'rgba(168, 108, 255, 0.15)' if mode == 'dojo' else 'rgba(0, 240, 255, 0.15)' };
+    background: { 'rgba(168, 108, 255, 0.15)' if mode == 'dojo' else ('rgba(95, 234, 208, 0.15)' if mode == 'arcanum' else 'rgba(0, 240, 255, 0.15)') };
     border-left: 2px solid {p['C_PURPLE']};
     color: {p['C_TEXT']};
 }}
 QTreeWidget::item:hover:!selected {{
-    background: { 'rgba(0, 240, 255, 0.05)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.05)' };
-    border-left: 2px solid { 'rgba(0, 240, 255, 0.2)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.2)' };
+    background: { 'rgba(95, 234, 208, 0.05)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.05)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.05)') };
+    border-left: 2px solid { 'rgba(95, 234, 208, 0.2)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.2)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.2)') };
     color: #9090C0;
 }}
 
@@ -749,11 +818,11 @@ QScrollBar:vertical {{
     border-left: 1px solid {p['C_BORDER']};
 }}
 QScrollBar::handle:vertical {{
-    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)')};
+    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(95, 234, 208, 0.3)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)'))};
     border-radius: {'0px' if mode == 'manhattan' else '4px'};
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)')};
+    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(95, 234, 208, 0.6)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)'))};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
@@ -768,11 +837,11 @@ QScrollBar:horizontal {{
     border-top: 1px solid {p['C_BORDER']};
 }}
 QScrollBar::handle:horizontal {{
-    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)')};
+    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(95, 234, 208, 0.3)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)'))};
     border-radius: {'0px' if mode == 'manhattan' else '4px'};
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)')};
+    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(95, 234, 208, 0.6)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)'))};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0px;
