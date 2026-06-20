@@ -263,7 +263,7 @@ class GDriveService:
         return None
 
     def get_access_token(self):
-        if not self.is_linked():
+        if not self.is_linked() or not self.is_configured():
             return None
 
         # Check if expired
