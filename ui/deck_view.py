@@ -657,7 +657,7 @@ class DeckView(QWidget):
         deck_history.push(self._data)  # undo snapshot
         self.deck["bookmarked"] = not self.deck.get("bookmarked", False)
         store.mark_dirty()
-        store.save_soon(min_interval=0.0)
+        store.save_soon(min_interval=3.0)
         
         home = self._find_home()
         if home:

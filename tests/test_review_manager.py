@@ -33,9 +33,7 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
             manager._rate(5)
 
         mark_dirty.assert_called_once_with()
-        save_soon.assert_called_once_with(
-            min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True
-        )
+        save_soon.assert_not_called()
         record_event.assert_called_once()
         rs._load_item.assert_called_once_with()
 
@@ -130,9 +128,7 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
             manager._review_undo()
 
         discard_event.assert_called_once_with(recorded_event)
-        save_soon.assert_called_once_with(
-            min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True
-        )
+        save_soon.assert_not_called()
         save_force.assert_called_once_with(async_save=True)
         self.assertEqual(card["boxes"][0]["reviews"], 5)
 
@@ -327,7 +323,7 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
         expected_due = datetime.combine(date.today() + timedelta(days=1), datetime.min.time()).isoformat(timespec="seconds")
         self.assertEqual(card["sm2_due"], expected_due)
         mark_dirty.assert_called_once()
-        save_soon.assert_called_once()
+        save_soon.assert_not_called()
 
         # Undo the super skip
         manager._review_undo()

@@ -660,20 +660,21 @@ class PdfAnnotationSession:
             rect = rect if isinstance(rect, QRectF) else QRectF(*rect)
             return rect.contains(point)
         points = item.get("points") or []
-        width = max(3.0, _safe_float(item.get("width"), 3.0))
+        tolerance = max(5.0, _safe_float(item.get("width"), 3.0) * 1.5)
         for idx in range(1, len(points)):
-            if _point_segment_distance(point, points[idx - 1], points[idx]) <= width:
+            if _point_segment_distance(point, points[idx - 1], points[idx]) <= tolerance:
                 return True
         return False
 
     def _existing_item_hit(self, item, point: QPointF) -> bool:
         kind = item.get("kind", "")
         if kind == "ink" and item.get("points"):
-            tolerance = max(3.0, _safe_float(item.get("width"), 2.0) * 1.8)
+            tolerance = max(5.0, _safe_float(item.get("width"), 2.0) * 1.8)
             pts = item["points"]
             for idx in range(1, len(pts)):
                 if _point_segment_distance(point, pts[idx - 1], pts[idx]) <= tolerance:
                     return True
+            return False
         return _rect_contains_point(item["rect"], point, padding=3.0)
 
     def undo(self):

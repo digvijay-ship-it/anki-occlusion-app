@@ -106,6 +106,22 @@ T_MONO = "'Roboto Mono', 'Courier New', monospace"
 T_HEADER = "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif"
 T_PIXEL = T_HEADER
 
+def _hex_to_rgba(hex_str: str, alpha: float) -> str:
+    if not hex_str or not isinstance(hex_str, str):
+        return f"rgba(102, 252, 241, {alpha})"
+    hex_str = hex_str.strip().lstrip('#')
+    if len(hex_str) == 6:
+        r = int(hex_str[0:2], 16)
+        g = int(hex_str[2:4], 16)
+        b = int(hex_str[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    elif len(hex_str) == 3:
+        r = int(hex_str[0] * 2, 16)
+        g = int(hex_str[1] * 2, 16)
+        b = int(hex_str[2] * 2, 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    return f"rgba(102, 252, 241, {alpha})"
+
 def sync_theme_colors():
     global T_BG, T_PANEL, T_CARD, T_GREEN, T_NEON, T_TEXT, T_SUBTEXT, T_RED, T_PURPLE, T_BORDER, T_MONO, T_HEADER, T_PIXEL
     try:
@@ -3188,7 +3204,48 @@ class TMNTTopBar(QFrame):
         panel._fade = QPropertyAnimation(panel, b"windowOpacity", self)
         panel._fade.setDuration(130)
         panel._fade.setEasingCurve(QEasingCurve.OutCubic)
-        panel_l = QVBoxLayout(panel)
+        
+        # Outer layout of the popup frame
+        outer_l = QVBoxLayout(panel)
+        outer_l.setContentsMargins(0, 0, 0, 0)
+        
+        # Scroll Area
+        scroll = QScrollArea(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setMinimumWidth(_px(330, self._scale))
+        scroll.setStyleSheet(
+            _scale_ss(
+                f"""
+                QScrollArea {{
+                    background: transparent;
+                    border: none;
+                }}
+                QScrollBar:vertical {{
+                    background: {T_BG};
+                    width: 6px;
+                    margin: 0px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {T_CARD};
+                    border-radius: 3px;
+                    min-height: 20px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background: {T_NEON};
+                }}
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+                """,
+                self._scale,
+            )
+        )
+        
+        container = QWidget(scroll)
+        container.setObjectName("settings_container")
+        container.setStyleSheet("background: transparent; border: none;")
+        
+        panel_l = QVBoxLayout(container)
         panel_l.setContentsMargins(
             _px(12, self._scale),
             _px(12, self._scale),
@@ -3526,6 +3583,85 @@ class TMNTTopBar(QFrame):
         fx_l.addWidget(self._cb_home_animations)
         panel_l.addWidget(fx_box)
 
+        # Pen Performance Selector (Beta)
+        pen_lbl = QLabel("PEN PERFORMANCE (BETA)")
+        pen_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(pen_lbl)
+
+        pen_box = QFrame()
+        pen_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        pen_layout = QHBoxLayout(pen_box)
+        pen_layout.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        pen_layout.setSpacing(_px(6, self._scale))
+        
+        pen_mode_lbl = QLabel("PEN MODE")
+        pen_mode_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        pen_layout.addWidget(pen_mode_lbl)
+        pen_layout.addStretch()
+
+        from PyQt5.QtCore import QSettings
+        settings = QSettings("AnkiOcclusion", "App")
+        saved_impl = settings.value("review/pen_implementation", "classic")
+
+        from PyQt5.QtWidgets import QComboBox
+        self._btn_pen_perf = QComboBox()
+        self._btn_pen_perf.addItems([
+            "CLASSIC SMOOTH",
+            "INCREMENTAL BEZIER",
+            "RAW POLYLINE",
+            "DISTANCE-FILTERED"
+        ])
+        self._btn_pen_perf.setCursor(Qt.PointingHandCursor)
+        self._btn_pen_perf.setStyleSheet(
+            _scale_ss(
+                f"""
+                QComboBox {{
+                    background: {T_BG};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                    color: {T_PURPLE};
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {T_PANEL};
+                    color: {T_PURPLE};
+                    border: 1px solid {T_BORDER};
+                    selection-background-color: {T_BG};
+                    selection-color: {T_NEON};
+                }}
+                """,
+                self._scale,
+            )
+        )
+        
+        _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
+        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+        self._btn_pen_perf.currentIndexChanged.connect(self._on_tmnt_pen_perf_changed)
+        pen_layout.addWidget(self._btn_pen_perf)
+        panel_l.addWidget(pen_box)
+
         archive_lbl = QLabel("MISSION ARCHIVE")
         archive_lbl.setStyleSheet(
             _scale_ss(
@@ -3684,11 +3820,127 @@ class TMNTTopBar(QFrame):
         
         panel_l.addWidget(gdrive_box)
 
+        # Cloud Asset Utilities Section
+        assets_lbl = QLabel("CLOUD ASSET UTILITIES")
+        assets_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px; margin-top: 10px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(assets_lbl)
+
+        assets_box = QFrame()
+        assets_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        assets_layout = QHBoxLayout(assets_box)
+        assets_layout.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        assets_layout.setSpacing(_px(6, self._scale))
+
+        self._assets_backup_btn = QPushButton("BACKUP ASSETS")
+        self._assets_backup_btn.setCursor(Qt.PointingHandCursor)
+        self._assets_backup_btn.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_CARD};
+                    color: {T_GREEN};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }}
+                QPushButton:hover {{
+                    background: {_hex_to_rgba(T_GREEN, 0.12)};
+                    border-color: {T_GREEN};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        self._assets_backup_btn.clicked.connect(self._backup_assets_to_cloud)
+        assets_layout.addWidget(self._assets_backup_btn, 0)
+
+        self._assets_restore_btn = QPushButton("RESTORE ASSETS")
+        self._assets_restore_btn.setCursor(Qt.PointingHandCursor)
+        self._assets_restore_btn.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_CARD};
+                    color: {T_NEON};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }}
+                QPushButton:hover {{
+                    background: {_hex_to_rgba(T_NEON, 0.12)};
+                    border-color: {T_NEON};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        self._assets_restore_btn.clicked.connect(self._sync_assets_from_cloud)
+        assets_layout.addWidget(self._assets_restore_btn, 0)
+
+        self._assets_prune_btn = QPushButton("PRUNE CLOUD")
+        self._assets_prune_btn.setCursor(Qt.PointingHandCursor)
+        self._assets_prune_btn.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_CARD};
+                    color: {T_RED};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                }}
+                QPushButton:hover {{
+                    background: {_hex_to_rgba(T_RED, 0.12)};
+                    border-color: {T_RED};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        self._assets_prune_btn.clicked.connect(self._prune_cloud_assets)
+        assets_layout.addWidget(self._assets_prune_btn, 0)
+
+        panel_l.addWidget(assets_box)
+
         panel_l.addWidget(
             self._menu_button(
                 "RECOVERY CENTER", T_PURPLE, self.recovery_clicked.emit
             )
         )
+
+        scroll.setWidget(container)
+        outer_l.addWidget(scroll)
+        
+        # Save references to prevent garbage collection and allow dynamic resizing
+        panel._scroll = scroll
+        panel._container = container
 
         panel.adjustSize()
         return panel
@@ -3849,7 +4101,7 @@ class TMNTTopBar(QFrame):
                 )
         elif event.type() == QEvent.Leave:
             self._pending_panel = panel_name
-            self._panel_hide_timer.start(120)
+            self._panel_hide_timer.start(1500)
 
     def _toggle_panel(self, panel, anchor, align):
         if panel.isVisible():
@@ -3879,11 +4131,33 @@ class TMNTTopBar(QFrame):
                 self._volume_slider.blockSignals(True)
                 self._volume_slider.setValue(self._data.get("_volume", 40))
                 self._volume_slider.blockSignals(False)
+            if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
+                self._btn_pen_perf.blockSignals(True)
+                from PyQt5.QtCore import QSettings
+                saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "classic")
+                _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
+                self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+                self._btn_pen_perf.blockSignals(False)
             self._refresh_gdrive_display()
+        
+        # Reset constraints first to get true size hint
+        panel.setMinimumHeight(0)
+        panel.setMaximumHeight(16777215)
         panel.adjustSize()
+        
         x = 0 if align == "left" else anchor.width() - panel.width()
         y = anchor.height() + _px(6, self._scale)
-        panel.move(anchor.mapToGlobal(QPoint(x, y)))
+        panel_pos = anchor.mapToGlobal(QPoint(x, y))
+        
+        # Constrain height to fit available screen space
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geom = screen.availableGeometry()
+            max_allowed_h = screen_geom.bottom() - panel_pos.y() - _px(12, self._scale)
+            if panel.height() > max_allowed_h:
+                panel.setFixedHeight(max_allowed_h)
+                
+        panel.move(panel_pos)
         panel.setWindowOpacity(0.0)
         panel.show()
         panel.raise_()
@@ -3948,6 +4222,12 @@ class TMNTTopBar(QFrame):
             sync_all_retro_widgets()
         except Exception as e:
             print(f"[DEBUG][tmnt_home] sync_all_retro_widgets error: {e}")
+
+    def _on_tmnt_pen_perf_changed(self, idx):
+        _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
+        impl = _idx_to_impl.get(idx, "classic")
+        from PyQt5.QtCore import QSettings
+        QSettings("AnkiOcclusion", "App").setValue("review/pen_implementation", impl)
 
     def _reset_brand_glitch(self):
         self.brand_name.setText("ANKI OCCLUSION")
@@ -4061,6 +4341,18 @@ class TMNTTopBar(QFrame):
             self._gdrive_link_btn.setText("LINK")
             self._gdrive_sync_btn.setEnabled(False)
 
+        home = self._find_home()
+        backup_running = getattr(home, "_backup_in_progress", False) if home else False
+        restore_running = getattr(home, "_restore_in_progress", False) if home else False
+        prune_running = getattr(home, "_prune_in_progress", False) if home else False
+
+        if hasattr(self, "_assets_backup_btn") and self._assets_backup_btn is not None:
+            self._assets_backup_btn.setEnabled(gdrive_store.is_linked() and not backup_running)
+        if hasattr(self, "_assets_restore_btn") and self._assets_restore_btn is not None:
+            self._assets_restore_btn.setEnabled(gdrive_store.is_linked() and not restore_running)
+        if hasattr(self, "_assets_prune_btn") and self._assets_prune_btn is not None:
+            self._assets_prune_btn.setEnabled(gdrive_store.is_linked() and not prune_running)
+
     def _toggle_gdrive_link(self):
         home = self._find_home()
         if home and hasattr(home, "_toggle_gdrive_link"):
@@ -4071,6 +4363,24 @@ class TMNTTopBar(QFrame):
         home = self._find_home()
         if home and hasattr(home, "_manual_gdrive_sync"):
             home._manual_gdrive_sync()
+            self._refresh_gdrive_display()
+
+    def _backup_assets_to_cloud(self):
+        home = self._find_home()
+        if home and hasattr(home, "_backup_assets_to_cloud"):
+            home._backup_assets_to_cloud()
+            self._refresh_gdrive_display()
+
+    def _sync_assets_from_cloud(self):
+        home = self._find_home()
+        if home and hasattr(home, "_sync_assets_from_cloud"):
+            home._sync_assets_from_cloud()
+            self._refresh_gdrive_display()
+
+    def _prune_cloud_assets(self):
+        home = self._find_home()
+        if home and hasattr(home, "_prune_cloud_assets"):
+            home._prune_cloud_assets()
             self._refresh_gdrive_display()
 
 
@@ -4279,7 +4589,7 @@ class TMNTHomeLayout(QWidget):
 
             invalidate_deck_stats()
             store.mark_dirty()
-            store.save_soon(min_interval=0.0)
+            store.save_soon(min_interval=3.0)
             self.refresh()
 
     def _new_sub(self):
@@ -4299,7 +4609,7 @@ class TMNTHomeLayout(QWidget):
             }
             self._selected_deck.setdefault("children", []).append(child)
             store.mark_dirty()
-            store.save_soon(min_interval=0.0)
+            store.save_soon(min_interval=3.0)
             self.refresh()
 
     def _reload_main(self):

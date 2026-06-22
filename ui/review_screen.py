@@ -722,6 +722,7 @@ class ReviewScreen(QWidget):
         self._user_zoom_scale = None
         self._review_ink_width = self._load_review_ink_width()
         self._review_ink_colors, self._review_ink_color_idx = self._load_review_ink_color()
+        self._review_pen_implementation = settings.value("review/pen_implementation", "classic")
 
         raw_summary = settings.value("review/show_summary_popup", True)
         if isinstance(raw_summary, str):
@@ -1397,6 +1398,7 @@ class ReviewScreen(QWidget):
             
             self._rating_frame.hide()
             QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
+            self._maybe_auto_reveal()
             
             # Fit the rendered card width to the viewport
             QTimer.singleShot(0, self._zoom_fit)
@@ -1479,6 +1481,7 @@ class ReviewScreen(QWidget):
                 self._update_review_page_nav_ui()
 
             QTimer.singleShot(0, _same_pdf_zoom_center)
+            self._maybe_auto_reveal()
         else:
             self._reload_current_canvas()
 
@@ -1493,6 +1496,7 @@ class ReviewScreen(QWidget):
         self.canvas.setFocus()  # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
         self._rating_frame.hide()  # ← rating frame explicitly hide karo
         QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
+        self._maybe_auto_reveal()
 
     def keyPressEvent(self, e):
         key = e.key()
@@ -1885,6 +1889,29 @@ class ReviewScreen(QWidget):
         row1.addWidget(self._btn_summary_toggle)
         self._update_summary_toggle_button_state()
 
+        from data_manager import store
+        auto_reveal = store.get().get("_auto_reveal", False)
+        self._btn_auto_reveal = _hdr_btn("👁 Auto-Reveal")
+        self._btn_auto_reveal.setCheckable(True)
+        self._btn_auto_reveal.setChecked(auto_reveal)
+        if dojo:
+            self._btn_auto_reveal.setStyleSheet(
+                self._btn_auto_reveal.styleSheet()
+                + f"QPushButton:checked{{background:{accent2};color:white;"
+                f"border:1px solid {accent2};}}"
+            )
+        else:
+            self._btn_auto_reveal.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:6px;"
+                f"padding:4px 14px;font-size:12px;}}"
+                f"QPushButton:checked{{background:#6A3FBF;color:white;"
+                f"border:1px solid {accent};}}"
+                f"QPushButton:hover{{background:{surface};}}"
+            )
+        self._btn_auto_reveal.clicked.connect(self._toggle_auto_reveal)
+        row1.addWidget(self._btn_auto_reveal)
+
         b_exit = _hdr_btn("✕ Exit")
         b_exit.clicked.connect(self.cancelled.emit)
         row1.addWidget(b_exit)
@@ -2149,6 +2176,44 @@ class ReviewScreen(QWidget):
         self._btn_pen_clear.clicked.connect(self._clear_pen_strokes)
         row2.addWidget(self._btn_pen_clear)
 
+        from PyQt5.QtWidgets import QComboBox
+        self._btn_review_pen_perf = QComboBox()
+        self._btn_review_pen_perf.setFocusPolicy(Qt.NoFocus)
+        self._btn_review_pen_perf.addItems([
+            "Classic" if dojo else "Classic Smooth",
+            "Incremental" if dojo else "Incremental Bezier",
+            "Polyline" if dojo else "Raw Polyline",
+            "Filtered" if dojo else "Distance-Filtered"
+        ])
+        self._btn_review_pen_perf.setCursor(Qt.PointingHandCursor)
+        self._btn_review_pen_perf.setToolTip("Change Pen Mode (Beta)")
+        
+        if dojo:
+            self._btn_review_pen_perf.setStyleSheet(
+                f"QComboBox{{background:{card};color:{accent};"
+                f"border:1px solid {border};border-radius:2px;"
+                f"padding:2px 4px;font-family:{font};font-size:9px;font-weight:bold;}}"
+                f"QComboBox QAbstractItemView{{"
+                f"background-color:{card};color:{accent};"
+                f"border:1px solid {border};"
+                f"selection-background-color:{surface};selection-color:{accent};}}"
+            )
+        else:
+            self._btn_review_pen_perf.setStyleSheet(
+                f"QComboBox{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:6px;"
+                f"padding:2px 8px;font-size:11px;font-weight:bold;}}"
+                f"QComboBox QAbstractItemView{{"
+                f"background-color:{card};color:{text};"
+                f"border:1px solid {border};"
+                f"selection-background-color:{surface};selection-color:{accent};}}"
+            )
+        
+        _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
+        self._btn_review_pen_perf.setCurrentIndex(_impl_to_idx.get(self._review_pen_implementation, 0))
+        self._btn_review_pen_perf.currentIndexChanged.connect(self._on_review_pen_perf_changed)
+        row2.addWidget(self._btn_review_pen_perf)
+
         # Initialize the dynamic states of these buttons
         self._update_pen_button_states()
 
@@ -2194,6 +2259,7 @@ class ReviewScreen(QWidget):
         self.canvas._ink_width = float(self._review_ink_width)
         self.canvas._ink_colors = list(self._review_ink_colors)
         self.canvas._ink_color_idx = int(self._review_ink_color_idx)
+        self.canvas._ink_implementation = self._review_pen_implementation
         self._activate_default_review_pen()
         self._update_pen_button_states()
         self.canvas.right_clicked.connect(self._toggle_chrome)
@@ -2864,6 +2930,19 @@ class ReviewScreen(QWidget):
                 self._btn_summary_toggle.setText("📊 Summary: OFF")
                 self._btn_summary_toggle.setToolTip("Do not show session summary popup at the end")
 
+    def _toggle_auto_reveal(self):
+        from data_manager import store
+        enabled = self._btn_auto_reveal.isChecked()
+        store.get()["_auto_reveal"] = enabled
+        store.mark_dirty()
+        if enabled and self._reveal_bar.isVisible():
+            self._reveal_current()
+
+    def _maybe_auto_reveal(self):
+        from data_manager import store
+        if store.get().get("_auto_reveal", False):
+            QTimer.singleShot(60, self._reveal_current)
+
     def _on_canvas_zoom_settled(self):
         """Ctrl+scroll zoom settle hone ke baad — user zoom yaad rakho."""
         self._user_zoom_scale = self.canvas._scale
@@ -2977,6 +3056,24 @@ class ReviewScreen(QWidget):
 
     def _clear_pen_strokes(self):
         self.canvas.ink_clear()
+
+    def _on_review_pen_perf_changed(self, idx):
+        _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
+        impl = _idx_to_impl.get(idx, "classic")
+        self._review_pen_implementation = impl
+        self.canvas._ink_implementation = impl
+        
+        from PyQt5.QtCore import QSettings
+        QSettings("AnkiOcclusion", "App").setValue("review/pen_implementation", impl)
+        
+        _names = {
+            "classic": "Classic Smooth",
+            "incremental": "Incremental Bezier",
+            "polyline": "Raw Polyline",
+            "filtered": "Distance-Filtered"
+        }
+        name = _names.get(impl, "Classic Smooth")
+        self.canvas._show_toast(f"🖊 Pen: {name}")
 
     def _update_pen_button_states(self):
         if not hasattr(self, "_btn_toggle_pen") or self._btn_toggle_pen is None:
@@ -5104,6 +5201,7 @@ class ReviewScreen(QWidget):
         # 5. Always reset UI state — Show Answer bar visible, rating hidden
         self._show_overlay(self._reveal_bar)
         self._rating_frame.hide()
+        self._maybe_auto_reveal()
 
         # 6. Zoom fit + center (deferred so viewport geometry is final)
         from PyQt5.QtCore import QTimer

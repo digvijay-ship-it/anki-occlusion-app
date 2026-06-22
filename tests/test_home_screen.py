@@ -395,11 +395,8 @@ class HomeScreenClassicUiTests(unittest.TestCase):
             self.home_screen.show_review([{"title": "Card"}], self.home_screen._data)
             self.home_screen._active_review.cancelled.emit()
 
-        save_force.assert_not_called()
-        save_soon.assert_called_once_with(
-            min_interval=REVIEW_SAVE_MIN_INTERVAL,
-            delay_from_now=True,
-        )
+        save_force.assert_called_once_with(async_save=True, force_gdrive=True)
+        save_soon.assert_not_called()
 
     def test_recovery_center_delete_all_drafts_deletes_every_selected_draft(self):
         first_summary = {

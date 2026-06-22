@@ -286,7 +286,37 @@ class DirtyStoreTests(unittest.TestCase):
 
         schedule_timer.assert_called_once_with(8.0)
         start_thread.assert_not_called()
-        self.assertTrue(store.is_dirty())
+    def test_autosave_is_disabled(self):
+        store = data_manager.DirtyStore()
+        store.start_autosave(interval=1)
+        self.assertIsNone(store._auto_thread)
+
+    def test_gdrive_upload_throttled_unless_forced(self):
+        store = data_manager.DirtyStore()
+        payload = {"decks": [{"_id": 1, "name": "Bio"}]}
+        
+        from services.gdrive_service import gdrive_store
+        
+        with patch.object(data_manager, "DATA_FILE", str(self.data_file)), \
+             patch.object(gdrive_store, "is_linked", return_value=True), \
+             patch.object(gdrive_store, "upload_file_to_drive") as mock_upload:
+            
+            # Case 1: save_if_dirty (default force_gdrive=False)
+            store.set(payload)
+            store.save_if_dirty()
+            
+            time.sleep(0.05)
+            mock_upload.assert_not_called()
+            
+            # Case 2: save_force (default force_gdrive=True)
+            store.save_force()
+            
+            deadline = time.time() + 2.0
+            while not mock_upload.called and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(mock_upload.called)
+
+
 
 
 class WrapperAndHelperTests(unittest.TestCase):

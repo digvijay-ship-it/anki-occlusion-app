@@ -407,6 +407,21 @@ class CanvasRendererMixin:
         from .geometry import smooth_points_to_path
         return smooth_points_to_path(pts, scale=sc)
 
+    def _stroke_to_path(self, stroke, sc) -> QPainterPath:
+        impl = getattr(stroke, "_implementation", "classic")
+        pts = stroke[1:]
+        if not pts:
+            return QPainterPath()
+        
+        path = QPainterPath()
+        if impl in ("classic", "incremental", "filtered"):
+            path = self._smooth_points_to_path(pts, sc)
+        else: # polyline
+            path.moveTo(QPointF(pts[0].x() * sc, pts[0].y() * sc))
+            for pt in pts[1:]:
+                path.lineTo(QPointF(pt.x() * sc, pt.y() * sc))
+        return path
+
     def _draw_ink_layer(self, p: QPainter):
         if not self._ink_strokes and not self._ink_current:
             return
@@ -434,7 +449,7 @@ class CanvasRendererMixin:
                 stroke_id = id(stroke)
             cached_scale, path = self._ink_path_cache.get(stroke_id, (None, None))
             if cached_scale != sc or path is None:
-                path = self._smooth_points_to_path(pts, sc)
+                path = self._stroke_to_path(stroke, sc)
                 self._ink_path_cache[stroke_id] = (sc, path)
                 
             p.setPen(QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
@@ -446,11 +461,16 @@ class CanvasRendererMixin:
             pts = self._ink_current[1:]
             if pts:
                 p.setPen(QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-                if len(pts) == 1:
-                    p.drawPoint(QPointF(pts[0].x() * sc, pts[0].y() * sc))
+                impl = getattr(self, "_ink_implementation", "classic")
+                if impl == "classic":
+                    if len(pts) == 1:
+                        p.drawPoint(QPointF(pts[0].x() * sc, pts[0].y() * sc))
+                    else:
+                        path = self._smooth_points_to_path(pts, sc)
+                        p.drawPath(path)
                 else:
-                    path = self._smooth_points_to_path(pts, sc)
-                    p.drawPath(path)
+                    if hasattr(self, "_ink_current_path") and not self._ink_current_path.isEmpty():
+                        p.drawPath(self._ink_current_path)
         p.restore()
 
     def _redraw(self):

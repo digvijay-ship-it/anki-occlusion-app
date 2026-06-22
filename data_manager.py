@@ -615,7 +615,7 @@ class DirtyStore:
     def is_dirty(self):
         return self._dirty
 
-    def save_if_dirty(self):
+    def save_if_dirty(self, force_gdrive=False):
         """
         Write to disk only if dirty.
         Returns True if save happened, False if skipped.
@@ -628,13 +628,13 @@ class DirtyStore:
             self._latest_save_request_seq = save_seq
             self._dirty = False
         try:
-            return self._write_snapshot_to_disk(save_seq)
+            return self._write_snapshot_to_disk(save_seq, force_gdrive=force_gdrive)
         except Exception:
             with self._lock:
                 self._dirty = True
             raise
 
-    def save_force(self, async_save=False):
+    def save_force(self, async_save=False, force_gdrive=True):
         """Force write regardless of dirty flag (use on app exit, or async in UI)."""
         with self._lock:
             self._save_seq += 1
@@ -645,7 +645,7 @@ class DirtyStore:
         if async_save:
             def _bg_write():
                 try:
-                    self._write_snapshot_to_disk(save_seq)
+                    self._write_snapshot_to_disk(save_seq, force_gdrive=force_gdrive)
                 except Exception as e:
                     print(f"[data_manager] Async save_force failed: {e}")
                     with self._lock:
@@ -653,13 +653,13 @@ class DirtyStore:
             threading.Thread(target=_bg_write, daemon=True, name="DirtyStore-AsyncSaveForce").start()
         else:
             try:
-                self._write_snapshot_to_disk(save_seq)
+                return self._write_snapshot_to_disk(save_seq, force_gdrive=force_gdrive)
             except Exception:
                 with self._lock:
                     self._dirty = True
                 raise
 
-    def _write_snapshot_to_disk(self, save_seq):
+    def _write_snapshot_to_disk(self, save_seq, force_gdrive=False):
         with self._write_lock:
             with self._lock:
                 if save_seq < self._latest_save_request_seq:
@@ -691,7 +691,7 @@ class DirtyStore:
             # Asynchronous Google Drive Sync (Runs in a background thread)
             try:
                 from services.gdrive_service import gdrive_store
-                if gdrive_store.is_linked():
+                if gdrive_store.is_linked() and force_gdrive:
                     def _bg_upload():
                         try:
                             gdrive_store.upload_file_to_drive(db_path)
@@ -782,17 +782,8 @@ class DirtyStore:
     # ── Auto-save background thread ───────────────────────────────────────────
 
     def start_autosave(self, interval: int = AUTO_SAVE_INTERVAL):
-        """Start background thread - saves every `interval` seconds if dirty."""
-        if self._auto_thread and self._auto_thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._auto_thread = threading.Thread(
-            target=self._autosave_loop,
-            args=(interval,),
-            daemon=True,
-            name="DirtyStore-AutoSave",
-        )
-        self._auto_thread.start()
+        """Start background thread - disabled by default to prevent excessive saves."""
+        return
 
     def stop_autosave(self):
         """Stop background thread + final force save. Call on app shutdown."""

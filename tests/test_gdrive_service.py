@@ -64,18 +64,21 @@ class TestGDriveService(unittest.TestCase):
         self.assertEqual(folder_id, "folder_123")
 
     @patch("requests.get")
-    def test_find_file_in_folder_escapes_single_quotes(self, mock_get):
+    def test_get_or_create_subfolder_escapes_single_quotes(self, mock_get):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "files": [{"id": "file_456"}]
+            "files": [{"id": "folder_456"}]
         }
         mock_get.return_value = mock_response
 
-        file_id = self.service._find_file_in_folder(
-            {"Authorization": "Bearer token"}, "o'brien.db", "folder_123"
+        # Clear cache first to force a GDrive API call
+        self.service._folder_cache.clear()
+
+        folder_id = self.service._get_or_create_subfolder(
+            {"Authorization": "Bearer token"}, "o'brien", "parent_123"
         )
-        self.assertEqual(file_id, "file_456")
+        self.assertEqual(folder_id, "folder_456")
         
         args, kwargs = mock_get.call_args
         called_url = args[0]
@@ -83,7 +86,7 @@ class TestGDriveService(unittest.TestCase):
         parsed = urllib.parse.urlparse(called_url)
         params = urllib.parse.parse_qs(parsed.query)
         query_val = params["q"][0]
-        self.assertIn("name = 'o\\'brien.db'", query_val)
+        self.assertIn("name = 'o\\'brien'", query_val)
 
     @patch("services.gdrive_service.HTTPServer")
     def test_start_oauth_flow_state(self, mock_http_server):

@@ -530,8 +530,11 @@ def record_review_event(event):
             _PENDING_EVENTS.clear()
         else:
             to_write = []
-            _FLUSH_TIMER = threading.Timer(1.5, flush_pending_events)
-            _FLUSH_TIMER.start()
+            # We don't schedule a timer to flush to disk automatically during active review.
+            # This completely avoids writing intermediate recovery logs during active study.
+            # Events will be flushed on screen close, app exit, or when memory reaches 25 items.
+            # _FLUSH_TIMER = threading.Timer(1.5, flush_pending_events)
+            # _FLUSH_TIMER.start()
 
     if to_write:
         _write_events(to_write)

@@ -220,7 +220,7 @@ class SessionTimer:
         self._tick_timer.timeout.connect(self._tick)
 
         self._save_timer = QTimer(parent)
-        self._save_timer.setInterval(30_000)
+        self._save_timer.setInterval(300_000)
         self._save_timer.timeout.connect(lambda: _save_state(self._elapsed))
 
     def note_activity(self):

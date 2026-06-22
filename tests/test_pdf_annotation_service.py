@@ -233,6 +233,65 @@ class PdfAnnotationServiceTests(unittest.TestCase):
         self.assertEqual(item["color"], "#00FFAA")
         self.assertEqual(item["width"], 5.4)
 
+    def test_eraser_hits_existing_ink_only_within_tolerance(self):
+        session = PdfAnnotationSession.__new__(PdfAnnotationSession)
+        session.new_items = {}
+        session.existing_annots = {
+            0: [
+                {
+                    "id": "existing:100",
+                    "kind": "ink",
+                    "xref": 100,
+                    "rect": (10.0, 10.0, 100.0, 100.0),
+                    "points": [QPointF(10.0, 10.0), QPointF(100.0, 100.0)],
+                    "width": 3.0,
+                }
+            ]
+        }
+        session.pending_deleted_xrefs = set()
+        session.dirty_pages = set()
+        session._undo_stack = []
+        session._redo_stack = []
+        session._debug = lambda *args, **kwargs: None
+        session._loaded_existing_pages = {0}
+
+        # Far away but inside bounding box rect: (100.0, 10.0)
+        self.assertFalse(session.erase_at_point(0, QPointF(100.0, 10.0)))
+        self.assertNotIn(100, session.pending_deleted_xrefs)
+
+        # Close to line: (12.0, 12.0)
+        self.assertTrue(session.erase_at_point(0, QPointF(12.0, 12.0)))
+        self.assertIn(100, session.pending_deleted_xrefs)
+
+    def test_eraser_hits_new_pen_within_tolerance(self):
+        session = PdfAnnotationSession.__new__(PdfAnnotationSession)
+        session.new_items = {
+            0: [
+                {
+                    "id": "new:test_pen",
+                    "kind": "pen",
+                    "points": [QPointF(10.0, 10.0), QPointF(100.0, 100.0)],
+                    "width": 3.0,
+                    "deleted": False,
+                }
+            ]
+        }
+        session.existing_annots = {}
+        session.pending_deleted_xrefs = set()
+        session.dirty_pages = set()
+        session._undo_stack = []
+        session._redo_stack = []
+        session._debug = lambda *args, **kwargs: None
+        session._loaded_existing_pages = {0}
+
+        # Far away: (100.0, 10.0)
+        self.assertFalse(session.erase_at_point(0, QPointF(100.0, 10.0)))
+        self.assertFalse(session.new_items[0][0]["deleted"])
+
+        # Close to line: (12.0, 12.0)
+        self.assertTrue(session.erase_at_point(0, QPointF(12.0, 12.0)))
+        self.assertTrue(session.new_items[0][0]["deleted"])
+
 
 if __name__ == "__main__":
     unittest.main()

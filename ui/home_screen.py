@@ -202,6 +202,28 @@ C_BORDER = _DARK["C_BORDER"]
 C_MASK = "#F7916A"
 C_GROUP = "#BD93F9"
 
+def _hex_to_rgba(hex_str: str, alpha: float) -> str:
+    if not hex_str or not isinstance(hex_str, str):
+        return f"rgba(124, 106, 247, {alpha})"
+    hex_str = hex_str.strip().lstrip('#')
+    if len(hex_str) == 6:
+        r = int(hex_str[0:2], 16)
+        g = int(hex_str[2:4], 16)
+        b = int(hex_str[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    elif len(hex_str) == 3:
+        r = int(hex_str[0] * 2, 16)
+        g = int(hex_str[1] * 2, 16)
+        b = int(hex_str[2] * 2, 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    return f"rgba(124, 106, 247, {alpha})"
+
+def _log_success(msg: str):
+    banner = f" 👍  SUCCESS: {msg} "
+    width = max(len(banner) + 4, 50)
+    print("\n" + "╔" + "═"*(width-2) + "╗")
+    print("║" + banner.center(width-2) + "║")
+    print("╚" + "═"*(width-2) + "╝\n")
 
 BASE_FONT_SIZE = 11
 
@@ -1136,8 +1158,11 @@ class ToastNotification(QLabel):
 
 
 class HomeScreen(QWidget):
+    thread_safe_run_signal = pyqtSignal(object)
+
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
+        self.thread_safe_run_signal.connect(self._run_closure)
         load_custom_fonts()  # ── SAFE FONT LOAD ──
         self._data = data
         self._preload_thread = None  # background PDF preload thread
@@ -1152,6 +1177,9 @@ class HomeScreen(QWidget):
         self._cache_widget = None
         self._splitter_widget = None
         self._tmnt_layout = None
+        self._backup_in_progress = False
+        self._restore_in_progress = False
+        self._prune_in_progress = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -1212,6 +1240,8 @@ class HomeScreen(QWidget):
         # Theme Toggle Button
         saved_theme = self._data.get("_theme", "classic")
         self._current_theme = normalize_theme(saved_theme)
+        from theme_manager import get_palette
+        self._p = get_palette(self._current_theme)
         _next_lbl = {
             "classic": "🐢 TMNT MODE",
             "tmnt": "🎮 MANHATTAN",
@@ -1422,10 +1452,7 @@ class HomeScreen(QWidget):
 
         def _schedule_review_save():
             if store.is_dirty():
-                store.save_soon(
-                    min_interval=REVIEW_SAVE_MIN_INTERVAL,
-                    delay_from_now=True,
-                )
+                store.save_force(async_save=True, force_gdrive=True)
 
         def _on_finished():
             if not _save_done[0]:
@@ -1826,6 +1853,18 @@ class HomeScreen(QWidget):
         dlg.exec_()
 
     def _build_classic_settings_panel(self):
+        from PyQt5.QtWidgets import QApplication
+        from theme_manager import get_palette
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        p = get_palette(theme)
+        p_green = p.get("C_GREEN", "#50FA7B")
+        p_accent = p.get("C_ACCENT", "#7C6AF7")
+        p_red = p.get("C_RED", "#FF5555")
+        p_card = p.get("C_CARD", "#313145")
+        p_border = p.get("C_BORDER", "#45475A")
+        p_text = p.get("C_TEXT", "#CDD6F4")
+
         panel = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
         panel.setObjectName("classic_settings_panel")
         panel.setAttribute(Qt.WA_StyledBackground, True)
@@ -1862,7 +1901,42 @@ class HomeScreen(QWidget):
                 selection-color: {C_TEXT};
             }}
             """)
-        layout = QVBoxLayout(panel)
+        # Outer layout of the popup frame
+        outer_l = QVBoxLayout(panel)
+        outer_l.setContentsMargins(0, 0, 0, 0)
+        
+        # Scroll Area
+        scroll = QScrollArea(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setMinimumWidth(330)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {C_SURFACE};
+                width: 6px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {C_CARD};
+                border-radius: 3px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {C_ACCENT};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        """)
+        
+        container = QWidget(scroll)
+        container.setObjectName("settings_container")
+        container.setStyleSheet("background: transparent; border: none;")
+        
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
@@ -2010,6 +2084,46 @@ class HomeScreen(QWidget):
         contrast_layout.addWidget(self._cb_invert_pdf, 0, Qt.AlignRight)
         layout.addWidget(contrast_box)
 
+        # Pen Performance Selector (Beta)
+        pen_perf_title = QLabel("PEN PERFORMANCE (BETA)")
+        pen_perf_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(pen_perf_title)
+
+        pen_perf_box = QFrame()
+        pen_perf_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        pen_perf_layout = QHBoxLayout(pen_perf_box)
+        pen_perf_layout.setContentsMargins(10, 8, 10, 8)
+        pen_perf_layout.setSpacing(8)
+        
+        pen_perf_label = QLabel("Pen Mode")
+        pen_perf_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        pen_perf_layout.addWidget(pen_perf_label, 1)
+
+        from PyQt5.QtCore import QSettings
+        settings = QSettings("AnkiOcclusion", "App")
+        saved_impl = settings.value("review/pen_implementation", "classic")
+
+        from PyQt5.QtWidgets import QComboBox
+        self._btn_pen_perf = QComboBox()
+        self._btn_pen_perf.addItems([
+            "Classic Smooth",
+            "Incremental Bezier",
+            "Raw Polyline",
+            "Distance-Filtered"
+        ])
+        self._btn_pen_perf.setCursor(Qt.PointingHandCursor)
+        self._btn_pen_perf.setObjectName("font_btn")
+        
+        _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
+        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+        self._btn_pen_perf.currentIndexChanged.connect(self._on_classic_pen_perf_changed)
+        pen_perf_layout.addWidget(self._btn_pen_perf, 0, Qt.AlignRight)
+        layout.addWidget(pen_perf_box)
+
         archive_title = QLabel("MISSION ARCHIVE")
         archive_title.setStyleSheet(
             f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
@@ -2098,6 +2212,102 @@ class HomeScreen(QWidget):
         
         layout.addWidget(gdrive_box)
 
+        # Cloud Asset Utilities
+        assets_lbl = QLabel("CLOUD ASSET UTILITIES")
+        assets_lbl.setStyleSheet(
+            f"color:{C_SUBTEXT};font-weight:bold;font-size:10px;margin-top:10px;"
+        )
+        layout.addWidget(assets_lbl)
+
+        assets_box = QFrame()
+        assets_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        assets_layout = QHBoxLayout(assets_box)
+        assets_layout.setContentsMargins(10, 8, 10, 8)
+        assets_layout.setSpacing(8)
+
+        self._assets_backup_btn = QPushButton("BACKUP ASSETS")
+        self._assets_backup_btn.setCursor(Qt.PointingHandCursor)
+        self._assets_backup_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {p_card};
+                color: {p_green};
+                border: 1px solid {p_border};
+                border-radius: 6px;
+                padding: 5px 10px;
+                font-family: 'Segoe UI';
+                font-size: 11px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {_hex_to_rgba(p_green, 0.12)};
+                color: {p_text};
+                border-color: {p_green};
+            }}
+            """
+        )
+        self._assets_backup_btn.clicked.connect(self._backup_assets_to_cloud)
+        assets_layout.addWidget(self._assets_backup_btn, 0)
+
+        self._assets_restore_btn = QPushButton("RESTORE ASSETS")
+        self._assets_restore_btn.setCursor(Qt.PointingHandCursor)
+        self._assets_restore_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {p_card};
+                color: {p_accent};
+                border: 1px solid {p_border};
+                border-radius: 6px;
+                padding: 5px 10px;
+                font-family: 'Segoe UI';
+                font-size: 11px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {_hex_to_rgba(p_accent, 0.12)};
+                color: {p_text};
+                border-color: {p_accent};
+            }}
+            """
+        )
+        self._assets_restore_btn.clicked.connect(self._sync_assets_from_cloud)
+        assets_layout.addWidget(self._assets_restore_btn, 0)
+
+        self._assets_prune_btn = QPushButton("PRUNE CLOUD")
+        self._assets_prune_btn.setCursor(Qt.PointingHandCursor)
+        self._assets_prune_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {p_card};
+                color: {p_red};
+                border: 1px solid {p_border};
+                border-radius: 6px;
+                padding: 5px 10px;
+                font-family: 'Segoe UI';
+                font-size: 11px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {_hex_to_rgba(p_red, 0.12)};
+                color: {p_text};
+                border-color: {p_red};
+            }}
+            """
+        )
+        self._assets_prune_btn.clicked.connect(self._prune_cloud_assets)
+        assets_layout.addWidget(self._assets_prune_btn, 0)
+
+        layout.addWidget(assets_box)
+
+        scroll.setWidget(container)
+        outer_l.addWidget(scroll)
+        
+        # Save references to prevent garbage collection and allow dynamic resizing
+        panel._scroll = scroll
+        panel._container = container
+        
         self._refresh_classic_archive_display()
         self._refresh_gdrive_display()
         panel.adjustSize()
@@ -2118,6 +2328,12 @@ class HomeScreen(QWidget):
         invert = (state == Qt.Checked)
         store.get()["_invert_pdf"] = invert
         store.mark_dirty()
+
+    def _on_classic_pen_perf_changed(self, idx):
+        _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
+        impl = _idx_to_impl.get(idx, "classic")
+        from PyQt5.QtCore import QSettings
+        QSettings("AnkiOcclusion", "App").setValue("review/pen_implementation", impl)
 
     def _refresh_classic_archive_display(self):
         if self._classic_archive_value is None:
@@ -2146,10 +2362,30 @@ class HomeScreen(QWidget):
             self._classic_volume_slider.blockSignals(True)
             self._classic_volume_slider.setValue(self._data.get("_volume", 40))
             self._classic_volume_slider.blockSignals(False)
+        if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
+            self._btn_pen_perf.blockSignals(True)
+            from PyQt5.QtCore import QSettings
+            saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "classic")
+            _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
+            self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+            self._btn_pen_perf.blockSignals(False)
         self._refresh_classic_archive_display()
         self._refresh_gdrive_display()
+        # Reset constraints first to get true size hint
+        panel.setMinimumHeight(0)
+        panel.setMaximumHeight(16777215)
         panel.adjustSize()
+        
         pos = self._btn_settings.mapToGlobal(QPoint(0, self._btn_settings.height() + 6))
+        
+        # Constrain height to fit available screen space
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geom = screen.availableGeometry()
+            max_allowed_h = screen_geom.bottom() - pos.y() - 12
+            if panel.height() > max_allowed_h:
+                panel.setFixedHeight(max_allowed_h)
+                
         panel.move(pos)
         panel.show()
         panel.raise_()
@@ -2262,6 +2498,8 @@ class HomeScreen(QWidget):
         
         self._data["_theme"] = self._current_theme
         store.mark_dirty()
+        from theme_manager import get_palette
+        self._p = get_palette(self._current_theme)
 
         # Synchronize classic dropdown state if it exists
         _theme_to_idx = {"classic": 0, "tmnt": 1, "manhattan": 2, "arcanum": 3}
@@ -2746,6 +2984,17 @@ class HomeScreen(QWidget):
                 self._gdrive_link_btn.setText("LINK")
                 self._gdrive_sync_btn.setEnabled(False)
 
+        backup_running = getattr(self, "_backup_in_progress", False)
+        restore_running = getattr(self, "_restore_in_progress", False)
+        prune_running = getattr(self, "_prune_in_progress", False)
+
+        if hasattr(self, "_assets_backup_btn") and self._assets_backup_btn is not None:
+            self._assets_backup_btn.setEnabled(gdrive_store.is_linked() and not backup_running)
+        if hasattr(self, "_assets_restore_btn") and self._assets_restore_btn is not None:
+            self._assets_restore_btn.setEnabled(gdrive_store.is_linked() and not restore_running)
+        if hasattr(self, "_assets_prune_btn") and self._assets_prune_btn is not None:
+            self._assets_prune_btn.setEnabled(gdrive_store.is_linked() and not prune_running)
+
         # Refresh TMNT UI if active
         if hasattr(self, "_tmnt_layout") and self._tmnt_layout is not None:
             if hasattr(self._tmnt_layout, "topbar") and self._tmnt_layout.topbar is not None:
@@ -2826,14 +3075,233 @@ class HomeScreen(QWidget):
             def _done():
                 self._refresh_gdrive_display()
                 if success:
-                    QMessageBox.information(self, "Sync Complete", "Database synced to Google Drive successfully!")
+                    _log_success("Database manual sync completed successfully!")
+                    ToastNotification(self, "👍 Database synced to Google Drive successfully!")
                 else:
                     QMessageBox.warning(self, "Sync Failed", "Could not sync database. Check your internet connection.")
-            from PyQt5.QtCore import QTimer
-            QTimer.singleShot(0, _done)
+            self.thread_safe_run_signal.emit(_done)
             
         import threading
         threading.Thread(target=_bg, daemon=True, name="GDrive-ManualSync").start()
+
+    def _run_closure(self, func):
+        try:
+            func()
+        except Exception as e:
+            print(f"[HomeScreen] Error in thread callback: {e}")
+
+    def _get_active_assets(self):
+        from storage_paths import iter_cards, to_archive_relative
+        data = self._data
+        referenced_pdfs = set()
+        referenced_images = set()
+        for card in iter_cards(data):
+            pdf = card.get("pdf_path")
+            if pdf:
+                referenced_pdfs.add(to_archive_relative(pdf))
+            img = card.get("image_path")
+            if img:
+                referenced_images.add(to_archive_relative(img))
+        return referenced_pdfs, referenced_images
+
+    def _set_assets_button_state(self, action_type, is_running):
+        if action_type == "backup":
+            self._backup_in_progress = is_running
+            btn = getattr(self, "_assets_backup_btn", None)
+            text_normal, text_running = "BACKUP ASSETS", "⏳ BACKING UP..."
+        elif action_type == "restore":
+            self._restore_in_progress = is_running
+            btn = getattr(self, "_assets_restore_btn", None)
+            text_normal, text_running = "RESTORE ASSETS", "⏳ RESTORING..."
+        else:
+            self._prune_in_progress = is_running
+            btn = getattr(self, "_assets_prune_btn", None)
+            text_normal, text_running = "PRUNE CLOUD", "⏳ PRUNING..."
+
+        if btn is not None:
+            btn.setEnabled(not is_running)
+            btn.setText(text_running if is_running else text_normal)
+
+        if self._tmnt_layout is not None and hasattr(self._tmnt_layout, "topbar") and self._tmnt_layout.topbar is not None:
+            tb = self._tmnt_layout.topbar
+            if action_type == "backup":
+                tmnt_btn = getattr(tb, "_assets_backup_btn", None)
+            elif action_type == "restore":
+                tmnt_btn = getattr(tb, "_assets_restore_btn", None)
+            else:
+                tmnt_btn = getattr(tb, "_assets_prune_btn", None)
+
+            if tmnt_btn is not None:
+                tmnt_btn.setEnabled(not is_running)
+                tmnt_btn.setText(text_running if is_running else text_normal)
+
+    def _backup_assets_to_cloud(self):
+        from services.gdrive_service import gdrive_store
+        from storage_paths import get_mission_archive_root
+        
+        local_archive_root = get_mission_archive_root()
+        if not local_archive_root:
+            QMessageBox.warning(
+                self, 
+                "Mission Archive Required", 
+                "You must configure a Mission Archive folder in settings before backing up assets to the cloud."
+            )
+            return
+            
+        self._gdrive_status_lbl.setText("Backing up assets...")
+        self._set_assets_button_state("backup", True)
+        print("\n[GDriveService] ⚡ Starting cloud backup of all active assets...")
+        ToastNotification(self, "⚡ Starting assets backup to Google Drive in background...", duration_ms=2000)
+            
+        def _bg():
+            success = False
+            try:
+                db_path = store._get_db_path()
+                db_ok = gdrive_store.upload_file_to_drive(db_path)
+                from data_manager import DATA_FILE
+                if DATA_FILE.endswith(".json") and os.path.exists(DATA_FILE):
+                    gdrive_store.upload_file_to_drive(DATA_FILE)
+                
+                ref_pdfs, ref_images = self._get_active_assets()
+                success = gdrive_store.backup_referenced_assets(local_archive_root, ref_pdfs, ref_images)
+            except Exception as e:
+                print(f"[GDrive Backup Assets] Error: {e}")
+                
+            def _done():
+                self._set_assets_button_state("backup", False)
+                self._refresh_gdrive_display()
+                    
+                if success:
+                    _log_success("Assets backup completed successfully!")
+                    ToastNotification(self, "👍 All active assets backed up to Google Drive successfully!")
+                else:
+                    QMessageBox.warning(
+                        self, 
+                        "Backup Complete with Issues", 
+                        "Some assets failed to upload. Check console or log for details."
+                    )
+            self.thread_safe_run_signal.emit(_done)
+            
+        import threading
+        threading.Thread(target=_bg, daemon=True, name="GDrive-BackupAssets").start()
+
+    def _sync_assets_from_cloud(self):
+        from services.gdrive_service import gdrive_store
+        from storage_paths import get_mission_archive_root
+        import shutil
+        
+        local_archive_root = get_mission_archive_root()
+        if not local_archive_root:
+            QMessageBox.warning(
+                self, 
+                "Mission Archive Required", 
+                "You must configure a Mission Archive folder in settings before syncing assets from the cloud."
+            )
+            return
+            
+        self._gdrive_status_lbl.setText("Restoring assets...")
+        self._set_assets_button_state("restore", True)
+        print("\n[GDriveService] ⚡ Starting cloud restore/sync of assets...")
+        ToastNotification(self, "⚡ Starting assets restore from Google Drive in background...", duration_ms=2000)
+            
+        def _bg():
+            success = False
+            try:
+                db_path = store._get_db_path()
+                
+                # Create a local safety backup of current db first
+                if os.path.exists(db_path):
+                    backup_local = db_path + ".restore_backup"
+                    shutil.copy2(db_path, backup_local)
+                
+                # Fetch database from cloud
+                token = gdrive_store.get_access_token()
+                if token:
+                    folder_id = gdrive_store._get_or_create_backups_folder({"Authorization": f"Bearer {token}"})
+                    file_id = gdrive_store._find_file_in_folder({"Authorization": f"Bearer {token}"}, os.path.basename(db_path), folder_id)
+                    if file_id:
+                        dl_db_ok = gdrive_store.download_file_from_drive(file_id, db_path)
+                        if dl_db_ok:
+                            # Reload store so we parse the updated database
+                            store.load()
+                            ref_pdfs, ref_images = self._get_active_assets()
+                            
+                            # Differential sync for referenced assets
+                            success = gdrive_store.sync_referenced_assets(local_archive_root, ref_pdfs, ref_images)
+            except Exception as e:
+                print(f"[GDrive Sync Assets] Error: {e}")
+                
+            def _done():
+                self._set_assets_button_state("restore", False)
+                self._refresh_gdrive_display()
+                    
+                # Reload UI data
+                self._data = store.get()
+                self.refresh()
+                if hasattr(self, "_tmnt_layout") and self._tmnt_layout is not None:
+                    self._tmnt_layout.sidebar.set_data(self._data)
+                    self._tmnt_layout.main._data = self._data
+                    
+                if success:
+                    _log_success("Assets sync/restore completed successfully!")
+                    ToastNotification(self, "👍 Database and active assets synced from Google Drive successfully!")
+                else:
+                    QMessageBox.warning(
+                        self, 
+                        "Sync Complete with Issues", 
+                        "Database synced, but some asset downloads failed. Check console for details."
+                    )
+            self.thread_safe_run_signal.emit(_done)
+            
+        import threading
+        threading.Thread(target=_bg, daemon=True, name="GDrive-SyncAssets").start()
+
+    def _prune_cloud_assets(self):
+        from services.gdrive_service import gdrive_store
+        
+        if (
+            QMessageBox.question(
+                self,
+                "Prune Cloud Storage",
+                "Are you sure you want to prune cloud storage?\n\n"
+                "This will scan your Google Drive and delete any PDFs or images that are NOT "
+                "referenced by any cards in your active database. This cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            != QMessageBox.Yes
+        ):
+            return
+            
+        self._gdrive_status_lbl.setText("Pruning cloud...")
+        self._set_assets_button_state("prune", True)
+        print("\n[GDriveService] ⚡ Starting cloud pruning scan...")
+        ToastNotification(self, "⚡ Starting cloud pruning scan in background...", duration_ms=2000)
+            
+        def _bg():
+            success = False
+            try:
+                ref_pdfs, ref_images = self._get_active_assets()
+                success = gdrive_store.prune_unreferenced_assets(ref_pdfs, ref_images)
+            except Exception as e:
+                print(f"[GDrive Prune Cloud] Error: {e}")
+                
+            def _done():
+                self._set_assets_button_state("prune", False)
+                self._refresh_gdrive_display()
+                    
+                if success:
+                    _log_success("Prune cloud assets completed successfully!")
+                    ToastNotification(self, "👍 Unreferenced assets deleted from Google Drive successfully!")
+                else:
+                    QMessageBox.warning(
+                        self, 
+                        "Pruning Failed", 
+                        "Pruning process encountered errors. Check console for details."
+                    )
+            self.thread_safe_run_signal.emit(_done)
+            
+        import threading
+        threading.Thread(target=_bg, daemon=True, name="GDrive-PruneAssets").start()
 
 
 from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit

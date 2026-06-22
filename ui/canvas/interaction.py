@@ -331,11 +331,57 @@ class CanvasInteractionMixin:
     def _ink_press(self, ip, input_kind="mouse"):
         self._ink_current = [self._ink_pen_color, ip]
         self._ink_input_kind = input_kind
+        
+        # Reset incremental path caches
+        self._ink_current_stable_path = QPainterPath()
+        self._ink_current_path = QPainterPath()
+        sc = self._scale
+        p0 = QPointF(ip.x() * sc, ip.y() * sc)
+        self._ink_current_stable_path.moveTo(p0)
+        self._ink_current_path.moveTo(p0)
 
     def _ink_move(self, ip):
         if not self._ink_current:
             return
+        
+        # Distance filter for "filtered" mode
+        impl = getattr(self, "_ink_implementation", "classic")
+        if impl == "filtered":
+            last_ip = self._ink_current[-1]
+            dx = ip.x() - last_ip.x()
+            dy = ip.y() - last_ip.y()
+            if dx * dx + dy * dy < 4.0:  # 2 pixels threshold -> squared distance is 4
+                return
+
         self._ink_current.append(ip)
+        
+        # Incremental path building for non-classic modes
+        if impl != "classic":
+            sc = self._scale
+            p_new = QPointF(ip.x() * sc, ip.y() * sc)
+            if impl in ("incremental", "filtered"):
+                pts_count = len(self._ink_current) - 1
+                if pts_count == 2:
+                    p0 = QPointF(self._ink_current[1].x() * sc, self._ink_current[1].y() * sc)
+                    p1 = p_new
+                    mid = QPointF((p0.x() + p1.x()) / 2.0, (p0.y() + p1.y()) / 2.0)
+                    self._ink_current_stable_path = QPainterPath()
+                    self._ink_current_stable_path.moveTo(p0)
+                    self._ink_current_stable_path.lineTo(mid)
+                    
+                    self._ink_current_path = QPainterPath(self._ink_current_stable_path)
+                    self._ink_current_path.lineTo(p1)
+                elif pts_count >= 3:
+                    p_prev = QPointF(self._ink_current[-2].x() * sc, self._ink_current[-2].y() * sc)
+                    p_curr = p_new
+                    mid = QPointF((p_prev.x() + p_curr.x()) / 2.0, (p_prev.y() + p_curr.y()) / 2.0)
+                    self._ink_current_stable_path.quadTo(p_prev, mid)
+                    
+                    self._ink_current_path = QPainterPath(self._ink_current_stable_path)
+                    self._ink_current_path.lineTo(p_curr)
+            elif impl == "polyline":
+                self._ink_current_path.lineTo(p_new)
+
         # ⚡ FIX: Only repaint the tiny bounding rect of the last segment,
         # not the entire canvas. This is the primary cause of pen lag —
         # a full-canvas update() on every mouseMoveEvent is 10–50x more work
@@ -361,6 +407,7 @@ class CanvasInteractionMixin:
             self._stroke_seq += 1
             stroke = StrokeList(self._ink_current)
             stroke._path_key = self._stroke_seq
+            stroke._implementation = getattr(self, "_ink_implementation", "classic")
             self._ink_strokes.append(stroke)
             # Compute bounding box of completed stroke for dirty-rect update
             pts = self._ink_current[1:]  # skip color element

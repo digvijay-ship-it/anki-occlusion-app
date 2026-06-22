@@ -134,7 +134,7 @@ class ReviewSessionManager:
             print(f"[Recovery] review checkpoint failed: {ex}")
         store.mark_dirty()
         self.rs._review_data_dirty = True
-        store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
+        # store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
 
         state = sm2_obj.get("sched_state", "review")
 
@@ -298,7 +298,7 @@ class ReviewSessionManager:
             print(f"[Recovery] review redo checkpoint failed: {ex}")
         store.mark_dirty()
         self.rs._review_data_dirty = True
-        store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
+        # store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
 
         self.rs.canvas._show_toast(f"↪ Redo — card {self._idx + 1}")
         self.rs._load_item()
@@ -374,7 +374,7 @@ class ReviewSessionManager:
         # Mark database as dirty so the new due date is saved
         store.mark_dirty()
         self.rs._review_data_dirty = True
-        store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
+        # store.save_soon(min_interval=REVIEW_SAVE_MIN_INTERVAL, delay_from_now=True)
 
         # Pop from session queue
         self._items.pop(self._idx)

@@ -161,6 +161,15 @@ def setup_logging():
             err_msg = _scrub_traceback(err_msg)
             sys.stderr.write("CRITICAL UNHANDLED EXCEPTION:\n" + err_msg + "\n")
             
+            # Save progress synchronously on crash/unhandled exception
+            try:
+                from data_manager import store
+                if store.is_dirty():
+                    store.save_force(async_save=False, force_gdrive=True)
+                    sys.stderr.write("[CrashHandler] Saved data successfully before crash exit.\n")
+            except Exception as se:
+                sys.stderr.write(f"Failed to save data on crash: {se}\n")
+            
         sys.excepthook = handle_exception
         print("Logging initialized. Log file: " + log_file_path)
     except Exception as e:

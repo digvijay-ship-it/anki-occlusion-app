@@ -408,6 +408,13 @@ def import_asset_into_archive(
         shutil.move(source_abs, dest_abs)
     else:
         shutil.copy2(source_abs, dest_abs)
+        
+    try:
+        from services.gdrive_service import gdrive_store
+        gdrive_store.upload_asset_async(dest_abs, kind)
+    except Exception as ex:
+        print(f"[storage_paths] Failed to trigger async asset upload: {ex}")
+        
     return dest_rel
 
 

@@ -814,7 +814,7 @@ class DeckTree(QWidget):
         deck_history.push(self._data)  # undo snapshot
         deck["bookmarked"] = not deck.get("bookmarked", False)
         store.mark_dirty()
-        store.save_soon(min_interval=0.0)
+        store.save_soon(min_interval=3.0)
         home = self._find_home()
         if home:
             home.refresh()
@@ -869,7 +869,7 @@ class DeckTree(QWidget):
         from perf_utils import invalidate_deck_stats
 
         invalidate_deck_stats()
-        store.save_soon(min_interval=0.0)
+        store.save_soon(min_interval=3.0)
         self.refresh()
         self._select_by_id(new_deck["_id"])
 
