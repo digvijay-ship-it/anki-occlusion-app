@@ -592,7 +592,8 @@ Persistence behavior:
 
 | Version | Highlights |
 |---------|------------|
-| Current | Visual similarity (dHash) & byte check (SHA-256) duplicate card protection, Text/Q&A Card creator & review flow, local-first web sync engine with transactional compaction, thread-safe merge-on-save daily journal, viewport-scoped mask cache & scroll paint fixes, O(1) deck stats cache, fast deepcopy undo/redo snapshots, on-demand OCR lifecycle (54MB boot memory) with animated theme-aware loading toast |
+| Current | Optimized incremental Google Drive backup, restore, and prune operations with O(1) folder caching, folder contents batching, local-first cache pre-filtering, thread-safe Qt GUI signal-slot updates, and circular-recursion safety |
+| v20 | Visual similarity (dHash) & byte check (SHA-256) duplicate card protection, Text/Q&A Card creator & review flow, local-first web sync engine with transactional compaction, thread-safe merge-on-save daily journal, viewport-scoped mask cache & scroll paint fixes, O(1) deck stats cache, fast deepcopy undo/redo snapshots, on-demand OCR lifecycle (54MB boot memory) with animated theme-aware loading toast |
 | v19 | SM-2 Hard/EF/fuzzing fixes, DirtyStore autosave, review queue panel, learning countdown, session summary, tablet-friendly pan |
 | v18 | Hardware mask cache and LRU page cache |
 | v17 | Progressive chunk loading and RAM cache improvements |
