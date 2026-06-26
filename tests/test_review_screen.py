@@ -1601,6 +1601,62 @@ class QuickNoteTests(unittest.TestCase):
             screen.canvas.ink_set_mode.assert_any_call("eraser")
             screen.canvas.ink_toggle.assert_not_called()
 
+    def test_save_review_ink_to_note_no_duplicates(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtCore import QSize, QPointF
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"), \
+             patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
+             patch("os.makedirs"), \
+             patch("PyQt5.QtGui.QImage.save") as mock_save, \
+             patch("data_manager.store") as mock_store:
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen.canvas = MagicMock()
+            screen._canvas_scroll = MagicMock()
+            screen._queue_panel = MagicMock()
+            screen._queue_list = MagicMock()
+            screen._queue_edge_button = MagicMock()
+            screen._queue_lock_button = MagicMock()
+            screen._queue_hide_button = MagicMock()
+            screen._reveal_bar = MagicMock()
+            screen._btn_note = MagicMock()
+            screen._hint_panel = MagicMock()
+            screen._hint_browser = MagicMock()
+            screen._btn_save_ink = MagicMock()
+            screen._show_review_toast = MagicMock()
+            screen._update_mask_note_ui = MagicMock()
+            
+            screen.__init__([])
+            
+            mock_card = {"_id": 1, "card_type": "image", "notes": "Old Note"}
+            mock_box = {"note": "Old Note"}
+            screen._items = [(mock_card, 0, mock_box)]
+            screen._idx = 0
+            
+            screen.canvas._px.size.return_value = QSize(800, 600)
+            screen.canvas._ink_width = 3.0
+            screen.canvas._ink_strokes = [
+                ["#FF0000", QPointF(10, 20), QPointF(30, 40)]
+            ]
+            
+            # First save - should save successfully
+            screen._save_review_ink_to_note(clear_ink=False)
+            self.assertEqual(mock_save.call_count, 1)
+            screen._show_review_toast.assert_called_with("📌 Saved drawing (canvas kept)!")
+            
+            # Reset mocks
+            mock_save.reset_mock()
+            screen._show_review_toast.reset_mock()
+            
+            # Second save without changes - should be blocked as duplicate
+            screen._save_review_ink_to_note(clear_ink=False)
+            mock_save.assert_not_called()
+            screen._show_review_toast.assert_called_with("⚠️ Sketch already saved to note.")
+
 
 if __name__ == "__main__":
     unittest.main()

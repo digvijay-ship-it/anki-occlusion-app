@@ -1651,6 +1651,19 @@ class ReviewScreen(QWidget):
             self._show_review_toast("⚠️ No drawings to save!")
             return
             
+        # Generate a key of the current ink strokes to prevent duplicate saves of the same content
+        current_strokes_key = []
+        for stroke in self.canvas._ink_strokes:
+            color = stroke[0]
+            color_str = color.name() if hasattr(color, "name") else str(color)
+            pts = tuple((round(pt.x(), 2), round(pt.y(), 2)) for pt in stroke[1:] if hasattr(pt, "x"))
+            current_strokes_key.append((color_str, pts))
+        current_strokes_key = tuple(current_strokes_key)
+
+        if getattr(self, "_last_saved_ink_strokes_key", None) == current_strokes_key:
+            self._show_review_toast("⚠️ Sketch already saved to note.")
+            return
+            
         card, box_idx, active_box = self._items[self._idx]
         
         import uuid
@@ -1795,8 +1808,10 @@ class ReviewScreen(QWidget):
         
         if clear_ink:
             self.canvas.ink_clear()
+            self._last_saved_ink_strokes_key = None
             self._show_review_toast("✅ Saved drawing as note image!")
         else:
+            self._last_saved_ink_strokes_key = current_strokes_key
             self._show_review_toast("📌 Saved drawing (canvas kept)!")
         
         self._update_mask_note_ui()
@@ -2365,6 +2380,7 @@ class ReviewScreen(QWidget):
             self._stimer.set_current_pdf(card.get("pdf_path", ""))
         if hasattr(self.canvas, "clear_review_ink_for_card_switch"):
             self.canvas.clear_review_ink_for_card_switch()
+        self._last_saved_ink_strokes_key = None
         self._sync_queue_state()  # state-only fast path for normal card advances
 
         # UI updates...
