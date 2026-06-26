@@ -329,6 +329,8 @@ def is_due_now(c):
     if not due_str:
         return True
     try:
+        if len(due_str) >= 19:
+            return due_str[:19] <= datetime.now().isoformat()[:19]
         return datetime.fromisoformat(due_str) <= datetime.now()
     except Exception:
         return True
@@ -338,9 +340,13 @@ def is_due_today(c):
     due_str = c.get("sm2_due", "")
     if due_str:
         try:
-            due_date = datetime.fromisoformat(due_str).date()
-            if due_date > date.today():
-                return False
+            if len(due_str) >= 10:
+                if due_str[:10] > date.today().isoformat():
+                    return False
+            else:
+                due_date = datetime.fromisoformat(due_str).date()
+                if due_date > date.today():
+                    return False
         except Exception:
             pass
 
@@ -363,6 +369,8 @@ def is_due_today(c):
             if not due_str:
                 return True
             try:
+                if len(due_str) >= 10:
+                    return due_str[:10] <= date.today().isoformat()
                 return datetime.fromisoformat(due_str).date() <= date.today()
             except Exception:
                 return True
@@ -374,8 +382,9 @@ def is_due_today(c):
     if not due_str:
         return True
     try:
-        due_date = datetime.fromisoformat(due_str).date()
-        return due_date <= date.today()
+        if len(due_str) >= 10:
+            return due_str[:10] <= date.today().isoformat()
+        return datetime.fromisoformat(due_str).date() <= date.today()
     except Exception:
         return True
 
@@ -386,7 +395,12 @@ def sm2_is_due(c):
 
 def sm2_days_left(c):
     try:
-        due = datetime.fromisoformat(c.get("sm2_due", ""))
+        due_str = c.get("sm2_due", "")
+        if len(due_str) >= 10:
+            due_date = date.fromisoformat(due_str[:10])
+            delta = (due_date - date.today()).days
+            return max(0, delta)
+        due = datetime.fromisoformat(due_str)
         delta = (due.date() - date.today()).days
         return max(0, delta)
     except Exception:

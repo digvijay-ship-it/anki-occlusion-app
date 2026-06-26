@@ -676,6 +676,9 @@ class MainWindow(QMainWindow):
                 home.deck_view, "update_font_size"
             ):
                 home.deck_view.update_font_size(self._font_size)
+            if hasattr(home, "_math_trainer") and home._math_trainer is not None:
+                if hasattr(home._math_trainer, "update_font_size"):
+                    home._math_trainer.update_font_size(self._font_size)
 
         store.save_force()
 

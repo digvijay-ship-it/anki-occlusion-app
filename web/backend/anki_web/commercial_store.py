@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,10 +45,16 @@ class CommercialWebStore:
     This store intentionally handles metadata only. PDFs and large images stay
     browser-local for the first commercial MVP.
     """
+    _initialized_db_paths = set()
+    _init_lock = threading.Lock()
 
     def __init__(self, db_path: str | os.PathLike[str] | None = None):
         self.db_path = Path(db_path) if db_path is not None else default_db_path()
-        self.init_db()
+        resolved_path = str(self.db_path.resolve())
+        with CommercialWebStore._init_lock:
+            if resolved_path not in CommercialWebStore._initialized_db_paths:
+                self.init_db()
+                CommercialWebStore._initialized_db_paths.add(resolved_path)
 
     def connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

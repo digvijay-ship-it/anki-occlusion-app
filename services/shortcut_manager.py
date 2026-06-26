@@ -46,7 +46,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.open_folder", "Review", "Open PDF folder", "Ctrl+L"),
     ShortcutAction("review.copy_pdf", "Review", "Copy PDF path", "L"),
     ShortcutAction("review.annotate", "Review", "Anotate Scroll", "T"),
-    ShortcutAction("review.edit_card", "Review", "Edit card", "E"),
+    ShortcutAction("review.edit_card", "Review", "Edit card", "Ctrl+Shift+E"),
     ShortcutAction("review.prev_page", "Review", "Previous page", "Left"),
     ShortcutAction("review.next_page", "Review", "Next page", "Right"),
     ShortcutAction("review.pen_toggle", "Review", "Toggle pen", "`"),
@@ -54,6 +54,11 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.pen_clear", "Review", "Clear pen marks", "Del"),
     ShortcutAction("review.pdf_contrast", "Review", "Toggle PDF Contrast", "I"),
     ShortcutAction("review.toggle_timer", "Review", "Toggle study timer visibility", "Alt+T"),
+    ShortcutAction("review.toggle_note", "Review", "Toggle mask note visibility", "N"),
+    ShortcutAction("review.quick_note", "Review", "Quick edit active mask note", "Ctrl+N"),
+    ShortcutAction("review.save_ink_clear", "Review", "Save review ink & clear canvas", "Ctrl+A"),
+    ShortcutAction("review.save_ink_keep", "Review", "Save review ink & keep on canvas", "Ctrl+Shift+A"),
+    ShortcutAction("review.eraser_toggle", "Review", "Toggle eraser drawing", "E"),
 )
 
 
@@ -61,6 +66,9 @@ _ACTIONS_BY_ID = {action.action_id: action for action in SHORTCUT_ACTIONS}
 
 
 def _settings():
+    from storage_paths import is_running_tests
+    if is_running_tests():
+        return QSettings("AnkiOcclusionTest", "AppTest")
     return QSettings(SETTINGS_ORG, SETTINGS_APP)
 
 

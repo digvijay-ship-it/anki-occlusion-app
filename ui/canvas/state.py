@@ -391,6 +391,7 @@ class CanvasStateMixin:
             d = {
                 "rect": [r.x(), r.y(), r.width(), r.height()],
                 "label": b.get("label", ""),
+                "note": b.get("note", ""),
                 "shape": b.get("shape", "rect"),
                 "angle": b.get("angle", 0.0),
                 "group_id": b.get("group_id", ""),
@@ -665,6 +666,12 @@ class CanvasStateMixin:
         if 0 <= idx < len(self._boxes):
             self._boxes[idx]["label"] = text
             self.update()
+            self.boxes_changed.emit(self.get_boxes())
+
+    def update_note(self, idx, text):
+        if 0 <= idx < len(self._boxes):
+            self._boxes[idx]["note"] = text
+            self.boxes_changed.emit(self.get_boxes())
 
     def group_selected(self):
         indices = self._get_all_selected()
@@ -756,6 +763,7 @@ class CanvasStateMixin:
             "angle": float(b.get("angle", 0.0)),
             "revealed": revealed,
             "label": b.get("label", ""),
+            "note": b.get("note", ""),
             "box_id": b.get("box_id", ""),
             "group_id": b.get("group_id", ""),
             **{

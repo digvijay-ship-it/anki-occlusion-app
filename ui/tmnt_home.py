@@ -394,6 +394,7 @@ class TMNTStatCard(QFrame):
         self._color = color
         self._scale = _tmnt_scale(data)
         self._setup(title, subtitle, color)
+        self.setFixedHeight(_px(100, self._scale))
         _apply_glow(self, color, blur=_px(18, self._scale), alpha=55)
 
     def enterEvent(self, event):
@@ -484,6 +485,7 @@ class TMNTStatCard(QFrame):
         t_font.setPixelSize(_px(10, self._scale))
         t_font.setBold(True)
         t_lbl.setFont(t_font)
+        t_lbl.setWordWrap(True)
 
         s_lbl = QLabel(subtitle)
         s_lbl.setStyleSheet(
@@ -496,6 +498,7 @@ class TMNTStatCard(QFrame):
         s_font = QFont(T_MONO)
         s_font.setPixelSize(_px(10, self._scale))
         s_lbl.setFont(s_font)
+        s_lbl.setWordWrap(True)
 
         txt.addWidget(self.val_lbl)
         txt.addWidget(t_lbl)
@@ -505,6 +508,24 @@ class TMNTStatCard(QFrame):
 
     def set_value(self, v):
         self.val_lbl.setText(str(v))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  HTMLButton (Custom clickable QLabel for rich HTML layouts)
+# ══════════════════════════════════════════════════════════════════════════════
+class HTMLButton(QLabel):
+    clicked = pyqtSignal()
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAlignment(Qt.AlignCenter)
+        self.setTextFormat(Qt.RichText)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -565,6 +586,7 @@ class TMNTMissionBanner(QFrame):
         title_font.setPixelSize(_px(title_size, self._scale))
         title_font.setBold(True)
         title.setFont(title_font)
+        title.setWordWrap(True)
 
         desc_text = "Stop Shredder's project and clear the levels!" if theme_name == "manhattan" else "Continue your training and defeat the due cards!"
         desc = QLabel(desc_text)
@@ -577,6 +599,7 @@ class TMNTMissionBanner(QFrame):
         desc_font = QFont(T_MONO)
         desc_font.setPixelSize(_px(14, self._scale))
         desc.setFont(desc_font)
+        desc.setWordWrap(True)
 
         quote_text = "> Pizza time! 🍕_" if theme_name == "manhattan" else "> Cowabunga! 🐢_"
         self.quote = QLabel(quote_text)
@@ -600,8 +623,7 @@ class TMNTMissionBanner(QFrame):
         l.addStretch()
 
         right = QVBoxLayout()
-        right.setSpacing(_px(8, self._scale))
-        right.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        right.setSpacing(_px(20, self._scale))
 
         if theme_name == "manhattan":
             btn_train_text = "▶  FIGHT FOOT CLAN\nREVIEW DUE COMBATS"
@@ -615,34 +637,56 @@ class TMNTMissionBanner(QFrame):
         btn_selected_family = T_MONO
         btn_selected_bold = True
 
-        self.btn_train = QPushButton(btn_train_text)
+        top_size = _px(16.5, self._scale)
+        sub_size = _px(10, self._scale)
+        if theme_name == "manhattan":
+            btn_train_html = f"""
+            <div style="line-height: 1.1;">
+                <span style="font-family: {btn_train_family}; font-size: {top_size}px; font-weight: 900; color: #07070B;">▶  FIGHT FOOT CLAN</span><br/>
+                <span style="font-family: {btn_train_family}; font-size: {sub_size}px; font-weight: 700; color: rgba(7, 7, 11, 0.6);">REVIEW DUE COMBATS</span>
+            </div>
+            """
+        else:
+            btn_train_html = f"""
+            <div style="line-height: 1.1;">
+                <span style="font-family: {btn_train_family}; font-size: {top_size}px; font-weight: 900; color: #07070B;">▶  START TRAINING</span><br/>
+                <span style="font-family: {btn_train_family}; font-size: {sub_size}px; font-weight: 700; color: rgba(7, 7, 11, 0.6);">REVIEW DUE SCROLLS</span>
+            </div>
+            """
+
+        base_w = _px(240, self._scale)
+        base_h = _px(76, self._scale)
+        max_w = int(base_w * 1.20)
+        max_h = int(base_h * 1.20)
+
+        self.btn_train_container = QWidget()
+        self.btn_train_container.setObjectName("btnTrainContainer")
+        self.btn_train_container.setStyleSheet("background:transparent; border:none;")
+        self.btn_train_container.setFixedSize(max_w, max_h)
+
+        self.btn_train = HTMLButton(btn_train_html, self.btn_train_container)
+        self.btn_train.setObjectName("btnTrain")
         self.btn_train.setStyleSheet(
             _scale_ss(
                 f"""
-            QPushButton {{
-                background: #4aa84f;
-                color: {T_BG};
-                border: 1px solid #60c467;
-                border-radius: 2px;
-                font-weight: 900;
-                font-family: {btn_train_family};
-                font-size: {btn_train_size}px;
-                min-height: 52px;
-                padding: 0px 24px;
-                text-align: center;
+            QLabel#btnTrain {{
+                background: #72FF4F;
+                border: 2px solid #72FF4F;
+                border-radius: 4px;
+                min-width: 240px;
             }}
-            QPushButton:hover {{ background: #56b75c; color: {T_BG}; }}
+            QLabel#btnTrain:hover {{
+                background: white;
+                border-color: white;
+            }}
         """,
                 self._scale,
             )
         )
+        self.btn_train.setFixedSize(base_w, base_h)
+        self.btn_train.move((max_w - base_w) // 2, (max_h - base_h) // 2)
         self.btn_train.clicked.connect(self.train_clicked)
-        _apply_glow(self.btn_train, "#5bc561", blur=_px(24, self._scale), alpha=120)
-        
-        btn_train_font = QFont(btn_train_family)
-        btn_train_font.setPixelSize(_px(btn_train_size, self._scale))
-        btn_train_font.setBold(True)
-        self.btn_train.setFont(btn_train_font)
+        _apply_glow(self.btn_train, "#72FF4F", blur=_px(16, self._scale), alpha=100)
 
         self.btn_selected = QPushButton(btn_selected_text)
         self.btn_selected.setStyleSheet(
@@ -657,8 +701,7 @@ class TMNTMissionBanner(QFrame):
                 font-weight: 700;
                 font-family: {btn_selected_family};
                 letter-spacing: 1px;
-                min-height: 36px;
-                padding: 0px 16px;
+                padding: 8px 16px;
             }}
             QPushButton:hover {{ background: rgba(255,255,255,0.04); color: {T_TEXT}; border-color: #70788f; }}
         """,
@@ -672,7 +715,7 @@ class TMNTMissionBanner(QFrame):
         btn_sel_font.setBold(btn_selected_bold)
         self.btn_selected.setFont(btn_sel_font)
 
-        right.addWidget(self.btn_train)
+        right.addWidget(self.btn_train_container)
         right.addWidget(self.btn_selected)
         l.addLayout(right)
 
@@ -682,8 +725,12 @@ class TMNTMissionBanner(QFrame):
         self._glow_timer.timeout.connect(self._tick_glow)
         self._glow_timer.setInterval(self.GLOW_INTERVAL_MS)
 
+        self.setMinimumHeight(_px(110, self._scale))
+        self.btn_train.setMinimumHeight(_px(76, self._scale))
+        self.btn_selected.setMinimumHeight(_px(36, self._scale))
+
     def set_animation_enabled(self, enabled):
-        enabled = bool(enabled) and _home_animations_enabled()
+        enabled = bool(enabled)
         if enabled:
             if not self._glow_timer.isActive():
                 self._glow_timer.start()
@@ -701,15 +748,26 @@ class TMNTMissionBanner(QFrame):
 
     def _tick_glow(self):
         self._glow_step += 1
-        t = (math.sin(self._glow_step * math.pi / 20.0) + 1.0) / 2.0
+        t = (math.sin(self._glow_step * math.pi / 15.0) + 1.0) / 2.0
         eff = self.btn_train.graphicsEffect()
         if eff and isinstance(eff, QGraphicsDropShadowEffect):
-            blur = _px(12 + 16 * t, self._scale)
+            blur = _px(16 + 24 * t, self._scale)
             eff.setBlurRadius(blur)
-            alpha = int(90 + 50 * t)
-            glow_color = QColor("#5bc561")
+            alpha = int(100 + 120 * t)
+            glow_color = QColor("#72FF4F")
             glow_color.setAlpha(alpha)
             eff.setColor(glow_color)
+
+        # Pulse scale
+        scale_factor = 1.0 + 0.15 * t
+        base_w = _px(240, self._scale)
+        base_h = _px(76, self._scale)
+        w = int(base_w * scale_factor)
+        h = int(base_h * scale_factor)
+        self.btn_train.setFixedSize(w, h)
+        max_w = int(base_w * 1.20)
+        max_h = int(base_h * 1.20)
+        self.btn_train.move((max_w - w) // 2, (max_h - h) // 2)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1473,7 +1531,7 @@ class TMNTDeckEngine(DeckTree):
         self.tree.setItemDelegate(self._delegate)
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.header().setStretchLastSection(True)
         self.tree.header().setSectionResizeMode(0, self.tree.header().Stretch)
@@ -1664,7 +1722,7 @@ class TMNTSidebar(QFrame):
         self._data = data
         self._scale = _tmnt_scale(data)
         self._selected_deck = None
-        self.setMinimumWidth(_px(280, self._scale))
+        self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setObjectName("tmnt_sidebar1")
         self.setStyleSheet(
@@ -2231,7 +2289,39 @@ class TMNTMainContent(DeckView):
         self.setStyleSheet(f"background: #151821;")
 
     def _setup_ui(self):
-        L = QVBoxLayout(self)
+        # Create a top-level layout on self to hold the QScrollArea
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Create QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(_scale_ss(f"""
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: {T_BG};
+                width: 8px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {T_PANEL};
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {T_GREEN};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        """, self._scale))
+
+        # Create a container widget for the actual content
+        content_widget = QWidget()
+        content_widget.setObjectName("tmnt_main_content_widget")
+        content_widget.setStyleSheet("QWidget#tmnt_main_content_widget { background: transparent; }")
+
+        L = QVBoxLayout(content_widget)
         L.setContentsMargins(
             _px(20, self._scale),
             _px(20, self._scale),
@@ -2258,7 +2348,7 @@ class TMNTMainContent(DeckView):
         title_txt = QVBoxLayout()
         title_txt.setSpacing(_px(2, self._scale))
         self.lbl_deck = QLabel("SELECT A DOJO")
-        self.lbl_deck.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lbl_deck.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.lbl_deck.setStyleSheet(
             _scale_ss(
                 f"color: {T_GREEN}; font-size: 24px; font-weight: 900; "
@@ -2282,15 +2372,20 @@ class TMNTMainContent(DeckView):
 
         title_row.addWidget(self.lbl_deck_icon)
         title_row.addLayout(title_txt)
+        title_row.addStretch()
+
+        # ── Buttons row ──
+        buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(_px(12, self._scale))
 
         self.btn_bookmark = QPushButton()
         self.btn_bookmark.setObjectName("bookmark_btn")
         self.btn_bookmark.setCursor(Qt.PointingHandCursor)
         self.btn_bookmark.clicked.connect(self._toggle_bookmark)
         self.btn_bookmark.hide()
-        title_row.addWidget(self.btn_bookmark)
+        buttons_row.addWidget(self.btn_bookmark)
 
-        title_row.addStretch()
+        buttons_row.addStretch()
 
         # Dynamic labels & colors for retro layout (Dojo vs Manhattan)
         from PyQt5.QtWidgets import QApplication
@@ -2334,7 +2429,7 @@ class TMNTMainContent(DeckView):
         )
         self.btn_add.clicked.connect(self._add_card)
         _apply_glow(self.btn_add, T_GREEN, blur=_px(22, self._scale), alpha=95)
-        title_row.addWidget(self.btn_add)
+        buttons_row.addWidget(self.btn_add)
 
         self.btn_add_text = QPushButton(btn_add_text_label)
         self.btn_add_text.setStyleSheet(
@@ -2358,7 +2453,7 @@ class TMNTMainContent(DeckView):
         )
         self.btn_add_text.clicked.connect(self._add_text_card)
         _apply_glow(self.btn_add_text, T_PURPLE, blur=_px(22, self._scale), alpha=95)
-        title_row.addWidget(self.btn_add_text)
+        buttons_row.addWidget(self.btn_add_text)
 
         # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping
         btn_font = QFont("Orbitron")
@@ -2368,6 +2463,7 @@ class TMNTMainContent(DeckView):
         self.btn_add_text.setFont(btn_font)
 
         L.addLayout(title_row)
+        L.addLayout(buttons_row)
 
         # ── 3 Stat Cards ──
         stats_row = QHBoxLayout()
@@ -2572,6 +2668,13 @@ class TMNTMainContent(DeckView):
         bot.addWidget(self.btn_delete_tmnt)
         bot.addStretch()
         L.addLayout(bot)
+
+        # programmatically enforce minimum height on list frame to prevent it from collapsing to 0
+        list_frame.setMinimumHeight(_px(200, self._scale))
+
+        scroll.setWidget(content_widget)
+        main_layout.addWidget(scroll)
+
         self._sync_action_state()
 
     def set_theme(self, theme):
@@ -4451,6 +4554,28 @@ class TMNTHomeLayout(QWidget):
         body.addWidget(self.sidebar, stretch=self.SIDEBAR_STRETCH)
         body.addWidget(self.main, stretch=self.MAIN_STRETCH)
 
+        # Sidebar hover-expand state
+        self._sidebar_expanded = False
+        self._body_w = body_w  # store reference for coordinate mapping
+
+        from PyQt5.QtCore import QVariantAnimation
+        self._sidebar_anim = QVariantAnimation(self)
+        self._sidebar_anim.setDuration(250)
+        self._sidebar_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._sidebar_anim.valueChanged.connect(self._on_sidebar_anim)
+        self._sidebar_anim.finished.connect(self._on_sidebar_anim_finished)
+
+        # Timer created but NOT started — will start in showEvent
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(150)
+        self._hover_timer.timeout.connect(self._check_sidebar_hover)
+
+        # Collapse delay timer — 1 second debounce before collapsing
+        self._collapse_delay = QTimer(self)
+        self._collapse_delay.setSingleShot(True)
+        self._collapse_delay.setInterval(1000)
+        self._collapse_delay.timeout.connect(self._do_collapse_sidebar)
+
         self._banga_reserve = QWidget()
         self._banga_reserve.setFixedWidth(0)
         self._banga_reserve.hide()
@@ -4471,10 +4596,130 @@ class TMNTHomeLayout(QWidget):
             self.crt.setGeometry(self.rect())
             self.crt.raise_()
 
+        # If sidebar is floating (expanded), update its height to match body
+        if getattr(self, "_sidebar_floating", False) and hasattr(self, "sidebar"):
+            body = getattr(self, "_body_w", None)
+            if body:
+                g = self.sidebar.geometry()
+                self.sidebar.setGeometry(g.x(), g.y(), g.width(), body.height())
+
     def showEvent(self, event):
         super().showEvent(event)
         if hasattr(self, "crt"):
             self.crt.trigger_boot_flicker()
+        # Start hover timer only after the widget is shown and laid out
+        if hasattr(self, "_hover_timer") and not self._hover_timer.isActive():
+            QTimer.singleShot(500, self._hover_timer.start)
+
+    def _check_sidebar_hover(self):
+        if not hasattr(self, "sidebar") or not self.sidebar.isVisible():
+            return
+        body = getattr(self, "_body_w", None)
+        if not body:
+            return
+
+        # Map global cursor to body widget coordinates
+        pos = body.mapFromGlobal(QCursor.pos())
+        body_rect = body.rect()
+        if not body_rect.contains(pos):
+            self._request_collapse()
+            return
+
+        # Fixed hover zone: left 30% of body = sidebar zone
+        hover_zone_w = int(body.width() * 0.30)
+        in_sidebar_zone = pos.x() <= hover_zone_w
+
+        if in_sidebar_zone:
+            # Mouse is back in sidebar zone — cancel any pending collapse
+            if hasattr(self, '_collapse_delay') and self._collapse_delay.isActive():
+                self._collapse_delay.stop()
+            self._expand_sidebar()
+        else:
+            self._request_collapse()
+
+    def _request_collapse(self):
+        """Start the 1-second collapse delay if not already pending."""
+        if not self._sidebar_expanded:
+            return
+        if not self._collapse_delay.isActive():
+            self._collapse_delay.start()
+
+    def _do_collapse_sidebar(self):
+        """Actually perform the collapse after the delay."""
+        self._collapse_sidebar()
+
+    def _on_sidebar_anim(self, val):
+        """During expand/collapse, update the sidebar geometry (floating mode)
+        or width (returning to layout)."""
+        if not hasattr(self, "sidebar"):
+            return
+        body = getattr(self, "_body_w", None)
+        if not body:
+            return
+        w = int(val)
+        if getattr(self, "_sidebar_floating", False):
+            # Sidebar is floating — set geometry absolutely within body_w
+            self.sidebar.setGeometry(0, 0, w, body.height())
+        else:
+            # Sidebar is back in layout — use setFixedWidth
+            self.sidebar.setFixedWidth(w)
+
+    def _on_sidebar_anim_finished(self):
+        """After collapse animation, re-insert sidebar into the layout."""
+        if not getattr(self, "_sidebar_expanded", False) and getattr(self, "_sidebar_floating", False):
+            self._sidebar_floating = False
+            body = getattr(self, "_body_w", None)
+            if body and hasattr(self, "sidebar"):
+                layout = body.layout()
+                # Re-insert sidebar at position 0 with original stretch
+                layout.insertWidget(0, self.sidebar, stretch=self.SIDEBAR_STRETCH)
+                # Release any fixed width so stretch takes over
+                self.sidebar.setMinimumWidth(0)
+                self.sidebar.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
+
+    def _expand_sidebar(self):
+        if self._sidebar_expanded:
+            return
+        self._sidebar_expanded = True
+        body = getattr(self, "_body_w", None)
+        if not body or not hasattr(self, "_sidebar_anim"):
+            return
+
+        # Save current geometry before removing from layout
+        saved_geom = self.sidebar.geometry()
+
+        # Remove sidebar from layout (it stays as a child of body_w)
+        body.layout().removeWidget(self.sidebar)
+        self._sidebar_floating = True
+
+        # Position absolutely at saved location, raise above main content
+        self.sidebar.setGeometry(saved_geom)
+        self.sidebar.raise_()
+        self.sidebar.show()
+
+        # Animate width from current to 60% of body
+        start_w = saved_geom.width()
+        end_w = int(body.width() * 0.60)
+        self._sidebar_anim.stop()
+        self._sidebar_anim.setStartValue(start_w)
+        self._sidebar_anim.setEndValue(end_w)
+        self._sidebar_anim.start()
+
+    def _collapse_sidebar(self):
+        if not self._sidebar_expanded:
+            return
+        self._sidebar_expanded = False
+        body = getattr(self, "_body_w", None)
+        if not body or not hasattr(self, "_sidebar_anim"):
+            return
+
+        # Animate width back to 30% of body (matches SIDEBAR_STRETCH)
+        start_w = self.sidebar.width()
+        end_w = int(body.width() * 0.30)
+        self._sidebar_anim.stop()
+        self._sidebar_anim.setStartValue(start_w)
+        self._sidebar_anim.setEndValue(end_w)
+        self._sidebar_anim.start()
 
 
 

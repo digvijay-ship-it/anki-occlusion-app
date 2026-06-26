@@ -664,8 +664,7 @@ class DirtyStore:
             with self._lock:
                 if save_seq < self._latest_save_request_seq:
                     return False
-                import copy
-                data_snapshot = copy.deepcopy(self._data)
+                data_snapshot = json.loads(json.dumps(self._data))
             
             db_path = self._get_db_path()
             db_dir = os.path.dirname(db_path)
@@ -1269,13 +1268,11 @@ class _DeckHistory:
 
     @staticmethod
     def _snapshot(data: dict) -> dict:
-        import copy
-        return copy.deepcopy(data)
+        return json.loads(json.dumps(data))
 
     @staticmethod
     def _restore(snapshot: dict) -> dict:
-        import copy
-        return copy.deepcopy(snapshot)
+        return json.loads(json.dumps(snapshot))
 
     def push(self, data: dict):
         """Mutate se PEHLE call karo."""

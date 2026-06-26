@@ -122,6 +122,10 @@ class ReviewSessionManager:
 
         # Always stamp the parent card with the latest review time
         card["last_reviewed_at"] = _now
+        if self.rs and getattr(self.rs, "_stimer", None):
+            pdf_path = card.get("pdf_path", "")
+            if pdf_path:
+                self.rs._stimer.record_card_review(pdf_path)
         # Persist a tiny recovery event immediately, then debounce the heavy
         # full-data JSON save/backup so review flow and next-PDF loading stay
         # responsive. A forced app kill can replay the recovery event.
@@ -225,6 +229,12 @@ class ReviewSessionManager:
                 card.pop("last_reviewed_at", None)
             else:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
+        if self.rs and getattr(self.rs, "_stimer", None):
+            snap_card = snap.get("card")
+            if snap_card:
+                pdf_path = snap_card.get("pdf_path", "")
+                if pdf_path:
+                    self.rs._stimer.undo_card_review(pdf_path)
 
         try:
             recovery_manager.discard_review_event(snap.get("recovery_event"))
@@ -283,6 +293,12 @@ class ReviewSessionManager:
                 card.pop("last_reviewed_at", None)
             else:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
+        if self.rs and getattr(self.rs, "_stimer", None):
+            snap_card = snap.get("card")
+            if snap_card:
+                pdf_path = snap_card.get("pdf_path", "")
+                if pdf_path:
+                    self.rs._stimer.record_card_review(pdf_path)
 
         try:
             timestamp = datetime.now().isoformat(timespec="seconds")

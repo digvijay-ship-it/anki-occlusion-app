@@ -44,22 +44,41 @@ _TEXT_COLOR = "#7C6AF7"  # accent purple — stands out clearly
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _load_state() -> int:
+def normalize_pdf_path(path: str) -> str:
+    if not path:
+        return ""
+    return os.path.normpath(path).replace("\\", "/").lower()
+
+
+def _load_state_dict() -> dict:
     today = date.today().isoformat()
     if not os.path.exists(_STATE_FILE):
-        return 0
+        return {}
     try:
         with open(_STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if data.get("date") == today:
-            return max(0, int(data.get("seconds", 0)))
+            return data
     except Exception:
         pass
-    return 0
+    return {}
 
 
-def _save_state(seconds: int):
-    _atomic_write(_STATE_FILE, {"date": date.today().isoformat(), "seconds": seconds})
+def _load_state() -> int:
+    state_dict = _load_state_dict()
+    return max(0, int(state_dict.get("seconds", 0)))
+
+
+def _save_state(seconds: int, pdf_seconds: dict = None, pdf_cards_today: dict = None):
+    data = {
+        "date": date.today().isoformat(),
+        "seconds": seconds
+    }
+    if pdf_seconds is not None:
+        data["pdf_seconds"] = pdf_seconds
+    if pdf_cards_today is not None:
+        data["pdf_cards_today"] = pdf_cards_today
+    _atomic_write(_STATE_FILE, data)
 
 
 def _atomic_write(path: str, data: dict):
@@ -192,13 +211,24 @@ class SessionTimer:
     """
     Persistent per-day stopwatch.
 
-    embed  self.label  in any layout.
-    Call   flush_to_journal()  on app close.
+    Embed self.label in any layout.
+    Call flush_to_journal() on app close.
     """
 
     def __init__(self, parent=None):
         self._current_day = date.today().isoformat()
         self._elapsed = _load_state()
+        state_dict = _load_state_dict()
+        
+        pdf_secs = state_dict.get("pdf_seconds", {})
+        self._pdf_seconds = pdf_secs if isinstance(pdf_secs, dict) else {}
+        pdf_cards = state_dict.get("pdf_cards_today", {})
+        self._pdf_cards_today = pdf_cards if isinstance(pdf_cards, dict) else {}
+        
+        self._current_pdf = ""
+        self._session_pdf_seconds = {}
+        self._session_pdf_cards = {}
+        
         self._session_elapsed = 0
         self._idle_seconds = 0
         self._idle_limit_seconds = 180
@@ -221,7 +251,7 @@ class SessionTimer:
 
         self._save_timer = QTimer(parent)
         self._save_timer.setInterval(300_000)
-        self._save_timer.timeout.connect(lambda: _save_state(self._elapsed))
+        self._save_timer.timeout.connect(lambda: _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today))
 
     def note_activity(self):
         self._idle_seconds = 0
@@ -275,9 +305,13 @@ class SessionTimer:
         _write_focus_to_journal_for_date(self._current_day, self._elapsed)
         self._current_day = today
         self._elapsed = 0
+        self._pdf_seconds = {}
+        self._pdf_cards_today = {}
+        self._session_pdf_seconds = {}
+        self._session_pdf_cards = {}
         self.label.setText(self._make_text())
         self.label_today.setText(self._fmt(self._elapsed))
-        _save_state(self._elapsed)
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
 
     def start(self):
         if not self._running:
@@ -294,11 +328,11 @@ class SessionTimer:
             self._tick_timer.stop()
             self._save_timer.stop()
             self._remove_activity_filter()
-            _save_state(self._elapsed)
+            _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
 
     def flush_to_journal(self):
         self._rollover_if_needed()
-        _save_state(self._elapsed)
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
         _write_focus_to_journal(self._elapsed)
 
     def elapsed_str(self) -> str:
@@ -307,6 +341,29 @@ class SessionTimer:
     @property
     def elapsed_seconds(self) -> int:
         return self._elapsed
+
+    def set_current_pdf(self, pdf_path: str):
+        self._current_pdf = normalize_pdf_path(pdf_path)
+
+    def record_card_review(self, pdf_path: str):
+        if not pdf_path:
+            return
+        self._rollover_if_needed()
+        norm_path = normalize_pdf_path(pdf_path)
+        self._pdf_cards_today[norm_path] = self._pdf_cards_today.get(norm_path, 0) + 1
+        self._session_pdf_cards[norm_path] = self._session_pdf_cards.get(norm_path, 0) + 1
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
+
+    def undo_card_review(self, pdf_path: str):
+        if not pdf_path:
+            return
+        self._rollover_if_needed()
+        norm_path = normalize_pdf_path(pdf_path)
+        if norm_path in self._pdf_cards_today:
+            self._pdf_cards_today[norm_path] = max(0, self._pdf_cards_today[norm_path] - 1)
+        if norm_path in self._session_pdf_cards:
+            self._session_pdf_cards[norm_path] = max(0, self._session_pdf_cards[norm_path] - 1)
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
 
     def _tick(self):
         self._rollover_if_needed()
@@ -327,6 +384,12 @@ class SessionTimer:
 
         self._elapsed += 1
         self._session_elapsed += 1
+
+        if self._current_pdf:
+            norm_path = normalize_pdf_path(self._current_pdf)
+            self._pdf_seconds[norm_path] = self._pdf_seconds.get(norm_path, 0) + 1
+            self._session_pdf_seconds[norm_path] = self._session_pdf_seconds.get(norm_path, 0) + 1
+
         self.label.setText(self._make_text())
         self.label_session.setText(self._fmt(self._session_elapsed))
         self.label_today.setText(self._fmt(self._elapsed))

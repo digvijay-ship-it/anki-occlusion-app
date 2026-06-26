@@ -418,6 +418,8 @@ class PdfAnnotationSession:
             "opacity": style["opacity"],
             "deleted": False,
         }
+        if style_override and "widths" in style_override:
+            item["widths"] = style_override["widths"]
         self.new_items.setdefault(int(page_num), []).append(item)
         self.dirty_pages.add(int(page_num))
         self._undo_stack.append(

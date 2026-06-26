@@ -104,6 +104,10 @@ class CanvasInteractionMixin:
                 self._ink_pending_press_ip = QPointF(ip)
                 self._ink_pending_press_sp = QPointF(sp)
                 self._ink_pending_press_time = time.monotonic()
+            elif getattr(self, "_ink_mode", "pen") == "eraser":
+                self._ink_pre_erase_snapshot = self._clone_ink_strokes(self._ink_strokes)
+                self._ink_erasing = True
+                self._ink_erase_at(ip)
             else:
                 self._ink_press(ip, input_kind="tablet")
             e.accept()
@@ -114,7 +118,10 @@ class CanvasInteractionMixin:
                 if self._start_pending_mask_ink_if_needed(sp, ip, input_kind="tablet"):
                     e.accept()
                     return True
-            if self._ink_current and getattr(self, "_ink_input_kind", None) == "tablet":
+            if getattr(self, "_ink_mode", "pen") == "eraser":
+                if getattr(self, "_ink_erasing", False):
+                    self._ink_erase_at(ip)
+            elif self._ink_current and getattr(self, "_ink_input_kind", None) == "tablet":
                 self._ink_move(ip)
             e.accept()
             return True
@@ -128,8 +135,10 @@ class CanvasInteractionMixin:
                     self._boxes
                 ):
                     self._boxes[hit]["revealed"] = not self._boxes[hit]["revealed"]
-
                     self.update()
+            elif getattr(self, "_ink_mode", "pen") == "eraser":
+                self._ink_erasing = False
+                self._ink_pre_erase_snapshot = None
             elif getattr(self, "_ink_input_kind", None) == "tablet":
                 self._ink_release()
             e.accept()
@@ -273,6 +282,7 @@ class CanvasInteractionMixin:
         if self._ink_active:
             self._clear_pending_ink_mask_action()
         self._ink_active = not self._ink_active
+        self._ink_mode = "pen"
         self.setCursor(
             QCursor(Qt.CrossCursor if self._ink_active else Qt.PointingHandCursor)
         )
@@ -281,9 +291,63 @@ class CanvasInteractionMixin:
         if not active:
             self._clear_pending_ink_mask_action()
         self._ink_active = bool(active)
+        self._ink_mode = "pen"
         self.setCursor(
             QCursor(Qt.CrossCursor if self._ink_active else Qt.PointingHandCursor)
         )
+
+    def ink_set_mode(self, mode: str):
+        self._ink_mode = mode
+        if self._ink_active:
+            if mode == "eraser":
+                self.setCursor(QCursor(Qt.SizeAllCursor)) # A nice target-like cursor for eraser
+                self._show_toast("🧹 Eraser Active")
+            else:
+                self.setCursor(QCursor(Qt.CrossCursor))
+                self._show_toast("✏ Pen Active")
+        self.update()
+
+    def ink_get_mode(self) -> str:
+        return getattr(self, "_ink_mode", "pen")
+
+    def _ink_erase_at(self, ip):
+        erased_any = False
+        i = len(self._ink_strokes) - 1
+        while i >= 0:
+            stroke = self._ink_strokes[i]
+            pts = stroke[1:]
+            
+            # Use 15.0 pixels threshold in canvas coordinates for easy erasing
+            threshold = 15.0
+            close = False
+            for pt in pts:
+                dx = ip.x() - pt.x()
+                dy = ip.y() - pt.y()
+                if dx * dx + dy * dy < threshold * threshold:
+                    close = True
+                    break
+            
+            if close:
+                if getattr(self, "_ink_pre_erase_snapshot", None) is not None:
+                    if not hasattr(self, "_ink_undo_stack"):
+                        self._ink_undo_stack = []
+                    if not hasattr(self, "_ink_redo_stack"):
+                        self._ink_redo_stack = []
+                    self._ink_undo_stack.append(self._ink_pre_erase_snapshot)
+                    self._ink_redo_stack.clear()
+                    self._ink_pre_erase_snapshot = None
+
+                self._ink_strokes.pop(i)
+                if hasattr(self, "_ink_path_cache"):
+                    stroke_id = stroke.get("_path_key") if hasattr(stroke, "get") else getattr(stroke, "_path_key", None)
+                    if stroke_id is None:
+                        stroke_id = id(stroke)
+                    self._ink_path_cache.pop(stroke_id, None)
+                erased_any = True
+            i -= 1
+            
+        if erased_any:
+            self.update()
 
     def ink_cycle_color(self):
         self._ink_color_idx = (self._ink_color_idx + 1) % len(self._ink_colors)
@@ -295,6 +359,8 @@ class CanvasInteractionMixin:
         self._show_toast(f"Ink size: {self._ink_width:.1f}")
 
     def ink_clear(self):
+        if self._ink_strokes:
+            self._push_ink_undo()
         self._ink_strokes.clear()
         self._ink_current.clear()
         if hasattr(self, "_ink_path_cache"):
@@ -311,17 +377,65 @@ class CanvasInteractionMixin:
             self._ink_path_cache.clear()
         self._ink_input_kind = None
         self._clear_pending_ink_mask_action()
+        if hasattr(self, "_ink_undo_stack"):
+            self._ink_undo_stack.clear()
+        if hasattr(self, "_ink_redo_stack"):
+            self._ink_redo_stack.clear()
+        self._ink_pre_erase_snapshot = None
         if had_ink:
             self.update()
 
+    def _clone_ink_strokes(self, strokes):
+        cloned = []
+        for stroke in strokes:
+            new_stroke = StrokeList()
+            new_stroke._path_key = getattr(stroke, "_path_key", None)
+            new_stroke._implementation = getattr(stroke, "_implementation", "classic")
+            for item in stroke:
+                if isinstance(item, QColor):
+                    new_stroke.append(QColor(item))
+                elif isinstance(item, QPointF):
+                    new_stroke.append(QPointF(item))
+                else:
+                    try:
+                        new_stroke.append(copy.copy(item))
+                    except Exception:
+                        new_stroke.append(item)
+            cloned.append(new_stroke)
+        return cloned
+
+    def _push_ink_undo(self):
+        if not hasattr(self, "_ink_undo_stack"):
+            self._ink_undo_stack = []
+        if not hasattr(self, "_ink_redo_stack"):
+            self._ink_redo_stack = []
+        self._ink_undo_stack.append(self._clone_ink_strokes(self._ink_strokes))
+        self._ink_redo_stack.clear()
+
+    def has_ink_undo(self) -> bool:
+        return bool(getattr(self, "_ink_undo_stack", None))
+
+    def has_ink_redo(self) -> bool:
+        return bool(getattr(self, "_ink_redo_stack", None))
+
     def ink_undo_stroke(self):
-        if self._ink_strokes:
-            stroke = self._ink_strokes.pop()
+        if self.has_ink_undo():
+            if not hasattr(self, "_ink_redo_stack"):
+                self._ink_redo_stack = []
+            self._ink_redo_stack.append(self._clone_ink_strokes(self._ink_strokes))
+            self._ink_strokes = self._ink_undo_stack.pop()
             if hasattr(self, "_ink_path_cache"):
-                stroke_id = stroke.get("_path_key") if hasattr(stroke, "get") else getattr(stroke, "_path_key", None)
-                if stroke_id is None:
-                    stroke_id = id(stroke)
-                self._ink_path_cache.pop(stroke_id, None)
+                self._ink_path_cache.clear()
+            self.update()
+
+    def ink_redo_stroke(self):
+        if self.has_ink_redo():
+            if not hasattr(self, "_ink_undo_stack"):
+                self._ink_undo_stack = []
+            self._ink_undo_stack.append(self._clone_ink_strokes(self._ink_strokes))
+            self._ink_strokes = self._ink_redo_stack.pop()
+            if hasattr(self, "_ink_path_cache"):
+                self._ink_path_cache.clear()
             self.update()
 
     @property
@@ -402,6 +516,7 @@ class CanvasInteractionMixin:
 
     def _ink_release(self):
         if len(self._ink_current) >= 2:
+            self._push_ink_undo()
             if not hasattr(self, "_stroke_seq"):
                 self._stroke_seq = 0
             self._stroke_seq += 1
@@ -492,7 +607,12 @@ class CanvasInteractionMixin:
                     self._ink_pending_press_time = time.monotonic()
                     e.accept()
                     return
-                self._ink_press(ip)
+                if getattr(self, "_ink_mode", "pen") == "eraser":
+                    self._ink_pre_erase_snapshot = self._clone_ink_strokes(self._ink_strokes)
+                    self._ink_erasing = True
+                    self._ink_erase_at(ip)
+                else:
+                    self._ink_press(ip)
                 e.accept()
                 return
             hit = self._hit_box(ip)
@@ -565,6 +685,15 @@ class CanvasInteractionMixin:
             and self._ink_pending_mask_idx >= 0
         ):
             if self._start_pending_mask_ink_if_needed(sp, ip):
+                e.accept()
+                return
+        if (
+            self._mode == "review"
+            and self._ink_active
+            and getattr(self, "_ink_mode", "pen") == "eraser"
+        ):
+            if getattr(self, "_ink_erasing", False):
+                self._ink_erase_at(ip)
                 e.accept()
                 return
         if (
@@ -687,11 +816,16 @@ class CanvasInteractionMixin:
             self._mode == "review"
             and self._ink_active
             and e.button() == Qt.LeftButton
-            and getattr(self, "_ink_input_kind", None) == "mouse"
         ):
-            self._ink_release()
-            e.accept()
-            return
+            if getattr(self, "_ink_mode", "pen") == "eraser":
+                self._ink_erasing = False
+                self._ink_pre_erase_snapshot = None
+                e.accept()
+                return
+            elif getattr(self, "_ink_input_kind", None) == "mouse":
+                self._ink_release()
+                e.accept()
+                return
 
         if self._drawing and e.button() == Qt.LeftButton:
             self._drawing = False
@@ -791,6 +925,8 @@ class CanvasInteractionMixin:
             super().keyPressEvent(e)
 
     def leaveEvent(self, e):
+        self._ink_erasing = False
+        self._ink_pre_erase_snapshot = None
         sc = self.parent()
         while sc and not hasattr(sc, "_pan_active"):
             sc = sc.parent()

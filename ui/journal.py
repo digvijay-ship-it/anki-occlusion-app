@@ -800,6 +800,12 @@ class JournalDialog(QDialog):
 
     def _ninja_ss(self, p) -> str:
         """Ninja/Dojo/TMNT stylesheet — matches test.html visual language."""
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        is_cyan = theme in ("manhattan", "tmnt")
+        hover_g = "0, 240, 255" if is_cyan else "114, 255, 79"
+
         N_BG = p.get("C_BG", "#07070B")
         N_SURFACE = p.get("C_SURFACE", "#0F0F17")
         N_CARD = p.get("C_CARD", "#14141F")
@@ -836,7 +842,7 @@ class JournalDialog(QDialog):
                 letter-spacing:{btn_letter_spacing};
             }}
             QPushButton:hover {{
-                background:rgba(114,255,79,0.1); color:{N_TEXT};
+                background:rgba({hover_g},0.1); color:{N_TEXT};
             }}
             QPushButton#ninja_primary {{
                 background:{N_ACCENT}; color:{N_BG};
@@ -870,8 +876,8 @@ class JournalDialog(QDialog):
                 color:{N_TEXT};
             }}
             QListWidget::item:hover:!selected {{
-                background:rgba(114,255,79,0.05);
-                border-left:2px solid rgba(114,255,79,0.2);
+                background:rgba({hover_g},0.05);
+                border-left:2px solid rgba({hover_g},0.2);
             }}
             QScrollArea {{ border:none; background:{N_BG}; }}
             QScrollBar:vertical {{
@@ -907,7 +913,7 @@ class JournalDialog(QDialog):
                 font-family:{hf}, 'Segoe UI'; font-weight:700; letter-spacing:1px;
             }}
             QPushButton#btn_toggle_stats:hover {{
-                background:rgba(114,255,79,0.1);
+                background:rgba({hover_g},0.1);
             }}
             QPushButton#btn_toggle_stats:checked {{
                 background:{N_ACCENT}; color:{N_BG}; border:none; font-weight:900;
@@ -1223,6 +1229,11 @@ class JournalDialog(QDialog):
     def _setup_ui_ninja(self):
         """Build the Dojo/Ninja themed journal UI matching test.html aesthetic."""
         p = self._p
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        theme = getattr(app, "_active_theme", "classic")
+        is_cyan = theme in ("manhattan", "tmnt")
+        hover_g = "0, 240, 255" if is_cyan else "114, 255, 79"
         N_BG = p.get("C_BG", "#07070B")
         N_SURFACE = p.get("C_SURFACE", "#0F0F17")
         N_CARD = p.get("C_CARD", "#14141F")
@@ -1604,13 +1615,24 @@ class JournalDialog(QDialog):
     def _arrow_btn(self, text, slot):
         b = QPushButton(text)
         if self._ninja:
+            p = getattr(self, "_p", {})
+            bg = p.get("C_CARD", "#14141F")
+            subtext = p.get("C_SUBTEXT", "#5F627D")
+            border = p.get("C_BORDER", "#1A1A26")
+            accent = p.get("C_ACCENT", "#72FF4F")
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            theme = getattr(app, "_active_theme", "classic")
+            is_cyan = theme in ("manhattan", "tmnt")
+            hover_g = "0, 240, 255" if is_cyan else "114, 255, 79"
+
             b.setFixedSize(30, 30)
             b.setStyleSheet(
-                f"QPushButton{{background:{N_CARD};color:{N_SUBTEXT};"
-                f"border:1px solid {N_BORDER};border-radius:2px;"
+                f"QPushButton{{background:{bg};color:{subtext};"
+                f"border:1px solid {border};border-radius:2px;"
                 f"font-size:16px;font-weight:700;padding:0;}}"
-                f"QPushButton:hover{{color:{N_ACCENT};border-color:{N_ACCENT};"
-                f"background:rgba(114,255,79,0.08);}}"
+                f"QPushButton:hover{{color:{accent};border-color:{accent};"
+                f"background:rgba({hover_g},0.08);}}"
             )
         else:
             b.setFixedSize(36, 36)
@@ -1656,6 +1678,12 @@ class JournalDialog(QDialog):
             N_CARD = p.get("C_CARD", "#14141F")
             N_ACCENT = p.get("C_ACCENT", "#72FF4F")
             N_TEXT = p.get("C_TEXT", "#E0E0FF")
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            theme = getattr(app, "_active_theme", "classic")
+            is_cyan = theme in ("manhattan", "tmnt")
+            hover_g = "0, 240, 255" if is_cyan else "114, 255, 79"
+
             hf = p.get("header_font", "'Orbitron'").split(",")[0].strip("'")
             active_ss = (
                 f"QPushButton{{background:{N_ACCENT};color:{N_BG};"
@@ -1669,7 +1697,7 @@ class JournalDialog(QDialog):
                 f"border:1px solid {N_ACCENT};border-radius:2px;"
                 f"padding:4px 10px;font-size:11px;"
                 f"font-family:{hf}, 'Segoe UI';font-weight:700;letter-spacing:1px;}}"
-                f"QPushButton:hover{{background:rgba(114,255,79,0.1);}}"
+                f"QPushButton:hover{{background:rgba({hover_g},0.1);}}"
             )
             hints = {
                 MODE_PEN: "🗡 INK JUTSU — INSCRIBE THE SCROLL",

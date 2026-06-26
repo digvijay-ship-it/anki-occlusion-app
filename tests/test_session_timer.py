@@ -210,5 +210,26 @@ class SessionTimerTests(unittest.TestCase):
         self.assertEqual(state["date"], "2026-05-05")
         self.assertEqual(state["seconds"], 0)
 
+    @patch('session_timer._STATE_FILE', new_callable=lambda: None)
+    @patch('session_timer.QApplication.activeWindow', return_value=True)
+    def test_SessionTimer_pdf_tracking(self, mock_active_window, mock_state_file):
+        session_timer._STATE_FILE = self.test_state_file
+        timer = SessionTimer()
+        
+        timer.set_current_pdf("C:\\Path\\To\\File.pdf")
+        self.assertEqual(timer._current_pdf, "c:/path/to/file.pdf")
+        
+        timer._tick()
+        self.assertEqual(timer._pdf_seconds["c:/path/to/file.pdf"], 1)
+        self.assertEqual(timer._session_pdf_seconds["c:/path/to/file.pdf"], 1)
+        
+        timer.record_card_review("C:\\Path\\To\\File.pdf")
+        self.assertEqual(timer._pdf_cards_today["c:/path/to/file.pdf"], 1)
+        self.assertEqual(timer._session_pdf_cards["c:/path/to/file.pdf"], 1)
+        
+        timer.undo_card_review("C:\\Path\\To\\File.pdf")
+        self.assertEqual(timer._pdf_cards_today["c:/path/to/file.pdf"], 0)
+        self.assertEqual(timer._session_pdf_cards["c:/path/to/file.pdf"], 0)
+
 if __name__ == "__main__":
     unittest.main()

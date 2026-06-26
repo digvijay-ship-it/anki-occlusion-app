@@ -158,6 +158,8 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QShortcut,
     QColorDialog,
+    QTextBrowser,
+    QSlider,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -193,6 +195,7 @@ from PyQt5.QtGui import (
     QDesktopServices,
     QKeySequence,
     QTextDocument,
+    QImage,
 )
 
 _RE_IMG_SRC = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
@@ -354,6 +357,511 @@ class DraggableFrame(QFrame):
             super().mouseReleaseEvent(event)
 
 
+class FloatingActionButton(QFrame):
+    def __init__(self, parent=None, text="Button", emoji="", on_click=None, border_color_hex=None):
+        super().__init__(parent)
+        self._on_click = on_click
+        self._drag_start_pos = None
+        self._press_pos = None
+        self.text_str = text
+        self.emoji_str = emoji
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = p.get("C_SURFACE", "#24283B")
+        self.accent = border_color_hex or p.get("C_ACCENT", "#7C6AF7")
+        text_color = p.get("C_TEXT", "#CDD6F4")
+        
+        self.setStyleSheet(
+            f"QFrame {{ "
+            f"  background: {bg}; "
+            f"  border: 2px solid {self.accent}; "
+            f"  border-radius: 18px; "
+            f"  padding: 4px 10px; "
+            f"}} "
+            f"QFrame:hover {{ "
+            f"  background: {self.accent}; "
+            f"  border-color: white; "
+            f"}}"
+        )
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setSpacing(4)
+        
+        self.label = QLabel(f"{emoji} {text}" if emoji else text)
+        self.label.setStyleSheet(
+            f"color: {text_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+        )
+        layout.addWidget(self.label)
+        
+        self.setCursor(Qt.PointingHandCursor)
+        self.adjustSize()
+        self.setFixedSize(self.sizeHint().width() + 10, 36)
+        
+        # Setup opacity effect for smooth fade proximity/drawing animations
+        from PyQt5.QtWidgets import QGraphicsOpacityEffect
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._opacity_effect.setOpacity(1.0)
+        self._current_opacity = 1.0
+
+    def fade_to(self, opacity, duration=150):
+        if not hasattr(self, "_opacity_anim"):
+            from PyQt5.QtCore import QPropertyAnimation
+            self._opacity_anim = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._opacity_anim.stop()
+        self._opacity_anim.setDuration(duration)
+        self._opacity_anim.setStartValue(self._opacity_effect.opacity())
+        self._opacity_anim.setEndValue(opacity)
+        self._opacity_anim.start()
+
+    def slide_to(self, pos, duration=250):
+        if not hasattr(self, "_slide_anim"):
+            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
+            self._slide_anim = QPropertyAnimation(self, b"pos")
+            self._slide_anim.setEasingCurve(QEasingCurve.OutQuad)
+        self._slide_anim.stop()
+        self._slide_anim.setDuration(duration)
+        self._slide_anim.setStartValue(self.pos())
+        self._slide_anim.setEndValue(pos)
+        self._slide_anim.start()
+
+    def enterEvent(self, event):
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = p.get("C_BG", "#1E1E2E")
+        self.label.setStyleSheet(
+            f"color: {bg if theme != 'classic' else 'white'}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+        )
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        text_color = p.get("C_TEXT", "#CDD6F4")
+        self.label.setStyleSheet(
+            f"color: {text_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+        )
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.globalPos() - self.frameGeometry().topLeft()
+            self._press_pos = event.pos()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self._drag_start_pos is not None:
+            new_pos = event.globalPos() - self._drag_start_pos
+            parent = self.parentWidget()
+            if parent:
+                x = max(0, min(new_pos.x(), parent.width() - self.width()))
+                y = max(0, min(new_pos.y(), parent.height() - self.height()))
+                self.move(x, y)
+            else:
+                self.move(new_pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = None
+            if self._press_pos is not None:
+                diff = event.pos() - self._press_pos
+                if diff.manhattanLength() < 5:
+                    if self._on_click:
+                        self._on_click()
+            self._press_pos = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+
+class DrawingCanvas(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(360, 260)
+        self.setAttribute(Qt.WA_StaticContents)
+        self._pixmap = QPixmap(360, 260)
+        self._pixmap.fill(Qt.white)
+        self._last_point = QPoint()
+        self._drawing = False
+        self._pen_color = QColor("#000000")
+        self._pen_width = 3
+
+    def set_pen_color(self, color):
+        self._pen_color = QColor(color)
+
+    def set_pen_width(self, width):
+        self._pen_width = width
+
+    def clear(self):
+        self._pixmap.fill(Qt.white)
+        self.update()
+
+    def resizeEvent(self, event):
+        if event.size().width() > self._pixmap.width() or event.size().height() > self._pixmap.height():
+            new_width = max(self._pixmap.width(), event.size().width())
+            new_height = max(self._pixmap.height(), event.size().height())
+            new_pix = QPixmap(new_width, new_height)
+            new_pix.fill(Qt.white)
+            painter = QPainter(new_pix)
+            painter.drawPixmap(0, 0, self._pixmap)
+            painter.end()
+            self._pixmap = new_pix
+        super().resizeEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._pixmap)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._last_point = event.pos()
+            self._drawing = True
+
+    def mouseMoveEvent(self, event):
+        if (event.buttons() & Qt.LeftButton) and self._drawing:
+            painter = QPainter(self._pixmap)
+            pen = QPen(self._pen_color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.drawLine(self._last_point, event.pos())
+            painter.end()
+            self._last_point = event.pos()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drawing = False
+
+    def get_image(self):
+        return self._pixmap.toImage()
+
+
+class QuickNoteDialog(QDialog):
+    def __init__(self, current_note, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Mask Note / Hint")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint)
+        self.setWindowState(Qt.WindowMaximized)
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = p.get("C_BG", "#1E1E2E")
+        surface = p.get("C_SURFACE", "#24283B")
+        text = p.get("C_TEXT", "#CDD6F4")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        border = p.get("C_BORDER", "#45475A")
+        font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
+
+        self.setStyleSheet(
+            f"QDialog{{background:{bg};}}"
+            f"QLabel{{color:{text};font-family:'{font_family}';font-size:12px;font-weight:bold;}}"
+            f"QPushButton{{font-family:'{font_family}';font-size:12px;font-weight:bold;}}"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # Segmented toggle button group at the top
+        toggle_container = QWidget()
+        toggle_layout = QHBoxLayout(toggle_container)
+        toggle_layout.setContentsMargins(0, 0, 0, 0)
+        toggle_layout.setSpacing(0)
+        toggle_layout.setAlignment(Qt.AlignCenter)
+
+        self.btn_toggle_text = QPushButton("📝 Text & Pasted Images")
+        self.btn_toggle_text.setFixedHeight(34)
+        self.btn_toggle_text.setFixedWidth(220)
+        self.btn_toggle_text.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_text.clicked.connect(lambda: self.set_view(0))
+
+        self.btn_toggle_draw = QPushButton("🎨 Sketchpad / Drawing Canvas")
+        self.btn_toggle_draw.setFixedHeight(34)
+        self.btn_toggle_draw.setFixedWidth(220)
+        self.btn_toggle_draw.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_draw.clicked.connect(lambda: self.set_view(1))
+
+        toggle_layout.addWidget(self.btn_toggle_text)
+        toggle_layout.addWidget(self.btn_toggle_draw)
+        layout.addWidget(toggle_container)
+
+        # Central stacked widget
+        self.stacked_widget = QStackedWidget()
+
+        # 1. Text View Widget
+        self.text_view_widget = QWidget()
+        text_v = QVBoxLayout(self.text_view_widget)
+        text_v.setContentsMargins(0, 0, 0, 0)
+        text_v.setSpacing(8)
+
+        from editor_ui import RichTextEdit
+        self.note_edit = RichTextEdit()
+        self.note_edit.setPlaceholderText("Type a hint, explanation, paste clipboard images (Ctrl+V), or drag and drop images here...")
+        self.note_edit.setStyleSheet(
+            f"QTextEdit{{background:{surface};color:{text};border:1px solid {border};"
+            f"border-radius:6px;padding:8px;font-size:13px;}}"
+        )
+        if "<img" in current_note or "<html>" in current_note or "<p>" in current_note:
+            self.note_edit.setHtml(current_note)
+        else:
+            self.note_edit.setPlainText(current_note)
+        text_v.addWidget(self.note_edit, stretch=1)
+
+        # Dashboard dashed button
+        self.btn_goto_sketch = QPushButton("➕ Draw a Sketch / Diagram")
+        self.btn_goto_sketch.setFixedHeight(38)
+        self.btn_goto_sketch.setCursor(Qt.PointingHandCursor)
+        self.btn_goto_sketch.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {accent}; border: 2px dashed {border}; border-radius: 6px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background: {surface}; border-color: {accent}; }}"
+        )
+        self.btn_goto_sketch.clicked.connect(lambda: self.set_view(1))
+        text_v.addWidget(self.btn_goto_sketch)
+
+        self.stacked_widget.addWidget(self.text_view_widget)
+
+        # 2. Sketchpad View Widget
+        self.sketch_view_widget = QWidget()
+        sketch_v = QVBoxLayout(self.sketch_view_widget)
+        sketch_v.setContentsMargins(0, 0, 0, 0)
+        sketch_v.setSpacing(8)
+
+        canvas_frame = QFrame()
+        canvas_frame.setStyleSheet(
+            f"QFrame {{ border: 1px solid {border}; border-radius: 6px; background: white; }}"
+        )
+        canvas_layout = QVBoxLayout(canvas_frame)
+        canvas_layout.setContentsMargins(1, 1, 1, 1)
+        
+        self.draw_canvas = DrawingCanvas()
+        canvas_layout.addWidget(self.draw_canvas)
+        sketch_v.addWidget(canvas_frame, stretch=1)
+
+        # Controls
+        controls_h = QHBoxLayout()
+        controls_h.setSpacing(10)
+
+        # Color palette
+        colors_layout = QHBoxLayout()
+        colors_layout.setSpacing(6)
+        
+        self.color_buttons = []
+        palette_colors = [
+            ("black", "#1E1E2E", "#1E1E2E"),
+            ("red", "#F38BA8", "#F38BA8"),
+            ("blue", "#89B4FA", "#89B4FA"),
+            ("green", "#A6E3A1", "#A6E3A1"),
+            ("yellow", "#F9E2AF", "#F9E2AF"),
+        ]
+        
+        for name, hex_val, display_color in palette_colors:
+            btn = QPushButton()
+            btn.setFixedSize(20, 20)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setProperty("color_val", hex_val)
+            btn.clicked.connect(self._change_pen_color)
+            colors_layout.addWidget(btn)
+            self.color_buttons.append(btn)
+
+        self._selected_color_hex = "#1E1E2E"
+        self._update_color_buttons_style()
+        controls_h.addLayout(colors_layout)
+
+        # Pen Size
+        lbl_size = QLabel("Size:")
+        lbl_size.setStyleSheet(f"color:{text}; font-size:11px;")
+        controls_h.addWidget(lbl_size)
+
+        self.size_slider = QSlider(Qt.Horizontal)
+        self.size_slider.setRange(1, 20)
+        self.size_slider.setValue(3)
+        self.size_slider.setFixedWidth(80)
+        self.size_slider.valueChanged.connect(self._change_pen_width)
+        controls_h.addWidget(self.size_slider)
+
+        controls_h.addStretch()
+
+        # Clear
+        self.btn_clear_draw = QPushButton("🧹 Clear")
+        self.btn_clear_draw.setFixedHeight(28)
+        self.btn_clear_draw.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{text};border:1px solid {border};border-radius:4px;padding:0 12px;font-size:11px;}}"
+            f"QPushButton:hover{{background:{surface};}}"
+        )
+        self.btn_clear_draw.clicked.connect(self.draw_canvas.clear)
+        controls_h.addWidget(self.btn_clear_draw)
+
+        # Insert Drawing
+        self.btn_insert_draw = QPushButton("📥 Insert Drawing")
+        self.btn_insert_draw.setFixedHeight(28)
+        if theme != "classic":
+            self.btn_insert_draw.setStyleSheet(
+                f"QPushButton{{background:{accent};color:{bg};border:none;border-radius:4px;padding:0 14px;font-weight:bold;font-size:11px;}}"
+                f"QPushButton:hover{{background:white;color:{bg};}}"
+            )
+        else:
+            self.btn_insert_draw.setStyleSheet(
+                f"QPushButton{{background:{accent};color:white;border:none;border-radius:4px;padding:0 14px;font-weight:bold;font-size:11px;}}"
+                f"QPushButton:hover{{background:#6A58E0;}}"
+            )
+        self.btn_insert_draw.clicked.connect(self._insert_drawing_to_editor)
+        controls_h.addWidget(self.btn_insert_draw)
+
+        sketch_v.addLayout(controls_h)
+        self.stacked_widget.addWidget(self.sketch_view_widget)
+
+        layout.addWidget(self.stacked_widget, stretch=1)
+
+        # Update initial toggle buttons state
+        self.set_view(0)
+
+        # Bottom save/cancel buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        
+        self.btn_save = QPushButton("💾 Save Note")
+        self.btn_save.setFixedHeight(34)
+        if theme != "classic":
+            self.btn_save.setStyleSheet(
+                f"QPushButton{{background:{accent};color:{bg};border:none;border-radius:6px;padding:0 24px;font-size:13px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:white;color:{bg};}}"
+            )
+        else:
+            self.btn_save.setStyleSheet(
+                f"QPushButton{{background:{accent};color:white;border:none;border-radius:6px;padding:0 24px;font-size:13px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:#6A58E0;}}"
+            )
+        self.btn_save.clicked.connect(self.accept)
+
+        self.btn_cancel = QPushButton("✕ Cancel")
+        self.btn_cancel.setFixedHeight(34)
+        self.btn_cancel.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{text};border:1px solid {border};border-radius:6px;padding:0 24px;font-size:13px;}}"
+            f"QPushButton:hover{{background:{surface};}}"
+        )
+        self.btn_cancel.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_save)
+        layout.addLayout(btn_layout)
+
+        # Dialog-level shortcut to save with Ctrl+S
+        from PyQt5.QtWidgets import QShortcut
+        from PyQt5.QtGui import QKeySequence
+        self.save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.save_shortcut.activated.connect(self.accept)
+
+    def set_view(self, index):
+        self.stacked_widget.setCurrentIndex(index)
+        self._update_toggle_buttons_style()
+
+    def _update_toggle_buttons_style(self):
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = p.get("C_BG", "#1E1E2E")
+        surface = p.get("C_SURFACE", "#24283B")
+        text = p.get("C_TEXT", "#CDD6F4")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        border = p.get("C_BORDER", "#45475A")
+        
+        active_idx = self.stacked_widget.currentIndex()
+        
+        if active_idx == 0:
+            if theme != "classic":
+                left_style = f"background:{accent}; color:{bg}; border: 1px solid {accent}; border-top-left-radius: 6px; border-bottom-left-radius: 6px; border-top-right-radius: 0px; border-bottom-right-radius: 0px; font-weight: bold;"
+            else:
+                left_style = f"background:{accent}; color:white; border: 1px solid {accent}; border-top-left-radius: 6px; border-bottom-left-radius: 6px; border-top-right-radius: 0px; border-bottom-right-radius: 0px; font-weight: bold;"
+            
+            right_style = f"background:transparent; color:{text}; border: 1px solid {border}; border-left: none; border-top-right-radius: 6px; border-bottom-right-radius: 6px; border-top-left-radius: 0px; border-bottom-left-radius: 0px;"
+        else:
+            left_style = f"background:transparent; color:{text}; border: 1px solid {border}; border-right: none; border-top-left-radius: 6px; border-bottom-left-radius: 6px; border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
+            
+            if theme != "classic":
+                right_style = f"background:{accent}; color:{bg}; border: 1px solid {accent}; border-top-right-radius: 6px; border-bottom-right-radius: 6px; border-top-left-radius: 0px; border-bottom-left-radius: 0px; font-weight: bold;"
+            else:
+                right_style = f"background:{accent}; color:white; border: 1px solid {accent}; border-top-right-radius: 6px; border-bottom-right-radius: 6px; border-top-left-radius: 0px; border-bottom-left-radius: 0px; font-weight: bold;"
+                
+        self.btn_toggle_text.setStyleSheet(left_style)
+        self.btn_toggle_draw.setStyleSheet(right_style)
+
+    def _change_pen_color(self):
+        btn = self.sender()
+        if btn:
+            color_hex = btn.property("color_val")
+            self._selected_color_hex = color_hex
+            self.draw_canvas.set_pen_color(color_hex)
+            self._update_color_buttons_style()
+
+    def _update_color_buttons_style(self):
+        for btn in self.color_buttons:
+            c = btn.property("color_val")
+            if c == self._selected_color_hex:
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {c}; border: 2px solid white; border-radius: 10px; }}"
+                )
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {c}; border: 1px solid #45475A; border-radius: 10px; }}"
+                )
+
+    def _change_pen_width(self, val):
+        self.draw_canvas.set_pen_width(val)
+
+    def _insert_drawing_to_editor(self):
+        import storage_paths
+        import os
+        import uuid
+        
+        image_dir = storage_paths.archive_image_dir()
+        if not image_dir:
+            return
+            
+        os.makedirs(image_dir, exist_ok=True)
+        filename = f"sketch_{uuid.uuid4().hex[:8]}.png"
+        file_path = os.path.join(image_dir, filename)
+        
+        img = self.draw_canvas.get_image()
+        img.save(file_path, "PNG")
+        
+        relative_path = f"images/{filename}"
+        self.note_edit.insertHtml(f'<img src="{relative_path}">')
+        self.draw_canvas.clear()
+        
+        # Automatically switch back to the text view
+        self.set_view(0)
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        mods = e.modifiers()
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
+            from ui.shortcut_dialog import ShortcutSettingsDialog
+            dlg = ShortcutSettingsDialog(self)
+            dlg.exec_()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+
 from ui.review.queue_delegate import QueueDelegate
 
 
@@ -512,9 +1020,19 @@ class ReviewScreen(QWidget):
         self.mgr._rate(quality)
 
     def _review_undo(self):
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and getattr(canvas, "_ink_active", False) is True:
+            if hasattr(canvas, "ink_undo_stroke") and getattr(canvas, "has_ink_undo")() is True:
+                canvas.ink_undo_stroke()
+                return
         self.mgr._review_undo()
 
     def _review_redo(self):
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and getattr(canvas, "_ink_active", False) is True:
+            if hasattr(canvas, "ink_redo_stroke") and getattr(canvas, "has_ink_redo")() is True:
+                canvas.ink_redo_stroke()
+                return
         self.mgr._review_redo()
 
     def _skip_session(self):
@@ -856,6 +1374,496 @@ class ReviewScreen(QWidget):
             self._cache_panel.show()
             self._cache_panel.refresh()
 
+    def _toggle_hint_panel(self):
+        if self._hint_panel.isVisible():
+            self._hint_panel.hide()
+            self._btn_note.setChecked(False)
+        else:
+            self._hint_panel.show()
+            self._btn_note.setChecked(True)
+        self.setFocus()
+
+    def _update_mask_note_ui(self):
+        self._btn_note.setChecked(False)
+        self._hint_browser.clear()
+        self._hint_panel.hide()
+        if getattr(self, "_floating_hint_button", None):
+            self._floating_hint_button.hide()
+
+        if not (0 <= self._idx < len(self._items)):
+            self._btn_note.setEnabled(False)
+            self._btn_save_ink.setEnabled(False)
+            if getattr(self, "_floating_hint_button", None):
+                self._floating_hint_button.hide()
+            return
+
+        self._btn_save_ink.setEnabled(True)
+
+        card, box_idx, active_box = self._items[self._idx]
+
+        note_content = ""
+        if card.get("card_type") == "text":
+            note_content = card.get("notes", "")
+        elif active_box is not None:
+            if hasattr(active_box, "get"):
+                note_content = active_box.get("note", "")
+            else:
+                note_content = getattr(active_box, "note", "")
+
+        if not note_content:
+            note_content = card.get("notes", "")
+
+        note_content = (note_content or "").strip()
+
+        self._btn_note.setEnabled(True)
+        if getattr(self, "_floating_hint_button", None):
+            self._floating_hint_button.show()
+
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        text_color = p.get("C_TEXT", "#CDD6F4")
+        subtext_color = p.get("C_SUBTEXT", "#A6ADC8")
+        accent_color = p.get("C_ACCENT", "#7C6AF7")
+        font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
+
+        css = f"""
+        body {{
+            color: {text_color};
+            font-family: '{font_family}', 'Segoe UI', sans-serif;
+            font-size: 13px;
+            line-height: 1.4;
+        }}
+        a {{
+            color: {accent_color};
+            text-decoration: none;
+        }}
+        img {{
+            max-width: 100%;
+            border-radius: 4px;
+            margin: 6px 0;
+        }}
+        """
+
+        def format_field(text):
+            if not text:
+                return ""
+            if "<img" in text or "<html>" in text or "<p>" in text or "<div" in text or "<span>" in text or "<br" in text:
+                return text
+            import html
+            return html.escape(text).replace("\n", "<br>")
+
+        if note_content:
+            n_html = format_field(note_content)
+        else:
+            themed_text = "Jutsu" if theme == "dojo" else ("Spell" if theme == "arcanum" else "Mask")
+            n_html = f"<i style='color:{subtext_color};'>No {themed_text.lower()} hint or note yet.</i><br><br><span style='font-size:11px;color:{subtext_color};'>Press <b>Ctrl+N</b> to add a hint/note or sketch a diagram.</span>"
+
+        def process_html_images(html_content):
+            if not html_content:
+                return ""
+            import re
+            import os
+            from storage_paths import resolve_asset_path
+            
+            def replace_src(match):
+                tag = match.group(0)
+                src_match = re.search(r'src\s*=\s*["\']([^"\']+)["\']', tag, flags=re.IGNORECASE)
+                if src_match:
+                    src = src_match.group(1)
+                    abs_path = resolve_asset_path(src)
+                    abs_path = os.path.normpath(abs_path)
+                    abs_path_url = QUrl.fromLocalFile(abs_path).toString()
+                    tag = re.sub(
+                        r'src\s*=\s*["\'][^"\']+["\']',
+                        f'src="{abs_path_url}"',
+                        tag,
+                        flags=re.IGNORECASE
+                    )
+                if 'style' in tag:
+                    tag = re.sub(r'style\s*=\s*["\']([^"\']*)["\']', r'style="\1; max-width: 100%;"', tag, flags=re.IGNORECASE)
+                else:
+                    tag = tag[:-1] + ' style="max-width: 100%;">'
+                return tag
+                
+            return re.sub(r'<img[^>]+>', replace_src, html_content, flags=re.IGNORECASE)
+
+        html_body = f"<html><head><style>{css}</style></head><body>{process_html_images(n_html)}</body></html>"
+        self._hint_browser.setHtml(html_body)
+        
+        self._reposition_floating_buttons()
+
+    def _reposition_floating_buttons(self):
+        self._update_floating_buttons_layout()
+
+    def _update_floating_buttons_layout(self):
+        if "_floating_hint_button" not in self.__dict__ or self._floating_hint_button is None:
+            return
+            
+        # 1. Determine target visibility
+        # The hint button is always visible as long as we have items
+        hint_visible = (0 <= self._idx < len(self._items))
+        
+        # Save buttons are visible if pen/eraser is active AND slide hover state is active
+        save_visible = False
+        if hasattr(self, "canvas") and self.canvas is not None:
+            pen_active = getattr(self.canvas, "_ink_active", False)
+            save_visible = pen_active and getattr(self, "_save_buttons_slide_visible", False)
+            
+        # 2. Get the list of buttons in their target order
+        target_buttons = []
+        if hint_visible:
+            target_buttons.append(self._floating_hint_button)
+        if save_visible:
+            if "_floating_save_clear_button" in self.__dict__ and self._floating_save_clear_button is not None:
+                target_buttons.append(self._floating_save_clear_button)
+            if "_floating_save_keep_button" in self.__dict__ and self._floating_save_keep_button is not None:
+                target_buttons.append(self._floating_save_keep_button)
+                
+        # 3. Position / animate visible buttons
+        x = 15
+        for btn in target_buttons:
+            # If the button was hidden, make it visible first, placing it at start position (e.g. x=-150)
+            if not btn.isVisible():
+                btn.show()
+                btn.move(-150, 15)
+            # Slide to its target position
+            btn.slide_to(QPoint(x, 15))
+            x += btn.width() + 10
+            
+        # 4. Slide out and hide buttons that should be hidden
+        all_btns = []
+        if "_floating_hint_button" in self.__dict__ and self._floating_hint_button is not None:
+            all_btns.append(self._floating_hint_button)
+        if "_floating_save_clear_button" in self.__dict__ and self._floating_save_clear_button is not None:
+            all_btns.append(self._floating_save_clear_button)
+        if "_floating_save_keep_button" in self.__dict__ and self._floating_save_keep_button is not None:
+            all_btns.append(self._floating_save_keep_button)
+
+        for btn in all_btns:
+            if btn and btn not in target_buttons:
+                if btn.isVisible():
+                    # Slide to left and hide when animation finishes
+                    btn.slide_to(QPoint(-150, 15))
+                    QTimer.singleShot(250, btn.hide)
+
+    def _check_floating_button_proximity(self):
+        if "_floating_hint_button" not in self.__dict__ or self._floating_hint_button is None:
+            return
+            
+        # Get mouse position relative to self._canvas_stage
+        pos_global = QCursor.pos()
+        pos_local = self._canvas_stage.mapFromGlobal(pos_global)
+        
+        # Check if mouse is in the canvas stage rect
+        in_stage = self._canvas_stage.rect().contains(pos_local)
+        
+        # 1. Determine if hovering over any of the three buttons
+        hovering_hint = (self._floating_hint_button.isVisible() and 
+                         self._floating_hint_button.geometry().contains(pos_local))
+        hovering_save_clear = (self._floating_save_clear_button.isVisible() and 
+                               self._floating_save_clear_button.geometry().contains(pos_local))
+        hovering_save_keep = (self._floating_save_keep_button.isVisible() and 
+                              self._floating_save_keep_button.geometry().contains(pos_local))
+                              
+        hovering_any_button = hovering_hint or hovering_save_clear or hovering_save_keep
+        
+        # 2. Update the slide_visible state for the save buttons
+        pen_active = False
+        if hasattr(self, "canvas") and self.canvas is not None:
+            pen_active = getattr(self.canvas, "_ink_active", False)
+            
+        if pen_active:
+            if hovering_any_button:
+                # User is hovering over the buttons: show them
+                if not getattr(self, "_save_buttons_slide_visible", False):
+                    self._save_buttons_slide_visible = True
+                    self._update_floating_buttons_layout()
+                self._mouse_left_buttons_time = None
+            else:
+                # Mouse is NOT hovering over any button
+                if getattr(self, "_save_buttons_slide_visible", False):
+                    if getattr(self, "_mouse_left_buttons_time", None) is None:
+                        self._mouse_left_buttons_time = time.time()
+                    elif time.time() - self._mouse_left_buttons_time >= 1.5:
+                        self._save_buttons_slide_visible = False
+                        self._mouse_left_buttons_time = None
+                        self._update_floating_buttons_layout()
+        else:
+            # Pen not active: always hide save buttons
+            if getattr(self, "_save_buttons_slide_visible", False):
+                self._save_buttons_slide_visible = False
+                self._update_floating_buttons_layout()
+            self._mouse_left_buttons_time = None
+
+        # 3. Handle proximity opacity-fading
+        # Determine if mouse is in the top-left area where buttons are
+        # The area is x < 420 and y < 80
+        in_proximity_zone = in_stage and pos_local.x() < 420 and pos_local.y() < 80
+        
+        # Decide target opacity
+        # If in proximity zone and NOT hovering directly over a button, fade them to 0.15
+        # Otherwise, keep them fully visible (1.0)
+        target_opacity = 1.0
+        if in_proximity_zone and not hovering_any_button:
+            target_opacity = 0.15
+            
+        all_btns = []
+        if "_floating_hint_button" in self.__dict__ and self._floating_hint_button is not None:
+            all_btns.append(self._floating_hint_button)
+        if "_floating_save_clear_button" in self.__dict__ and self._floating_save_clear_button is not None:
+            all_btns.append(self._floating_save_clear_button)
+        if "_floating_save_keep_button" in self.__dict__ and self._floating_save_keep_button is not None:
+            all_btns.append(self._floating_save_keep_button)
+
+        for btn in all_btns:
+            if btn and btn.isVisible():
+                if not hasattr(btn, "_current_opacity") or btn._current_opacity != target_opacity:
+                    btn._current_opacity = target_opacity
+                    btn.fade_to(target_opacity)
+
+    def _show_review_toast(self, msg: str):
+        if not hasattr(self, "_review_toast_label") or self._review_toast_label is None:
+            self._review_toast_label = QLabel(self)
+            self._review_toast_label.setStyleSheet(
+                "QLabel{background:rgba(30,30,46,220);color:#F38BA8;"
+                "border:1px solid #F38BA8;border-radius:6px;"
+                "padding:6px 14px;font-size:12px;font-weight:bold;}"
+            )
+            self._review_toast_timer = QTimer(self)
+            self._review_toast_timer.setSingleShot(True)
+            self._review_toast_timer.timeout.connect(lambda: self._review_toast_label.hide())
+        
+        self._review_toast_label.setText(msg)
+        self._review_toast_label.adjustSize()
+        x = (self.width() - self._review_toast_label.width()) // 2
+        y = 50
+        self._review_toast_label.move(x, y)
+        self._review_toast_label.show()
+        self._review_toast_label.raise_()
+        self._review_toast_timer.start(2000)
+
+    def _save_review_ink_to_note(self, clear_ink=True):
+        if not (0 <= self._idx < len(self._items)):
+            return
+            
+        if not getattr(self, "canvas", None) or not self.canvas._ink_strokes:
+            self._show_review_toast("⚠️ No drawings to save!")
+            return
+            
+        card, box_idx, active_box = self._items[self._idx]
+        
+        import uuid
+        import storage_paths
+        import os
+        
+        image_dir = storage_paths.archive_image_dir()
+        if not image_dir:
+            return
+            
+        os.makedirs(image_dir, exist_ok=True)
+        filename = f"ink_sketch_{uuid.uuid4().hex[:8]}.png"
+        file_path = os.path.join(image_dir, filename)
+        
+        # Calculate bounding box of all ink strokes to crop the saved image perfectly!
+        all_pts = []
+        for stroke in self.canvas._ink_strokes:
+            if len(stroke) >= 2:
+                all_pts.extend(stroke[1:])
+                
+        if not all_pts:
+            if self.canvas._px is not None:
+                size = self.canvas._px.size()
+            elif getattr(self.canvas, "_pages", None):
+                size = QSize(self.canvas._total_w, self.canvas._total_h)
+            else:
+                size = self.canvas.size()
+            offset_x = 0
+            offset_y = 0
+        else:
+            xs = [pt.x() for pt in all_pts]
+            ys = [pt.y() for pt in all_pts]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            
+            # Add 20px padding around the drawing
+            padding = 20
+            min_x = max(0, min_x - padding)
+            min_y = max(0, min_y - padding)
+            
+            # Get total canvas bounds safely to handle unit test MagicMocks
+            canvas_w = 999999
+            canvas_h = 999999
+            try:
+                if self.canvas._px is not None:
+                    w = self.canvas._px.width()
+                    h = self.canvas._px.height()
+                elif getattr(self.canvas, "_pages", None):
+                    w = self.canvas._total_w
+                    h = self.canvas._total_h
+                else:
+                    w = self.canvas.width()
+                    h = self.canvas.height()
+                
+                if isinstance(w, (int, float)) and not hasattr(w, "called"):
+                    canvas_w = w
+                if isinstance(h, (int, float)) and not hasattr(h, "called"):
+                    canvas_h = h
+            except Exception:
+                pass
+                
+            max_x = min(canvas_w, max_x + padding)
+            max_y = min(canvas_h, max_y + padding)
+            
+            width = max(10, int(max_x - min_x))
+            height = max(10, int(max_y - min_y))
+            size = QSize(width, height)
+            offset_x = min_x
+            offset_y = min_y
+            
+        px = QPixmap(size)
+        px.fill(Qt.white)
+        
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Offset the drawing relative to our cropped bounding box
+        painter.translate(-offset_x, -offset_y)
+        
+        pen_w = max(2.0, self.canvas._ink_width * 2.0)
+        for stroke in self.canvas._ink_strokes:
+            if len(stroke) < 2:
+                continue
+            color = stroke[0]
+            pts = stroke[1:]
+            if not pts:
+                continue
+                
+            painter.setPen(QPen(QColor(color), pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            path = QPainterPath()
+            path.moveTo(pts[0])
+            for pt in pts[1:]:
+                path.lineTo(pt)
+            painter.drawPath(path)
+            
+        painter.end()
+        px.toImage().save(file_path, "PNG")
+        
+        relative_path = f"images/{filename}"
+        img_tag = f'<br><img src="{relative_path}"/><br>'
+        
+        current_note = ""
+        if card.get("card_type") == "text":
+            current_note = card.get("notes", "")
+        elif active_box is not None:
+            if hasattr(active_box, "get"):
+                current_note = active_box.get("note", "")
+            else:
+                current_note = getattr(active_box, "note", "")
+        if not current_note:
+            current_note = card.get("notes", "")
+            
+        current_note = current_note or ""
+        
+        if "<html" in current_note or "<p" in current_note or "<img" in current_note:
+            if "</body>" in current_note:
+                new_note = current_note.replace("</body>", f"{img_tag}</body>")
+            else:
+                new_note = current_note + img_tag
+        else:
+            new_note = current_note + img_tag
+            
+        if active_box is not None:
+            if hasattr(active_box, "__setitem__"):
+                active_box["note"] = new_note
+            elif hasattr(active_box, "note"):
+                active_box.note = new_note
+        else:
+            card["notes"] = new_note
+            
+        if getattr(self, "canvas", None) is not None:
+            if isinstance(box_idx, int) and 0 <= box_idx < len(self.canvas._boxes):
+                self.canvas._boxes[box_idx]["note"] = new_note
+            elif isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                for b in self.canvas._boxes:
+                    if b.get("group_id") == gid:
+                        b["note"] = new_note
+                        
+        from data_manager import store
+        store.save_force(async_save=True)
+        
+        if clear_ink:
+            self.canvas.ink_clear()
+            self._show_review_toast("✅ Saved drawing as note image!")
+        else:
+            self._show_review_toast("📌 Saved drawing (canvas kept)!")
+        
+        self._update_mask_note_ui()
+        if not self._reveal_bar.isVisible():
+            self._hint_panel.show()
+            self._btn_note.setChecked(True)
+
+    def _open_quick_note_editor(self):
+        if not (0 <= self._idx < len(self._items)):
+            return
+            
+        card, box_idx, active_box = self._items[self._idx]
+        
+        current_note = ""
+        if card.get("card_type") == "text":
+            current_note = card.get("notes", "")
+        elif active_box is not None:
+            if hasattr(active_box, "get"):
+                current_note = active_box.get("note", "")
+            else:
+                current_note = getattr(active_box, "note", "")
+        if not current_note:
+            current_note = card.get("notes", "")
+            
+        current_note = current_note or ""
+        
+        dialog = QuickNoteDialog(current_note, parent=self)
+        accepted = (dialog.exec_() == QDialog.Accepted)
+        
+        # Restore ink state if it was temporarily disabled by holding Ctrl
+        if getattr(self, "_was_ink_active_before_ctrl", False):
+            if getattr(self, "canvas", None):
+                self.canvas.ink_set_active(True)
+                self._update_ink_hint()
+            self._was_ink_active_before_ctrl = False
+            
+        if accepted:
+            if "<img" in dialog.note_edit.toHtml():
+                new_note = dialog.note_edit.toHtml()
+            else:
+                new_note = dialog.note_edit.toPlainText().strip()
+                
+            if active_box is not None:
+                if hasattr(active_box, "__setitem__"):
+                    active_box["note"] = new_note
+                elif hasattr(active_box, "note"):
+                    active_box.note = new_note
+            else:
+                card["notes"] = new_note
+                
+            if getattr(self, "canvas", None) is not None:
+                if isinstance(box_idx, int) and 0 <= box_idx < len(self.canvas._boxes):
+                    self.canvas._boxes[box_idx]["note"] = new_note
+                elif isinstance(box_idx, tuple) and box_idx[0] == "group":
+                    gid = box_idx[1]
+                    for b in self.canvas._boxes:
+                        if b.get("group_id") == gid:
+                            b["note"] = new_note
+                            
+            from data_manager import store
+            store.save_force(async_save=True)
+            
+            self._update_mask_note_ui()
+            if not self._reveal_bar.isVisible():
+                self._hint_panel.show()
+                self._btn_note.setChecked(True)
+
     def closeEvent(self, e):
         try:
             from services import recovery_manager
@@ -1063,6 +2071,8 @@ class ReviewScreen(QWidget):
         self._reposition_queue_edge_handle()
         self._reposition_queue_overlay()
         self._reposition_floating_timer()
+        if getattr(self, "_floating_hint_button", None) is not None:
+            self._floating_hint_button.raise_()
         
         # Synchronize retro overlays
         if getattr(self, "crt", None) is not None:
@@ -1351,6 +2361,8 @@ class ReviewScreen(QWidget):
 
         card, box_idx, sm2_obj = self._items[self._idx]
         item_title = card.get("title", "Untitled")
+        if self._stimer:
+            self._stimer.set_current_pdf(card.get("pdf_path", ""))
         if hasattr(self.canvas, "clear_review_ink_for_card_switch"):
             self.canvas.clear_review_ink_for_card_switch()
         self._sync_queue_state()  # state-only fast path for normal card advances
@@ -1403,6 +2415,9 @@ class ReviewScreen(QWidget):
             # Fit the rendered card width to the viewport
             QTimer.singleShot(0, self._zoom_fit)
             self.canvas.setFocus()
+            
+            self._update_mask_note_ui()
+            self._update_pen_button_states()
             
             self._review_profile_log(
                 "item_loaded",
@@ -1493,6 +2508,10 @@ class ReviewScreen(QWidget):
             box_ref=box_idx,
             elapsed=f"{(time.perf_counter() - load_t0) * 1000:.1f}ms",
         )
+        if same_pdf:
+            self._update_mask_note_ui()
+        self._update_pen_button_states()
+
         self.canvas.setFocus()  # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
         self._rating_frame.hide()  # ← rating frame explicitly hide karo
         QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
@@ -1501,6 +2520,22 @@ class ReviewScreen(QWidget):
     def keyPressEvent(self, e):
         key = e.key()
         mods = e.modifiers()
+
+        # Ctrl+? toggle to open shortcuts dialog
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
+            from ui.shortcut_dialog import ShortcutSettingsDialog
+            dlg = ShortcutSettingsDialog(self)
+            dlg.exec_()
+            e.accept()
+            return
+
         if (
             getattr(self, "canvas", None) is not None
             and getattr(self.canvas, "_mode", "") == "edit"
@@ -1595,10 +2630,42 @@ class ReviewScreen(QWidget):
             self._toggle_pdf_contrast()
         elif shortcut_manager.event_matches(e, "review.toggle_timer") and not e.isAutoRepeat():
             self._toggle_floating_timer_visibility()
-        elif (
-            key == Qt.Key_Alt
-            or shortcut_manager.event_matches(e, "review.pen_toggle")
-        ) and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.toggle_note") and not e.isAutoRepeat():
+            self._toggle_hint_panel()
+            e.accept()
+            return
+        elif shortcut_manager.event_matches(e, "review.quick_note") and not e.isAutoRepeat():
+            self._open_quick_note_editor()
+            e.accept()
+            return
+        elif shortcut_manager.event_matches(e, "review.save_ink_clear") and not e.isAutoRepeat():
+            self._save_review_ink_to_note(clear_ink=True)
+            e.accept()
+            return
+        elif shortcut_manager.event_matches(e, "review.save_ink_keep") and not e.isAutoRepeat():
+            self._save_review_ink_to_note(clear_ink=False)
+            e.accept()
+            return
+        elif shortcut_manager.event_matches(e, "review.eraser_toggle") and not e.isAutoRepeat():
+            self.canvas.ink_set_active(True)
+            self.canvas.ink_set_mode("eraser")
+            self._update_ink_hint()
+            self._update_pen_button_states()
+            e.accept()
+            return
+        elif shortcut_manager.event_matches(e, "review.pen_toggle") and not e.isAutoRepeat():
+            self.canvas.ink_set_active(True)
+            self.canvas.ink_set_mode("pen")
+            active = self.canvas._ink_active
+            color = self.canvas._ink_colors[self.canvas._ink_color_idx]
+            self.canvas._show_toast(
+                f"✏ Pen {'ON' if active and self.canvas.ink_get_mode() == 'pen' else 'OFF'}  {color if active and self.canvas.ink_get_mode() == 'pen' else ''}"
+            )
+            self._update_ink_hint()
+            self._update_pen_button_states()
+            e.accept()
+            return
+        elif key == Qt.Key_Alt and not e.isAutoRepeat():
             self.canvas.ink_toggle()
             active = self.canvas._ink_active
             color = self.canvas._ink_colors[self.canvas._ink_color_idx]
@@ -1607,6 +2674,8 @@ class ReviewScreen(QWidget):
             )
             self._update_ink_hint()
             self._update_pen_button_states()
+            e.accept()
+            return
         elif (
             key in (Qt.Key_Equal, Qt.Key_Plus)
             and not (mods & Qt.ControlModifier)
@@ -1687,6 +2756,9 @@ class ReviewScreen(QWidget):
         self._reveal_bar.hide()
         self._show_overlay(self._rating_frame)
 
+        # Note drawer auto-reveal on Space (reveal answer) has been disabled per user request.
+        pass
+
     def _exit_peek(self):
         if self._peek_idx is None:
             return
@@ -1735,7 +2807,11 @@ class ReviewScreen(QWidget):
 
         app = QApplication.instance()
         theme = getattr(app, "_active_theme", "classic")
+        self._theme = theme
         p = get_palette(theme)
+
+        is_cyan_theme = theme in ("manhattan", "tmnt")
+        hover_bg_raw = "0, 240, 255" if is_cyan_theme else "114, 255, 79"
 
         # ── resolved palette ──────────────────────────────────────────────────
         bg = p.get("C_BG", C_BG)
@@ -1816,7 +2892,7 @@ class ReviewScreen(QWidget):
                         f"border:1px solid {border};border-radius:2px;"
                         f"padding:4px 14px;font-size:7.5px;"
                         f"font-family:{font};letter-spacing:0.5px;}}"
-                        f"QPushButton:hover{{background:rgba(114,255,79,0.08);"
+                        f"QPushButton:hover{{background:rgba({hover_bg_raw},0.08);"
                         f"border:1px solid {accent};}}"
                     )
             else:
@@ -1842,9 +2918,37 @@ class ReviewScreen(QWidget):
         self._btn_annot.clicked.connect(self._open_annotation_beta)
         b_cache = _hdr_btn("💾 Cache")
         b_cache.clicked.connect(self._toggle_cache_panel)
+        
+        self._btn_note = _hdr_btn("💡 Note")
+        self._btn_note.setCheckable(True)
+        self._btn_note.setChecked(False)
+        if dojo:
+            self._btn_note.setStyleSheet(
+                self._btn_note.styleSheet()
+                + f"QPushButton:checked{{background:{accent2};color:white;"
+                f"border:1px solid {accent2};}}"
+            )
+        else:
+            self._btn_note.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:6px;"
+                f"padding:4px 14px;font-size:12px;}}"
+                f"QPushButton:checked{{background:#6A3FBF;color:white;"
+                f"border:1px solid {accent};}}"
+                f"QPushButton:hover{{background:{surface};}}"
+            )
+        self._btn_note.clicked.connect(self._toggle_hint_panel)
+        self._btn_note.setEnabled(False)
+
+        self._btn_save_ink = _hdr_btn("🎨 Save Ink")
+        self._btn_save_ink.clicked.connect(self._save_review_ink_to_note)
+        self._btn_save_ink.setEnabled(False)
+        
         row1.addWidget(b_edit)
         row1.addWidget(self._btn_annot)
         row1.addWidget(b_cache)
+        row1.addWidget(self._btn_note)
+        row1.addWidget(self._btn_save_ink)
 
         self._btn_mode = _hdr_btn("🟧 Hide All, Guess One")
         self._btn_mode.setCheckable(True)
@@ -1948,7 +3052,7 @@ class ReviewScreen(QWidget):
                 b.setStyleSheet(
                     f"QPushButton{{background:{card};color:{accent};"
                     f"border:1px solid {border};border-radius:2px;}}"
-                    f"QPushButton:hover{{background:rgba(114,255,79,0.15);"
+                    f"QPushButton:hover{{background:rgba({hover_bg_raw},0.15);"
                     f"border:1px solid {accent};}}"
                 )
             else:
@@ -2136,7 +3240,7 @@ class ReviewScreen(QWidget):
             self._btn_invert_pdf.setStyleSheet(
                 f"QPushButton{{background:{card};color:{accent};"
                 f"border:1px solid {accent};border-radius:2px;}}"
-                f"QPushButton:hover{{background:rgba(114,255,79,0.20);"
+                f"QPushButton:hover{{background:rgba({hover_bg_raw},0.20);"
                 f"border:1px solid {accent};}}"
             )
         else:
@@ -2165,6 +3269,11 @@ class ReviewScreen(QWidget):
         self._btn_toggle_pen.setText("🖊")
         self._btn_toggle_pen.clicked.connect(self._toggle_pen_drawing)
         row2.addWidget(self._btn_toggle_pen)
+
+        self._btn_eraser = _icon_btn(QIcon(), "Toggle Eraser Tool  Shift+`", 28)
+        self._btn_eraser.setText("🧹")
+        self._btn_eraser.clicked.connect(self._toggle_eraser)
+        row2.addWidget(self._btn_eraser)
 
         self._btn_pen_color = _icon_btn(QIcon(), "Choose Custom Pen Color (Click to pick, Shift+X to open dialog)", 28)
         self._btn_pen_color.setText("🎨")
@@ -2263,6 +3372,7 @@ class ReviewScreen(QWidget):
         self._activate_default_review_pen()
         self._update_pen_button_states()
         self.canvas.right_clicked.connect(self._toggle_chrome)
+
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
         self.canvas._zoom_timer.timeout.connect(self._on_canvas_zoom_settled)
@@ -2312,10 +3422,131 @@ class ReviewScreen(QWidget):
 
         self._canvas_stage = QWidget()
         self._canvas_stage.setStyleSheet(f"background:{bg};")
+
+        # Dynamic QSplitter to allow resizing the hint panel
+        canvas_splitter = QSplitter(Qt.Horizontal, self._canvas_stage)
+        canvas_splitter.setStyleSheet(
+            f"QSplitter::handle {{ background-color: {border}; width: 2px; }}"
+        )
+        self._canvas_splitter = canvas_splitter
+        
         canvas_stage_l = QVBoxLayout(self._canvas_stage)
         canvas_stage_l.setContentsMargins(0, 0, 0, 0)
-        canvas_stage_l.setSpacing(0)
-        canvas_stage_l.addWidget(self._stacked_widget)
+        canvas_stage_l.addWidget(canvas_splitter)
+        
+        canvas_splitter.addWidget(self._stacked_widget)
+        self._stacked_widget.setMinimumWidth(300)
+
+        # Slide-out Solution Drawer / Hint Panel
+        self._hint_panel = QFrame()
+        if dojo:
+            self._hint_panel.setStyleSheet(
+                f"QFrame{{background:{surface};border-left:2px solid {accent};border-radius:0;}}"
+            )
+        else:
+            self._hint_panel.setStyleSheet(
+                f"QFrame{{background:{surface};border-left:1px solid {border};border-radius:0;}}"
+            )
+        self._hint_panel.setMinimumWidth(200)
+
+        hp_layout = QVBoxLayout(self._hint_panel)
+        hp_layout.setContentsMargins(12, 12, 12, 12)
+        hp_layout.setSpacing(10)
+
+        hp_hdr = QHBoxLayout()
+        hp_hdr.setSpacing(6)
+        hp_title = QLabel("💡 Solution / Hint")
+        hp_title.setFont(QFont(font if dojo else "Segoe UI", 11, QFont.Bold))
+        hp_title.setStyleSheet(f"color:{accent};background:transparent;border:none;")
+        hp_hdr.addWidget(hp_title)
+        hp_hdr.addStretch()
+
+        hp_close = QPushButton("✕")
+        hp_close.setFixedSize(24, 24)
+        if dojo:
+            hp_close.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{text};border:none;font-weight:bold;}}"
+                f"QPushButton:hover{{color:{accent};}}"
+            )
+        else:
+            hp_close.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{subtext};border:none;font-weight:bold;font-size:14px;}}"
+                f"QPushButton:hover{{color:{accent};}}"
+            )
+        hp_close.clicked.connect(self._toggle_hint_panel)
+        hp_hdr.addWidget(hp_close)
+        hp_layout.addLayout(hp_hdr)
+
+        self._hint_browser = QTextBrowser()
+        self._hint_browser.setOpenExternalLinks(True)
+        self._hint_browser.setStyleSheet(
+            f"QTextBrowser{{background:transparent;color:{text};border:none;"
+            f"font-size:13px;line-height:1.4;}}"
+            f"QScrollBar:vertical{{background:{surface};width:6px;border-radius:3px;}}"
+            f"QScrollBar::handle:vertical{{background:{border};border-radius:3px;}}"
+        )
+        hp_layout.addWidget(self._hint_browser)
+
+        canvas_splitter.addWidget(self._hint_panel)
+        self._hint_panel.hide()
+        canvas_splitter.setSizes([800, 360])
+
+        # Configure floating action buttons based on the active theme
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        if theme == "dojo":
+            hint_text, hint_emoji, hint_border = "Jutsu Note", "📜", "#FFB7C5"
+            sc_text, sc_emoji, sc_border = "Forge & Clear", "⚔", "#A6E3A1"
+            sk_text, sk_emoji, sk_border = "Forge & Keep", "📌", "#89B4FA"
+        elif theme in ("tmnt", "manhattan"):
+            hint_text, hint_emoji, hint_border = "Ooze Hint", "🧪", "#A86CFF"
+            sc_text, sc_emoji, sc_border = "Save & Clear", "🍕", "#39FF14"
+            sk_text, sk_emoji, sk_border = "Save & Keep", "📌", "#FFA200"
+        elif theme == "arcanum":
+            hint_text, hint_emoji, hint_border = "Spell Note", "🔮", "#5FEAD0"
+            sc_text, sc_emoji, sc_border = "Cast & Clear", "✨", "#6FE7A8"
+            sk_text, sk_emoji, sk_border = "Cast & Keep", "📌", "#A78BFA"
+        else:
+            hint_text, hint_emoji, hint_border = "Hint", "💡", None
+            sc_text, sc_emoji, sc_border = "Save & Clear", "💾", "#A6E3A1"
+            sk_text, sk_emoji, sk_border = "Save & Keep", "📌", "#89B4FA"
+
+        self._floating_hint_button = FloatingActionButton(
+            self._canvas_stage,
+            text=hint_text,
+            emoji=hint_emoji,
+            on_click=self._toggle_hint_panel,
+            border_color_hex=hint_border
+        )
+        self._floating_hint_button.move(15, 15)
+        self._floating_hint_button.hide()
+
+        self._floating_save_clear_button = FloatingActionButton(
+            self._canvas_stage,
+            text=sc_text,
+            emoji=sc_emoji,
+            on_click=lambda: self._save_review_ink_to_note(clear_ink=True),
+            border_color_hex=sc_border
+        )
+        self._floating_save_clear_button.move(105, 15)
+        self._floating_save_clear_button.hide()
+
+        self._floating_save_keep_button = FloatingActionButton(
+            self._canvas_stage,
+            text=sk_text,
+            emoji=sk_emoji,
+            on_click=lambda: self._save_review_ink_to_note(clear_ink=False),
+            border_color_hex=sk_border
+        )
+        self._floating_save_keep_button.move(220, 15)
+        self._floating_save_keep_button.hide()
+
+        # Proximity detection timer for drawing/mouse near floating buttons
+        self._save_buttons_slide_visible = False
+        self._mouse_left_buttons_time = None
+        self._proximity_timer = QTimer(self)
+        self._proximity_timer.setInterval(100)
+        self._proximity_timer.timeout.connect(self._check_floating_button_proximity)
+        self._proximity_timer.start()
 
         self._floating_timer_frame = None
         self._floating_timer_session = None
@@ -2586,11 +3817,11 @@ class ReviewScreen(QWidget):
         bl.setSpacing(0)
 
         hint_text = (
-            "SPACE=REVEAL  •  1/2/3/4=RATE  •  C=FIT  •  D=DEBUG  •  "
+            "SPACE=REVEAL  •  1/2/3/4=RATE  •  C=FIT  •  N=NOTE  •  D=DEBUG  •  "
             "CTRL+SCROLL=ZOOM  •  H=PAN  •  L=COPY PDF  •  CTRL+L=OPEN FOLDER  •  "
             "ALT/P=PEN  •  X=COLOR  •  +/-=SIZE  •  DEL=CLEAR  •  F11"
             if dojo
-            else "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  D = debug  •  "
+            else "Space = reveal  •  1/2/3/4 = rate  •  C = fit+center  •  N = note  •  D = debug  •  "
             "Ctrl+Scroll = zoom  •  H = pan  •  L = copy PDF  •  Ctrl+L = open folder  •  "
             "Alt/P = pen  •  X = color  •  +/- = size  •  Del = clear pen  •  F11"
         )
@@ -2978,13 +4209,17 @@ class ReviewScreen(QWidget):
             return
         from data_manager import store
         invert = store.get().get("_invert_pdf", False)
-        dojo = (getattr(self, "_theme", "classic") == "dojo")
-        p = _get_palette(getattr(self, "_theme", "classic"))
+        dojo = _is_dojo()
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        p = _get_palette(theme)
         card = p["C_CARD"]
         accent = p["C_ACCENT"]
         border = p["C_BORDER"]
         text = p["C_TEXT"]
         surface = p["C_SURFACE"]
+        is_cyan = theme in ("manhattan", "tmnt")
+        hover_bg = "rgba(0,240,255,0.12)" if is_cyan else "rgba(114,255,79,0.12)"
+        
         if invert:
             if dojo:
                 self._btn_invert_pdf.setStyleSheet(
@@ -3001,7 +4236,7 @@ class ReviewScreen(QWidget):
                 self._btn_invert_pdf.setStyleSheet(
                     f"QPushButton{{background:{card};color:{accent};"
                     f"border:1px solid {border};border-radius:2px;font-size:13px;}}"
-                    f"QPushButton:hover{{background:rgba(114,255,79,0.12);"
+                    f"QPushButton:hover{{background:{hover_bg};"
                     f"border:1px solid {accent};}}"
                 )
             else:
@@ -3027,12 +4262,38 @@ class ReviewScreen(QWidget):
             self._reload_pdf_contrast()
 
     def _toggle_pen_drawing(self):
-        self.canvas.ink_toggle()
+        active = getattr(self.canvas, "_ink_active", False)
+        mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
+        
+        if not active:
+            self.canvas.ink_set_active(True)
+        else:
+            if mode == "pen":
+                self.canvas.ink_set_active(False)
+            else:
+                self.canvas.ink_set_mode("pen")
+                
         active = self.canvas._ink_active
         color = self.canvas._ink_colors[self.canvas._ink_color_idx]
         self.canvas._show_toast(
-            f"✏ Pen {'ON' if active else 'OFF'}  {color if active else ''}"
+            f"✏ Pen {'ON' if active and self.canvas.ink_get_mode() == 'pen' else 'OFF'}  {color if active and self.canvas.ink_get_mode() == 'pen' else ''}"
         )
+        self._update_ink_hint()
+        self._update_pen_button_states()
+
+    def _toggle_eraser(self):
+        active = getattr(self.canvas, "_ink_active", False)
+        mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
+        
+        if not active:
+            self.canvas.ink_set_active(True)
+            self.canvas.ink_set_mode("eraser")
+        else:
+            if mode == "eraser":
+                self.canvas.ink_set_active(False)
+            else:
+                self.canvas.ink_set_mode("eraser")
+                
         self._update_ink_hint()
         self._update_pen_button_states()
 
@@ -3081,11 +4342,16 @@ class ReviewScreen(QWidget):
         if not hasattr(self, "canvas") or self.canvas is None:
             return
         active = getattr(self.canvas, "_ink_active", False)
+        mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
         color = self.canvas._ink_colors[self.canvas._ink_color_idx]
         dojo = _is_dojo()
         
-        if active:
-            bg_color = "rgba(114,255,79,0.18)" if dojo else "rgba(124,106,247,0.15)"
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        is_cyan = theme in ("manhattan", "tmnt")
+        bg_color = "rgba(0,240,255,0.18)" if is_cyan else ("rgba(114,255,79,0.18)" if dojo else "rgba(124,106,247,0.15)")
+        
+        # Style Pen button
+        if active and mode == "pen":
             self._btn_toggle_pen.setStyleSheet(
                 f"QPushButton{{background:{bg_color};border:1.5px solid {color};"
                 f"border-radius:4px;font-size:12px;font-weight:bold;"
@@ -3098,6 +4364,21 @@ class ReviewScreen(QWidget):
                 f"padding:0px;letter-spacing:0px;text-transform:none;}}"
             )
 
+        # Style Eraser button
+        if hasattr(self, "_btn_eraser") and self._btn_eraser is not None:
+            if active and mode == "eraser":
+                self._btn_eraser.setStyleSheet(
+                    f"QPushButton{{background:{bg_color};border:1.5px solid #F38BA8;"
+                    f"border-radius:4px;font-size:12px;font-weight:bold;"
+                    f"padding:0px;letter-spacing:0px;text-transform:none;}}"
+                )
+            else:
+                self._btn_eraser.setStyleSheet(
+                    f"QPushButton{{background:transparent;border:1px solid {_tc('#45475A', '#1A1A26')};"
+                    f"border-radius:4px;font-size:12px;"
+                    f"padding:0px;letter-spacing:0px;text-transform:none;}}"
+                )
+
         self._btn_pen_color.setStyleSheet(
             f"QPushButton{{border:1.5px solid {color};border-radius:4px;"
             f"background:rgba(255,255,255,0.06);font-size:12px;"
@@ -3109,6 +4390,9 @@ class ReviewScreen(QWidget):
             f"background:transparent;font-size:12px;"
             f"padding:0px;letter-spacing:0px;text-transform:none;}}"
         )
+
+        # Dynamically show/hide hovering save buttons based on pen activity
+        self._update_floating_buttons_layout()
 
     def _reload_pdf_contrast(self):
         path = getattr(self.canvas, "_current_pdf_path", None)
@@ -5102,11 +6386,13 @@ class ReviewScreen(QWidget):
                             "angle",
                             "group_id",
                             "box_id",
+                            "note",
                         )
                         if k in b
                     },
                     "rect": b["rect"],
                     "label": b.get("label", ""),
+                    "note": b.get("note", ""),
                     "revealed": False,
                 }
                 for b in boxes
@@ -5120,6 +6406,7 @@ class ReviewScreen(QWidget):
                 {
                     "rect": b["rect"],
                     "label": b.get("label", ""),
+                    "note": b.get("note", ""),
                     "shape": b.get("shape", "rect"),
                     "angle": b.get("angle", 0.0),
                     "group_id": b.get("group_id", ""),
@@ -5135,6 +6422,7 @@ class ReviewScreen(QWidget):
                 {
                     "rect": b["rect"],
                     "label": b.get("label", ""),
+                    "note": b.get("note", ""),
                     "shape": b.get("shape", "rect"),
                     "angle": b.get("angle", 0.0),
                     "group_id": b.get("group_id", ""),
@@ -5159,6 +6447,8 @@ class ReviewScreen(QWidget):
             self._update_review_page_nav_ui()
 
         QTimer.singleShot(0, _apply_zoom_and_center_img)
+        self._update_mask_note_ui()
+        self._update_pen_button_states()
 
     def _apply_canvas_pages(self, card, box_idx, pages):
         """File: anki_occlusion_v19.py -> Class: ReviewScreen"""
@@ -5233,9 +6523,9 @@ class ReviewScreen(QWidget):
 
         # 7. Rebuild queue now that _page_tops is populated with real page positions
         QTimer.singleShot(50, self._rebuild_queue)
-        # 8. Force a visible-page pass after the viewport settles so already-cached
-        #    pages show immediately when returning to review.
         QTimer.singleShot(120, self._canvas_scroll._emit_visible_pages)
+        self._update_mask_note_ui()
+        self._update_pen_button_states()
 
     def _start_review_pdf_thread(self, card, box_idx):
         path = resolve_asset_path(card.get("pdf_path", ""))

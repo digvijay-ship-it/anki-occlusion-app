@@ -77,15 +77,12 @@ def choose_pdf_render_zoom(page_count: int) -> float:
 def get_pdf_render_zoom_for_path(path: str) -> float:
     if not PDF_SUPPORT or not os.path.exists(path):
         return PDF_RENDER_ZOOM_LARGE_DOC
-    doc = None
     try:
-        doc = fitz.open(path)
-        return choose_pdf_render_zoom(len(doc))
+        from perf_utils import get_pdf_page_count
+        page_count = get_pdf_page_count(path)
+        return choose_pdf_render_zoom(page_count)
     except Exception:
         return PDF_RENDER_ZOOM_LARGE_DOC
-    finally:
-        if doc is not None:
-            doc.close()
 
 
 def ensure_pdf_cache_profile(path: str, render_zoom: float, cache_variant: str | None = None) -> bool:

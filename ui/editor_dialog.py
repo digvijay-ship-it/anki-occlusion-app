@@ -62,7 +62,7 @@ from storage_paths import (
     resolve_asset_path,
 )
 
-from editor_ui import OcclusionCanvas, _ZoomableScrollArea, ToolBar, MaskPanel
+from editor_ui import OcclusionCanvas, _ZoomableScrollArea, ToolBar, MaskPanel, RichTextEdit
 from ui.pdf_annotation_dialog import PdfAnnotationDialog
 from ui.pdf_viewer_controller import PdfViewerController
 
@@ -529,7 +529,7 @@ class CardEditorDialog(QDialog):
         self.inp_title.setPlaceholderText("Card title…")
         self.inp_tags = QLineEdit()
         self.inp_tags.setPlaceholderText("tag1, tag2…")
-        self.inp_notes = QTextEdit()
+        self.inp_notes = RichTextEdit()
         self.inp_notes.setPlaceholderText("Hints / notes…")
         self.inp_notes.setMaximumHeight(64)
         cib.addRow("Title:", self.inp_title)
@@ -622,7 +622,7 @@ class CardEditorDialog(QDialog):
                 "tags": [
                     t.strip() for t in self.inp_tags.text().split(",") if t.strip()
                 ],
-                "notes": self.inp_notes.toPlainText(),
+                "notes": self.inp_notes.toHtml() if "<img" in self.inp_notes.toHtml() else self.inp_notes.toPlainText(),
                 "boxes": boxes,
                 "created": card.get("created") or self._recovery_created_at,
                 "reviews": card.get("reviews", 0),
@@ -1935,7 +1935,11 @@ class CardEditorDialog(QDialog):
         load_t0 = time.perf_counter()
         self.inp_title.setText(card.get("title", ""))
         self.inp_tags.setText(", ".join(card.get("tags", [])))
-        self.inp_notes.setPlainText(card.get("notes", ""))
+        notes = card.get("notes", "")
+        if "<img" in notes or "<html>" in notes or "<p>" in notes:
+            self.inp_notes.setHtml(notes)
+        else:
+            self.inp_notes.setPlainText(notes)
 
         current_boxes = card.get("boxes", [])
         image_path = self._resolve_source_path(card.get("image_path", ""))
@@ -2328,7 +2332,7 @@ class CardEditorDialog(QDialog):
                 "tags": [
                     t.strip() for t in self.inp_tags.text().split(",") if t.strip()
                 ],
-                "notes": self.inp_notes.toPlainText(),
+                "notes": self.inp_notes.toHtml() if "<img" in self.inp_notes.toHtml() else self.inp_notes.toPlainText(),
                 "boxes": merged,
                 "created": self.card.get("created", datetime.now().isoformat()),
                 "reviews": self.card.get("reviews", 0),

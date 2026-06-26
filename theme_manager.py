@@ -80,18 +80,18 @@ PALETTES = {
         "body_font": "'Segoe UI', sans-serif",
     },
     "tmnt": {
-        "C_BG": "#0F150E",       # Dojo Dark Green-Black background
-        "C_SURFACE": "#181D16",  # Dojo Panel background
-        "C_CARD": "#353B33",     # Dojo Card background
-        "C_ACCENT": "#66FCF1",   # Dojo Neon Cyan
-        "C_PURPLE": "#B088F9",   # Dojo Purple
-        "C_ORANGE": "#FFB86C",
-        "C_GREEN": "#45A247",    # Dojo Accent Green
-        "C_RED": "#FF4D4D",      # Dojo Red
-        "C_TEXT": "#FFFFFF",     # Pure White for excellent contrast!
-        "C_SUBTEXT": "#A0AEC0",  # Bright slate gray for clean readability!
-        "C_BORDER": "#2D332B",   # Dojo Border
-        "C_YELLOW": "#F4D35E",
+        "C_BG": "#080c10",       # Manhattan Background for better contrast
+        "C_SURFACE": "#121622",  # Manhattan Surface
+        "C_CARD": "#192030",     # Manhattan Card
+        "C_ACCENT": "#00f0ff",   # Manhattan Accent (Cyan)
+        "C_PURPLE": "#a86cff",   # Manhattan Purple
+        "C_ORANGE": "#ffa200",   # Manhattan Orange
+        "C_GREEN": "#39ff14",    # Manhattan Green
+        "C_RED": "#ff0055",      # Manhattan Red
+        "C_TEXT": "#f5f1e8",     # Manhattan Text
+        "C_SUBTEXT": "#7a8ca3",  # Manhattan Subtext
+        "C_BORDER": "#212a3b",   # Manhattan Border
+        "C_YELLOW": "#ffcc00",   # Manhattan Yellow
         "header_font": "'Orbitron', 'Oxanium', 'Segoe UI Black', sans-serif",
         "body_font": "'Roboto Mono', 'Courier New', monospace",
     },
@@ -275,81 +275,6 @@ def build_stylesheet(mode="classic", font_size=14):
         overlay_name = "panel_overlay.png"
     dojo_panel_overlay_subtle = app_resource_url("assets", "themes", "dojo", overlay_name)
 
-    if mode == "tmnt":
-        return f"""
-QMainWindow, QDialog {{
-    background: {p['C_BG']};
-    color: {p['C_TEXT']};
-}}
-QWidget {{
-    background: {p['C_BG']};
-    color: {p['C_TEXT']};
-    font-family: {bf};
-    font-size: {font_size}px;
-}}
-QLabel {{
-    background: transparent;
-    color: {p['C_TEXT']};
-}}
-QFrame {{
-    border: none;
-}}
-QMenu {{
-    background: {p['C_SURFACE']};
-    color: {p['C_TEXT']};
-    border: 1px solid {p['C_BORDER']};
-    border-radius: 2px;
-    font-family: {bf};
-    font-size: {font_size}px;
-}}
-QMenu::item:selected {{
-    background: {p['C_CARD']};
-    color: {p['C_ACCENT']};
-}}
-QScrollArea {{
-    background: transparent;
-    border: none;
-}}
-QScrollBar:vertical {{
-    background: {p['C_BG']};
-    width: 8px;
-    margin: 0px;
-    border-left: 1px solid {p['C_BORDER']};
-}}
-QScrollBar::handle:vertical {{
-    background: {p['C_CARD']};
-    border-radius: 4px;
-}}
-QScrollBar::handle:vertical:hover {{
-    background: {p['C_ACCENT']};
-}}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-    height: 0px;
-}}
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-    background: none;
-}}
-QScrollBar:horizontal {{
-    background: {p['C_BG']};
-    height: 8px;
-    margin: 0px;
-    border-top: 1px solid {p['C_BORDER']};
-}}
-QScrollBar::handle:horizontal {{
-    background: {p['C_CARD']};
-    border-radius: 4px;
-}}
-QScrollBar::handle:horizontal:hover {{
-    background: {p['C_ACCENT']};
-}}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-    width: 0px;
-}}
-QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
-    background: none;
-}}
-"""
-
     if mode == "dojo":
         hf = "'Orbitron', " + hf
         bf = "'Orbitron', " + bf
@@ -362,17 +287,17 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
 
     # UI Constants
     btn_radius = (
-        "0px" if mode in ("dojo", "manhattan")
+        "0px" if mode in ("dojo", "manhattan", "tmnt")
         else "4px" if mode == "arcanum"
         else "6px"
     )
     btn_border = (
-        "3px" if mode == "manhattan"
+        "3px" if mode in ("manhattan", "tmnt")
         else "2px" if mode in ("dojo", "arcanum")
         else "1px"
     )
     btn_padding = (
-        "0px 20px" if mode == "manhattan"
+        "0px" if mode in ("manhattan", "tmnt")
         else "10px 20px" if mode == "dojo"
         else "8px 18px" if mode == "arcanum"
         else "6px 14px"
@@ -380,7 +305,7 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
 
     raised = (
         f"border-bottom: 4px solid rgba(0,0,0,0.6);"
-        if mode == "manhattan"
+        if mode in ("manhattan", "tmnt")
         else (
             f"border-bottom: 3px solid rgba(0,0,0,0.5);"
             if mode == "dojo"
@@ -444,12 +369,12 @@ QPushButton {{
     border-radius: {btn_radius};
     padding: {btn_padding};
     font-family: {hf};
-    font-weight: {'normal' if mode == 'manhattan' else 'bold'};
-    text-transform: {'uppercase' if mode in ('dojo', 'manhattan') else 'none'};
-    letter-spacing: {'2px' if mode in ('dojo', 'manhattan') else '0px'};
+    font-weight: {'normal' if mode in ('manhattan', 'tmnt') else 'bold'};
+    text-transform: {'uppercase' if mode in ('dojo', 'manhattan', 'tmnt') else 'none'};
+    letter-spacing: {'2px' if mode in ('dojo', 'manhattan', 'tmnt') else '0px'};
 }}
 QPushButton:hover {{
-    background: { 'rgba(240, 163, 94, 0.12)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.15)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.1)') };
+    background: { 'rgba(240, 163, 94, 0.12)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.15)' if mode in ('manhattan', 'tmnt') else 'rgba(114, 255, 79, 0.1)') };
 }}
 
 /* Dominant CTA - START TRAINING */
@@ -460,7 +385,7 @@ QPushButton#cta_primary {{
     border-radius: {btn_radius};
     padding: 12px 24px;
     font-family: {hf};
-    font-weight: {'normal' if mode == 'manhattan' else '900'};
+    font-weight: {'normal' if mode in ('manhattan', 'tmnt') else '900'};
     font-size: 16px;
     text-transform: uppercase;
     letter-spacing: 2px;
@@ -794,8 +719,8 @@ QTreeWidget::item:selected {{
     color: {p['C_TEXT']};
 }}
 QTreeWidget::item:hover:!selected {{
-    background: { 'rgba(95, 234, 208, 0.05)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.05)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.05)') };
-    border-left: 2px solid { 'rgba(95, 234, 208, 0.2)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.2)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.2)') };
+    background: { 'rgba(95, 234, 208, 0.05)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.05)' if mode in ('manhattan', 'tmnt') else 'rgba(114, 255, 79, 0.05)') };
+    border-left: 2px solid { 'rgba(95, 234, 208, 0.2)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.2)' if mode in ('manhattan', 'tmnt') else 'rgba(114, 255, 79, 0.2)') };
     color: #9090C0;
 }}
 
@@ -818,11 +743,11 @@ QScrollBar:vertical {{
     border-left: 1px solid {p['C_BORDER']};
 }}
 QScrollBar::handle:vertical {{
-    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(95, 234, 208, 0.3)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)'))};
-    border-radius: {'0px' if mode == 'manhattan' else '4px'};
+    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(95, 234, 208, 0.3)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.4)' if mode in ('manhattan', 'tmnt') else 'rgba(114, 255, 79, 0.3)'))};
+    border-radius: {'0px' if mode in ('manhattan', 'tmnt') else '4px'};
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(95, 234, 208, 0.6)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)'))};
+    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(95, 234, 208, 0.6)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.8)' if mode in ('manhattan', 'tmnt') else 'rgba(114, 255, 79, 0.6)'))};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
@@ -837,11 +762,11 @@ QScrollBar:horizontal {{
     border-top: 1px solid {p['C_BORDER']};
 }}
 QScrollBar::handle:horizontal {{
-    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(95, 234, 208, 0.3)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.4)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.3)'))};
-    border-radius: {'0px' if mode == 'manhattan' else '4px'};
+    background: {p['C_BORDER'] if mode == 'classic' else ('rgba(95, 234, 208, 0.3)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.4)' if mode in ('manhattan', 'tmnt') else 'rgba(114, 255, 79, 0.3)'))};
+    border-radius: {'0px' if mode in ('manhattan', 'tmnt') else '4px'};
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(95, 234, 208, 0.6)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.8)' if mode == 'manhattan' else 'rgba(114, 255, 79, 0.6)'))};
+    background: {p['C_SUBTEXT'] if mode == 'classic' else ('rgba(95, 234, 208, 0.6)' if mode == 'arcanum' else ('rgba(0, 240, 255, 0.8)' if mode in ('manhattan', 'tmnt') else 'rgba(114, 255, 79, 0.6)'))};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0px;

@@ -11,6 +11,7 @@ class Box:
     group_id: str = ""
     page_num: int = 0
     box_id: str = ""
+    note: str = ""
     
     # SM2 fields
     sm2_interval: int = 0

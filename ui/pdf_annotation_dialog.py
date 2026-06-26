@@ -81,6 +81,8 @@ class PdfAnnotationCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
         self._pages = []
         self._page_tops = []
         self._scale = 1.0
@@ -88,6 +90,7 @@ class PdfAnnotationCanvas(QWidget):
         self._overlay_provider = None
         self._drawing_page = None
         self._live_points = []
+        self._live_widths = []
         self._live_tool = "pen"
         self._erase_active = False
         self._image_drag_item = None
@@ -99,6 +102,13 @@ class PdfAnnotationCanvas(QWidget):
         self._selected_image_page = None
         self._selected_image_id = None
         self._resize_handle = None  # "tl"|"tr"|"bl"|"br" = resize; None = move
+        
+        from collections import OrderedDict
+        self._spx_cache = OrderedDict()
+        self._ink_path_cache = {}
+        self._overlay_cache = {}
+        self._overlay_sig_cache = {}
+        
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -106,6 +116,14 @@ class PdfAnnotationCanvas(QWidget):
         self._overlay_provider = provider
 
     def load_pages(self, pages):
+        if hasattr(self, "_spx_cache"):
+            self._spx_cache.clear()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
+        if hasattr(self, "_overlay_cache"):
+            self._overlay_cache.clear()
+        if hasattr(self, "_overlay_sig_cache"):
+            self._overlay_sig_cache.clear()
         self._pages = list(pages or [])
         self._page_tops = []
         y = 0
@@ -134,6 +152,12 @@ class PdfAnnotationCanvas(QWidget):
 
     def replace_page(self, page_num: int, pixmap: QPixmap):
         if 0 <= page_num < len(self._pages):
+            if hasattr(self, "_spx_cache"):
+                self._spx_cache.pop(page_num, None)
+            if hasattr(self, "_overlay_cache"):
+                self._overlay_cache.pop(page_num, None)
+            if hasattr(self, "_overlay_sig_cache"):
+                self._overlay_sig_cache.pop(page_num, None)
             old = self._pages[page_num]
             same_size = (
                 old is not None
@@ -231,6 +255,25 @@ class PdfAnnotationCanvas(QWidget):
                 return idx, QPointF(x, y - top)
         return None, None
 
+    def _get_scaled_page(self, idx: int) -> QPixmap:
+        if not (0 <= idx < len(self._pages)):
+            return QPixmap()
+        page_px = self._pages[idx]
+        if not page_px or page_px.isNull():
+            return QPixmap()
+        cached_scale, cached_spx = self._spx_cache.get(idx, (None, None))
+        if (
+            cached_scale == self._scale
+            and cached_spx is not None
+            and not cached_spx.isNull()
+        ):
+            return cached_spx
+        sw = max(int(page_px.width() * self._scale), 1)
+        sh = max(int(page_px.height() * self._scale), 1)
+        cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._spx_cache[idx] = (self._scale, cached_spx)
+        return cached_spx
+
     def paintEvent(self, event):
         from theme_manager import get_palette
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
@@ -251,13 +294,31 @@ class PdfAnnotationCanvas(QWidget):
             if rect.bottom() < clip.top() or rect.top() > clip.bottom():
                 continue
             p.fillRect(rect, Qt.white)
-            p.drawPixmap(rect, px, QRectF(px.rect()))
+            scaled_page = self._get_scaled_page(idx)
+            p.drawPixmap(rect.topLeft(), scaled_page)
             p.setPen(QPen(QColor("#4A4A5A"), 1))
             p.drawRect(rect)
-            self._draw_page_overlays(p, idx, rect.top())
+            
+            # Check/rebuild overlay cache for this page
+            sig = (self._scale, self._get_page_items_key(idx))
+            cached_sig = self._overlay_sig_cache.get(idx)
+            if idx not in self._overlay_cache or cached_sig != sig:
+                self._rebuild_overlay_cache(idx, rect.size(), sig)
+            
+            # Draw overlay cache
+            p.drawPixmap(rect.topLeft(), self._overlay_cache[idx])
+            
+            # Draw decorations (selection borders/handles)
+            self._draw_page_decorations(p, idx, rect.top())
 
         if self._live_points and self._drawing_page is not None:
-            self._draw_points(p, self._live_points, self._drawing_page, self._live_tool)
+            self._draw_points(
+                p,
+                self._live_points,
+                self._drawing_page,
+                self._live_tool,
+                widths=self._live_widths,
+            )
             
         if self._tool == "image" and self._image_drag_item is not None and self._image_drag_page is not None:
             current_page = getattr(self, "_image_drag_current_page", self._image_drag_page)
@@ -266,6 +327,65 @@ class PdfAnnotationCanvas(QWidget):
             self._draw_image_item_global(p, self._image_drag_item, current_page)
 
         p.end()
+
+    def _get_page_items_key(self, page_num: int):
+        if not self._overlay_provider:
+            return ()
+        items = list(self._overlay_provider(page_num))
+        sig = []
+        for item in items:
+            item_id = item.get("id", "")
+            pts = item.get("points", [])
+            pts_len = len(pts)
+            pts_sig = (pts[0].x(), pts[0].y(), pts[-1].x(), pts[-1].y()) if pts_len >= 2 else ()
+            rect = item.get("rect")
+            rect_val = (rect.x(), rect.y(), rect.width(), rect.height()) if rect else ()
+            sig.append((item_id, pts_len, pts_sig, rect_val))
+        return tuple(sig)
+
+    def _rebuild_overlay_cache(self, page_num: int, size, sig):
+        w = max(1, int(size.width()))
+        h = max(1, int(size.height()))
+        px = QPixmap(w, h)
+        px.fill(Qt.transparent)
+        
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        top = self._page_tops[page_num] * self._scale
+        painter.translate(0.0, -top)
+        
+        if self._overlay_provider:
+            items = list(self._overlay_provider(page_num))
+            for item in items:
+                if self._is_selectable_visual(item):
+                    self._draw_image_item(painter, item, page_num)
+            for item in items:
+                if self._is_selectable_visual(item):
+                    continue
+                self._draw_points(
+                    painter,
+                    item.get("points", []),
+                    page_num,
+                    item.get("kind", "pen"),
+                    color=item.get("color"),
+                    width=item.get("width"),
+                    opacity=item.get("opacity", 1.0),
+                    item_id=item.get("id"),
+                    widths=item.get("widths"),
+                )
+        
+        painter.end()
+        self._overlay_cache[page_num] = px
+        self._overlay_sig_cache[page_num] = sig
+
+    def _draw_page_decorations(self, painter: QPainter, page_num: int, top: float):
+        if not self._overlay_provider:
+            return
+        items = list(self._overlay_provider(page_num))
+        for item in items:
+            if self._is_selectable_visual(item):
+                self._draw_image_selection(painter, item, page_num)
 
     def _draw_image_item_global(self, painter: QPainter, item, page_num: int):
         pixmap = item.get("pixmap")
@@ -301,27 +421,6 @@ class PdfAnnotationCanvas(QWidget):
         ]:
             painter.drawRect(QRectF(cx - hr / 2, cy - hr / 2, hr, hr))
         painter.restore()
-
-    def _draw_page_overlays(self, painter: QPainter, page_num: int, top: float):
-        if not self._overlay_provider:
-            return
-        items = list(self._overlay_provider(page_num))
-        for item in items:
-            if self._is_selectable_visual(item):
-                self._draw_image_item(painter, item, page_num)
-                self._draw_image_selection(painter, item, page_num)
-        for item in items:
-            if self._is_selectable_visual(item):
-                continue
-            self._draw_points(
-                painter,
-                item.get("points", []),
-                page_num,
-                item.get("kind", "pen"),
-                color=item.get("color"),
-                width=item.get("width"),
-                opacity=item.get("opacity", 1.0),
-            )
 
     def _draw_image_item(self, painter: QPainter, item, page_num: int):
         if self._tool == "image" and self._image_drag_item is not None:
@@ -397,6 +496,8 @@ class PdfAnnotationCanvas(QWidget):
         color=None,
         width=None,
         opacity=1.0,
+        item_id=None,
+        widths=None,
     ):
         pts = [
             pt if isinstance(pt, QPointF) else QPointF(pt[0], pt[1]) for pt in points
@@ -404,27 +505,53 @@ class PdfAnnotationCanvas(QWidget):
         if len(pts) < 2:
             return
         top = self._page_tops[page_num] * self._scale
-        from ui.canvas.geometry import smooth_points_to_path
-        path = smooth_points_to_path(
-            pts,
-            scale=self._scale,
-            offset=QPointF(0.0, top),
-        )
+        
         pen_color = QColor(color or ("#FFD54A" if tool == "highlight" else "#FF4444"))
         painter.save()
         painter.setOpacity(float(opacity))
-        pen = QPen(
-            pen_color,
-            max(
-                1.0,
-                float(width or (12.0 if tool == "highlight" else 2.8)) * self._scale,
-            ),
+        
+        base_w = max(
+            1.0,
+            float(width or (12.0 if tool == "highlight" else 2.8)) * self._scale,
         )
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawPath(path)
+        
+        if widths and len(widths) >= len(pts) - 1:
+            for i in range(len(pts) - 1):
+                p0 = pts[i]
+                p1 = pts[i + 1]
+                pt0 = QPointF(p0.x() * self._scale, top + p0.y() * self._scale)
+                pt1 = QPointF(p1.x() * self._scale, top + p1.y() * self._scale)
+                w = max(1.0, float(widths[i]) * self._scale)
+                pen = QPen(pen_color, w)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawLine(pt0, pt1)
+        else:
+            path = None
+            if item_id is not None:
+                cached_scale, cached_path = self._ink_path_cache.get(item_id, (None, None))
+                if cached_scale == self._scale and cached_path is not None:
+                    path = cached_path
+                    
+            if path is None:
+                from ui.canvas.geometry import smooth_points_to_path
+                path = smooth_points_to_path(
+                    pts,
+                    scale=self._scale,
+                    offset=QPointF(0.0, top),
+                )
+                if item_id is not None:
+                    self._ink_path_cache[item_id] = (self._scale, path)
+                    
+            pen = QPen(pen_color, base_w)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+            
         painter.restore()
 
     def mousePressEvent(self, event):
@@ -479,6 +606,11 @@ class PdfAnnotationCanvas(QWidget):
         self._drawing_page = page_num
         self._live_tool = self._tool
         self._live_points = [point]
+        self._live_widths = []
+        import time
+        self._last_time = time.time()
+        self._last_point = point
+        self._current_width = 2.8  # Start width for pen
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -574,8 +706,62 @@ class PdfAnnotationCanvas(QWidget):
             return
         if self._drawing_page is None or page_num != self._drawing_page:
             return super().mouseMoveEvent(event)
+            
+        # Distance filter to avoid duplicate/ultra-dense points
+        if self._live_points:
+            last_pt = self._live_points[-1]
+            dx = point.x() - last_pt.x()
+            dy = point.y() - last_pt.y()
+            if dx * dx + dy * dy < 1.0:  # 1 pixel threshold in image-space
+                return
+
+        # Calculate velocity for dynamic brush width
+        if self._live_tool == "pen":
+            import time
+            now = time.time()
+            dt = now - self._last_time
+            if dt <= 0:
+                dt = 0.001
+            
+            p0 = self._live_points[-1]
+            p1 = point
+            dist = ((p1.x() - p0.x()) ** 2 + (p1.y() - p0.y()) ** 2) ** 0.5
+            velocity = dist / dt
+            
+            # Map velocity to width (faster -> thinner, slower -> thicker)
+            min_w = 1.2
+            max_w = 4.8
+            target_w = max_w - (max_w - min_w) * min(1.0, velocity / 1200.0)
+            
+            # Exponential smoothing (alpha = 0.20)
+            w = 0.20 * target_w + 0.80 * self._current_width
+            self._current_width = w
+            self._live_widths.append(w)
+            
+            self._last_time = now
+            self._last_point = point
+        else:
+            w = 12.0 if self._live_tool == "highlight" else 2.8
+            self._live_widths.append(w)
+
         self._live_points.append(point)
-        self.update()
+        
+        # Dirty-rect update to only repaint the modified region
+        if len(self._live_points) >= 2:
+            import math
+            p0, p1 = self._live_points[-2], self._live_points[-1]
+            top0 = self._page_tops[self._drawing_page] * self._scale
+            # Find the segment width
+            w = self._live_widths[-1] if self._live_widths else 2.8
+            pen_w = max(4.0, float(w) * self._scale) + 15
+            x0 = int(min(p0.x(), p1.x()) * self._scale - pen_w)
+            y0 = int(min(p0.y(), p1.y()) * self._scale + top0 - pen_w)
+            x1 = int(max(p0.x(), p1.x()) * self._scale + pen_w)
+            y1 = int(max(p0.y(), p1.y()) * self._scale + top0 + pen_w)
+            from PyQt5.QtCore import QRect
+            self.update(QRect(x0, y0, x1 - x0, y1 - y0))
+        else:
+            self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
@@ -610,10 +796,13 @@ class PdfAnnotationCanvas(QWidget):
             return
         if self._drawing_page is not None and len(self._live_points) >= 2:
             self.stroke_finished.emit(
-                self._drawing_page, self._live_tool, list(self._live_points)
+                self._drawing_page,
+                self._live_tool,
+                (list(self._live_points), list(self._live_widths)),
             )
         self._drawing_page = None
         self._live_points = []
+        self._live_widths = []
         self.update()
 
     def _handle_at(self, page_num: int, point: QPointF):
@@ -1354,11 +1543,20 @@ class PdfAnnotationDialog(QDialog):
         self.return_page = page_zero
 
     def _on_stroke_finished(self, page_num: int, tool: str, points):
+        widths = None
+        if isinstance(points, tuple) and len(points) == 2:
+            points, widths = points
+        
+        style = self._annotation_pen_style_override(tool)
+        if widths is not None:
+            style = dict(style) if style else {}
+            style["widths"] = widths
+
         item = self.session.add_new_item(
             page_num,
             tool,
             points,
-            style_override=self._annotation_pen_style_override(tool),
+            style_override=style,
         )
         if item is not None:
             self.canvas.update()

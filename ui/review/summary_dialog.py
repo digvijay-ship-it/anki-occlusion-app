@@ -97,7 +97,21 @@ class ReviewSessionSummaryDialog(QDialog):
         retention = round((good + easy + perfect) / total * 100) if total else 0
 
         self.setWindowTitle("Mission Complete" if dojo else "Session Complete")
-        self.setFixedSize(560, 480 if dojo else 440)
+        
+        import os
+        from session_timer import normalize_pdf_path
+        pdf_paths = []
+        if self.rs._items:
+            for card, _, _ in self.rs._items:
+                path = card.get("pdf_path", "")
+                if path:
+                    norm_path = normalize_pdf_path(path)
+                    if norm_path not in pdf_paths:
+                        pdf_paths.append(norm_path)
+                        
+        base_height = 510 if dojo else 470
+        additional_height = len(pdf_paths) * 120
+        self.setFixedSize(620, base_height + additional_height)
         if dojo:
             self.setStyleSheet(
                 f"QDialog {{ background: {bg}; border: 1px solid {accent}; }}"
@@ -110,8 +124,8 @@ class ReviewSessionSummaryDialog(QDialog):
                 f"QLabel {{ color: {text}; background: transparent; }}"
             )
         L = QVBoxLayout(self)
-        L.setContentsMargins(24, 24, 24, 24)
-        L.setSpacing(16)
+        L.setContentsMargins(28, 28, 28, 28)
+        L.setSpacing(18)
 
         # Title
         if dojo:
@@ -125,7 +139,7 @@ class ReviewSessionSummaryDialog(QDialog):
                 title_text = "🥷  MISSION COMPLETE"
             title = QLabel(title_text)
             font_weight = QFont.Normal if theme_mode == "manhattan" else QFont.Bold
-            title.setFont(QFont(font, 16, font_weight))
+            title.setFont(QFont(font, 18, font_weight))
             title.setAlignment(Qt.AlignCenter)
             title.setStyleSheet(
                 f"color:{accent};background:transparent;"
@@ -134,7 +148,7 @@ class ReviewSessionSummaryDialog(QDialog):
             )
         else:
             title = QLabel("🎉  Session Complete")
-            title.setFont(QFont(font, 18, QFont.Bold))
+            title.setFont(QFont(font, 20, QFont.Bold))
             title.setAlignment(Qt.AlignCenter)
             title.setStyleSheet(f"color:{accent};background:transparent;font-family:{font};")
         L.addWidget(title)
@@ -165,18 +179,18 @@ class ReviewSessionSummaryDialog(QDialog):
         # Retention Rate Circle/Label
         ret_hdr = QLabel("RETENTION" if dojo else "Retention")
         if dojo:
-            ret_hdr.setStyleSheet(f"color:{subtext};font-size:9px;font-family:{font};letter-spacing:1px;")
+            ret_hdr.setStyleSheet(f"color:{subtext};font-size:11px;font-family:{font};letter-spacing:1px;font-weight:bold;")
         else:
-            ret_hdr.setStyleSheet(f"color:{subtext};font-size:11px;font-family:{body_font};")
+            ret_hdr.setStyleSheet(f"color:{subtext};font-size:12px;font-family:{body_font};font-weight:bold;")
         ret_hdr.setAlignment(Qt.AlignCenter)
         left_l.addWidget(ret_hdr)
 
         ret_color = green if retention >= 80 else yellow if retention >= 60 else red
         ret_val = QLabel(f"{retention}%")
         if dojo:
-            ret_val.setStyleSheet(f"color:{ret_color};font-size:36px;font-family:{font};font-weight:bold;")
+            ret_val.setStyleSheet(f"color:{ret_color};font-size:42px;font-family:{font};font-weight:bold;")
         else:
-            ret_val.setStyleSheet(f"color:{ret_color};font-size:36px;font-family:{font};font-weight:bold;")
+            ret_val.setStyleSheet(f"color:{ret_color};font-size:42px;font-family:{font};font-weight:bold;")
         ret_val.setAlignment(Qt.AlignCenter)
         left_l.addWidget(ret_val)
 
@@ -211,24 +225,42 @@ class ReviewSessionSummaryDialog(QDialog):
         left_l.addWidget(sep)
 
         # Stats rows
-        def _left_stat_row(label, value, color=None):
+        def _left_stat_row(label, value, color=None, highlight=False):
             row = QFrame()
-            row.setStyleSheet("background: transparent;")
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 4, 0, 4)
+            if highlight:
+                col = QColor(accent)
+                bg_color = f"rgba({col.red()}, {col.green()}, {col.blue()}, 0.12)"
+                row.setObjectName("highlight_row")
+                row.setStyleSheet(
+                    f"QFrame#highlight_row {{"
+                    f"  background: {bg_color};"
+                    f"  border: 1px solid {accent};"
+                    f"  border-radius: 4px;"
+                    f"}}"
+                    f"QLabel {{"
+                    f"  background: transparent;"
+                    f"  border: none;"
+                    f"}}"
+                )
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(8, 6, 8, 6)
+            else:
+                row.setStyleSheet("background: transparent;")
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(0, 4, 0, 4)
             
             lbl = QLabel(label)
             if dojo:
-                lbl.setStyleSheet(f"color:{subtext};font-size:9px;font-family:{font};letter-spacing:1px;")
+                lbl.setStyleSheet(f"color:{accent if highlight else subtext};font-size:{'12px' if highlight else '11px'};font-family:{font};letter-spacing:1px;font-weight:bold;")
             else:
-                lbl.setStyleSheet(f"color:{subtext};font-size:11px;font-family:{body_font};")
+                lbl.setStyleSheet(f"color:{accent if highlight else subtext};font-size:{'13px' if highlight else '12px'};font-family:{body_font};font-weight:bold;")
                 
             val = QLabel(str(value))
-            v_color = color or text
+            v_color = color or (accent if highlight else text)
             if dojo:
-                val.setStyleSheet(f"color:{v_color};font-size:12px;font-family:{font};font-weight:bold;")
+                val.setStyleSheet(f"color:{v_color};font-size:{'15px' if highlight else '13px'};font-family:{font};font-weight:bold;")
             else:
-                val.setStyleSheet(f"color:{v_color};font-size:12px;font-family:{body_font};font-weight:bold;")
+                val.setStyleSheet(f"color:{v_color};font-size:{'15px' if highlight else '13px'};font-family:{body_font};font-weight:bold;")
             val.setAlignment(Qt.AlignRight)
             
             rl.addWidget(lbl)
@@ -255,7 +287,44 @@ class ReviewSessionSummaryDialog(QDialog):
             avg_time_str = _fmt_duration(avg_secs)
         else:
             avg_time_str = "0s"
-        left_l.addWidget(_left_stat_row("AVG TIME/CARD" if dojo else "Avg Time/Card", avg_time_str))
+        left_l.addWidget(_left_stat_row("AVG TIME/CARD" if dojo else "Avg Time/Card", avg_time_str, highlight=True))
+
+        if pdf_paths and self.rs._stimer:
+            for pdf_path in pdf_paths:
+                sep_pdf = QFrame()
+                sep_pdf.setFrameShape(QFrame.HLine)
+                sep_pdf.setStyleSheet(f"background:{border};")
+                sep_pdf.setFixedHeight(1)
+                left_l.addWidget(sep_pdf)
+                
+                fn = os.path.basename(pdf_path)
+                if len(fn) > 35:
+                    fn = fn[:32] + "..."
+                pdf_hdr = QLabel(fn.upper() if dojo else fn)
+                if dojo:
+                    pdf_hdr.setStyleSheet(
+                        f"color:{accent};font-size:11px;font-family:{font};"
+                        f"letter-spacing:1.5px;font-weight:bold;margin-top:8px;margin-bottom:4px;"
+                    )
+                else:
+                    pdf_hdr.setStyleSheet(
+                        f"color:{accent};font-size:13px;font-family:{body_font};"
+                        f"font-weight:bold;margin-top:8px;margin-bottom:4px;"
+                    )
+                left_l.addWidget(pdf_hdr)
+                
+                pdf_secs = self.rs._stimer._pdf_seconds.get(pdf_path, 0)
+                pdf_cards = self.rs._stimer._pdf_cards_today.get(pdf_path, 0)
+                
+                left_l.addWidget(_left_stat_row("TODAY'S TIME" if dojo else "Today's Time", _fmt_duration(pdf_secs)))
+                left_l.addWidget(_left_stat_row("TODAY'S CARDS" if dojo else "Today's Cards", pdf_cards))
+                
+                if pdf_cards > 0:
+                    pdf_avg = round(pdf_secs / pdf_cards)
+                    pdf_avg_str = _fmt_duration(pdf_avg)
+                else:
+                    pdf_avg_str = "0s"
+                left_l.addWidget(_left_stat_row("TODAY'S AVG/CARD" if dojo else "Today's Avg/Card", pdf_avg_str, highlight=True))
 
         left_l.addStretch()
         cols_l.addWidget(left_card)
@@ -269,9 +338,9 @@ class ReviewSessionSummaryDialog(QDialog):
 
         breakdown_title = QLabel("PERFORMANCE" if dojo else "Performance")
         if dojo:
-            breakdown_title.setStyleSheet(f"color:{accent};font-size:10px;font-family:{font};letter-spacing:1.5px;font-weight:bold;")
+            breakdown_title.setStyleSheet(f"color:{accent};font-size:12px;font-family:{font};letter-spacing:1.5px;font-weight:bold;border-bottom:1px solid {border};padding-bottom:4px;")
         else:
-            breakdown_title.setStyleSheet(f"color:{accent};font-size:12px;font-family:{body_font};font-weight:bold;")
+            breakdown_title.setStyleSheet(f"color:{accent};font-size:14px;font-family:{body_font};font-weight:bold;border-bottom:1px solid {border};padding-bottom:4px;")
         right_l.addWidget(breakdown_title)
 
         def _breakdown_row(label, count, color):
@@ -288,16 +357,16 @@ class ReviewSessionSummaryDialog(QDialog):
             
             lbl = QLabel(label)
             if dojo:
-                lbl.setStyleSheet(f"color:{text};font-size:10px;font-family:{font};")
+                lbl.setStyleSheet(f"color:{text};font-size:12px;font-family:{font};")
             else:
-                lbl.setStyleSheet(f"color:{text};font-size:12px;font-family:{body_font};")
+                lbl.setStyleSheet(f"color:{text};font-size:13px;font-family:{body_font};")
                 
             pct = round(count / total * 100) if total else 0
             val = QLabel(f"{count} ({pct}%)")
             if dojo:
-                val.setStyleSheet(f"color:{color};font-size:11px;font-family:{font};font-weight:bold;")
+                val.setStyleSheet(f"color:{color};font-size:13px;font-family:{font};font-weight:bold;")
             else:
-                val.setStyleSheet(f"color:{color};font-size:12px;font-family:{body_font};font-weight:bold;")
+                val.setStyleSheet(f"color:{color};font-size:13px;font-family:{body_font};font-weight:bold;")
             val.setAlignment(Qt.AlignRight)
             
             hl.addWidget(lbl)
@@ -358,7 +427,7 @@ class ReviewSessionSummaryDialog(QDialog):
             btn.setStyleSheet(
                 f"QPushButton {{"
                 f"  background:{accent};color:{bg};border:none;border-radius:2px;"
-                f"  padding:{v_pad} 24px;font-size:11px;font-weight:{weight_str};"
+                f"  padding:{v_pad} 24px;font-size:13px;font-weight:{weight_str};"
                 f"  font-family:{font};letter-spacing:1px;"
                 f"}}"
                 f"QPushButton:hover {{"

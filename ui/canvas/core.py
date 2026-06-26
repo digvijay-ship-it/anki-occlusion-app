@@ -105,6 +105,11 @@ class OcclusionCanvas(
         self._ink_implementation = "classic"
         self._ink_current_stable_path = QPainterPath()
         self._ink_current_path = QPainterPath()
+        self._ink_mode = "pen"
+        self._ink_erasing = False
+        self._ink_undo_stack = []
+        self._ink_redo_stack = []
+        self._ink_pre_erase_snapshot = None
 
         # ── zoom ──────────────────────────────────────────────────────────────
         self._fast_zoom = False

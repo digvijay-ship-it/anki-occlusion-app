@@ -305,7 +305,7 @@ class TMNTMissionBannerTests(unittest.TestCase):
 
         banner.set_animation_enabled(True)
 
-        self.assertFalse(banner._glow_timer.isActive())
+        self.assertTrue(banner._glow_timer.isActive())
 
     def test_glow_timer_runs_when_home_animations_are_enabled(self):
         with patch.dict(os.environ, {"ANKI_HOME_ANIMATIONS": "1"}, clear=False):

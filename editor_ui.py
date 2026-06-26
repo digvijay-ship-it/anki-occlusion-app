@@ -105,6 +105,7 @@ from PyQt5.QtGui import (
     QCursor,
     QBrush,
     QDesktopServices,
+    QImage,
 )
 
 from sm2_engine import sm2_init
@@ -204,6 +205,87 @@ class ToolBar(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  RICH TEXT EDIT (supports image pasting & drag-and-drop)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_base_url():
+    from storage_paths import get_mission_archive_root, current_data_file
+    root = get_mission_archive_root()
+    if not root:
+        root = os.path.dirname(current_data_file())
+    if root:
+        return QUrl.fromLocalFile(os.path.abspath(root) + "/")
+    return QUrl()
+
+
+class RichTextEdit(QTextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.document().setBaseUrl(get_base_url())
+        self.document().setDefaultStyleSheet("img { max-width: 100%; }")
+
+    def insertFromMimeData(self, mimeData):
+        if mimeData.hasImage():
+            image = mimeData.imageData()
+            if image is not None:
+                self.insert_qimage(image)
+                return
+        if mimeData.hasUrls():
+            for url in mimeData.urls():
+                file_path = url.toLocalFile()
+                if file_path and os.path.exists(file_path):
+                    ext = os.path.splitext(file_path.lower())[1]
+                    if ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
+                        self.insert_image_file(file_path)
+            return
+        super().insertFromMimeData(mimeData)
+
+    def insert_qimage(self, qimage):
+        import uuid
+        from storage_paths import has_mission_archive, build_archive_asset_path
+        filename = f"paste_{uuid.uuid4().hex[:8]}.png"
+        
+        if has_mission_archive():
+            abs_path, rel_path = build_archive_asset_path("images", filename)
+        else:
+            import tempfile
+            temp_dir = tempfile.gettempdir()
+            abs_path = os.path.normpath(os.path.join(temp_dir, filename))
+            rel_path = abs_path
+            
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        
+        from PyQt5.QtGui import QImage
+        if isinstance(qimage, QImage):
+            qimage.save(abs_path, "PNG")
+        else:
+            img = qimage.value() if hasattr(qimage, "value") else qimage
+            if hasattr(img, "save"):
+                img.save(abs_path, "PNG")
+            else:
+                return
+                
+        self.insert_image_html(rel_path)
+
+    def insert_image_file(self, file_path):
+        from storage_paths import has_mission_archive, import_asset_into_archive
+        try:
+            if has_mission_archive():
+                rel_path = import_asset_into_archive(file_path, "images")
+            else:
+                rel_path = file_path
+            self.insert_image_html(rel_path)
+        except Exception as e:
+            print(f"Error importing image: {e}")
+
+    def insert_image_html(self, rel_path):
+        url_path = rel_path.replace("\\", "/")
+        cursor = self.textCursor()
+        cursor.insertHtml(f'<br><img src="{url_path}"/><br>')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MASK PANEL
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -222,6 +304,7 @@ class MaskPanel(QWidget):
         self.list_w = QListWidget()
         self.list_w.currentRowChanged.connect(self._on_select)
         L.addWidget(self.list_w, stretch=1)
+        
         lbl_e = QLabel("Label:")
         lbl_e.setStyleSheet("color:#555;font-size:11px;background:transparent;")
         L.addWidget(lbl_e)
@@ -229,6 +312,16 @@ class MaskPanel(QWidget):
         self.inp_label.setPlaceholderText("e.g. Mitochondria")
         self.inp_label.textChanged.connect(self._on_label_change)
         L.addWidget(self.inp_label)
+        
+        lbl_n = QLabel("Mask Note / Hint:")
+        lbl_n.setStyleSheet("color:#555;font-size:11px;background:transparent;margin-top:4px;")
+        L.addWidget(lbl_n)
+        self.inp_note = RichTextEdit()
+        self.inp_note.setPlaceholderText("Paste solution, hint text, or images...")
+        self.inp_note.setMaximumHeight(80)
+        self.inp_note.textChanged.connect(self._on_note_change)
+        L.addWidget(self.inp_note)
+        
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
         b_del = QPushButton("🗑 Delete")
@@ -255,23 +348,85 @@ class MaskPanel(QWidget):
         if 0 <= sel < self.list_w.count():
             self.list_w.setCurrentRow(sel)
             box = self._canvas._boxes[sel]
+            
+            new_label = box.get("label", "")
+            if self.inp_label.text() != new_label:
+                self.inp_label.blockSignals(True)
+                self.inp_label.setText(new_label)
+                self.inp_label.blockSignals(False)
+            
+            new_note = box.get("note", "")
+            if self.inp_note.toPlainText() != new_note and self.inp_note.toHtml() != new_note:
+                self.inp_note.blockSignals(True)
+                if "<img" in new_note or "<html>" in new_note or "<p>" in new_note:
+                    self.inp_note.setHtml(new_note)
+                else:
+                    self.inp_note.setPlainText(new_note)
+                self.inp_note.blockSignals(False)
+            
+            self.inp_label.setEnabled(True)
+            self.inp_note.setEnabled(True)
+        else:
             self.inp_label.blockSignals(True)
-            self.inp_label.setText(box.get("label", ""))
+            self.inp_label.clear()
             self.inp_label.blockSignals(False)
+            
+            self.inp_note.blockSignals(True)
+            self.inp_note.clear()
+            self.inp_note.blockSignals(False)
+            
+            self.inp_label.setEnabled(False)
+            self.inp_note.setEnabled(False)
         self.list_w.blockSignals(False)
 
     def _on_select(self, row):
         self._canvas.highlight(row)
         if 0 <= row < len(self._canvas._boxes):
+            box = self._canvas._boxes[row]
+            
+            new_label = box.get("label", "")
+            if self.inp_label.text() != new_label:
+                self.inp_label.blockSignals(True)
+                self.inp_label.setText(new_label)
+                self.inp_label.blockSignals(False)
+            
+            new_note = box.get("note", "")
+            if self.inp_note.toPlainText() != new_note and self.inp_note.toHtml() != new_note:
+                self.inp_note.blockSignals(True)
+                if "<img" in new_note or "<html>" in new_note or "<p>" in new_note:
+                    self.inp_note.setHtml(new_note)
+                else:
+                    self.inp_note.setPlainText(new_note)
+                self.inp_note.blockSignals(False)
+            
+            self.inp_label.setEnabled(True)
+            self.inp_note.setEnabled(True)
+        else:
             self.inp_label.blockSignals(True)
-            self.inp_label.setText(self._canvas._boxes[row].get("label", ""))
+            self.inp_label.clear()
             self.inp_label.blockSignals(False)
+            
+            self.inp_note.blockSignals(True)
+            self.inp_note.clear()
+            self.inp_note.blockSignals(False)
+            
+            self.inp_label.setEnabled(False)
+            self.inp_note.setEnabled(False)
 
     def _on_label_change(self, text):
         row = self.list_w.currentRow()
         if row >= 0:
             self._canvas.update_label(row, text)
             self.list_w.currentItem().setText(f"  🟧 {text or f'Mask #{row+1}'}")
+
+    def _on_note_change(self):
+        row = self.list_w.currentRow()
+        if row >= 0:
+            if "<img" in self.inp_note.toHtml():
+                text = self.inp_note.toHtml()
+            else:
+                text = self.inp_note.toPlainText()
+            self._canvas.update_note(row, text)
 
     def _delete_selected(self):
         row = self.list_w.currentRow()
