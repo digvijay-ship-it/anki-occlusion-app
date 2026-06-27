@@ -338,6 +338,12 @@ class CardEditorDialog(QDialog):
         self.btn_relink.setEnabled(PDF_SUPPORT)
         self.btn_relink.clicked.connect(self._relink_pdf)
         self.btn_relink.setVisible(False)
+
+        self.btn_crop = _tbtn(
+            "✂ Crop Image", "Crop the background image"
+        )
+        self.btn_crop.clicked.connect(self._crop_background_image)
+        self.btn_crop.setVisible(False)
         self.btn_relink.setStyleSheet(
             f"QPushButton{{background:transparent;border:none;border-radius:4px;"
             f"padding:4px 10px;font-size:13px;color:{p.get('C_ORANGE', '#8B4513')};min-height:32px;}}"
@@ -371,6 +377,7 @@ class CardEditorDialog(QDialog):
             self.btn_open_ext,
             self.btn_annotate_beta,
             self.btn_relink,
+            self.btn_crop,
             self.lbl_sync,
         ]:
             tl.addWidget(w)
@@ -1211,6 +1218,36 @@ class CardEditorDialog(QDialog):
             self.inp_title.setText(cleaned)
             self._schedule_recovery_draft("title")
 
+    def _crop_background_image(self):
+        if self.canvas._px is None or self.canvas._px.isNull():
+            QMessageBox.warning(self, "No Image", "No background image loaded to crop.")
+            return
+
+        from ui.crop_dialog import CropImageDialog
+        dialog = CropImageDialog(self.canvas._px, self)
+        if dialog.exec_() == QDialog.Accepted:
+            cropped_pixmap = dialog.get_cropped_pixmap()
+            if not cropped_pixmap.isNull():
+                from storage_paths import resolve_asset_path
+                stored_path = self.card.get("image_path")
+                if stored_path:
+                    abs_path = resolve_asset_path(stored_path)
+                    if abs_path and os.path.exists(abs_path):
+                        if cropped_pixmap.save(abs_path, "PNG"):
+                            x, y, w, h = dialog.get_crop_geometry()
+                            boxes = self.canvas.get_boxes()
+                            for box in boxes:
+                                rect = box["rect"]
+                                rect[0] = rect[0] - x
+                                rect[1] = rect[1] - y
+                            self.canvas.load_pixmap(cropped_pixmap)
+                            self.canvas.set_boxes(boxes)
+                            self.mask_panel._refresh(boxes)
+                            self._write_recovery_checkpoint("image_cropped")
+                            self.canvas._show_toast("✂ Image cropped")
+                        else:
+                            QMessageBox.warning(self, "Error", "Could not save cropped image.")
+
     # ── image / paste ─────────────────────────────────────────────────────────
 
     def _load_image(self):
@@ -1235,6 +1272,7 @@ class CardEditorDialog(QDialog):
         self._pdf_pages = []
         self.pdf_bar.hide()
         self.btn_open_ext.setVisible(False)
+        self.btn_crop.setVisible(True)
         self.lbl_sync.setVisible(False)
         self._stop_watch()
         from data_manager import store
@@ -1282,6 +1320,7 @@ class CardEditorDialog(QDialog):
         self._pdf_pages = []
         self.pdf_bar.hide()
         self.btn_open_ext.setVisible(False)
+        self.btn_crop.setVisible(True)
         self.lbl_sync.setVisible(False)
         self._stop_watch()
         from data_manager import store
@@ -1329,6 +1368,7 @@ class CardEditorDialog(QDialog):
         self._auto_subdeck_name = os.path.splitext(os.path.basename(path))[0]
         self._pending_boxes = []
         self.btn_relink.setVisible(True)
+        self.btn_crop.setVisible(False)
         self._show_pdf_loading(True)
         self._load_pdf_direct(abs_path)
         self._write_recovery_checkpoint("pdf_loaded")
@@ -1965,12 +2005,14 @@ class CardEditorDialog(QDialog):
                 self.canvas.set_boxes(current_boxes)
                 self.mask_panel._refresh(current_boxes)
             self._schedule_initial_view_restore("image_load")
+            self.btn_crop.setVisible(True)
         elif card.get("pdf_path") and PDF_SUPPORT and os.path.exists(pdf_path):
             self.card["pdf_path"] = card.get("pdf_path", "")
             self._auto_subdeck_name = os.path.splitext(os.path.basename(pdf_path))[0]
             self._pending_boxes = current_boxes
             self._pending_boxes_need_pdf_adapt = True
             self.btn_relink.setVisible(True)
+            self.btn_crop.setVisible(False)
             self._show_pdf_loading(True)
             print(
                 "[DEBUG][editor_card] load "
@@ -1986,6 +2028,7 @@ class CardEditorDialog(QDialog):
                 f"file={os.path.basename(pdf_path)}"
             )
             self.btn_relink.setVisible(True)
+            self.btn_crop.setVisible(False)
             self.lbl_sync.setVisible(True)
             self.lbl_sync.setText("⚠ PDF not found — click 🔄 Relink PDF to fix")
             self.lbl_sync.setStyleSheet(
@@ -2491,6 +2534,7 @@ class CardEditorDialog(QDialog):
         self.btn_open_ext.setVisible(False)
         self.btn_annotate_beta.setVisible(False)
         self.btn_relink.setVisible(False)
+        self.btn_crop.setVisible(False)
         self.lbl_sync.setVisible(False)
         self.lbl_sync.setText("")
         self.setWindowTitle("Occlusion Card Editor")
