@@ -1317,10 +1317,86 @@ class QuickNoteTests(unittest.TestCase):
         self.assertEqual(canvas._ink_width, 1.2)
         self.assertIsNotNone(canvas._preview_pixmap)
         self.assertTrue(canvas._crop_rect.isValid())
+        self.assertEqual(dialog.save_shortcut.key().toString(), "Ctrl+S")
         
         cropped_px = dialog.get_cropped_pixmap()
         self.assertIsNotNone(cropped_px)
         self.assertFalse(cropped_px.isNull())
+
+    def test_crop_canvas_mouse_interaction(self):
+        from ui.crop_dialog import CropCanvas
+        from PyQt5.QtCore import QSize, QPointF, QPoint, Qt, QRectF, QEvent
+        from PyQt5.QtGui import QMouseEvent
+        
+        strokes = [
+            ["#FF0000", QPointF(100, 100), QPointF(200, 200)]
+        ]
+        
+        canvas = CropCanvas(strokes, QSize(800, 600), 1.2, "#7C6AF7")
+        
+        # Initial crop rect should cover the entire display rect
+        self.assertTrue(canvas._crop_rect.isValid())
+        
+        # Set crop rect to a smaller box with room to move
+        canvas._crop_rect = QRectF(100, 100, 200, 200)
+        initial_rect = QRectF(canvas._crop_rect)
+        
+        # 1. Test dragging inside to move the crop box
+        center = initial_rect.center().toPoint()
+        
+        # Press mouse at center
+        press_event = QMouseEvent(QEvent.MouseButtonPress, QPointF(center), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mousePressEvent(press_event)
+        self.assertEqual(canvas._active_handle, "move")
+        
+        # Move mouse by 50, 50 px
+        move_event = QMouseEvent(QEvent.MouseMove, QPointF(center + QPoint(50, 50)), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mouseMoveEvent(move_event)
+        
+        # Release mouse
+        release_event = QMouseEvent(QEvent.MouseButtonRelease, QPointF(center + QPoint(50, 50)), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mouseReleaseEvent(release_event)
+        
+        # Verify the crop rect was translated
+        self.assertNotEqual(canvas._crop_rect, initial_rect)
+        
+        # 2. Test drawing a new crop box from scratch (outside the current crop box)
+        canvas._crop_rect = QRectF(100, 100, 200, 200)
+        
+        # Press mouse at (10, 10) which is outside
+        press_event = QMouseEvent(QEvent.MouseButtonPress, QPointF(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mousePressEvent(press_event)
+        self.assertEqual(canvas._active_handle, "new")
+        
+        # Drag to (50, 50)
+        move_event = QMouseEvent(QEvent.MouseMove, QPointF(50, 50), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mouseMoveEvent(move_event)
+        
+        # Release mouse
+        release_event = QMouseEvent(QEvent.MouseButtonRelease, QPointF(50, 50), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mouseReleaseEvent(release_event)
+        
+        # Verify a new crop rect was drawn at (10, 10) to (50, 50)
+        self.assertEqual(canvas._crop_rect, QRectF(10, 10, 40, 40))
+        
+        # 3. Test resizing corner handle (bottom-right)
+        br_pos = QPoint(50, 50)
+        
+        # Press mouse at bottom-right corner handle
+        press_event = QMouseEvent(QEvent.MouseButtonPress, QPointF(br_pos), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mousePressEvent(press_event)
+        self.assertEqual(canvas._active_handle, "bottom-right")
+        
+        # Drag handle to (80, 80)
+        move_event = QMouseEvent(QEvent.MouseMove, QPointF(80, 80), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mouseMoveEvent(move_event)
+        
+        # Release mouse
+        release_event = QMouseEvent(QEvent.MouseButtonRelease, QPointF(80, 80), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mouseReleaseEvent(release_event)
+        
+        # Verify the crop rect was resized to (10, 10, 70, 70)
+        self.assertEqual(canvas._crop_rect, QRectF(10, 10, 70, 70))
 
     def test_open_quick_note_editor_and_ink_restoration(self):
         from ui.review_screen import ReviewScreen
