@@ -2084,6 +2084,30 @@ class HomeScreen(QWidget):
         contrast_layout.addWidget(self._cb_invert_pdf, 0, Qt.AlignRight)
         layout.addWidget(contrast_box)
 
+        window_title = QLabel("WINDOW MODE")
+        window_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(window_title)
+
+        window_box = QFrame()
+        window_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        window_layout = QHBoxLayout(window_box)
+        window_layout.setContentsMargins(10, 8, 10, 8)
+        window_layout.setSpacing(8)
+        window_label = QLabel("Keep open in Fullscreen")
+        window_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        window_layout.addWidget(window_label, 1)
+
+        self._cb_keep_fullscreen = QCheckBox()
+        self._cb_keep_fullscreen.setCursor(Qt.PointingHandCursor)
+        self._cb_keep_fullscreen.setChecked(self._data.get("_keep_fullscreen", False))
+        self._cb_keep_fullscreen.stateChanged.connect(self._on_classic_fullscreen_changed)
+        window_layout.addWidget(self._cb_keep_fullscreen, 0, Qt.AlignRight)
+        layout.addWidget(window_box)
+
         # Pen Performance Selector (Beta)
         pen_perf_title = QLabel("PEN PERFORMANCE (BETA)")
         pen_perf_title.setStyleSheet(
@@ -2329,6 +2353,17 @@ class HomeScreen(QWidget):
         store.get()["_invert_pdf"] = invert
         store.mark_dirty()
 
+    def _on_classic_fullscreen_changed(self, state):
+        keep = (state == Qt.Checked)
+        self._data["_keep_fullscreen"] = keep
+        store.mark_dirty()
+        win = self.window()
+        if win:
+            if keep:
+                win.showFullScreen()
+            else:
+                win.showMaximized()
+
     def _on_classic_pen_perf_changed(self, idx):
         _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
         impl = _idx_to_impl.get(idx, "classic")
@@ -2358,6 +2393,10 @@ class HomeScreen(QWidget):
             self._cb_invert_pdf.blockSignals(True)
             self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
             self._cb_invert_pdf.blockSignals(False)
+        if hasattr(self, "_cb_keep_fullscreen") and self._cb_keep_fullscreen:
+            self._cb_keep_fullscreen.blockSignals(True)
+            self._cb_keep_fullscreen.setChecked(self._data.get("_keep_fullscreen", False))
+            self._cb_keep_fullscreen.blockSignals(False)
         if hasattr(self, "_classic_volume_slider") and self._classic_volume_slider:
             self._classic_volume_slider.blockSignals(True)
             self._classic_volume_slider.setValue(self._data.get("_volume", 40))

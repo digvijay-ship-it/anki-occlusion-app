@@ -3637,6 +3637,55 @@ class TMNTTopBar(QFrame):
         contrast_l.addWidget(self._cb_invert_pdf)
         panel_l.addWidget(contrast_box)
 
+        window_lbl = QLabel("WINDOW MODE")
+        window_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(window_lbl)
+
+        window_box = QFrame()
+        window_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        window_layout = QHBoxLayout(window_box)
+        window_layout.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        window_layout.setSpacing(_px(6, self._scale))
+        window_mode_lbl = QLabel("KEEP OPEN IN FULLSCREEN")
+        window_mode_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        window_layout.addWidget(window_mode_lbl)
+        window_layout.addStretch()
+
+        self._cb_keep_fullscreen = QCheckBox()
+        self._cb_keep_fullscreen.setCursor(Qt.PointingHandCursor)
+        self._cb_keep_fullscreen.setStyleSheet(
+            _scale_ss(
+                f"QCheckBox::indicator {{ width: 14px; height: 14px; }}"
+                f"QCheckBox::indicator:unchecked {{ border: 1px solid {T_BORDER}; background: {T_BG}; }}"
+                f"QCheckBox::indicator:checked {{ border: 1px solid {T_NEON}; background: {T_NEON}; }}"
+                , self._scale
+            )
+        )
+        self._cb_keep_fullscreen.setChecked(self._data.get("_keep_fullscreen", False))
+        self._cb_keep_fullscreen.stateChanged.connect(self._on_tmnt_fullscreen_changed)
+        window_layout.addWidget(self._cb_keep_fullscreen)
+        panel_l.addWidget(window_box)
+
         fx_lbl = QLabel("VISUAL FX / ANIMATIONS")
         fx_lbl.setStyleSheet(
             _scale_ss(
@@ -4230,6 +4279,10 @@ class TMNTTopBar(QFrame):
                 self._cb_invert_pdf.blockSignals(True)
                 self._cb_invert_pdf.setChecked(store.get().get("_invert_pdf", False))
                 self._cb_invert_pdf.blockSignals(False)
+            if hasattr(self, "_cb_keep_fullscreen") and self._cb_keep_fullscreen:
+                self._cb_keep_fullscreen.blockSignals(True)
+                self._cb_keep_fullscreen.setChecked(self._data.get("_keep_fullscreen", False))
+                self._cb_keep_fullscreen.blockSignals(False)
             if hasattr(self, "_volume_slider") and self._volume_slider:
                 self._volume_slider.blockSignals(True)
                 self._volume_slider.setValue(self._data.get("_volume", 40))
@@ -4315,6 +4368,17 @@ class TMNTTopBar(QFrame):
         invert = (state == Qt.Checked)
         store.get()["_invert_pdf"] = invert
         store.mark_dirty()
+
+    def _on_tmnt_fullscreen_changed(self, state):
+        keep = (state == Qt.Checked)
+        self._data["_keep_fullscreen"] = keep
+        store.mark_dirty()
+        win = self.window()
+        if win:
+            if keep:
+                win.showFullScreen()
+            else:
+                win.showMaximized()
 
     def _on_tmnt_animations_changed(self, state):
         enabled = (state == Qt.Checked)

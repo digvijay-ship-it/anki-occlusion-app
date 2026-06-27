@@ -262,6 +262,14 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         self.home_screen._toggle_classic_settings_panel()
         self.assertFalse(self.home_screen._classic_settings_panel.isVisible())
 
+    def test_classic_settings_panel_fullscreen_toggle(self):
+        self.assertFalse(self.home_screen._data.get("_keep_fullscreen", False))
+        self.home_screen._cb_keep_fullscreen.setChecked(True)
+        self.assertTrue(self.home_screen._data.get("_keep_fullscreen", False))
+        
+        self.home_screen._cb_keep_fullscreen.setChecked(False)
+        self.assertFalse(self.home_screen._data.get("_keep_fullscreen", False))
+
     def test_classic_save_button_delegates_to_manual_save(self):
         with patch.object(self.home_screen, "_save_current_data_now") as save_now:
             self.home_screen._on_classic_save_clicked()

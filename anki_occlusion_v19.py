@@ -478,6 +478,9 @@ class MainWindow(QMainWindow):
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
 
+        if self._data.get("_keep_fullscreen", False):
+            self.showFullScreen()
+
         sb = self.statusBar()
         if sb:
             sb.showMessage(f"✅ SM-2 Active  |  {_pdf_backend_status()}")
