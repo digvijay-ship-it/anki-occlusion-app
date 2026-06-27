@@ -1190,6 +1190,17 @@ class QuickNoteTests(unittest.TestCase):
         # Test clear
         canvas.clear()
         self.assertIsNotNone(canvas.get_image())
+        
+        # Test crop: draw a small line and assert cropped image size is smaller than default canvas size
+        from PyQt5.QtGui import QPainter, QPen
+        painter = QPainter(canvas._pixmap)
+        painter.setPen(QPen(QColor("#000000"), 3))
+        painter.drawLine(100, 100, 110, 110)
+        painter.end()
+        
+        img = canvas.get_image()
+        self.assertLess(img.width(), 360)
+        self.assertLess(img.height(), 260)
 
     def test_quick_note_dialog_and_sketch_insertion(self):
         from ui.review_screen import QuickNoteDialog

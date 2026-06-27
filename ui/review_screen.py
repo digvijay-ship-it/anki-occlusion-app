@@ -543,7 +543,68 @@ class DrawingCanvas(QWidget):
             self._drawing = False
 
     def get_image(self):
-        return self._pixmap.toImage()
+        img = self._pixmap.toImage()
+        width = img.width()
+        height = img.height()
+        
+        # Scan to crop unnecessary white space
+        min_y = 0
+        found = False
+        for y in range(height):
+            for x in range(width):
+                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                    min_y = y
+                    found = True
+                    break
+            if found:
+                break
+        if not found:
+            return img
+            
+        max_y = height - 1
+        for y in range(height - 1, min_y - 1, -1):
+            found = False
+            for x in range(width):
+                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                    max_y = y
+                    found = True
+                    break
+            if found:
+                break
+                
+        min_x = 0
+        for x in range(width):
+            found = False
+            for y in range(min_y, max_y + 1):
+                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                    min_x = x
+                    found = True
+                    break
+            if found:
+                break
+                
+        max_x = width - 1
+        for x in range(width - 1, min_x - 1, -1):
+            found = False
+            for y in range(min_y, max_y + 1):
+                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                    max_x = x
+                    found = True
+                    break
+            if found:
+                break
+                
+        # Add 15px padding
+        padding = 15
+        p_min_x = max(0, min_x - padding)
+        p_max_x = min(width - 1, max_x + padding)
+        p_min_y = max(0, min_y - padding)
+        p_max_y = min(height - 1, max_y + padding)
+        
+        cropped_w = p_max_x - p_min_x + 1
+        cropped_h = p_max_y - p_min_y + 1
+        
+        return img.copy(p_min_x, p_min_y, cropped_w, cropped_h)
 
 
 class QuickNoteDialog(QDialog):
