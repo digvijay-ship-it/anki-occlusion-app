@@ -84,6 +84,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QDialog,
     QApplication,
+    QMenu,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -225,6 +226,56 @@ class RichTextEdit(QTextEdit):
         self.document().setBaseUrl(get_base_url())
         self.document().setDefaultStyleSheet("img { max-width: 100%; }")
         self.setCursorWidth(2)
+
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu()
+        cursor = self.cursorForPosition(event.pos())
+        char_format = cursor.charFormat()
+        
+        if char_format.isImageFormat():
+            image_format = char_format.toImageFormat()
+            image_name = image_format.name()
+            
+            menu.addSeparator()
+            crop_action = menu.addAction("✂ Crop Image")
+            
+            action = menu.exec_(event.globalPos())
+            if action == crop_action:
+                self._crop_inline_image(image_name, char_format, cursor)
+        else:
+            menu.exec_(event.globalPos())
+
+    def _crop_inline_image(self, image_name, char_format, cursor):
+        from storage_paths import resolve_asset_path
+        abs_path = resolve_asset_path(image_name)
+        if not abs_path or not os.path.exists(abs_path):
+            QMessageBox.warning(self, "Error", "Could not locate image path.")
+            return
+            
+        pixmap = QPixmap(abs_path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "Error", "Could not load image.")
+            return
+            
+        from ui.crop_dialog import CropImageDialog
+        dialog = CropImageDialog(pixmap, self.window())
+        if dialog.exec_() == QDialog.Accepted:
+            cropped_pixmap = dialog.get_cropped_pixmap()
+            if not cropped_pixmap.isNull():
+                if cropped_pixmap.save(abs_path, "PNG"):
+                    self.document().addResource(
+                        self.document().ImageResource,
+                        QUrl(image_name),
+                        cropped_pixmap
+                    )
+                    html = self.toHtml()
+                    self.setHtml(html)
+                    
+                    parent_win = self.window()
+                    if hasattr(parent_win, "_write_recovery_checkpoint"):
+                        parent_win._write_recovery_checkpoint("image_cropped")
+                else:
+                    QMessageBox.warning(self, "Error", "Could not save cropped image.")
 
     def insertFromMimeData(self, mimeData):
         if mimeData.hasImage():
