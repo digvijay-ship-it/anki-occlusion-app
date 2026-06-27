@@ -495,6 +495,7 @@ class DrawingCanvas(QWidget):
         self._drawing = False
         self._pen_color = QColor("#000000")
         self._pen_width = 3
+        self._has_drawn = False
 
     def set_pen_color(self, color):
         self._pen_color = QColor(color)
@@ -504,6 +505,7 @@ class DrawingCanvas(QWidget):
 
     def clear(self):
         self._pixmap.fill(Qt.white)
+        self._has_drawn = False
         self.update()
 
     def resizeEvent(self, event):
@@ -536,6 +538,7 @@ class DrawingCanvas(QWidget):
             painter.drawLine(self._last_point, event.pos())
             painter.end()
             self._last_point = event.pos()
+            self._has_drawn = True
             self.update()
 
     def mouseReleaseEvent(self, event):
@@ -607,6 +610,8 @@ class DrawingCanvas(QWidget):
         return img.copy(p_min_x, p_min_y, cropped_w, cropped_h)
 
     def is_empty(self) -> bool:
+        if not getattr(self, "_has_drawn", False):
+            return True
         img = self._pixmap.toImage()
         width = img.width()
         height = img.height()
@@ -936,6 +941,12 @@ class QuickNoteDialog(QDialog):
             e.accept()
             return
         super().keyPressEvent(e)
+
+    def accept(self):
+        if self.stacked_widget.currentIndex() == 1:
+            if hasattr(self.draw_canvas, "is_empty") and not self.draw_canvas.is_empty():
+                self._insert_drawing_to_editor()
+        super().accept()
 
 
 from ui.review.queue_delegate import QueueDelegate

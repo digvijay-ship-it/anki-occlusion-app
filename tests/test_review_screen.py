@@ -1233,6 +1233,7 @@ class QuickNoteTests(unittest.TestCase):
             painter.setPen(QPen(QColor("#000000"), 3))
             painter.drawLine(10, 10, 20, 20)
             painter.end()
+            dialog.draw_canvas._has_drawn = True
             
             # Trigger insert sketch -> should save successfully
             dialog._insert_drawing_to_editor()
@@ -1242,6 +1243,56 @@ class QuickNoteTests(unittest.TestCase):
             # Verify the img tag is inserted
             html = dialog.note_edit.toHtml()
             self.assertIn("images/sketch_", html)
+
+    def test_quick_note_dialog_accept_and_auto_insert(self):
+        from ui.review_screen import QuickNoteDialog
+        
+        with patch("ui.review_screen.QSettings"), \
+             patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
+             patch("os.makedirs"), \
+             patch("PyQt5.QtGui.QImage.save") as mock_save, \
+             patch("ui.review_screen.QMessageBox.warning") as mock_warn:
+             
+            # Test 1: On Text view (index 0), accept doesn't insert drawing
+            dialog = QuickNoteDialog("Existing note")
+            dialog.set_view(0)
+            from PyQt5.QtGui import QPainter, QPen, QColor
+            painter = QPainter(dialog.draw_canvas._pixmap)
+            painter.setPen(QPen(QColor("#000000"), 3))
+            painter.drawLine(10, 10, 20, 20)
+            painter.end()
+            dialog.draw_canvas._has_drawn = True
+            
+            with patch("PyQt5.QtWidgets.QDialog.accept") as mock_dialog_accept:
+                dialog.accept()
+                mock_save.assert_not_called()
+                mock_dialog_accept.assert_called_once()
+                
+            # Test 2: On Sketchpad view (index 1), accept auto-inserts if has drawn
+            dialog = QuickNoteDialog("Existing note")
+            dialog.set_view(1)
+            painter = QPainter(dialog.draw_canvas._pixmap)
+            painter.setPen(QPen(QColor("#000000"), 3))
+            painter.drawLine(10, 10, 20, 20)
+            painter.end()
+            dialog.draw_canvas._has_drawn = True
+            
+            with patch("PyQt5.QtWidgets.QDialog.accept") as mock_dialog_accept:
+                dialog.accept()
+                mock_save.assert_called_once()
+                mock_dialog_accept.assert_called_once()
+                self.assertIn("images/sketch_", dialog.note_edit.toHtml())
+                
+            # Test 3: On Sketchpad view (index 1), accept does NOT auto-insert if empty (but still accepts)
+            mock_save.reset_mock()
+            dialog = QuickNoteDialog("Existing note")
+            dialog.set_view(1)
+            dialog.draw_canvas._has_drawn = False
+            
+            with patch("PyQt5.QtWidgets.QDialog.accept") as mock_dialog_accept:
+                dialog.accept()
+                mock_save.assert_not_called()
+                mock_dialog_accept.assert_called_once()
 
     def test_open_quick_note_editor_and_ink_restoration(self):
         from ui.review_screen import ReviewScreen
