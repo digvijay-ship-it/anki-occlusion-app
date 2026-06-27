@@ -918,7 +918,11 @@ class QuickNoteDialog(QDialog):
         img.save(file_path, "PNG")
         
         relative_path = f"images/{filename}"
-        self.note_edit.insertHtml(f'<img src="{relative_path}">')
+        cursor = self.note_edit.textCursor()
+        cursor.insertHtml(f'<img src="{relative_path}">&nbsp;')
+        from PyQt5.QtGui import QTextCharFormat
+        cursor.setCharFormat(QTextCharFormat())
+        self.note_edit.setTextCursor(cursor)
         self.draw_canvas.clear()
         
         # Automatically switch back to the text view

@@ -1294,6 +1294,15 @@ class QuickNoteTests(unittest.TestCase):
                 mock_save.assert_not_called()
                 mock_dialog_accept.assert_called_once()
 
+    def test_rich_text_edit_cursor_settings(self):
+        from editor_ui import RichTextEdit
+        
+        editor = RichTextEdit()
+        self.assertEqual(editor.cursorWidth(), 2)
+        
+        editor.insert_image_html("images/test_image.png")
+        self.assertIn("images/test_image.png", editor.toHtml())
+
     def test_open_quick_note_editor_and_ink_restoration(self):
         from ui.review_screen import ReviewScreen
         from PyQt5.QtWidgets import QDialog

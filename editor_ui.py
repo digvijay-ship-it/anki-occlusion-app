@@ -224,6 +224,7 @@ class RichTextEdit(QTextEdit):
         self.setAcceptDrops(True)
         self.document().setBaseUrl(get_base_url())
         self.document().setDefaultStyleSheet("img { max-width: 100%; }")
+        self.setCursorWidth(2)
 
     def insertFromMimeData(self, mimeData):
         if mimeData.hasImage():
@@ -282,7 +283,10 @@ class RichTextEdit(QTextEdit):
     def insert_image_html(self, rel_path):
         url_path = rel_path.replace("\\", "/")
         cursor = self.textCursor()
-        cursor.insertHtml(f'<br><img src="{url_path}"/><br>')
+        cursor.insertHtml(f'<br><img src="{url_path}"/><br>&nbsp;')
+        from PyQt5.QtGui import QTextCharFormat
+        cursor.setCharFormat(QTextCharFormat())
+        self.setTextCursor(cursor)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
