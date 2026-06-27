@@ -1209,7 +1209,8 @@ class QuickNoteTests(unittest.TestCase):
         with patch("ui.review_screen.QSettings"), \
              patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
              patch("os.makedirs"), \
-             patch("PyQt5.QtGui.QImage.save") as mock_save:
+             patch("PyQt5.QtGui.QImage.save") as mock_save, \
+             patch("ui.review_screen.QMessageBox.warning") as mock_warn:
              
             dialog = QuickNoteDialog("Existing note")
             self.assertEqual(dialog.note_edit.toPlainText(), "Existing note")
@@ -1218,10 +1219,24 @@ class QuickNoteTests(unittest.TestCase):
             dialog.size_slider.setValue(8)
             self.assertEqual(dialog.draw_canvas._pen_width, 8)
             
-            # Trigger insert sketch
+            # 1. Trigger insert sketch when empty -> should warn and not save
             dialog._insert_drawing_to_editor()
+            mock_warn.assert_called_once()
+            mock_save.assert_not_called()
             
-            # Verify the image save was called
+            # Reset warn mock
+            mock_warn.reset_mock()
+            
+            # 2. Draw something on the canvas
+            from PyQt5.QtGui import QPainter, QPen, QColor
+            painter = QPainter(dialog.draw_canvas._pixmap)
+            painter.setPen(QPen(QColor("#000000"), 3))
+            painter.drawLine(10, 10, 20, 20)
+            painter.end()
+            
+            # Trigger insert sketch -> should save successfully
+            dialog._insert_drawing_to_editor()
+            mock_warn.assert_not_called()
             mock_save.assert_called_once()
             
             # Verify the img tag is inserted

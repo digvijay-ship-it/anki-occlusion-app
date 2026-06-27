@@ -606,6 +606,16 @@ class DrawingCanvas(QWidget):
         
         return img.copy(p_min_x, p_min_y, cropped_w, cropped_h)
 
+    def is_empty(self) -> bool:
+        img = self._pixmap.toImage()
+        width = img.width()
+        height = img.height()
+        for y in range(height):
+            for x in range(width):
+                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                    return False
+        return True
+
 
 class QuickNoteDialog(QDialog):
     def __init__(self, current_note, parent=None):
@@ -882,6 +892,11 @@ class QuickNoteDialog(QDialog):
         self.draw_canvas.set_pen_width(val)
 
     def _insert_drawing_to_editor(self):
+        if hasattr(self.draw_canvas, "is_empty") and self.draw_canvas.is_empty():
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Empty Drawing", "Please draw something on the canvas before inserting.")
+            return
+            
         import storage_paths
         import os
         import uuid
