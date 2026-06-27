@@ -1465,13 +1465,23 @@ class ReviewScreen(QWidget):
             self._cache_panel.show()
             self._cache_panel.refresh()
 
-    def _toggle_hint_panel(self):
-        if self._hint_panel.isVisible():
-            self._hint_panel.hide()
-            self._btn_note.setChecked(False)
-        else:
+    def _set_hint_panel_visible(self, visible: bool):
+        if visible:
             self._hint_panel.show()
             self._btn_note.setChecked(True)
+            target_w = getattr(self, "_last_calculated_hint_width", 360)
+            sizes = self._canvas_splitter.sizes()
+            if len(sizes) >= 2:
+                total_width = sum(sizes)
+                if total_width > 0:
+                    left_width = total_width - target_w
+                    self._canvas_splitter.setSizes([left_width, target_w])
+        else:
+            self._hint_panel.hide()
+            self._btn_note.setChecked(False)
+
+    def _toggle_hint_panel(self):
+        self._set_hint_panel_visible(not self._hint_panel.isVisible())
         self.setFocus()
 
     def _update_mask_note_ui(self):
@@ -1581,6 +1591,33 @@ class ReviewScreen(QWidget):
 
         html_body = f"<html><head><style>{css}</style></head><body>{process_html_images(n_html)}</body></html>"
         self._hint_browser.setHtml(html_body)
+        
+        # Calculate target panel width based on image size in hint content
+        max_img_width = 0
+        if note_content:
+            from storage_paths import resolve_asset_path
+            sources = _RE_IMG_SRC.findall(note_content)
+            for src in sources:
+                abs_path = resolve_asset_path(src)
+                abs_path = os.path.normpath(abs_path)
+                if os.path.exists(abs_path):
+                    img = QImage(abs_path)
+                    if not img.isNull():
+                        max_img_width = max(max_img_width, img.width())
+
+        target_panel_width = 360
+        if max_img_width > 0:
+            target_panel_width = max_img_width + 40
+            sizes = self._canvas_splitter.sizes()
+            if len(sizes) >= 2:
+                total_width = sum(sizes)
+                if total_width > 0:
+                    max_limit = min(750, int(total_width * 0.55))
+                    target_panel_width = max(360, min(target_panel_width, max_limit))
+            else:
+                target_panel_width = max(360, min(target_panel_width, 750))
+
+        self._last_calculated_hint_width = target_panel_width
         
         self._reposition_floating_buttons()
 
@@ -1760,6 +1797,9 @@ class ReviewScreen(QWidget):
         import uuid
         import storage_paths
         import os
+        from PyQt5.QtCore import QSize
+        from PyQt5.QtWidgets import QDialog
+        from ui.crop_dialog import CropInkDialog
         
         image_dir = storage_paths.archive_image_dir()
         if not image_dir:
@@ -1769,88 +1809,18 @@ class ReviewScreen(QWidget):
         filename = f"ink_sketch_{uuid.uuid4().hex[:8]}.png"
         file_path = os.path.join(image_dir, filename)
         
-        # Calculate bounding box of all ink strokes to crop the saved image perfectly!
-        all_pts = []
-        for stroke in self.canvas._ink_strokes:
-            if len(stroke) >= 2:
-                all_pts.extend(stroke[1:])
-                
-        if not all_pts:
-            if self.canvas._px is not None:
-                size = self.canvas._px.size()
-            elif getattr(self.canvas, "_pages", None):
-                size = QSize(self.canvas._total_w, self.canvas._total_h)
-            else:
-                size = self.canvas.size()
-            offset_x = 0
-            offset_y = 0
-        else:
-            xs = [pt.x() for pt in all_pts]
-            ys = [pt.y() for pt in all_pts]
-            min_x, max_x = min(xs), max(xs)
-            min_y, max_y = min(ys), max(ys)
+        # Calculate canvas size
+        canvas_size = self.canvas.size()
+        if self.canvas._px is not None:
+            canvas_size = self.canvas._px.size()
+        elif getattr(self.canvas, "_pages", None):
+            canvas_size = QSize(self.canvas._total_w, self.canvas._total_h)
             
-            # Add 20px padding around the drawing
-            padding = 20
-            min_x = max(0, min_x - padding)
-            min_y = max(0, min_y - padding)
+        dialog = CropInkDialog(self.canvas._ink_strokes, canvas_size, self.canvas._ink_width, parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            return # Cancelled
             
-            # Get total canvas bounds safely to handle unit test MagicMocks
-            canvas_w = 999999
-            canvas_h = 999999
-            try:
-                if self.canvas._px is not None:
-                    w = self.canvas._px.width()
-                    h = self.canvas._px.height()
-                elif getattr(self.canvas, "_pages", None):
-                    w = self.canvas._total_w
-                    h = self.canvas._total_h
-                else:
-                    w = self.canvas.width()
-                    h = self.canvas.height()
-                
-                if isinstance(w, (int, float)) and not hasattr(w, "called"):
-                    canvas_w = w
-                if isinstance(h, (int, float)) and not hasattr(h, "called"):
-                    canvas_h = h
-            except Exception:
-                pass
-                
-            max_x = min(canvas_w, max_x + padding)
-            max_y = min(canvas_h, max_y + padding)
-            
-            width = max(10, int(max_x - min_x))
-            height = max(10, int(max_y - min_y))
-            size = QSize(width, height)
-            offset_x = min_x
-            offset_y = min_y
-            
-        px = QPixmap(size)
-        px.fill(Qt.white)
-        
-        painter = QPainter(px)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        # Offset the drawing relative to our cropped bounding box
-        painter.translate(-offset_x, -offset_y)
-        
-        pen_w = max(2.0, self.canvas._ink_width * 2.0)
-        for stroke in self.canvas._ink_strokes:
-            if len(stroke) < 2:
-                continue
-            color = stroke[0]
-            pts = stroke[1:]
-            if not pts:
-                continue
-                
-            painter.setPen(QPen(QColor(color), pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            path = QPainterPath()
-            path.moveTo(pts[0])
-            for pt in pts[1:]:
-                path.lineTo(pt)
-            painter.drawPath(path)
-            
-        painter.end()
+        px = dialog.get_cropped_pixmap()
         px.toImage().save(file_path, "PNG")
         
         relative_path = f"images/{filename}"
@@ -1907,8 +1877,7 @@ class ReviewScreen(QWidget):
         
         self._update_mask_note_ui()
         if not self._reveal_bar.isVisible():
-            self._hint_panel.show()
-            self._btn_note.setChecked(True)
+            self._set_hint_panel_visible(True)
 
     def _open_quick_note_editor(self):
         if not (0 <= self._idx < len(self._items)):
@@ -1967,8 +1936,7 @@ class ReviewScreen(QWidget):
             
             self._update_mask_note_ui()
             if not self._reveal_bar.isVisible():
-                self._hint_panel.show()
-                self._btn_note.setChecked(True)
+                self._set_hint_panel_visible(True)
 
     def closeEvent(self, e):
         try:

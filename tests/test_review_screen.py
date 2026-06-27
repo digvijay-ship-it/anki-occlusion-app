@@ -1303,6 +1303,25 @@ class QuickNoteTests(unittest.TestCase):
         editor.insert_image_html("images/test_image.png")
         self.assertIn("images/test_image.png", editor.toHtml())
 
+    def test_crop_ink_dialog(self):
+        from ui.crop_dialog import CropInkDialog
+        from PyQt5.QtCore import QSize, QPointF
+        
+        strokes = [
+            ["#FF0000", QPointF(10, 20), QPointF(30, 40)]
+        ]
+        
+        dialog = CropInkDialog(strokes, QSize(800, 600), 1.2)
+        canvas = dialog.crop_canvas
+        self.assertEqual(canvas._strokes, strokes)
+        self.assertEqual(canvas._ink_width, 1.2)
+        self.assertIsNotNone(canvas._preview_pixmap)
+        self.assertTrue(canvas._crop_rect.isValid())
+        
+        cropped_px = dialog.get_cropped_pixmap()
+        self.assertIsNotNone(cropped_px)
+        self.assertFalse(cropped_px.isNull())
+
     def test_open_quick_note_editor_and_ink_restoration(self):
         from ui.review_screen import ReviewScreen
         from PyQt5.QtWidgets import QDialog
@@ -1370,7 +1389,13 @@ class QuickNoteTests(unittest.TestCase):
              patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
              patch("os.makedirs"), \
              patch("PyQt5.QtGui.QImage.save") as mock_save, \
-             patch("data_manager.store") as mock_store:
+             patch("data_manager.store") as mock_store, \
+             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog:
+             
+            mock_dialog = MockCropDialog.return_value
+            mock_dialog.exec_.return_value = 1
+            from PyQt5.QtGui import QPixmap
+            mock_dialog.get_cropped_pixmap.return_value = QPixmap(10, 10)
              
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
@@ -1425,7 +1450,13 @@ class QuickNoteTests(unittest.TestCase):
              patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
              patch("os.makedirs"), \
              patch("PyQt5.QtGui.QImage.save") as mock_save, \
-             patch("data_manager.store") as mock_store:
+             patch("data_manager.store") as mock_store, \
+             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog:
+             
+            mock_dialog = MockCropDialog.return_value
+            mock_dialog.exec_.return_value = 1
+            from PyQt5.QtGui import QPixmap
+            mock_dialog.get_cropped_pixmap.return_value = QPixmap(10, 10)
               
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
@@ -1698,7 +1729,13 @@ class QuickNoteTests(unittest.TestCase):
              patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
              patch("os.makedirs"), \
              patch("PyQt5.QtGui.QImage.save") as mock_save, \
-             patch("data_manager.store") as mock_store:
+             patch("data_manager.store") as mock_store, \
+             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog:
+             
+            mock_dialog = MockCropDialog.return_value
+            mock_dialog.exec_.return_value = 1
+            from PyQt5.QtGui import QPixmap
+            mock_dialog.get_cropped_pixmap.return_value = QPixmap(10, 10)
              
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
