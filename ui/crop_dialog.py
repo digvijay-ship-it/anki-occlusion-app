@@ -309,3 +309,253 @@ class CropInkDialog(QDialog):
 
     def get_cropped_pixmap(self):
         return self.crop_canvas.get_cropped_pixmap()
+
+
+class CropImageCanvas(QWidget):
+    def __init__(self, pixmap, accent_color, parent=None):
+        super().__init__(parent)
+        self._original_pixmap = pixmap
+        self._accent_color = accent_color
+        
+        # Scale to fit a comfortable maximum preview size
+        max_w = 800
+        max_h = 600
+        self._preview_pixmap = self._original_pixmap.scaled(
+            max_w, max_h,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        
+        self._display_rect = self._preview_pixmap.rect()
+        self._scale = self._preview_pixmap.width() / self._original_pixmap.width()
+        
+        # Set fixed size of the widget to match the scaled preview
+        self.setFixedSize(self._preview_pixmap.size())
+        
+        # Initialize crop rect to cover the full preview
+        self._crop_rect = QRectF(self._display_rect)
+        
+        # Mouse interaction states
+        self._active_handle = None
+        self._drag_start = QPointF()
+        self._orig_crop_rect = QRectF()
+        
+        self.setMouseTracking(True)
+
+    def _get_handle_at(self, pos):
+        h_size = 14  # Active area size for handles
+        rects = {
+            "top-left": QRectF(self._crop_rect.left() - h_size/2, self._crop_rect.top() - h_size/2, h_size, h_size),
+            "top-right": QRectF(self._crop_rect.right() - h_size/2, self._crop_rect.top() - h_size/2, h_size, h_size),
+            "bottom-left": QRectF(self._crop_rect.left() - h_size/2, self._crop_rect.bottom() - h_size/2, h_size, h_size),
+            "bottom-right": QRectF(self._crop_rect.right() - h_size/2, self._crop_rect.bottom() - h_size/2, h_size, h_size),
+        }
+        for name, r in rects.items():
+            if r.contains(QPointF(pos)):
+                return name
+        return None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            pos = event.pos()
+            handle = self._get_handle_at(pos)
+            if handle:
+                self._active_handle = handle
+            elif self._crop_rect.contains(QPointF(pos)):
+                self._active_handle = "move"
+            else:
+                self._active_handle = "new"
+                self._crop_rect = QRectF(pos, QSizeF(0, 0))
+                
+            self._drag_start = QPointF(pos)
+            self._orig_crop_rect = QRectF(self._crop_rect)
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        pos = event.pos()
+        if not self._active_handle:
+            handle = self._get_handle_at(pos)
+            if handle in ("top-left", "bottom-right"):
+                self.setCursor(Qt.SizeFDiagCursor)
+            elif handle in ("top-right", "bottom-left"):
+                self.setCursor(Qt.SizeBDiagCursor)
+            elif self._crop_rect.contains(QPointF(pos)):
+                self.setCursor(Qt.SizeAllCursor)
+            else:
+                self.setCursor(Qt.CrossCursor)
+            return
+
+        diff = pos - self._drag_start
+        r = QRectF(self._orig_crop_rect)
+        
+        if self._active_handle == "move":
+            r.translate(diff.x(), diff.y())
+            if r.left() < 0:
+                r.moveLeft(0)
+            if r.right() > self.width():
+                r.moveRight(self.width())
+            if r.top() < 0:
+                r.moveTop(0)
+            if r.bottom() > self.height():
+                r.moveBottom(self.height())
+            self._crop_rect = r
+            
+        elif self._active_handle == "new":
+            x0 = max(0, min(self._drag_start.x(), pos.x()))
+            y0 = max(0, min(self._drag_start.y(), pos.y()))
+            x1 = min(self.width(), max(self._drag_start.x(), pos.x()))
+            y1 = min(self.height(), max(self._drag_start.y(), pos.y()))
+            self._crop_rect = QRectF(x0, y0, x1 - x0, y1 - y0)
+            
+        else:
+            left = r.left()
+            right = r.right()
+            top = r.top()
+            bottom = r.bottom()
+            min_size = 15
+            
+            if "left" in self._active_handle:
+                left = min(right - min_size, max(0, left + diff.x()))
+            elif "right" in self._active_handle:
+                right = max(left + min_size, min(self.width(), right + diff.x()))
+                
+            if "top" in self._active_handle:
+                top = min(bottom - min_size, max(0, top + diff.y()))
+            elif "bottom" in self._active_handle:
+                bottom = max(top + min_size, min(self.height(), bottom + diff.y()))
+                
+            self._crop_rect = QRectF(left, top, right - left, bottom - top)
+            
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._active_handle = None
+            if self._crop_rect.width() < 10 or self._crop_rect.height() < 10:
+                self._crop_rect = QRectF(self._display_rect)
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._preview_pixmap)
+        
+        # Dim outside crop box
+        whole_path = QPainterPath()
+        whole_path.addRect(QRectF(self.rect()))
+        crop_path = QPainterPath()
+        crop_path.addRect(self._crop_rect)
+        dim_path = whole_path.subtracted(crop_path)
+        painter.fillPath(dim_path, QBrush(QColor(0, 0, 0, 120)))
+        
+        # Border
+        accent = QColor(self._accent_color)
+        painter.setPen(QPen(accent, 2, Qt.SolidLine))
+        painter.drawRect(self._crop_rect)
+        
+        # Handles
+        h_size = 8
+        painter.setBrush(QBrush(accent))
+        painter.setPen(QPen(Qt.white, 1))
+        corners = [
+            self._crop_rect.topLeft(),
+            self._crop_rect.topRight(),
+            self._crop_rect.bottomLeft(),
+            self._crop_rect.bottomRight()
+        ]
+        for c in corners:
+            painter.drawRect(QRectF(c.x() - h_size/2, c.y() - h_size/2, h_size, h_size))
+
+    def get_crop_geometry(self):
+        orig_min_x = self._crop_rect.x() / self._scale
+        orig_min_y = self._crop_rect.y() / self._scale
+        orig_w = self._crop_rect.width() / self._scale
+        orig_h = self._crop_rect.height() / self._scale
+        return int(orig_min_x), int(orig_min_y), int(orig_w), int(orig_h)
+
+    def get_cropped_pixmap(self):
+        x, y, w, h = self.get_crop_geometry()
+        return self._original_pixmap.copy(x, y, w, h)
+
+
+class CropImageDialog(QDialog):
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Crop Image")
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = p.get("C_BG", "#1E1E2E")
+        surface = p.get("C_SURFACE", "#24283B")
+        text = p.get("C_TEXT", "#CDD6F4")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        border = p.get("C_BORDER", "#45475A")
+        font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
+        
+        self.setStyleSheet(
+            f"QDialog {{ background: {bg}; }}"
+            f"QLabel {{ color: {text}; font-family: '{font_family}'; font-size: 13px; }}"
+            f"QPushButton {{ font-family: '{font_family}'; font-size: 12px; font-weight: bold; }}"
+        )
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        
+        lbl_info = QLabel("Drag borders/corners to crop the image. Press Enter/Ctrl+S to save.")
+        layout.addWidget(lbl_info)
+        
+        # Center the CropImageCanvas inside a background container
+        canvas_container = QWidget()
+        canvas_container.setStyleSheet(f"background: {surface}; border: 1px solid {border}; border-radius: 6px;")
+        cc_layout = QVBoxLayout(canvas_container)
+        cc_layout.setContentsMargins(8, 8, 8, 8)
+        cc_layout.setAlignment(Qt.AlignCenter)
+        
+        self.crop_canvas = CropImageCanvas(pixmap, accent, self)
+        cc_layout.addWidget(self.crop_canvas)
+        layout.addWidget(canvas_container, stretch=1)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        
+        self.btn_save = QPushButton("📥 Crop Image")
+        self.btn_save.setFixedHeight(34)
+        if theme != "classic":
+            self.btn_save.setStyleSheet(
+                f"QPushButton {{ background: {accent}; color: {bg}; border: none; border-radius: 6px; padding: 0 20px; }}"
+                f"QPushButton:hover {{ background: white; color: {bg}; }}"
+            )
+        else:
+            self.btn_save.setStyleSheet(
+                f"QPushButton {{ background: {accent}; color: white; border: none; border-radius: 6px; padding: 0 20px; }}"
+                f"QPushButton:hover {{ background: #6A58E0; }}"
+            )
+        self.btn_save.clicked.connect(self.accept)
+        
+        self.btn_cancel = QPushButton("✕ Cancel")
+        self.btn_cancel.setFixedHeight(34)
+        self.btn_cancel.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {text}; border: 1px solid {border}; border-radius: 6px; padding: 0 20px; }}"
+            f"QPushButton:hover {{ background: {surface}; }}"
+        )
+        self.btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_save)
+        layout.addLayout(btn_layout)
+        
+        # Setup shortcuts
+        from PyQt5.QtWidgets import QShortcut
+        from PyQt5.QtGui import QKeySequence
+        self.save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.save_shortcut.activated.connect(self.accept)
+
+    def get_cropped_pixmap(self):
+        return self.crop_canvas.get_cropped_pixmap()
+
+    def get_crop_geometry(self):
+        return self.crop_canvas.get_crop_geometry()
+
