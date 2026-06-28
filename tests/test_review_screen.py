@@ -1294,6 +1294,50 @@ class QuickNoteTests(unittest.TestCase):
                 mock_save.assert_not_called()
                 mock_dialog_accept.assert_called_once()
 
+    def test_drawing_canvas_load_image_and_eraser(self):
+        from ui.quick_note_dialog import DrawingCanvas
+        from PyQt5.QtGui import QPixmap, QColor
+        
+        canvas = DrawingCanvas()
+        self.assertFalse(canvas._eraser_mode)
+        
+        # Load a test pixmap
+        px = QPixmap(50, 50)
+        px.fill(QColor("#FF0000"))
+        canvas.load_image(px)
+        
+        self.assertEqual(canvas._pixmap.size(), px.size())
+        self.assertTrue(canvas._has_drawn)
+        
+        # Toggle eraser
+        canvas.set_eraser_mode(True)
+        self.assertTrue(canvas._eraser_mode)
+        canvas.set_eraser_mode(False)
+        self.assertFalse(canvas._eraser_mode)
+
+    def test_edit_sketch_dialog_basic(self):
+        from ui.quick_note_dialog import EditSketchDialog
+        from PyQt5.QtGui import QPixmap, QColor
+        
+        px = QPixmap(50, 50)
+        px.fill(QColor("#FF0000"))
+        
+        dialog = EditSketchDialog(px)
+        self.assertEqual(dialog.draw_canvas._pixmap.size(), px.size())
+        
+        # Check pen/eraser toggle methods
+        dialog._select_eraser()
+        self.assertTrue(dialog.draw_canvas._eraser_mode)
+        self.assertFalse(dialog.colors_container.isEnabled())
+        
+        dialog._select_pen()
+        self.assertFalse(dialog.draw_canvas._eraser_mode)
+        self.assertTrue(dialog.colors_container.isEnabled())
+        
+        # Check pen color change
+        dialog.size_slider.setValue(6)
+        self.assertEqual(dialog.draw_canvas._pen_width, 6)
+
     def test_rich_text_edit_cursor_settings(self):
         from editor_ui import RichTextEdit
         
@@ -1305,12 +1349,12 @@ class QuickNoteTests(unittest.TestCase):
 
     def test_crop_ink_dialog(self):
         from ui.crop_dialog import CropInkDialog
-        from PyQt5.QtCore import QSize, QPointF
+        from PyQt5.QtCore import QSize, QPointF, QRectF
         
+        # 1. Test classic behavior without card_img_size
         strokes = [
             ["#FF0000", QPointF(10, 20), QPointF(30, 40)]
         ]
-        
         dialog = CropInkDialog(strokes, QSize(800, 600), 1.2)
         canvas = dialog.crop_canvas
         self.assertEqual(canvas._strokes, strokes)
@@ -1322,6 +1366,32 @@ class QuickNoteTests(unittest.TestCase):
         cropped_px = dialog.get_cropped_pixmap()
         self.assertIsNotNone(cropped_px)
         self.assertFalse(cropped_px.isNull())
+        
+        # 2. Test auto-focus on scratchpad drawings (lying outside card_img_size)
+        card_img_size = QSize(100, 100)
+        strokes_with_scratchpad = [
+            ["#FF0000", QPointF(10, 10), QPointF(20, 20)],       # on card annotation
+            ["#00FF00", QPointF(150, 150), QPointF(180, 180)],   # scratchpad calculation (outside card bounds)
+        ]
+        
+        # Initialize dialog with card_img_size
+        dialog_sp = CropInkDialog(strokes_with_scratchpad, QSize(300, 300), 1.2, card_img_size=card_img_size)
+        canvas_sp = dialog_sp.crop_canvas
+        
+        # Check scratchpad strokes are detected
+        self.assertEqual(len(canvas_sp._scratchpad_strokes), 1)
+        self.assertEqual(canvas_sp._scratchpad_strokes[0][0], "#00FF00")
+        
+        # Verify default crop rect was auto-focused around scratchpad only (not covering full preview)
+        self.assertNotEqual(canvas_sp._crop_rect, QRectF(canvas_sp._display_rect))
+        
+        # Verify select_all resets crop rect to cover the full canvas preview
+        canvas_sp.select_all()
+        self.assertEqual(canvas_sp._crop_rect, QRectF(canvas_sp._display_rect))
+        
+        # Verify select_scratchpad_only focuses back on the scratchpad strokes
+        canvas_sp.select_scratchpad_only()
+        self.assertNotEqual(canvas_sp._crop_rect, QRectF(canvas_sp._display_rect))
 
     def test_crop_canvas_mouse_interaction(self):
         from ui.crop_dialog import CropCanvas

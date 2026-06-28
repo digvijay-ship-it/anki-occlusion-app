@@ -1378,14 +1378,23 @@ class ReviewScreen(QWidget):
         from PyQt5.QtWidgets import QDialog, QApplication
         from ui.crop_dialog import CropInkDialog
         
-        # Calculate canvas size
-        canvas_size = self.canvas.size()
+        # Calculate canvas size dynamically based on scale to prevent clipping scratchpad drawings
+        sc = getattr(self.canvas, "_scale", 1.0) or 1.0
+        canvas_size = QSize(int(self.canvas.width() / sc), int(self.canvas.height() / sc))
+        
+        card_img_size = None
         if self.canvas._px is not None:
-            canvas_size = self.canvas._px.size()
+            card_img_size = self.canvas._px.size()
         elif getattr(self.canvas, "_pages", None):
-            canvas_size = QSize(self.canvas._total_w, self.canvas._total_h)
+            card_img_size = QSize(self.canvas._total_w, self.canvas._total_h)
             
-        dialog = CropInkDialog(self.canvas._ink_strokes, canvas_size, self.canvas._ink_width, parent=self)
+        dialog = CropInkDialog(
+            self.canvas._ink_strokes,
+            canvas_size,
+            self.canvas._ink_width,
+            parent=self,
+            card_img_size=card_img_size
+        )
         if dialog.exec_() != QDialog.Accepted:
             return # Cancelled
             

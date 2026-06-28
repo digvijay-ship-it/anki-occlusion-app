@@ -36,10 +36,13 @@ class RichTextEdit(QTextEdit):
             
             menu.addSeparator()
             crop_action = menu.addAction("✂ Crop Image")
+            edit_sketch_action = menu.addAction("🎨 Edit Sketch")
             
             action = menu.exec_(event.globalPos())
             if action == crop_action:
                 self._crop_inline_image(image_name, char_format, cursor)
+            elif action == edit_sketch_action:
+                self._edit_inline_sketch(image_name, char_format, cursor)
         else:
             menu.exec_(event.globalPos())
 
@@ -75,6 +78,39 @@ class RichTextEdit(QTextEdit):
                         parent_win._write_recovery_checkpoint("image_cropped")
                 else:
                     QMessageBox.warning(self, "Error", "Could not save cropped image.")
+
+    def _edit_inline_sketch(self, image_name, char_format, cursor):
+        from storage_paths import resolve_asset_path
+        from PyQt5.QtGui import QPixmap
+        abs_path = resolve_asset_path(image_name)
+        if not abs_path or not os.path.exists(abs_path):
+            QMessageBox.warning(self, "Error", "Could not locate image path.")
+            return
+            
+        pixmap = QPixmap(abs_path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "Error", "Could not load image.")
+            return
+            
+        from ui.quick_note_dialog import EditSketchDialog
+        dialog = EditSketchDialog(pixmap, self.window())
+        if dialog.exec_() == QDialog.Accepted:
+            edited_pixmap = dialog.get_edited_pixmap()
+            if not edited_pixmap.isNull():
+                if edited_pixmap.save(abs_path, "PNG"):
+                    self.document().addResource(
+                        self.document().ImageResource,
+                        QUrl(image_name),
+                        edited_pixmap
+                    )
+                    html = self.toHtml()
+                    self.setHtml(html)
+                    
+                    parent_win = self.window()
+                    if hasattr(parent_win, "_write_recovery_checkpoint"):
+                        parent_win._write_recovery_checkpoint("image_edited")
+                else:
+                    QMessageBox.warning(self, "Error", "Could not save edited sketch.")
 
     def insertFromMimeData(self, mimeData):
         if mimeData.hasImage():
