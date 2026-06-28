@@ -1370,42 +1370,13 @@ class ReviewScreen(QWidget):
         self._review_toast_timer.start(2000)
 
     def _save_review_ink_to_note(self, clear_ink=True):
-        if not (0 <= self._idx < len(self._items)):
-            return
-            
         if not getattr(self, "canvas", None) or not self.canvas._ink_strokes:
             self._show_review_toast("⚠️ No drawings to save!")
             return
             
-        # Generate a key of the current ink strokes to prevent duplicate saves of the same content
-        current_strokes_key = []
-        for stroke in self.canvas._ink_strokes:
-            color = stroke[0]
-            color_str = color.name() if hasattr(color, "name") else str(color)
-            pts = tuple((round(pt.x(), 2), round(pt.y(), 2)) for pt in stroke[1:] if hasattr(pt, "x"))
-            current_strokes_key.append((color_str, pts))
-        current_strokes_key = tuple(current_strokes_key)
-
-        if getattr(self, "_last_saved_ink_strokes_key", None) == current_strokes_key:
-            self._show_review_toast("⚠️ Sketch already saved to note.")
-            return
-            
-        card, box_idx, active_box = self._items[self._idx]
-        
-        import uuid
-        import storage_paths
-        import os
         from PyQt5.QtCore import QSize
-        from PyQt5.QtWidgets import QDialog
+        from PyQt5.QtWidgets import QDialog, QApplication
         from ui.crop_dialog import CropInkDialog
-        
-        image_dir = storage_paths.archive_image_dir()
-        if not image_dir:
-            return
-            
-        os.makedirs(image_dir, exist_ok=True)
-        filename = f"ink_sketch_{uuid.uuid4().hex[:8]}.png"
-        file_path = os.path.join(image_dir, filename)
         
         # Calculate canvas size
         canvas_size = self.canvas.size()
@@ -1419,63 +1390,16 @@ class ReviewScreen(QWidget):
             return # Cancelled
             
         px = dialog.get_cropped_pixmap()
-        px.toImage().save(file_path, "PNG")
         
-        relative_path = f"images/{filename}"
-        img_tag = f'<br><img src="{relative_path}"/><br>'
-        
-        current_note = ""
-        if card.get("card_type") == "text":
-            current_note = card.get("notes", "")
-        elif active_box is not None:
-            if hasattr(active_box, "get"):
-                current_note = active_box.get("note", "")
-            else:
-                current_note = getattr(active_box, "note", "")
-        if not current_note:
-            current_note = card.get("notes", "")
-            
-        current_note = current_note or ""
-        
-        if "<html" in current_note or "<p" in current_note or "<img" in current_note:
-            if "</body>" in current_note:
-                new_note = current_note.replace("</body>", f"{img_tag}</body>")
-            else:
-                new_note = current_note + img_tag
-        else:
-            new_note = current_note + img_tag
-            
-        if active_box is not None:
-            if hasattr(active_box, "__setitem__"):
-                active_box["note"] = new_note
-            elif hasattr(active_box, "note"):
-                active_box.note = new_note
-        else:
-            card["notes"] = new_note
-            
-        if getattr(self, "canvas", None) is not None:
-            if isinstance(box_idx, int) and 0 <= box_idx < len(self.canvas._boxes):
-                self.canvas._boxes[box_idx]["note"] = new_note
-            elif isinstance(box_idx, tuple) and box_idx[0] == "group":
-                gid = box_idx[1]
-                for b in self.canvas._boxes:
-                    if b.get("group_id") == gid:
-                        b["note"] = new_note
-                        
-        from data_manager import store
-        store.save_force(async_save=True)
+        # Copy to clipboard
+        clipboard = QApplication.clipboard()
+        clipboard.setPixmap(px)
         
         if clear_ink:
             self.canvas.ink_clear()
-            self._last_saved_ink_strokes_key = None
-            self._show_review_toast("✅ Saved drawing as note image!")
+            self._show_review_toast("📋 Copied drawing to clipboard!")
         else:
-            self._last_saved_ink_strokes_key = current_strokes_key
-            self._show_review_toast("📌 Saved drawing (canvas kept)!")
-        
-        self._update_mask_note_ui()
-        if not self._reveal_bar.isVisible():
-            self._set_hint_panel_visible(True)
+            self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
 
     def _open_quick_note_editor(self):
         if not (0 <= self._idx < len(self._items)):

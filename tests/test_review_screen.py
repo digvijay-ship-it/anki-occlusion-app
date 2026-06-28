@@ -1462,17 +1462,17 @@ class QuickNoteTests(unittest.TestCase):
              patch.object(ReviewScreen, "_init_review_profile"), \
              patch.object(ReviewScreen, "_load_item"), \
              patch("ui.review_screen.QSettings"), \
-             patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
-             patch("os.makedirs"), \
-             patch("PyQt5.QtGui.QImage.save") as mock_save, \
-             patch("data_manager.store") as mock_store, \
-             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog:
-             
+             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog, \
+             patch("PyQt5.QtWidgets.QApplication.clipboard") as mock_clipboard_func:
+              
             mock_dialog = MockCropDialog.return_value
             mock_dialog.exec_.return_value = 1
             from PyQt5.QtGui import QPixmap
             mock_dialog.get_cropped_pixmap.return_value = QPixmap(10, 10)
-             
+            
+            mock_clipboard = MagicMock()
+            mock_clipboard_func.return_value = mock_clipboard
+              
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
             screen._canvas_scroll = MagicMock()
@@ -1486,6 +1486,7 @@ class QuickNoteTests(unittest.TestCase):
             screen._hint_panel = MagicMock()
             screen._hint_browser = MagicMock()
             screen._btn_save_ink = MagicMock()
+            screen._show_review_toast = MagicMock()
             
             screen.__init__([])
             
@@ -1505,15 +1506,11 @@ class QuickNoteTests(unittest.TestCase):
             # Run the save ink method
             screen._save_review_ink_to_note()
             
-            # Assert PNG was saved
-            mock_save.assert_called_once()
-            
-            # Assert note was updated with image tag
-            self.assertIn("images/ink_sketch_", mock_box["note"])
+            # Assert clipboard was called
+            mock_clipboard.setPixmap.assert_called_once()
             
             # Assert ink was cleared from canvas
             screen.canvas.ink_clear.assert_called_once()
-            mock_store.save_force.assert_called_once()
 
     def test_save_review_ink_to_note_keep(self):
         from ui.review_screen import ReviewScreen
@@ -1523,17 +1520,17 @@ class QuickNoteTests(unittest.TestCase):
              patch.object(ReviewScreen, "_init_review_profile"), \
              patch.object(ReviewScreen, "_load_item"), \
              patch("ui.review_screen.QSettings"), \
-             patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
-             patch("os.makedirs"), \
-             patch("PyQt5.QtGui.QImage.save") as mock_save, \
-             patch("data_manager.store") as mock_store, \
-             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog:
-             
+             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog, \
+             patch("PyQt5.QtWidgets.QApplication.clipboard") as mock_clipboard_func:
+              
             mock_dialog = MockCropDialog.return_value
             mock_dialog.exec_.return_value = 1
             from PyQt5.QtGui import QPixmap
             mock_dialog.get_cropped_pixmap.return_value = QPixmap(10, 10)
-              
+            
+            mock_clipboard = MagicMock()
+            mock_clipboard_func.return_value = mock_clipboard
+               
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
             screen._canvas_scroll = MagicMock()
@@ -1547,6 +1544,7 @@ class QuickNoteTests(unittest.TestCase):
             screen._hint_panel = MagicMock()
             screen._hint_browser = MagicMock()
             screen._btn_save_ink = MagicMock()
+            screen._show_review_toast = MagicMock()
             
             screen.__init__([])
             
@@ -1564,15 +1562,11 @@ class QuickNoteTests(unittest.TestCase):
             # Run the save ink method with clear_ink=False
             screen._save_review_ink_to_note(clear_ink=False)
             
-            # Assert PNG was saved
-            mock_save.assert_called_once()
-            
-            # Assert note was updated with image tag
-            self.assertIn("images/ink_sketch_", mock_box["note"])
+            # Assert clipboard was called
+            mock_clipboard.setPixmap.assert_called_once()
             
             # Assert ink was NOT cleared from canvas
             screen.canvas.ink_clear.assert_not_called()
-            mock_store.save_force.assert_called_once()
 
     def test_toggle_eraser(self):
         from ui.review_screen import ReviewScreen
@@ -1794,7 +1788,7 @@ class QuickNoteTests(unittest.TestCase):
             screen.canvas.ink_set_mode.assert_any_call("eraser")
             screen.canvas.ink_toggle.assert_not_called()
 
-    def test_save_review_ink_to_note_no_duplicates(self):
+    def test_save_review_ink_to_note_multiple_copies(self):
         from ui.review_screen import ReviewScreen
         from PyQt5.QtCore import QSize, QPointF
         
@@ -1802,17 +1796,17 @@ class QuickNoteTests(unittest.TestCase):
              patch.object(ReviewScreen, "_init_review_profile"), \
              patch.object(ReviewScreen, "_load_item"), \
              patch("ui.review_screen.QSettings"), \
-             patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
-             patch("os.makedirs"), \
-             patch("PyQt5.QtGui.QImage.save") as mock_save, \
-             patch("data_manager.store") as mock_store, \
-             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog:
-             
+             patch("ui.crop_dialog.CropInkDialog") as MockCropDialog, \
+             patch("PyQt5.QtWidgets.QApplication.clipboard") as mock_clipboard_func:
+              
             mock_dialog = MockCropDialog.return_value
             mock_dialog.exec_.return_value = 1
             from PyQt5.QtGui import QPixmap
             mock_dialog.get_cropped_pixmap.return_value = QPixmap(10, 10)
-             
+            
+            mock_clipboard = MagicMock()
+            mock_clipboard_func.return_value = mock_clipboard
+              
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
             screen._canvas_scroll = MagicMock()
@@ -1827,7 +1821,6 @@ class QuickNoteTests(unittest.TestCase):
             screen._hint_browser = MagicMock()
             screen._btn_save_ink = MagicMock()
             screen._show_review_toast = MagicMock()
-            screen._update_mask_note_ui = MagicMock()
             
             screen.__init__([])
             
@@ -1842,19 +1835,18 @@ class QuickNoteTests(unittest.TestCase):
                 ["#FF0000", QPointF(10, 20), QPointF(30, 40)]
             ]
             
-            # First save - should save successfully
+            # First copy
             screen._save_review_ink_to_note(clear_ink=False)
-            self.assertEqual(mock_save.call_count, 1)
-            screen._show_review_toast.assert_called_with("📌 Saved drawing (canvas kept)!")
+            self.assertEqual(mock_clipboard.setPixmap.call_count, 1)
+            screen._show_review_toast.assert_called_with("📋 Copied drawing to clipboard (canvas kept)!")
             
-            # Reset mocks
-            mock_save.reset_mock()
+            # Reset toast mock
             screen._show_review_toast.reset_mock()
             
-            # Second save without changes - should be blocked as duplicate
+            # Second copy - should also succeed (no duplicate blocks for clipboard)
             screen._save_review_ink_to_note(clear_ink=False)
-            mock_save.assert_not_called()
-            screen._show_review_toast.assert_called_with("⚠️ Sketch already saved to note.")
+            self.assertEqual(mock_clipboard.setPixmap.call_count, 2)
+            screen._show_review_toast.assert_called_with("📋 Copied drawing to clipboard (canvas kept)!")
 
 
 if __name__ == "__main__":
