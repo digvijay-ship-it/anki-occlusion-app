@@ -191,6 +191,8 @@ changes and sync them as session-level metadata.
   oval masks, or inline text labels.
 - **Move / Resize / Rotate** — Select masks, drag them around, resize with
   handles, and rotate when needed.
+- **Background Image Cropping** — Crop card background images directly inside the editor; coordinate scales and mask offsets automatically shift and scale.
+- **Right-Click Inline Image Cropping** — Right-click any inline image inside the RichTextEdit editor to crop it instantly.
 - **Undo / Redo** — Safely experiment while building cards.
 - **Pan & Zoom** — Use `Space+drag`, `Ctrl+Scroll`, and fit/reset zoom controls.
 - **PDF Page Navigation** — Move between PDF pages with left/right arrows while
@@ -201,6 +203,10 @@ changes and sync them as session-level metadata.
 ### 🎓 Review Mode
 - **Default Review Pen** — Review opens with the pen active, so you can mark and
   think directly on the page.
+- **Drawing Canvas Undo/Redo** — Undo and redo pen strokes on the scratchpad and whiteboard drawing canvas with a dedicated history stack.
+- **Interactive Scratchpad Crop** — Use a custom crop canvas to crop scratchpad drawings and calculations before saving, automatically trimming unnecessary whitespace margins.
+- **Clipboard Ink Sharing** — Save cropped scratchpad drawings directly to the system clipboard instead of appending to card notes.
+- **Smart Save Guards** — Automatic checks prevent duplicate sketches or saving empty drawings, with auto-save support on `Ctrl+S`.
 - **Floating Study Timer** — When the queue drawer is hidden, a large floating
   timer stays above the PDF.
 - **Stable Timer During Page Jumps** — Arrow-key page navigation raises the
@@ -217,6 +223,7 @@ changes and sync them as session-level metadata.
 ### 🧮 Math Trainer & OCR
 - **Math Practice Module** — Practice tables, squares, cubes, and quick mental
   calculation.
+- **Auto-Focused Scratchpad Crop** — Automatically focuses the crop box around active math scratchpad calculations with quick-toggle options.
 - **Async OCR** — OCR prediction runs in a Qt worker thread so the interface
   does not freeze while TensorFlow or the local OCR worker is busy.
 
@@ -228,8 +235,12 @@ changes and sync them as session-level metadata.
   accidental empty-data overwrites.
 - **Single-Instance Protection** — Prevents two app windows from writing to the
   same data file at the same time.
-- **Themes, Font Scaling & Music** — Dojo/classic theme support, app-wide font
+- **Themes, Font Scaling & Music** — Dojo, classic, and Arcanum theme support, app-wide font
   scaling, music controls, fullscreen mode, and shortcut customization.
+- **Persistent Fullscreen State** — The app remembers and automatically restores your fullscreen setting on startup.
+- **The Arcanum Magic Theme** — Retro-family theme featuring custom Cinzel typography, interactive procedural magic sigils, animated ember/rune particle effects, an Archmage mentor card helper, and customized retro layouts.
+- **Ctrl+? Shortcut Help Dialog** — A dynamic dialog that toggles a keyboard shortcut cheat sheet by pressing `Ctrl+?`.
+- **SQLite & Threading Optimizations** — Lock optimizations prevent database serialization overhead, dialog `deleteLater` cleanups prevent memory leaks, and a background queue in `GDriveService` handles cloud sync without UI blocking.
 
 ---
 
@@ -348,7 +359,7 @@ Useful terminal diagnostics while this performance work is being observed:
 | `Left` | Previous PDF page |
 | `Right` | Next PDF page |
 | `C` | Center current mask |
-| `E` | Edit current card |
+| `Ctrl+Shift+E` | Edit current card |
 | `T` | Open annotation scroll |
 | `Ctrl+E` | Open current PDF |
 | `Ctrl+L` | Open PDF folder |
@@ -362,6 +373,15 @@ Useful terminal diagnostics while this performance work is being observed:
 | `X` | Cycle review pen color |
 | `+` / `-` | Adjust review pen size |
 | `Del` | Clear review pen marks |
+| `E` | Toggle eraser drawing |
+| `Alt+T` | Toggle study timer visibility |
+| `N` | Toggle mask note visibility |
+| `Ctrl+N` | Quick edit active mask note |
+| `Ctrl+A` | Save review ink & clear canvas |
+| `Ctrl+Shift+A` | Save review ink & keep on canvas |
+| `S` | Skip card for session |
+| `Alt+S` | Super skip card for today |
+| `Ctrl+?` | Toggle shortcut help dialog |
 | `F11` | Toggle fullscreen |
 | `Esc` | Leave review |
 
@@ -417,6 +437,9 @@ Useful terminal diagnostics while this performance work is being observed:
 | `Ctrl+0` | Reset app font size |
 | `M` | Toggle music |
 | `N` | Next music track |
+| `A` | Add card to selected deck |
+| `E` | Edit selected card |
+| `Ctrl+?` | Toggle shortcut settings / help dialog |
 | `F11` | Toggle fullscreen |
 
 ---
@@ -452,6 +475,8 @@ ui/
 ├── 🗂️ deck_tree.py            Deck hierarchy sidebar
 ├── 📊 deck_view.py            Deck detail/actions view
 ├── ✏️ editor_dialog.py        Card editor and PDF/image occlusion editor
+├── ✂️ crop_dialog.py          Image cropping canvas and dialog
+├── 📝 quick_note_dialog.py    Drawing canvas and quick note dialog
 ├── 🎓 review_screen.py        Review mode
 ├── 📓 journal.py              Journal and focus view
 ├── 🧮 math_trainer.py         Math practice module
@@ -505,6 +530,8 @@ tests/
 ├── test_data_manager.py       Storage and safety checks
 ├── test_ocr_engine.py         Async OCR bridge
 ├── test_recovery_manager.py   Recovery event handling
+├── test_math_trainer_pen.py   Math trainer drawing and pen checks
+├── test_shortcut_dialog.py    Shortcut dialog modal key verification
 └── ...                        Additional UI/service/package tests
 ```
 
@@ -592,7 +619,8 @@ Persistence behavior:
 
 | Version | Highlights |
 |---------|------------|
-| Current | Optimized incremental Google Drive backup, restore, and prune operations with O(1) folder caching, folder contents batching, local-first cache pre-filtering, thread-safe Qt GUI signal-slot updates, and circular-recursion safety |
+| Current | Persistent fullscreen preference, interactive crop canvas & dialogs for card backgrounds and rich text inline images, auto-focus cropping on scratchpad calculations, canvas drawing history (undo/redo) stack, whitespace crop for scratchpad/whiteboard sketch drawings, copy cropped ink directly to clipboard, Arcanum magic theme with Cinzel typography and animated rune particle effects, and Ctrl+? shortcut help dialog. |
+| v21 | Optimized incremental Google Drive backup, restore, and prune operations with O(1) folder caching, folder contents batching, local-first cache pre-filtering, thread-safe Qt GUI signal-slot updates, and circular-recursion safety |
 | v20 | Visual similarity (dHash) & byte check (SHA-256) duplicate card protection, Text/Q&A Card creator & review flow, local-first web sync engine with transactional compaction, thread-safe merge-on-save daily journal, viewport-scoped mask cache & scroll paint fixes, O(1) deck stats cache, fast deepcopy undo/redo snapshots, on-demand OCR lifecycle (54MB boot memory) with animated theme-aware loading toast |
 | v19 | SM-2 Hard/EF/fuzzing fixes, DirtyStore autosave, review queue panel, learning countdown, session summary, tablet-friendly pan |
 | v18 | Hardware mask cache and LRU page cache |

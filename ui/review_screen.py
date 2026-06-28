@@ -1376,7 +1376,7 @@ class ReviewScreen(QWidget):
             
         from PyQt5.QtCore import QSize
         from PyQt5.QtWidgets import QDialog, QApplication
-        from ui.crop_dialog import CropInkDialog
+        from ui.crop_dialog import CropInkDialog, get_auto_crop_rect, render_cropped_strokes
         
         # Calculate canvas size dynamically based on scale to prevent clipping scratchpad drawings
         sc = getattr(self.canvas, "_scale", 1.0) or 1.0
@@ -1387,6 +1387,17 @@ class ReviewScreen(QWidget):
             card_img_size = self.canvas._px.size()
         elif getattr(self.canvas, "_pages", None):
             card_img_size = QSize(self.canvas._total_w, self.canvas._total_h)
+            
+        if not clear_ink:
+            # INSTANT COPY (no prompting dialog)
+            crop_rect = get_auto_crop_rect(self.canvas._ink_strokes, canvas_size, card_img_size)
+            px = render_cropped_strokes(self.canvas._ink_strokes, crop_rect, self.canvas._ink_width)
+            
+            # Copy to clipboard
+            clipboard = QApplication.clipboard()
+            clipboard.setPixmap(px)
+            self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
+            return
             
         dialog = CropInkDialog(
             self.canvas._ink_strokes,

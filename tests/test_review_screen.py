@@ -1545,6 +1545,9 @@ class QuickNoteTests(unittest.TestCase):
               
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
+            screen.canvas.width.return_value = 800
+            screen.canvas.height.return_value = 600
+            screen.canvas._scale = 1.0
             screen._canvas_scroll = MagicMock()
             screen._queue_panel = MagicMock()
             screen._queue_list = MagicMock()
@@ -1603,6 +1606,9 @@ class QuickNoteTests(unittest.TestCase):
                
             screen = ReviewScreen.__new__(ReviewScreen)
             screen.canvas = MagicMock()
+            screen.canvas.width.return_value = 800
+            screen.canvas.height.return_value = 600
+            screen.canvas._scale = 1.0
             screen._canvas_scroll = MagicMock()
             screen._queue_panel = MagicMock()
             screen._queue_list = MagicMock()

@@ -636,3 +636,81 @@ class CropImageDialog(QDialog):
     def get_crop_geometry(self):
         return self.crop_canvas.get_crop_geometry()
 
+
+def get_auto_crop_rect(strokes, canvas_size, card_img_size=None):
+    from PyQt5.QtCore import QRectF
+    xs = []
+    ys = []
+    for stroke in strokes:
+        if len(stroke) >= 2:
+            for pt in stroke[1:]:
+                xs.append(pt.x())
+                ys.append(pt.y())
+                
+    if not xs:
+        return QRectF(0, 0, canvas_size.width(), canvas_size.height())
+        
+    # Check for scratchpad strokes first
+    scratchpad_strokes = []
+    if card_img_size is not None:
+        img_w = card_img_size.width()
+        img_h = card_img_size.height()
+        for stroke in strokes:
+            if len(stroke) >= 2:
+                is_scratchpad = False
+                for pt in stroke[1:]:
+                    if pt.x() > img_w + 10 or pt.y() > img_h + 10:
+                        is_scratchpad = True
+                        break
+                if is_scratchpad:
+                    scratchpad_strokes.append(stroke)
+                    
+    target_strokes = scratchpad_strokes if scratchpad_strokes else strokes
+    t_xs = []
+    t_ys = []
+    for stroke in target_strokes:
+        for pt in stroke[1:]:
+            t_xs.append(pt.x())
+            t_ys.append(pt.y())
+            
+    pad = 15
+    min_x = max(0, min(t_xs) - pad)
+    min_y = max(0, min(t_ys) - pad)
+    max_x = min(canvas_size.width(), max(t_xs) + pad)
+    max_y = min(canvas_size.height(), max(t_ys) + pad)
+    
+    return QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+
+
+def render_cropped_strokes(strokes, crop_rect, ink_width):
+    from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QPainterPath
+    from PyQt5.QtCore import QSize, Qt
+    
+    orig_min_x = crop_rect.x()
+    orig_min_y = crop_rect.y()
+    orig_w = crop_rect.width()
+    orig_h = crop_rect.height()
+    
+    size = QSize(max(10, int(orig_w)), max(10, int(orig_h)))
+    px = QPixmap(size)
+    px.fill(Qt.white)
+    
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.translate(-orig_min_x, -orig_min_y)
+    
+    pen_w = max(2.0, ink_width * 2.0)
+    for stroke in strokes:
+        if len(stroke) < 2:
+            continue
+        color = stroke[0]
+        pts = stroke[1:]
+        p.setPen(QPen(QColor(color), pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        path = QPainterPath()
+        path.moveTo(pts[0])
+        for pt in pts[1:]:
+            path.lineTo(pt)
+        p.drawPath(path)
+    p.end()
+    return px
+
