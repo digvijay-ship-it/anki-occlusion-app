@@ -1174,7 +1174,7 @@ class ReviewScreenSummaryToggleTests(unittest.TestCase):
 
 class QuickNoteTests(unittest.TestCase):
     def test_drawing_canvas_operations(self):
-        from ui.review_screen import DrawingCanvas
+        from ui.quick_note_dialog import DrawingCanvas
         from PyQt5.QtGui import QColor
         from PyQt5.QtCore import QPoint
         
@@ -1203,7 +1203,7 @@ class QuickNoteTests(unittest.TestCase):
         self.assertLess(img.height(), 260)
 
     def test_quick_note_dialog_and_sketch_insertion(self):
-        from ui.review_screen import QuickNoteDialog
+        from ui.quick_note_dialog import QuickNoteDialog
         
         # Mock QSettings and other dependencies
         with patch("ui.review_screen.QSettings"), \
@@ -1245,7 +1245,7 @@ class QuickNoteTests(unittest.TestCase):
             self.assertIn("images/sketch_", html)
 
     def test_quick_note_dialog_accept_and_auto_insert(self):
-        from ui.review_screen import QuickNoteDialog
+        from ui.quick_note_dialog import QuickNoteDialog
         
         with patch("ui.review_screen.QSettings"), \
              patch("storage_paths.archive_image_dir", return_value="/mock/images"), \
