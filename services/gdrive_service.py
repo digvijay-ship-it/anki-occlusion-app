@@ -96,6 +96,13 @@ class GDriveService:
         self._load_sync_cache()
         self._load_folder_cache()
 
+        import queue
+        self._upload_queue = queue.Queue()
+        self._uploader_thread = threading.Thread(
+            target=self._uploader_worker_loop, daemon=True, name="GDrive-QueueUploader"
+        )
+        self._uploader_thread.start()
+
     def _load_tokens(self):
         path = storage_paths._home_file(TOKEN_FILE_NAME)
         if os.path.exists(path):
@@ -658,17 +665,24 @@ class GDriveService:
         """Asynchronously upload a newly added PDF or image in the background."""
         if not self.is_linked():
             return
-        
-        def _bg_worker():
+        self._upload_queue.put((local_file_path, kind))
+
+    def _uploader_worker_loop(self):
+        while True:
             try:
-                # Map kind to GDrive subfolder names
+                item = self._upload_queue.get()
+                if item is None:
+                    break
+                local_file_path, kind = item
+                if not self.is_linked():
+                    self._upload_queue.task_done()
+                    continue
                 subfolder_name = kind
                 self.upload_file_to_drive_subfolder(local_file_path, subfolder_name)
+                self._upload_queue.task_done()
             except Exception as e:
-                print(f"[GDriveService] Background asset upload failed: {e}")
-                
-        import threading
-        threading.Thread(target=_bg_worker, daemon=True, name=f"GDrive-AssetUpload-{os.path.basename(local_file_path)}").start()
+                print(f"[GDriveService] Background uploader loop error: {e}")
+                time.sleep(1)
 
     def delete_file_from_drive(self, file_id):
         if not self.is_linked():

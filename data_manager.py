@@ -664,7 +664,9 @@ class DirtyStore:
             with self._lock:
                 if save_seq < self._latest_save_request_seq:
                     return False
-                data_snapshot = json.loads(json.dumps(self._data))
+                data_str = json.dumps(self._data)
+            
+            data_snapshot = json.loads(data_str)
             
             db_path = self._get_db_path()
             db_dir = os.path.dirname(db_path)

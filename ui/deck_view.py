@@ -1020,10 +1020,12 @@ class DeckView(QWidget):
             target_card, target_deck = find_card_and_deck_by_id(self._data, switch_id)
             if target_card and target_deck:
                 QTimer.singleShot(50, lambda: self._edit_card_by_dict(target_card, target_deck))
+            dlg.deleteLater()
             return
 
         if res != QDialog.Accepted:
             self._undo_stack.pop() if self._undo_stack else None
+            dlg.deleteLater()
             return
         card = dlg.get_card()
         # Only append card to deck if it's a valid card (not reset/empty)
@@ -1085,6 +1087,7 @@ class DeckView(QWidget):
         store.save_force(async_save=True)
         dlg.clear_recovery_draft()
         print("[DEBUG][data_save] card_add_checkpoint_saved")
+        dlg.deleteLater()
 
     def _add_text_card(self):
         if not self.deck:
@@ -1098,6 +1101,7 @@ class DeckView(QWidget):
             home._clear_home_ram_caches()
         if res != QDialog.Accepted:
             self._undo_stack.pop() if self._undo_stack else None
+            dlg.deleteLater()
             return
         card = dlg.get_card()
         self.deck.setdefault("cards", []).append(card)
@@ -1110,6 +1114,7 @@ class DeckView(QWidget):
         store.mark_dirty()  # 🔒 DirtyStore
         store.save_force(async_save=True)
         print("[DEBUG][data_save] text_card_add_checkpoint_saved")
+        dlg.deleteLater()
 
     def _find_home(self):
         from ui.home_screen import HomeScreen
@@ -1177,6 +1182,7 @@ class DeckView(QWidget):
                 print("[DEBUG][data_save] text_card_edit_checkpoint_saved")
             else:
                 self._undo_stack.pop() if self._undo_stack else None
+            dlg.deleteLater()
             return
 
         self._push_undo()
@@ -1227,6 +1233,7 @@ class DeckView(QWidget):
             print("[DEBUG][data_save] card_edit_checkpoint_saved")
         else:
             self._undo_stack.pop() if self._undo_stack else None
+        dlg.deleteLater()
 
     def _delete_card(self):
         if not self.deck:
