@@ -2631,11 +2631,42 @@ class ReviewScreen(QWidget):
         self._btn_save_ink.clicked.connect(self._save_review_ink_to_note)
         self._btn_save_ink.setEnabled(False)
         
+        self._btn_focus_canvas = _hdr_btn("🎯 Focus")
+        self._btn_focus_canvas.setCheckable(True)
+        self._btn_focus_canvas.setChecked(False)
+        if dojo:
+            self._btn_focus_canvas.setStyleSheet(
+                self._btn_focus_canvas.styleSheet()
+                + f"QPushButton:checked{{background:{accent2};color:white;"
+                f"border:1px solid {accent2};}}"
+            )
+        else:
+            self._btn_focus_canvas.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:6px;"
+                f"padding:4px 14px;font-size:12px;}}"
+                f"QPushButton:checked{{background:#6A3FBF;color:white;"
+                f"border:1px solid {accent};}}"
+                f"QPushButton:hover{{background:{surface};}}"
+            )
+        self._btn_focus_canvas.clicked.connect(self._toggle_focus_mode)
+
+        self._btn_focus_opacity_minus = _hdr_btn("−")
+        self._btn_focus_opacity_minus.setFixedWidth(28)
+        self._btn_focus_opacity_minus.clicked.connect(lambda: self._adjust_focus_opacity(-0.05))
+
+        self._btn_focus_opacity_plus = _hdr_btn("+")
+        self._btn_focus_opacity_plus.setFixedWidth(28)
+        self._btn_focus_opacity_plus.clicked.connect(lambda: self._adjust_focus_opacity(0.05))
+        
         row1.addWidget(b_edit)
         row1.addWidget(self._btn_annot)
         row1.addWidget(b_cache)
         row1.addWidget(self._btn_note)
         row1.addWidget(self._btn_save_ink)
+        row1.addWidget(self._btn_focus_canvas)
+        row1.addWidget(self._btn_focus_opacity_minus)
+        row1.addWidget(self._btn_focus_opacity_plus)
 
         self._btn_mode = _hdr_btn("🟧 Hide All, Guess One")
         self._btn_mode.setCheckable(True)
@@ -2939,30 +2970,6 @@ class ReviewScreen(QWidget):
             )
         self._btn_invert_pdf.clicked.connect(self._toggle_pdf_contrast)
         row2.addWidget(self._btn_invert_pdf)
-
-        self._btn_focus_canvas = _icon_btn(
-            icon_focus(_icon_sz, _icon_fg),
-            "Toggle Focus Mode (Lower background opacity for note taking)  Ctrl+F"
-        )
-        self._btn_focus_canvas.clicked.connect(self._toggle_focus_mode)
-        row2.addWidget(self._btn_focus_canvas)
-
-        self._btn_focus_opacity_minus = _icon_btn(
-            QIcon(),
-            "Decrease background opacity (make more blank)"
-        )
-        self._btn_focus_opacity_minus.setText("−")
-        self._btn_focus_opacity_minus.clicked.connect(lambda: self._adjust_focus_opacity(-0.05))
-
-        self._btn_focus_opacity_plus = _icon_btn(
-            QIcon(),
-            "Increase background opacity (make more visible)"
-        )
-        self._btn_focus_opacity_plus.setText("+")
-        self._btn_focus_opacity_plus.clicked.connect(lambda: self._adjust_focus_opacity(0.05))
-
-        row2.addWidget(self._btn_focus_opacity_minus)
-        row2.addWidget(self._btn_focus_opacity_plus)
 
         self._update_focus_mode_button_style()
 
@@ -3994,42 +4001,7 @@ class ReviewScreen(QWidget):
         if not hasattr(self, "_btn_focus_canvas"):
             return
         enabled = self.canvas.is_focus_mode() if getattr(self, "canvas", None) is not None else False
-        dojo = _is_dojo()
-        theme = getattr(QApplication.instance(), "_active_theme", "classic")
-        p = _get_palette(theme)
-        card = p["C_CARD"]
-        accent = p["C_ACCENT"]
-        border = p["C_BORDER"]
-        text = p["C_TEXT"]
-        surface = p["C_SURFACE"]
-        is_cyan = theme in ("manhattan", "tmnt")
-        hover_bg = "rgba(0,240,255,0.12)" if is_cyan else "rgba(114,255,79,0.12)"
-        
-        if enabled:
-            if dojo:
-                self._btn_focus_canvas.setStyleSheet(
-                    f"QPushButton{{background:{accent};color:{p['C_BG']};"
-                    f"border:1px solid {accent};border-radius:2px;font-size:13px;}}"
-                )
-            else:
-                self._btn_focus_canvas.setStyleSheet(
-                    f"QPushButton{{background:{accent};color:white;"
-                    f"border:1px solid {accent};border-radius:5px;font-size:13px;}}"
-                )
-        else:
-            if dojo:
-                self._btn_focus_canvas.setStyleSheet(
-                    f"QPushButton{{background:{card};color:{accent};"
-                    f"border:1px solid {border};border-radius:2px;font-size:13px;}}"
-                    f"QPushButton:hover{{background:{hover_bg};"
-                    f"border:1px solid {accent};}}"
-                )
-            else:
-                self._btn_focus_canvas.setStyleSheet(
-                    f"QPushButton{{background:{card};color:{text};"
-                    f"border:1px solid {border};border-radius:5px;font-size:13px;}}"
-                    f"QPushButton:hover{{background:{surface};}}"
-                )
+        self._btn_focus_canvas.setChecked(enabled)
 
     def _toggle_pen_drawing(self):
         active = getattr(self.canvas, "_ink_active", False)
