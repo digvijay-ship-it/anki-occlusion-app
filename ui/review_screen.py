@@ -2603,8 +2603,6 @@ class ReviewScreen(QWidget):
         b_edit.clicked.connect(self._edit_current_card)
         self._btn_annot = _hdr_btn("🖊 Annotate Scroll")
         self._btn_annot.clicked.connect(self._open_annotation_beta)
-        b_cache = _hdr_btn("💾 Cache")
-        b_cache.clicked.connect(self._toggle_cache_panel)
         
         self._btn_note = _hdr_btn("💡 Note")
         self._btn_note.setCheckable(True)
@@ -2661,7 +2659,6 @@ class ReviewScreen(QWidget):
         
         row1.addWidget(b_edit)
         row1.addWidget(self._btn_annot)
-        row1.addWidget(b_cache)
         row1.addWidget(self._btn_note)
         row1.addWidget(self._btn_save_ink)
         row1.addWidget(self._btn_focus_canvas)
@@ -2687,6 +2684,13 @@ class ReviewScreen(QWidget):
         self._act_summary.setChecked(self._show_summary_popup)
         self._act_summary.triggered.connect(self._on_summary_toggled)
         self._menu_options.addAction(self._act_summary)
+        
+        self._act_cache = QAction("Show Cache Panel", self, checkable=True)
+        self._act_cache.setChecked(False)
+        self._act_cache.triggered.connect(self._toggle_cache_panel)
+        self._menu_options.addAction(self._act_cache)
+        
+        self._menu_options.aboutToShow.connect(self._update_options_menu_states)
         
         self._btn_options.setMenu(self._menu_options)
         row1.addWidget(self._btn_options)
@@ -3848,6 +3852,13 @@ class ReviewScreen(QWidget):
         settings = QSettings("AnkiOcclusion", "App")
         settings.setValue("review/show_summary_popup", self._show_summary_popup)
         settings.sync()
+
+    def _update_options_menu_states(self):
+        is_hide_all = self.canvas._review_mode_style == "hide_all" if getattr(self, "canvas", None) is not None else True
+        self._act_hide_all.setChecked(is_hide_all)
+        self._act_summary.setChecked(self._show_summary_popup)
+        is_cache_visible = self._cache_panel.isVisible() if getattr(self, "_cache_panel", None) is not None else False
+        self._act_cache.setChecked(is_cache_visible)
 
     def _toggle_auto_reveal(self):
         from data_manager import store
