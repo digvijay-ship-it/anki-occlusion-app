@@ -2675,17 +2675,17 @@ class ReviewScreen(QWidget):
             f"QMenu::item:checked {{ font-weight: bold; }}"
         )
         
-        self._act_hide_all = QAction("Hide All, Guess One", self, checkable=True)
+        self._act_hide_all = QAction("🟧 Hide All, Guess One", self, checkable=True)
         self._act_hide_all.setChecked(True)
         self._act_hide_all.triggered.connect(self._on_hide_all_toggled)
         self._menu_options.addAction(self._act_hide_all)
         
-        self._act_summary = QAction("Show Summary Popup", self, checkable=True)
+        self._act_summary = QAction("📊 Show Summary Popup", self, checkable=True)
         self._act_summary.setChecked(self._show_summary_popup)
         self._act_summary.triggered.connect(self._on_summary_toggled)
         self._menu_options.addAction(self._act_summary)
         
-        self._act_cache = QAction("Show Cache Panel", self, checkable=True)
+        self._act_cache = QAction("💾 Show Cache Panel", self, checkable=True)
         self._act_cache.setChecked(False)
         self._act_cache.triggered.connect(self._toggle_cache_panel)
         self._menu_options.addAction(self._act_cache)
