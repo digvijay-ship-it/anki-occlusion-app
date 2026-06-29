@@ -1099,17 +1099,17 @@ class ReviewScreenSummaryToggleTests(unittest.TestCase):
             screen._queue_hide_button = MagicMock()
             
             screen.__init__([])
-            screen._btn_summary_toggle = MagicMock()
+            screen._act_summary = MagicMock()
             
             # Toggle OFF
-            screen._btn_summary_toggle.isChecked.return_value = False
-            screen._toggle_summary_popup()
+            screen._act_summary.isChecked.return_value = False
+            screen._on_summary_toggled()
             self.assertFalse(screen._show_summary_popup)
             settings_instance.setValue.assert_called_with("review/show_summary_popup", False)
             
             # Toggle ON
-            screen._btn_summary_toggle.isChecked.return_value = True
-            screen._toggle_summary_popup()
+            screen._act_summary.isChecked.return_value = True
+            screen._on_summary_toggled()
             self.assertTrue(screen._show_summary_popup)
             settings_instance.setValue.assert_called_with("review/show_summary_popup", True)
 

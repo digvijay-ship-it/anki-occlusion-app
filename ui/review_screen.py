@@ -2363,7 +2363,7 @@ class ReviewScreen(QWidget):
             key in (Qt.Key_Equal, Qt.Key_Plus)
             and not (mods & Qt.ControlModifier)
         ):
-            if self.canvas.is_focus_mode():
+            if getattr(self.canvas, "_focus_mode", False) is True:
                 self._adjust_focus_opacity(0.05)
             elif getattr(self.canvas, "_ink_active", False):
                 self.canvas.ink_adjust_width(0.4)
@@ -2372,7 +2372,7 @@ class ReviewScreen(QWidget):
             key == Qt.Key_Minus
             and not (mods & Qt.ControlModifier)
         ):
-            if self.canvas.is_focus_mode():
+            if getattr(self.canvas, "_focus_mode", False) is True:
                 self._adjust_focus_opacity(-0.05)
             elif getattr(self.canvas, "_ink_active", False):
                 self.canvas.ink_adjust_width(-0.4)
@@ -2668,48 +2668,28 @@ class ReviewScreen(QWidget):
         row1.addWidget(self._btn_focus_opacity_minus)
         row1.addWidget(self._btn_focus_opacity_plus)
 
-        self._btn_mode = _hdr_btn("🟧 Hide All, Guess One")
-        self._btn_mode.setCheckable(True)
-        self._btn_mode.setChecked(False)
-        if dojo:
-            self._btn_mode.setStyleSheet(
-                self._btn_mode.styleSheet()
-                + f"QPushButton:checked{{background:{accent2};color:white;"
-                f"border:1px solid {accent2};}}"
-            )
-        else:
-            self._btn_mode.setStyleSheet(
-                f"QPushButton{{background:{card};color:{text};"
-                f"border:1px solid {border};border-radius:6px;"
-                f"padding:4px 14px;font-size:12px;}}"
-                f"QPushButton:checked{{background:#6A3FBF;color:white;"
-                f"border:1px solid {accent};}}"
-                f"QPushButton:hover{{background:{surface};}}"
-            )
-        self._btn_mode.clicked.connect(self._toggle_review_mode)
-        row1.addWidget(self._btn_mode)
-
-        self._btn_summary_toggle = _hdr_btn("📊 Summary")
-        self._btn_summary_toggle.setCheckable(True)
-        self._btn_summary_toggle.setChecked(self._show_summary_popup)
-        if dojo:
-            self._btn_summary_toggle.setStyleSheet(
-                self._btn_summary_toggle.styleSheet()
-                + f"QPushButton:checked{{background:{accent2};color:white;"
-                f"border:1px solid {accent2};}}"
-            )
-        else:
-            self._btn_summary_toggle.setStyleSheet(
-                f"QPushButton{{background:{card};color:{text};"
-                f"border:1px solid {border};border-radius:6px;"
-                f"padding:4px 14px;font-size:12px;}}"
-                f"QPushButton:checked{{background:#6A3FBF;color:white;"
-                f"border:1px solid {accent};}}"
-                f"QPushButton:hover{{background:{surface};}}"
-            )
-        self._btn_summary_toggle.clicked.connect(self._toggle_summary_popup)
-        row1.addWidget(self._btn_summary_toggle)
-        self._update_summary_toggle_button_state()
+        self._btn_options = _hdr_btn("⚙️ Options")
+        from PyQt5.QtWidgets import QMenu, QAction
+        self._menu_options = QMenu(self)
+        self._menu_options.setStyleSheet(
+            f"QMenu {{ background-color: {card}; color: {text}; border: 1px solid {border}; border-radius: 4px; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 20px 6px 20px; border-radius: 2px; }}"
+            f"QMenu::item:selected {{ background-color: {accent}; color: white; }}"
+            f"QMenu::item:checked {{ font-weight: bold; }}"
+        )
+        
+        self._act_hide_all = QAction("Hide All, Guess One", self, checkable=True)
+        self._act_hide_all.setChecked(True)
+        self._act_hide_all.triggered.connect(self._on_hide_all_toggled)
+        self._menu_options.addAction(self._act_hide_all)
+        
+        self._act_summary = QAction("Show Summary Popup", self, checkable=True)
+        self._act_summary.setChecked(self._show_summary_popup)
+        self._act_summary.triggered.connect(self._on_summary_toggled)
+        self._menu_options.addAction(self._act_summary)
+        
+        self._btn_options.setMenu(self._menu_options)
+        row1.addWidget(self._btn_options)
 
         from data_manager import store
         auto_reveal = store.get().get("_auto_reveal", False)
@@ -3857,29 +3837,17 @@ class ReviewScreen(QWidget):
         settings.setValue("review/ink_color_idx", idx)
         settings.sync()
 
-    def _toggle_review_mode(self):
-        if self._btn_mode.isChecked():
-            self._btn_mode.setText("👁 Hide One, Guess One")
-            self.canvas.set_review_style("hide_one")
-        else:
-            self._btn_mode.setText("🟧 Hide All, Guess One")
+    def _on_hide_all_toggled(self):
+        if self._act_hide_all.isChecked():
             self.canvas.set_review_style("hide_all")
+        else:
+            self.canvas.set_review_style("hide_one")
 
-    def _toggle_summary_popup(self):
-        self._show_summary_popup = self._btn_summary_toggle.isChecked()
+    def _on_summary_toggled(self):
+        self._show_summary_popup = self._act_summary.isChecked()
         settings = QSettings("AnkiOcclusion", "App")
         settings.setValue("review/show_summary_popup", self._show_summary_popup)
         settings.sync()
-        self._update_summary_toggle_button_state()
-
-    def _update_summary_toggle_button_state(self):
-        if getattr(self, "_btn_summary_toggle", None) is not None:
-            if self._show_summary_popup:
-                self._btn_summary_toggle.setText("📊 Summary: ON")
-                self._btn_summary_toggle.setToolTip("Show session summary popup at the end")
-            else:
-                self._btn_summary_toggle.setText("📊 Summary: OFF")
-                self._btn_summary_toggle.setToolTip("Do not show session summary popup at the end")
 
     def _toggle_auto_reveal(self):
         from data_manager import store
@@ -3982,7 +3950,7 @@ class ReviewScreen(QWidget):
             self._reload_pdf_contrast()
 
     def _toggle_focus_mode(self):
-        enabled = not self.canvas.is_focus_mode()
+        enabled = not (getattr(self.canvas, "_focus_mode", False) is True)
         self.canvas.set_focus_mode(enabled)
         self._update_focus_mode_button_style()
         self.canvas._show_toast(
@@ -3990,7 +3958,7 @@ class ReviewScreen(QWidget):
         )
 
     def _adjust_focus_opacity(self, delta: float):
-        if not self.canvas.is_focus_mode():
+        if not (getattr(self.canvas, "_focus_mode", False) is True):
             self.canvas.set_focus_mode(True)
             self._update_focus_mode_button_style()
         new_op = self.canvas.get_bg_opacity() + delta
@@ -4000,7 +3968,7 @@ class ReviewScreen(QWidget):
     def _update_focus_mode_button_style(self):
         if not hasattr(self, "_btn_focus_canvas"):
             return
-        enabled = self.canvas.is_focus_mode() if getattr(self, "canvas", None) is not None else False
+        enabled = (getattr(self.canvas, "_focus_mode", False) is True) if getattr(self, "canvas", None) is not None else False
         self._btn_focus_canvas.setChecked(enabled)
 
     def _toggle_pen_drawing(self):
