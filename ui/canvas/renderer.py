@@ -236,8 +236,6 @@ class CanvasRendererMixin:
                     p.setPen(_SEP_PEN)
                     p.drawLine(0, sep_y, self.width(), sep_y)
 
-        p.restore()
-
         p.setRenderHint(QPainter.Antialiasing)
         if profile:
             boxes_t0 = time.perf_counter()
@@ -254,6 +252,8 @@ class CanvasRendererMixin:
                 phases["boxes_drawn"] += 1
         if profile:
             phases["boxes_ms"] += (time.perf_counter() - boxes_t0) * 1000.0
+
+        p.restore()
 
         p.setRenderHint(QPainter.Antialiasing)
         if profile:
