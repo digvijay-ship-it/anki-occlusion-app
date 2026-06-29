@@ -2651,10 +2651,16 @@ class ReviewScreen(QWidget):
 
         self._btn_focus_opacity_minus = _hdr_btn("−")
         self._btn_focus_opacity_minus.setFixedWidth(28)
+        self._btn_focus_opacity_minus.setStyleSheet(
+            self._btn_focus_opacity_minus.styleSheet() + " QPushButton { padding: 0px; font-size: 16px; font-weight: bold; }"
+        )
         self._btn_focus_opacity_minus.clicked.connect(lambda: self._adjust_focus_opacity(-0.05))
 
         self._btn_focus_opacity_plus = _hdr_btn("+")
         self._btn_focus_opacity_plus.setFixedWidth(28)
+        self._btn_focus_opacity_plus.setStyleSheet(
+            self._btn_focus_opacity_plus.styleSheet() + " QPushButton { padding: 0px; font-size: 16px; font-weight: bold; }"
+        )
         self._btn_focus_opacity_plus.clicked.connect(lambda: self._adjust_focus_opacity(0.05))
         
         row1.addWidget(b_edit)
