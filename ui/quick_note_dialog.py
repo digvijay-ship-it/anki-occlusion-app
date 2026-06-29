@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QSlider, QFrame, QApplication
 )
 from PyQt5.QtCore import Qt, QPoint
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QTextCharFormat, QKeySequence
+from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QTextCharFormat, QKeySequence, QCursor
 
 import storage_paths
 
@@ -17,36 +17,67 @@ class DrawingCanvas(QWidget):
         self.setMinimumSize(360, 260)
         self.setAttribute(Qt.WA_StaticContents)
         self._pixmap = QPixmap(360, 260)
-        self._pixmap.fill(Qt.white)
+        self._pixmap.fill(Qt.black)
         self._last_point = QPoint()
         self._drawing = False
-        self._pen_color = QColor("#000000")
+        self._pen_color = QColor("#FFFFFF")
         self._pen_width = 3
         self._has_drawn = False
         self._eraser_mode = False
+        self._bg_color = QColor(Qt.black)
+        self._update_cursor()
+
+    def _update_cursor(self):
+        w = max(4, self._pen_width)
+        pix_size = w + 4
+        pix = QPixmap(pix_size, pix_size)
+        pix.fill(Qt.transparent)
+        
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        bg_is_dark = (getattr(self, "_bg_color", Qt.black) == Qt.black)
+        color = Qt.white if bg_is_dark else Qt.black
+        
+        painter.setPen(QPen(color, 1))
+        if getattr(self, "_eraser_mode", False):
+            painter.drawRect(1, 1, w, w)
+        else:
+            painter.drawEllipse(1, 1, w, w)
+        painter.end()
+        self.setCursor(QCursor(pix, pix_size // 2, pix_size // 2))
 
     def set_pen_color(self, color):
         self._pen_color = QColor(color)
+        self._update_cursor()
 
     def set_pen_width(self, width):
         self._pen_width = width
+        self._update_cursor()
 
     def set_eraser_mode(self, enabled):
         self._eraser_mode = enabled
+        self._update_cursor()
 
     def load_image(self, pixmap):
         if not pixmap.isNull():
             self._pixmap = QPixmap(pixmap.size())
-            self._pixmap.fill(Qt.white)
+            # Detect background color of the loaded image
+            img = pixmap.toImage()
+            bg_pixel = img.pixel(0, 0)
+            self._bg_color = QColor(bg_pixel)
+            
+            self._pixmap.fill(self._bg_color)
             painter = QPainter(self._pixmap)
             painter.drawPixmap(0, 0, pixmap)
             painter.end()
             self.setMinimumSize(pixmap.size())
             self._has_drawn = True
+            self._update_cursor()
             self.update()
 
     def clear(self):
-        self._pixmap.fill(Qt.white)
+        self._pixmap.fill(self._bg_color)
         self._has_drawn = False
         self.update()
 
@@ -55,7 +86,7 @@ class DrawingCanvas(QWidget):
             new_width = max(self._pixmap.width(), event.size().width())
             new_height = max(self._pixmap.height(), event.size().height())
             new_pix = QPixmap(new_width, new_height)
-            new_pix.fill(Qt.white)
+            new_pix.fill(self._bg_color)
             painter = QPainter(new_pix)
             painter.drawPixmap(0, 0, self._pixmap)
             painter.end()
@@ -74,7 +105,7 @@ class DrawingCanvas(QWidget):
     def mouseMoveEvent(self, event):
         if (event.buttons() & Qt.LeftButton) and self._drawing:
             painter = QPainter(self._pixmap)
-            color = Qt.white if getattr(self, "_eraser_mode", False) else self._pen_color
+            color = self._bg_color if getattr(self, "_eraser_mode", False) else self._pen_color
             pen = QPen(color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
             painter.setRenderHint(QPainter.Antialiasing)
@@ -93,12 +124,14 @@ class DrawingCanvas(QWidget):
         width = img.width()
         height = img.height()
         
-        # Scan to crop unnecessary white space
+        bg_rgb = QColor(self._bg_color).rgb() & 0x00ffffff
+        
+        # Scan to crop unnecessary background space
         min_y = 0
         found = False
         for y in range(height):
             for x in range(width):
-                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                if (img.pixel(x, y) & 0x00ffffff) != bg_rgb:
                     min_y = y
                     found = True
                     break
@@ -111,7 +144,7 @@ class DrawingCanvas(QWidget):
         for y in range(height - 1, min_y - 1, -1):
             found = False
             for x in range(width):
-                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                if (img.pixel(x, y) & 0x00ffffff) != bg_rgb:
                     max_y = y
                     found = True
                     break
@@ -122,7 +155,7 @@ class DrawingCanvas(QWidget):
         for x in range(width):
             found = False
             for y in range(min_y, max_y + 1):
-                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                if (img.pixel(x, y) & 0x00ffffff) != bg_rgb:
                     min_x = x
                     found = True
                     break
@@ -133,7 +166,7 @@ class DrawingCanvas(QWidget):
         for x in range(width - 1, min_x - 1, -1):
             found = False
             for y in range(min_y, max_y + 1):
-                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                if (img.pixel(x, y) & 0x00ffffff) != bg_rgb:
                     max_x = x
                     found = True
                     break
@@ -158,9 +191,10 @@ class DrawingCanvas(QWidget):
         img = self._pixmap.toImage()
         width = img.width()
         height = img.height()
+        bg_rgb = QColor(self._bg_color).rgb() & 0x00ffffff
         for y in range(height):
             for x in range(width):
-                if (img.pixel(x, y) & 0x00ffffff) != 0x00ffffff:
+                if (img.pixel(x, y) & 0x00ffffff) != bg_rgb:
                     return False
         return True
 
@@ -277,7 +311,7 @@ class QuickNoteDialog(QDialog):
         
         self.color_buttons = []
         palette_colors = [
-            ("black", "#1E1E2E", "#1E1E2E"),
+            ("white", "#FFFFFF", "#FFFFFF"),
             ("red", "#F38BA8", "#F38BA8"),
             ("blue", "#89B4FA", "#89B4FA"),
             ("green", "#A6E3A1", "#A6E3A1"),
@@ -293,7 +327,7 @@ class QuickNoteDialog(QDialog):
             colors_layout.addWidget(btn)
             self.color_buttons.append(btn)
 
-        self._selected_color_hex = "#1E1E2E"
+        self._selected_color_hex = "#FFFFFF"
         self._update_color_buttons_style()
         controls_h.addLayout(colors_layout)
 
@@ -588,7 +622,7 @@ class EditSketchDialog(QDialog):
         
         self.color_buttons = []
         palette_colors = [
-            ("black", "#1E1E2E", "#1E1E2E"),
+            ("white", "#FFFFFF", "#FFFFFF"),
             ("red", "#F38BA8", "#F38BA8"),
             ("blue", "#89B4FA", "#89B4FA"),
             ("green", "#A6E3A1", "#A6E3A1"),
@@ -604,7 +638,7 @@ class EditSketchDialog(QDialog):
             colors_layout.addWidget(btn)
             self.color_buttons.append(btn)
 
-        self._selected_color_hex = "#1E1E2E"
+        self._selected_color_hex = "#FFFFFF"
         self._update_color_buttons_style()
         controls_h.addWidget(self.colors_container)
 

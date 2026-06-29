@@ -59,6 +59,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.save_ink_clear", "Review", "Save review ink & clear canvas", "Ctrl+A"),
     ShortcutAction("review.save_ink_keep", "Review", "Save review ink & keep on canvas", "Ctrl+Shift+A"),
     ShortcutAction("review.eraser_toggle", "Review", "Toggle eraser drawing", "E"),
+    ShortcutAction("review.toggle_focus", "Review", "Toggle Focus Canvas Mode", "Ctrl+F"),
 )
 
 

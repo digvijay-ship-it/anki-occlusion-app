@@ -179,3 +179,24 @@ def icon_chevron_right(size: int = 24, fg: str = "#CDD6F4") -> QIcon:
 
 def icon_contrast(size: int = 24, fg: str = "#CDD6F4") -> QIcon:
     return make_icon(size, fg, _draw_contrast)
+
+
+def _draw_focus(p: QPainter, s: int, fg: QColor):
+    """Focus target icon: dashed circle with a solid dot in center"""
+    pen = p.pen()
+    pen.setWidthF(s * 0.08)
+    p.setPen(pen)
+    cx, cy = s * 0.5, s * 0.5
+    r = s * 0.3
+    pen.setStyle(Qt.DashLine)
+    p.setPen(pen)
+    p.drawEllipse(QPointF(cx, cy), r, r)
+    pen.setStyle(Qt.SolidLine)
+    p.setPen(pen)
+    p.setBrush(fg)
+    p.drawEllipse(QPointF(cx, cy), s * 0.08, s * 0.08)
+
+
+def icon_focus(size: int = 24, fg: str = "#CDD6F4") -> QIcon:
+    return make_icon(size, fg, _draw_focus)
+

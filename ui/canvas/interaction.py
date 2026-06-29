@@ -321,8 +321,8 @@ class CanvasInteractionMixin:
             threshold = 15.0
             close = False
             for pt in pts:
-                dx = ip.x() - pt.x()
-                dy = ip.y() - pt.y()
+                dx = (ip.x() - pt.x()) * self._scale
+                dy = (ip.y() - pt.y()) * self._scale
                 if dx * dx + dy * dy < threshold * threshold:
                     close = True
                     break
@@ -347,7 +347,7 @@ class CanvasInteractionMixin:
             i -= 1
             
         if erased_any:
-            self.update()
+            self.repaint()
 
     def ink_cycle_color(self):
         self._ink_color_idx = (self._ink_color_idx + 1) % len(self._ink_colors)

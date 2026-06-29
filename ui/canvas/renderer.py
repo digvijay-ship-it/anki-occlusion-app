@@ -166,6 +166,10 @@ class CanvasRendererMixin:
 
         p.fillRect(clip, _C_BG_CANVAS)
 
+        p.save()
+        if getattr(self, "_focus_mode", False):
+            p.setOpacity(getattr(self, "_bg_opacity", 0.2))
+
         if self._px and not self._px.isNull():
             transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
             cached_scale, cached_tt, cached_spx = self._spx_cache.get("_px", (None, None, None))
@@ -231,6 +235,8 @@ class CanvasRendererMixin:
                     sep_y = scr_bot + int(PAGE_GAP * self._scale) // 2
                     p.setPen(_SEP_PEN)
                     p.drawLine(0, sep_y, self.width(), sep_y)
+
+        p.restore()
 
         p.setRenderHint(QPainter.Antialiasing)
         if profile:

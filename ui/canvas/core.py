@@ -111,6 +111,18 @@ class OcclusionCanvas(
         self._ink_redo_stack = []
         self._ink_pre_erase_snapshot = None
 
+
+
+        # ── focus mode ────────────────────────────────────────────────────────
+        self._focus_mode = False
+        from PyQt5.QtCore import QSettings
+        focus_settings = QSettings("AnkiOcclusion", "FocusModeSettings")
+        try:
+            self._bg_opacity = float(focus_settings.value("bg_opacity", 0.2))
+        except (ValueError, TypeError):
+            self._bg_opacity = 0.2
+
+
         # ── zoom ──────────────────────────────────────────────────────────────
         self._fast_zoom = False
         self._zoom_timer = QTimer(self)
@@ -134,3 +146,21 @@ class OcclusionCanvas(
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
+
+    def set_focus_mode(self, enabled: bool):
+        self._focus_mode = enabled
+        self.update()
+
+    def is_focus_mode(self) -> bool:
+        return self._focus_mode
+
+    def set_bg_opacity(self, opacity: float):
+        self._bg_opacity = max(0.0, min(1.0, round(opacity, 2)))
+        from PyQt5.QtCore import QSettings
+        settings = QSettings("AnkiOcclusion", "FocusModeSettings")
+        settings.setValue("bg_opacity", self._bg_opacity)
+        self.update()
+
+    def get_bg_opacity(self) -> float:
+        return self._bg_opacity
+

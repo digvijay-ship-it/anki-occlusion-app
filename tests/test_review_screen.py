@@ -1180,7 +1180,7 @@ class QuickNoteTests(unittest.TestCase):
         
         canvas = DrawingCanvas()
         self.assertEqual(canvas._pen_width, 3)
-        self.assertEqual(canvas._pen_color, QColor("#000000"))
+        self.assertEqual(canvas._pen_color, QColor("#FFFFFF"))
         
         canvas.set_pen_color("#FF0000")
         canvas.set_pen_width(5)
@@ -1192,9 +1192,9 @@ class QuickNoteTests(unittest.TestCase):
         self.assertIsNotNone(canvas.get_image())
         
         # Test crop: draw a small line and assert cropped image size is smaller than default canvas size
-        from PyQt5.QtGui import QPainter, QPen
+        from PyQt5.QtGui import QPainter, QPen, QColor
         painter = QPainter(canvas._pixmap)
-        painter.setPen(QPen(QColor("#000000"), 3))
+        painter.setPen(QPen(QColor("#FFFFFF"), 3))
         painter.drawLine(100, 100, 110, 110)
         painter.end()
         
@@ -1230,7 +1230,7 @@ class QuickNoteTests(unittest.TestCase):
             # 2. Draw something on the canvas
             from PyQt5.QtGui import QPainter, QPen, QColor
             painter = QPainter(dialog.draw_canvas._pixmap)
-            painter.setPen(QPen(QColor("#000000"), 3))
+            painter.setPen(QPen(QColor("#FFFFFF"), 3))
             painter.drawLine(10, 10, 20, 20)
             painter.end()
             dialog.draw_canvas._has_drawn = True
@@ -1258,7 +1258,7 @@ class QuickNoteTests(unittest.TestCase):
             dialog.set_view(0)
             from PyQt5.QtGui import QPainter, QPen, QColor
             painter = QPainter(dialog.draw_canvas._pixmap)
-            painter.setPen(QPen(QColor("#000000"), 3))
+            painter.setPen(QPen(QColor("#FFFFFF"), 3))
             painter.drawLine(10, 10, 20, 20)
             painter.end()
             dialog.draw_canvas._has_drawn = True
@@ -1272,7 +1272,7 @@ class QuickNoteTests(unittest.TestCase):
             dialog = QuickNoteDialog("Existing note")
             dialog.set_view(1)
             painter = QPainter(dialog.draw_canvas._pixmap)
-            painter.setPen(QPen(QColor("#000000"), 3))
+            painter.setPen(QPen(QColor("#FFFFFF"), 3))
             painter.drawLine(10, 10, 20, 20)
             painter.end()
             dialog.draw_canvas._has_drawn = True
@@ -1392,6 +1392,24 @@ class QuickNoteTests(unittest.TestCase):
         # Verify select_scratchpad_only focuses back on the scratchpad strokes
         canvas_sp.select_scratchpad_only()
         self.assertNotEqual(canvas_sp._crop_rect, QRectF(canvas_sp._display_rect))
+
+        # 3. Test Enter/Return keyPressEvent triggers accept
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        from unittest.mock import MagicMock
+        
+        dialog.accept = MagicMock()
+        
+        # Test Return key
+        event_return = QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.KeyboardModifiers())
+        dialog.keyPressEvent(event_return)
+        dialog.accept.assert_called_once()
+        
+        # Test Enter key (keypad)
+        dialog.accept.reset_mock()
+        event_enter = QKeyEvent(QEvent.KeyPress, Qt.Key_Enter, Qt.KeyboardModifiers())
+        dialog.keyPressEvent(event_enter)
+        dialog.accept.assert_called_once()
 
     def test_crop_canvas_mouse_interaction(self):
         from ui.crop_dialog import CropCanvas
@@ -1923,6 +1941,99 @@ class QuickNoteTests(unittest.TestCase):
             screen._save_review_ink_to_note(clear_ink=False)
             self.assertEqual(mock_clipboard.setPixmap.call_count, 2)
             screen._show_review_toast.assert_called_with("📋 Copied drawing to clipboard (canvas kept)!")
+
+
+
+    def test_hint_panel_font_zoom(self):
+        from PyQt5.QtCore import QSettings
+        from PyQt5.QtWidgets import QTextBrowser
+        from ui.review_screen import ReviewScreen
+        
+        fake_settings = {}
+        def fake_value(key, default=None):
+            return fake_settings.get(key, default)
+        def fake_set_value(key, val):
+            fake_settings[key] = val
+            
+        with patch("ui.review_screen.QSettings") as MockQSettings:
+            settings_mock = MockQSettings.return_value
+            settings_mock.value.side_effect = fake_value
+            settings_mock.setValue.side_effect = fake_set_value
+            
+            # Setup a mock review screen
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen._hint_font_size = 13
+            screen._hint_browser = MagicMock(spec=QTextBrowser)
+            screen._hint_panel = MagicMock()
+            screen._update_mask_note_ui = MagicMock()
+            
+            # Test zoom in
+            screen._zoom_hint_in()
+            self.assertEqual(screen._hint_font_size, 14)
+            self.assertEqual(fake_settings.get("review/hint_font_size"), 14)
+            screen._hint_browser.setStyleSheet.assert_called()
+            
+            # Test zoom out
+            screen._zoom_hint_out()
+            self.assertEqual(screen._hint_font_size, 13)
+            self.assertEqual(fake_settings.get("review/hint_font_size"), 13)
+            
+            # Test reset
+            screen._zoom_hint_in()
+            screen._zoom_hint_reset()
+            self.assertEqual(screen._hint_font_size, 13)
+            self.assertEqual(fake_settings.get("review/hint_font_size"), 13)
+
+    def test_hint_panel_markdown_and_latex_rendering(self):
+        from ui.review_screen import parse_markdown_tables, parse_latex_math
+        
+        # 1. Test Markdown Table parsing
+        md_table = (
+            "| Col 1 | Col 2 |\n"
+            "| --- | --- |\n"
+            "| Val 1 | Val 2 |"
+        )
+        html_table = parse_markdown_tables(md_table)
+        self.assertIn('<table width="100%">', html_table)
+        self.assertIn("<th align='left'>Col 1</th>", html_table)
+        self.assertIn("<td align='left'>Val 1</td>", html_table)
+        
+        # 2. Test Simple LaTeX Math translation (Offline)
+        simple_math = "The result is $2 \\times 1$ and $n!$."
+        rendered_simple = parse_latex_math(simple_math, "#CDD6F4")
+        self.assertIn("2 × 1", rendered_simple)
+        self.assertIn("n!", rendered_simple)
+        self.assertIn("<span style=", rendered_simple)
+        
+        # 3. Test Complex LaTeX Math rendering (Online image fallback)
+        complex_math = "Use equation: $\\frac{a}{b}$"
+        rendered_complex = parse_latex_math(complex_math, "#CDD6F4")
+        self.assertIn("<img src=\"https://latex.codecogs.com/png.image?", rendered_complex)
+        self.assertIn("color[HTML]{CDD6F4}", rendered_complex)
+
+    def test_hint_panel_width_persistence(self):
+        from PyQt5.QtCore import QSettings
+        from ui.review_screen import ReviewScreen
+        
+        fake_settings = {}
+        def fake_value(key, default=None):
+            return fake_settings.get(key, default)
+        def fake_set_value(key, val):
+            fake_settings[key] = val
+            
+        with patch("ui.review_screen.QSettings") as MockQSettings:
+            settings_mock = MockQSettings.return_value
+            settings_mock.value.side_effect = fake_value
+            settings_mock.setValue.side_effect = fake_set_value
+            
+            screen = ReviewScreen.__new__(ReviewScreen)
+            screen._user_hint_width = 360
+            screen._reposition_hint_panel = MagicMock()
+            
+            # Simulate panel resize
+            screen._on_hint_panel_resize(500)
+            self.assertEqual(screen._user_hint_width, 500)
+            self.assertEqual(fake_settings.get("review/hint_panel_width"), 500)
 
 
 if __name__ == "__main__":

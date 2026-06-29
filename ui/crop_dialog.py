@@ -246,7 +246,7 @@ class CropCanvas(QWidget):
         
         size = QSize(max(10, int(orig_w)), max(10, int(orig_h)))
         px = QPixmap(size)
-        px.fill(Qt.white)
+        px.fill(Qt.black)
         
         p = QPainter(px)
         p.setRenderHint(QPainter.Antialiasing)
@@ -258,7 +258,13 @@ class CropCanvas(QWidget):
                 continue
             color = stroke[0]
             pts = stroke[1:]
-            p.setPen(QPen(QColor(color), pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            
+            # Map dark stroke colors to white for visibility on black background
+            qc = QColor(color)
+            if qc.lightness() < 80:
+                qc = QColor(Qt.white)
+                
+            p.setPen(QPen(qc, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             path = QPainterPath()
             path.moveTo(pts[0])
             for pt in pts[1:]:
@@ -386,6 +392,13 @@ class CropInkDialog(QDialog):
 
     def get_cropped_pixmap(self):
         return self.crop_canvas.get_cropped_pixmap()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.accept()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class CropImageCanvas(QWidget):
@@ -636,6 +649,13 @@ class CropImageDialog(QDialog):
     def get_crop_geometry(self):
         return self.crop_canvas.get_crop_geometry()
 
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.accept()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 def get_auto_crop_rect(strokes, canvas_size, card_img_size=None):
     from PyQt5.QtCore import QRectF
@@ -693,7 +713,7 @@ def render_cropped_strokes(strokes, crop_rect, ink_width):
     
     size = QSize(max(10, int(orig_w)), max(10, int(orig_h)))
     px = QPixmap(size)
-    px.fill(Qt.white)
+    px.fill(Qt.black)
     
     p = QPainter(px)
     p.setRenderHint(QPainter.Antialiasing)
@@ -705,7 +725,13 @@ def render_cropped_strokes(strokes, crop_rect, ink_width):
             continue
         color = stroke[0]
         pts = stroke[1:]
-        p.setPen(QPen(QColor(color), pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        
+        # Map dark stroke colors to white for visibility on black background
+        qc = QColor(color)
+        if qc.lightness() < 80:
+            qc = QColor(Qt.white)
+            
+        p.setPen(QPen(qc, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         path = QPainterPath()
         path.moveTo(pts[0])
         for pt in pts[1:]:

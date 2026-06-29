@@ -1392,32 +1392,95 @@ class ReviewScreen(QWidget):
             # INSTANT COPY (no prompting dialog)
             crop_rect = get_auto_crop_rect(self.canvas._ink_strokes, canvas_size, card_img_size)
             px = render_cropped_strokes(self.canvas._ink_strokes, crop_rect, self.canvas._ink_width)
+        else:
+            dialog = CropInkDialog(
+                self.canvas._ink_strokes,
+                canvas_size,
+                self.canvas._ink_width,
+                parent=self,
+                card_img_size=card_img_size
+            )
+            if dialog.exec_() != QDialog.Accepted:
+                return # Cancelled
+            px = dialog.get_cropped_pixmap()
             
-            # Copy to clipboard
-            clipboard = QApplication.clipboard()
-            clipboard.setPixmap(px)
-            self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
-            return
-            
-        dialog = CropInkDialog(
-            self.canvas._ink_strokes,
-            canvas_size,
-            self.canvas._ink_width,
-            parent=self,
-            card_img_size=card_img_size
-        )
-        if dialog.exec_() != QDialog.Accepted:
-            return # Cancelled
-            
-        px = dialog.get_cropped_pixmap()
-        
-        # Copy to clipboard
+        # 1. Copy to clipboard
         clipboard = QApplication.clipboard()
         clipboard.setPixmap(px)
         
+        # 2. Save to local media folder and append to card/box note (only if clear_ink is True)
+        import os
+        import uuid
+        import storage_paths
+        
+        image_dir = storage_paths.archive_image_dir()
+        saved_to_note = False
+        if clear_ink and image_dir:
+            try:
+                os.makedirs(image_dir, exist_ok=True)
+                filename = f"sketch_{uuid.uuid4().hex[:8]}.png"
+                file_path = os.path.join(image_dir, filename)
+                px.save(file_path, "PNG")
+                relative_path = f"images/{filename}"
+                
+                if 0 <= self._idx < len(self._items):
+                    card, box_idx, active_box = self._items[self._idx]
+                    
+                    current_note = ""
+                    if card.get("card_type") == "text":
+                        current_note = card.get("notes", "")
+                    elif active_box is not None:
+                        if hasattr(active_box, "get"):
+                            current_note = active_box.get("note", "")
+                        else:
+                            current_note = getattr(active_box, "note", "")
+                    if not current_note:
+                        current_note = card.get("notes", "")
+                        
+                    current_note = (current_note or "").strip()
+                    
+                    img_tag = f'<img src="{relative_path}" width="{px.width()}" height="{px.height()}">'
+                    if current_note:
+                        if "<img" in current_note or "<html>" in current_note or "<p>" in current_note or "<div" in current_note or "<br" in current_note:
+                            new_note = f"{current_note}<br><br>{img_tag}"
+                        else:
+                            new_note = f"{current_note}\n\n{img_tag}"
+                    else:
+                        new_note = img_tag
+                        
+                    if active_box is not None:
+                        if hasattr(active_box, "__setitem__"):
+                            active_box["note"] = new_note
+                        elif hasattr(active_box, "note"):
+                            active_box.note = new_note
+                    else:
+                        card["notes"] = new_note
+                        
+                    if getattr(self, "canvas", None) is not None:
+                        if isinstance(box_idx, int) and 0 <= box_idx < len(self.canvas._boxes):
+                            self.canvas._boxes[box_idx]["note"] = new_note
+                        elif isinstance(box_idx, tuple) and box_idx[0] == "group":
+                            gid = box_idx[1]
+                            for b in self.canvas._boxes:
+                                if b.get("group_id") == gid:
+                                    b["note"] = new_note
+                                    
+                    from data_manager import store
+                    store.save_force(async_save=True)
+                    
+                    self._update_mask_note_ui()
+                    if not self._reveal_bar.isVisible():
+                        self._set_hint_panel_visible(True)
+                    saved_to_note = True
+            except Exception:
+                pass
+                
         if clear_ink:
             self.canvas.ink_clear()
-            self._show_review_toast("📋 Copied drawing to clipboard!")
+            if saved_to_note:
+                self._show_review_toast("🎨 Saved drawing to hint box & copied to clipboard!")
+            else:
+                self._show_review_toast("📋 Copied drawing to clipboard!")
         else:
             self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
 
@@ -2246,6 +2309,8 @@ class ReviewScreen(QWidget):
             self._go_next_review_page()
         elif shortcut_manager.event_matches(e, "review.pdf_contrast") and not e.isAutoRepeat():
             self._toggle_pdf_contrast()
+        elif shortcut_manager.event_matches(e, "review.toggle_focus") and not e.isAutoRepeat():
+            self._toggle_focus_mode()
         elif shortcut_manager.event_matches(e, "review.toggle_timer") and not e.isAutoRepeat():
             self._toggle_floating_timer_visibility()
         elif shortcut_manager.event_matches(e, "review.toggle_note") and not e.isAutoRepeat():
@@ -2297,17 +2362,21 @@ class ReviewScreen(QWidget):
         elif (
             key in (Qt.Key_Equal, Qt.Key_Plus)
             and not (mods & Qt.ControlModifier)
-            and getattr(self.canvas, "_ink_active", False)
         ):
-            self.canvas.ink_adjust_width(0.4)
-            self._capture_review_ink_width("width_plus")
+            if self.canvas.is_focus_mode():
+                self._adjust_focus_opacity(0.05)
+            elif getattr(self.canvas, "_ink_active", False):
+                self.canvas.ink_adjust_width(0.4)
+                self._capture_review_ink_width("width_plus")
         elif (
             key == Qt.Key_Minus
             and not (mods & Qt.ControlModifier)
-            and getattr(self.canvas, "_ink_active", False)
         ):
-            self.canvas.ink_adjust_width(-0.4)
-            self._capture_review_ink_width("width_minus")
+            if self.canvas.is_focus_mode():
+                self._adjust_focus_opacity(-0.05)
+            elif getattr(self.canvas, "_ink_active", False):
+                self.canvas.ink_adjust_width(-0.4)
+                self._capture_review_ink_width("width_minus")
         elif shortcut_manager.event_matches(e, "review.pen_color") and not e.isAutoRepeat():
             if self.canvas._ink_active:
                 if bool(mods & Qt.ShiftModifier):
@@ -2449,7 +2518,7 @@ class ReviewScreen(QWidget):
         # ── Icon imports ───────────────────────────────────────────────────────
         from ui.review_icons import (
             icon_zoom_in, icon_zoom_out, icon_zoom_fit, icon_crosshair,
-            icon_chevron_left, icon_chevron_right, icon_contrast,
+            icon_chevron_left, icon_chevron_right, icon_contrast, icon_focus,
         )
         _icon_fg = accent if dojo else text
         _icon_sz = 22  # rendered icon bitmap size
@@ -2870,6 +2939,32 @@ class ReviewScreen(QWidget):
             )
         self._btn_invert_pdf.clicked.connect(self._toggle_pdf_contrast)
         row2.addWidget(self._btn_invert_pdf)
+
+        self._btn_focus_canvas = _icon_btn(
+            icon_focus(_icon_sz, _icon_fg),
+            "Toggle Focus Mode (Lower background opacity for note taking)  Ctrl+F"
+        )
+        self._btn_focus_canvas.clicked.connect(self._toggle_focus_mode)
+        row2.addWidget(self._btn_focus_canvas)
+
+        self._btn_focus_opacity_minus = _icon_btn(
+            QIcon(),
+            "Decrease background opacity (make more blank)"
+        )
+        self._btn_focus_opacity_minus.setText("−")
+        self._btn_focus_opacity_minus.clicked.connect(lambda: self._adjust_focus_opacity(-0.05))
+
+        self._btn_focus_opacity_plus = _icon_btn(
+            QIcon(),
+            "Increase background opacity (make more visible)"
+        )
+        self._btn_focus_opacity_plus.setText("+")
+        self._btn_focus_opacity_plus.clicked.connect(lambda: self._adjust_focus_opacity(0.05))
+
+        row2.addWidget(self._btn_focus_opacity_minus)
+        row2.addWidget(self._btn_focus_opacity_plus)
+
+        self._update_focus_mode_button_style()
 
         row2.addWidget(_vsep())
 
@@ -3878,6 +3973,63 @@ class ReviewScreen(QWidget):
             self.canvas.load_pixmap(QPixmap.fromImage(img))
         else:
             self._reload_pdf_contrast()
+
+    def _toggle_focus_mode(self):
+        enabled = not self.canvas.is_focus_mode()
+        self.canvas.set_focus_mode(enabled)
+        self._update_focus_mode_button_style()
+        self.canvas._show_toast(
+            f"🌫️ Focus Mode {'ON' if enabled else 'OFF'} (Opacity: {int(self.canvas.get_bg_opacity() * 100)}%)"
+        )
+
+    def _adjust_focus_opacity(self, delta: float):
+        if not self.canvas.is_focus_mode():
+            self.canvas.set_focus_mode(True)
+            self._update_focus_mode_button_style()
+        new_op = self.canvas.get_bg_opacity() + delta
+        self.canvas.set_bg_opacity(new_op)
+        self.canvas._show_toast(f"🌫️ Focus Opacity: {int(self.canvas.get_bg_opacity() * 100)}%")
+
+    def _update_focus_mode_button_style(self):
+        if not hasattr(self, "_btn_focus_canvas"):
+            return
+        enabled = self.canvas.is_focus_mode() if getattr(self, "canvas", None) is not None else False
+        dojo = _is_dojo()
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        p = _get_palette(theme)
+        card = p["C_CARD"]
+        accent = p["C_ACCENT"]
+        border = p["C_BORDER"]
+        text = p["C_TEXT"]
+        surface = p["C_SURFACE"]
+        is_cyan = theme in ("manhattan", "tmnt")
+        hover_bg = "rgba(0,240,255,0.12)" if is_cyan else "rgba(114,255,79,0.12)"
+        
+        if enabled:
+            if dojo:
+                self._btn_focus_canvas.setStyleSheet(
+                    f"QPushButton{{background:{accent};color:{p['C_BG']};"
+                    f"border:1px solid {accent};border-radius:2px;font-size:13px;}}"
+                )
+            else:
+                self._btn_focus_canvas.setStyleSheet(
+                    f"QPushButton{{background:{accent};color:white;"
+                    f"border:1px solid {accent};border-radius:5px;font-size:13px;}}"
+                )
+        else:
+            if dojo:
+                self._btn_focus_canvas.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{accent};"
+                    f"border:1px solid {border};border-radius:2px;font-size:13px;}}"
+                    f"QPushButton:hover{{background:{hover_bg};"
+                    f"border:1px solid {accent};}}"
+                )
+            else:
+                self._btn_focus_canvas.setStyleSheet(
+                    f"QPushButton{{background:{card};color:{text};"
+                    f"border:1px solid {border};border-radius:5px;font-size:13px;}}"
+                    f"QPushButton:hover{{background:{surface};}}"
+                )
 
     def _toggle_pen_drawing(self):
         active = getattr(self.canvas, "_ink_active", False)
