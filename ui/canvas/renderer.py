@@ -236,6 +236,8 @@ class CanvasRendererMixin:
                     p.setPen(_SEP_PEN)
                     p.drawLine(0, sep_y, self.width(), sep_y)
 
+        p.restore()
+
         p.setRenderHint(QPainter.Antialiasing)
         if profile:
             boxes_t0 = time.perf_counter()
@@ -252,8 +254,6 @@ class CanvasRendererMixin:
                 phases["boxes_drawn"] += 1
         if profile:
             phases["boxes_ms"] += (time.perf_counter() - boxes_t0) * 1000.0
-
-        p.restore()
 
         p.setRenderHint(QPainter.Antialiasing)
         if profile:
@@ -342,6 +342,21 @@ class CanvasRendererMixin:
                 else:
                     brush = cc["C_MASK_BRUSH"]
                     pen = cc["C_BORDER_PEN_2"]
+                    if getattr(self, "_focus_mode", False):
+                        factor = self._bg_opacity
+                        bg = _C_BG_CANVAS
+                        def blend(c1, c2, f):
+                            return QColor(
+                                int(c1.red() * f + c2.red() * (1.0 - f)),
+                                int(c1.green() * f + c2.green() * (1.0 - f)),
+                                int(c1.blue() * f + c2.blue() * (1.0 - f)),
+                                int(c1.alpha() * f + c2.alpha() * (1.0 - f))
+                            )
+                        b_color = blend(brush.color(), bg, factor)
+                        p_color = blend(pen.color(), bg, factor)
+                        from PyQt5.QtGui import QBrush, QPen
+                        brush = QBrush(b_color)
+                        pen = QPen(p_color, pen.widthF(), pen.style(), pen.capStyle(), pen.joinStyle())
 
                 p.setBrush(brush)
                 p.setPen(pen)
