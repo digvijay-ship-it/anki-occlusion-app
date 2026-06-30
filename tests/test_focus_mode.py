@@ -89,7 +89,7 @@ class FocusModeTests(unittest.TestCase):
         # Press '+' (Key_Plus)
         event_plus = QKeyEvent(QEvent.KeyPress, Qt.Key_Plus, Qt.NoModifier)
         screen.keyPressEvent(event_plus)
-        self.assertAlmostEqual(screen.canvas.get_bg_opacity(), 0.25)
+        self.assertAlmostEqual(screen.canvas.get_bg_opacity(), 0.15)
         
         # Press '-' (Key_Minus)
         event_minus = QKeyEvent(QEvent.KeyPress, Qt.Key_Minus, Qt.NoModifier)

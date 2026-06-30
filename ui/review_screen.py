@@ -2827,7 +2827,7 @@ class ReviewScreen(QWidget):
             and not (mods & Qt.ControlModifier)
         ):
             if getattr(self.canvas, "_focus_mode", False) is True:
-                self._adjust_focus_opacity(0.05)
+                self._adjust_focus_opacity(-0.05)
             elif getattr(self.canvas, "_ink_active", False):
                 self.canvas.ink_adjust_width(0.4)
                 self._capture_review_ink_width("width_plus")
@@ -2836,7 +2836,7 @@ class ReviewScreen(QWidget):
             and not (mods & Qt.ControlModifier)
         ):
             if getattr(self.canvas, "_focus_mode", False) is True:
-                self._adjust_focus_opacity(-0.05)
+                self._adjust_focus_opacity(0.05)
             elif getattr(self.canvas, "_ink_active", False):
                 self.canvas.ink_adjust_width(-0.4)
                 self._capture_review_ink_width("width_minus")
@@ -3114,17 +3114,19 @@ class ReviewScreen(QWidget):
 
         self._btn_focus_opacity_minus = _hdr_btn("−")
         self._btn_focus_opacity_minus.setFixedWidth(28)
+        self._btn_focus_opacity_minus.setToolTip("Decrease Focus (Brighter)")
         self._btn_focus_opacity_minus.setStyleSheet(
             self._btn_focus_opacity_minus.styleSheet() + " QPushButton { padding: 0px; font-size: 16px; font-weight: bold; }"
         )
-        self._btn_focus_opacity_minus.clicked.connect(lambda: self._adjust_focus_opacity(-0.05))
+        self._btn_focus_opacity_minus.clicked.connect(lambda: self._adjust_focus_opacity(0.05))
 
         self._btn_focus_opacity_plus = _hdr_btn("+")
         self._btn_focus_opacity_plus.setFixedWidth(28)
+        self._btn_focus_opacity_plus.setToolTip("Increase Focus (Darker)")
         self._btn_focus_opacity_plus.setStyleSheet(
             self._btn_focus_opacity_plus.styleSheet() + " QPushButton { padding: 0px; font-size: 16px; font-weight: bold; }"
         )
-        self._btn_focus_opacity_plus.clicked.connect(lambda: self._adjust_focus_opacity(0.05))
+        self._btn_focus_opacity_plus.clicked.connect(lambda: self._adjust_focus_opacity(-0.05))
         
         row1.addWidget(b_edit)
         row1.addWidget(self._btn_annot)
