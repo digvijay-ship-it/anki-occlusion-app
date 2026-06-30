@@ -235,6 +235,83 @@ class ResizeHandle(QWidget):
             event.accept()
 
 
+class ScrollFadeOverlay(QWidget):
+    def __init__(self, parent, direction="bottom"):
+        super().__init__(parent)
+        self.direction = direction
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)  # Click-through
+        self.setFixedHeight(45)
+        
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(40)  # ~25 fps
+        self._anim_timer.timeout.connect(self.update)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._anim_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._anim_timer.stop()
+
+    def paintEvent(self, event):
+        from PyQt5.QtGui import QPainter, QLinearGradient, QColor, QPen, QPolygonF
+        from PyQt5.QtCore import QPointF
+        import time
+        import math
+        
+        painter = QPainter(self)
+        rect = self.rect()
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg_hex = p.get("C_SURFACE", "#1E1E2E")
+        bg_color = QColor(bg_hex)
+        
+        gradient = QLinearGradient(0, 0, 0, rect.height())
+        if self.direction == "bottom":
+            gradient.setColorAt(0.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 0))
+            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 255))
+        else:
+            gradient.setColorAt(0.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 255))
+            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 0))
+            
+        painter.fillRect(rect, gradient)
+        
+        painter.setRenderHint(QPainter.Antialiasing)
+        accent_hex = p.get("C_ACCENT", "#FFB7C5")
+        accent_color = QColor(accent_hex)
+        
+        t = time.time() * 5.0
+        alpha = int(160 + 95 * math.sin(t))
+        accent_color.setAlpha(alpha)
+        
+        pen = QPen(accent_color, 2.5)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        
+        cx = rect.width() / 2.0
+        bounce = 2.0 * math.sin(t)
+        cy = (rect.height() / 2.0) + (bounce if self.direction == "bottom" else -bounce)
+        
+        if self.direction == "bottom":
+            points = [
+                QPointF(cx - 8, cy - 3),
+                QPointF(cx, cy + 3),
+                QPointF(cx + 8, cy - 3)
+            ]
+        else:
+            points = [
+                QPointF(cx - 8, cy + 3),
+                QPointF(cx, cy - 3),
+                QPointF(cx + 8, cy + 3)
+            ]
+            
+        painter.drawPolyline(QPolygonF(points))
+
+
 MATH_UNICODE_MAP = {
     r"\times": "×",
     r"\cdot": "·",
@@ -1434,6 +1511,9 @@ class ReviewScreen(QWidget):
 
         html_body = f"<html><head><style>{css}</style></head><body>{process_html_images(n_html)}</body></html>"
         self._hint_browser.setHtml(html_body)
+        
+        # Trigger scroll indicator update after layout recalculates
+        QTimer.singleShot(100, self._update_hint_scroll_indicators)
         
         self._reposition_floating_buttons()
 
@@ -3583,13 +3663,41 @@ class ReviewScreen(QWidget):
         self._hint_browser.setOpenExternalLinks(True)
         self._hint_browser.setContextMenuPolicy(Qt.CustomContextMenu)
         self._hint_browser.customContextMenuRequested.connect(self._show_hint_context_menu)
-        self._hint_browser.setStyleSheet(
-            f"QTextBrowser{{background:transparent;color:{text};border:none;"
-            f"font-size:{self._hint_font_size}px;line-height:1.4;}}"
-            f"QScrollBar:vertical{{background:{surface};width:6px;border-radius:3px;}}"
-            f"QScrollBar::handle:vertical{{background:{border};border-radius:3px;}}"
+        
+        scrollbar_style = (
+            f"QTextBrowser {{ background: transparent; color: {text}; border: none; font-size: {self._hint_font_size}px; line-height: 1.4; }}"
+            f"QScrollBar:vertical {{"
+            f"    background: {surface};"
+            f"    width: 10px;"
+            f"    border-radius: 5px;"
+            f"    margin: 0px;"
+            f"}}"
+            f"QScrollBar::handle:vertical {{"
+            f"    background: {subtext};"
+            f"    min-height: 20px;"
+            f"    border-radius: 5px;"
+            f"}}"
+            f"QScrollBar::handle:vertical:hover {{"
+            f"    background: {accent};"
+            f"}}"
+            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{"
+            f"    background: none;"
+            f"    height: 0px;"
+            f"}}"
         )
+        self._hint_browser.setStyleSheet(scrollbar_style)
         hp_layout.addWidget(self._hint_browser)
+        
+        # Create top and bottom scroll fade overlays
+        self._hint_top_fade = ScrollFadeOverlay(self._hint_panel, "top")
+        self._hint_bottom_fade = ScrollFadeOverlay(self._hint_panel, "bottom")
+        self._hint_top_fade.hide()
+        self._hint_bottom_fade.hide()
+        
+        # Connect to scrollbar signals to update visibility
+        vbar = self._hint_browser.verticalScrollBar()
+        vbar.valueChanged.connect(self._update_hint_scroll_indicators)
+        vbar.rangeChanged.connect(self._update_hint_scroll_indicators)
         
         self._resize_handle = ResizeHandle(self._hint_panel, self._on_hint_panel_resize)
 
@@ -4185,14 +4293,31 @@ class ReviewScreen(QWidget):
         p = get_palette(theme)
         text_color = p.get("C_TEXT", "#CDD6F4")
         surface_color = p.get("C_SURFACE", "#1E1E2E")
-        border_color = p.get("C_BORDER", "#313244")
+        subtext_color = p.get("C_SUBTEXT", "#A6ADC8")
+        accent_color = p.get("C_ACCENT", "#7C6AF7")
         
-        self._hint_browser.setStyleSheet(
-            f"QTextBrowser{{background:transparent;color:{text_color};border:none;"
-            f"font-size:{self._hint_font_size}px;line-height:1.4;}}"
-            f"QScrollBar:vertical{{background:{surface_color};width:6px;border-radius:3px;}}"
-            f"QScrollBar::handle:vertical{{background:{border_color};border-radius:3px;}}"
+        scrollbar_style = (
+            f"QTextBrowser {{ background: transparent; color: {text_color}; border: none; font-size: {self._hint_font_size}px; line-height: 1.4; }}"
+            f"QScrollBar:vertical {{"
+            f"    background: {surface_color};"
+            f"    width: 10px;"
+            f"    border-radius: 5px;"
+            f"    margin: 0px;"
+            f"}}"
+            f"QScrollBar::handle:vertical {{"
+            f"    background: {subtext_color};"
+            f"    min-height: 20px;"
+            f"    border-radius: 5px;"
+            f"}}"
+            f"QScrollBar::handle:vertical:hover {{"
+            f"    background: {accent_color};"
+            f"}}"
+            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{"
+            f"    background: none;"
+            f"    height: 0px;"
+            f"}}"
         )
+        self._hint_browser.setStyleSheet(scrollbar_style)
         
         settings = QSettings("AnkiOcclusion", "App")
         settings.setValue("review/hint_font_size", self._hint_font_size)
@@ -4217,6 +4342,38 @@ class ReviewScreen(QWidget):
         self._hint_panel.setGeometry(w - panel_w, 0, panel_w, h)
         if hasattr(self, "_resize_handle"):
             self._resize_handle.setGeometry(0, 0, 6, h)
+            
+        # Reposition top and bottom fade overlays
+        if hasattr(self, "_hint_browser") and self._hint_browser is not None:
+            geom = self._hint_browser.geometry()
+            fade_h = 45
+            if hasattr(self, "_hint_top_fade") and self._hint_top_fade is not None:
+                self._hint_top_fade.setGeometry(geom.x(), geom.y(), geom.width(), fade_h)
+            if hasattr(self, "_hint_bottom_fade") and self._hint_bottom_fade is not None:
+                self._hint_bottom_fade.setGeometry(geom.x(), geom.y() + geom.height() - fade_h, geom.width(), fade_h)
+            
+            # Recalculate indicators visibility
+            self._update_hint_scroll_indicators()
+
+    def _update_hint_scroll_indicators(self):
+        if not hasattr(self, "_hint_browser") or self._hint_browser is None:
+            return
+        if not hasattr(self, "_hint_top_fade") or self._hint_top_fade is None:
+            return
+        if not hasattr(self, "_hint_bottom_fade") or self._hint_bottom_fade is None:
+            return
+            
+        vbar = self._hint_browser.verticalScrollBar()
+        if not vbar.isVisible() or vbar.maximum() <= 0:
+            self._hint_top_fade.hide()
+            self._hint_bottom_fade.hide()
+            return
+            
+        val = vbar.value()
+        max_val = vbar.maximum()
+        
+        self._hint_top_fade.setVisible(val > 0)
+        self._hint_bottom_fade.setVisible(val < max_val)
 
     def _activate_default_review_pen(self):
         canvas = self.__dict__.get("canvas", None)
