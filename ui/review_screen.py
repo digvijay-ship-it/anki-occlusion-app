@@ -1672,6 +1672,7 @@ class ReviewScreen(QWidget):
             self._show_review_toast("⚠️ No drawings to save!")
             return
             
+        was_active = getattr(self, "_was_ink_active_before_ctrl", False) or getattr(self.canvas, "_ink_active", False)
         from PyQt5.QtCore import QSize
         from PyQt5.QtWidgets import QDialog, QApplication
         from ui.crop_dialog import CropInkDialog, get_auto_crop_rect, render_cropped_strokes
@@ -1699,10 +1700,11 @@ class ReviewScreen(QWidget):
                 card_img_size=card_img_size
             )
             if dialog.exec_() != QDialog.Accepted:
-                if getattr(self, "_was_ink_active_before_ctrl", False):
+                if was_active:
                     if getattr(self, "canvas", None):
                         self.canvas.ink_set_active(True)
                         self._update_ink_hint()
+                        self._update_pen_button_states()
                     self._was_ink_active_before_ctrl = False
                 return # Cancelled
             px = dialog.get_cropped_pixmap()
@@ -1815,11 +1817,12 @@ class ReviewScreen(QWidget):
         else:
             self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
 
-        # Restore ink state if it was temporarily disabled by holding Ctrl
-        if getattr(self, "_was_ink_active_before_ctrl", False):
+        # Restore or keep ink state active
+        if was_active:
             if getattr(self, "canvas", None):
                 self.canvas.ink_set_active(True)
                 self._update_ink_hint()
+                self._update_pen_button_states()
             self._was_ink_active_before_ctrl = False
 
     def _open_quick_note_editor(self):
@@ -1849,6 +1852,7 @@ class ReviewScreen(QWidget):
             if getattr(self, "canvas", None):
                 self.canvas.ink_set_active(True)
                 self._update_ink_hint()
+                self._update_pen_button_states()
             self._was_ink_active_before_ctrl = False
             
         if accepted:
