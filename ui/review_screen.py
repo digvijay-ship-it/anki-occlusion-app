@@ -2144,6 +2144,13 @@ class ReviewScreen(QWidget):
             QEvent.MouseButtonRelease,
         ):
             self._note_user_activity()
+            
+        # Tap outside the floating hint panel to hide it
+        if et == QEvent.MouseButtonPress:
+            if hasattr(self, "_hint_panel") and self._hint_panel.isVisible():
+                if obj in (self.canvas, self._canvas_scroll.viewport(), self):
+                    self._set_hint_panel_visible(False)
+                    
         if et in (QEvent.MouseMove, QEvent.HoverMove):
             self._maybe_show_queue_edge_handle(event, source=obj)
             self._update_queue_auto_hide_from_event(event)
