@@ -50,6 +50,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.prev_page", "Review", "Previous page", "Left"),
     ShortcutAction("review.next_page", "Review", "Next page", "Right"),
     ShortcutAction("review.pen_toggle", "Review", "Toggle pen", "`"),
+    ShortcutAction("review.pen_mouse_toggle", "Review", "Toggle pen and mouse", "Alt"),
     ShortcutAction("review.pen_color", "Review", "Cycle pen color", "X"),
     ShortcutAction("review.pen_clear", "Review", "Clear pen marks", "Del"),
     ShortcutAction("review.pdf_contrast", "Review", "Toggle PDF Contrast", "I"),
@@ -132,4 +133,14 @@ def _event_sequence_texts(event) -> set[str]:
 
 
 def event_matches(event, action_id: str) -> bool:
-    return shortcut_text(action_id) in _event_sequence_texts(event)
+    val = shortcut_text(action_id)
+    key = event.key()
+    if val == "Alt" and key == Qt.Key_Alt:
+        return True
+    if val == "Ctrl" and key == Qt.Key_Control:
+        return True
+    if val == "Shift" and key == Qt.Key_Shift:
+        return True
+    if val == "Meta" and key == Qt.Key_Meta:
+        return True
+    return val in _event_sequence_texts(event)
