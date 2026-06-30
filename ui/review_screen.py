@@ -202,6 +202,215 @@ _RE_IMG_SRC = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORE
 _RE_IMG = re.compile(r'<img\s+[^>]+>', re.IGNORECASE)
 _RE_FONT_SIZE = re.compile(r'font-size\s*:\s*[^;\'"]+;?', re.IGNORECASE)
 
+
+class ResizeHandle(QWidget):
+    def __init__(self, parent_panel, on_resize):
+        super().__init__(parent_panel)
+        self.parent_panel = parent_panel
+        self.on_resize = on_resize
+        self.setCursor(Qt.SizeHorCursor)
+        self.setFixedWidth(6)
+        self.dragging = False
+        self.drag_start_x = 0
+        self.drag_start_width = 0
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = True
+            self.drag_start_x = event.globalX()
+            self.drag_start_width = self.parent_panel.width()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging:
+            delta_x = event.globalX() - self.drag_start_x
+            new_width = self.drag_start_width - delta_x
+            new_width = max(200, min(1600, new_width))
+            self.on_resize(new_width)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = False
+            event.accept()
+
+
+MATH_UNICODE_MAP = {
+    r"\times": "×",
+    r"\cdot": "·",
+    r"\div": "÷",
+    r"\pm": "±",
+    r"\mp": "∓",
+    r"\infty": "∞",
+    r"\neq": "≠",
+    r"\approx": "≈",
+    r"\leq": "≤",
+    r"\geq": "≥",
+    r"\le": "≤",
+    r"\ge": "≥",
+    r"\alpha": "α",
+    r"\beta": "β",
+    r"\gamma": "γ",
+    r"\delta": "δ",
+    r"\epsilon": "ε",
+    r"\theta": "θ",
+    r"\lambda": "λ",
+    r"\pi": "π",
+    r"\sigma": "σ",
+    r"\omega": "ω",
+    r"\Delta": "Δ",
+    r"\sum": "∑",
+    r"\prod": "∏",
+    r"\int": "∫",
+    r"\partial": "∂",
+    r"\nabla": "∇",
+    r"\deg": "°",
+    r"\dots": "...",
+    r"\cdots": "...",
+}
+
+
+def parse_markdown_tables(text):
+    if not text:
+        return ""
+    lines = text.split("\n")
+    in_table = False
+    table_lines = []
+    output = []
+    
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if not in_table:
+                in_table = True
+                table_lines = [line]
+            else:
+                table_lines.append(line)
+        else:
+            if in_table:
+                html_table = render_html_table(table_lines)
+                output.append(html_table)
+                in_table = False
+                table_lines = []
+            output.append(line)
+            
+    if in_table:
+        html_table = render_html_table(table_lines)
+        output.append(html_table)
+        
+    final_output = []
+    for line in output:
+        stripped_line = line.strip()
+        if (stripped_line.startswith("<table") or 
+            stripped_line.startswith("</table") or 
+            stripped_line.startswith("<tr") or 
+            stripped_line.startswith("</tr") or 
+            stripped_line.startswith("<td") or 
+            stripped_line.startswith("</td") or 
+            stripped_line.startswith("<th") or 
+            stripped_line.startswith("</th")):
+            final_output.append(line)
+        else:
+            final_output.append(line + "<br>")
+            
+    return "".join(final_output)
+
+
+def render_html_table(table_lines):
+    if len(table_lines) < 2:
+        return "\n".join(table_lines)
+        
+    sep_line = table_lines[1].strip()
+    sep_content = sep_line.strip("|").replace(" ", "").replace("-", "").replace(":", "").replace("|", "")
+    if sep_content != "":
+        return "\n".join(table_lines)
+        
+    headers = [c.strip() for c in table_lines[0].strip("|").split("|")]
+    
+    alignments = []
+    for col in table_lines[1].strip("|").split("|"):
+        col = col.strip()
+        if col.startswith(":") and col.endswith(":"):
+            alignments.append("center")
+        elif col.endswith(":"):
+            alignments.append("right")
+        else:
+            alignments.append("left")
+            
+    html = ['<table width="100%">']
+    
+    # Header row
+    html.append("  <tr>")
+    for i, h in enumerate(headers):
+        align = alignments[i] if i < len(alignments) else "left"
+        html.append(f"    <th align='{align}'>{h}</th>")
+    html.append("  </tr>")
+    
+    # Data rows
+    for row_line in table_lines[2:]:
+        cells = [c.strip() for c in row_line.strip("|").split("|")]
+        while len(cells) < len(headers):
+            cells.append("")
+        html.append("  <tr>")
+        for i, cell in enumerate(cells[:len(headers)]):
+            align = alignments[i] if i < len(alignments) else "left"
+            html.append(f"    <td align='{align}'>{cell}</td>")
+        html.append("  </tr>")
+        
+    html.append("</table>")
+    return "\n".join(html)
+
+
+def parse_latex_math(text, text_color):
+    import re
+    
+    def replace_display_math(match):
+        formula = match.group(1).strip()
+        translated = translate_formula(formula, text_color, is_display=True)
+        return f'<div align="center" style="margin: 12px 0;">{translated}</div>'
+        
+    text = re.sub(r'\$\$(.*?)\$\$', replace_display_math, text, flags=re.DOTALL)
+    text = re.sub(r'\\\[(.*?)\\\]', replace_display_math, text, flags=re.DOTALL)
+    
+    def replace_inline_math(match):
+        formula = match.group(1).strip()
+        return translate_formula(formula, text_color, is_display=False)
+        
+    text = re.sub(r'\$([^\$\n]+?)\$', replace_inline_math, text)
+    text = re.sub(r'\\\((.*?)\\\)', replace_inline_math, text)
+    
+    return text
+
+
+def translate_formula(formula, text_color, is_display=False):
+    import html
+    import urllib.parse
+    import re
+    
+    formula_clean = formula.strip()
+    
+    # 1. Try simple translation
+    translated = formula_clean
+    for k, v in MATH_UNICODE_MAP.items():
+        translated = translated.replace(k, v)
+        
+    translated = re.sub(r'\^\{([0-9a-zA-Z+-=]*)\}', r'<sup>\1</sup>', translated)
+    translated = re.sub(r'\^([0-9a-zA-Z])', r'<sup>\1</sup>', translated)
+    translated = re.sub(r'\_\{([0-9a-zA-Z+-=]*)\}', r'<sub>\1</sub>', translated)
+    translated = re.sub(r'\_([0-9a-zA-Z])', r'<sub>\1</sub>', translated)
+    
+    # 2. Check if complex LaTeX is still present
+    if "\\" in translated or "{" in translated or "}" in translated:
+        encoded = urllib.parse.quote(formula_clean)
+        color_hex = text_color.lstrip('#')
+        dpi = "140" if is_display else "120"
+        url = f"https://latex.codecogs.com/png.image?\\dpi{{{dpi}}}\\bg_transparent\\color[HTML]{{{color_hex}}}{encoded}"
+        display_style = "display: block; margin: 8px auto;" if is_display else "vertical-align: middle; margin: 2px 0;"
+        return f'<img src="{url}" alt="{html.escape(formula_clean)}" title="{html.escape(formula_clean)}" style="{display_style}" />'
+        
+    font_style = "font-size: 1.15em;" if is_display else ""
+    return f'<span style="white-space: nowrap; font-family: \'Cambria Math\', \'Times New Roman\', serif; font-style: italic; {font_style}">{translated}</span>'
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  THEME
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -835,6 +1044,16 @@ class ReviewScreen(QWidget):
         self._floating_timer_reposition_pending = False
         settings = QSettings("AnkiOcclusion", "App")
         try:
+            self._hint_font_size = int(settings.value("review/hint_font_size", 13))
+        except (TypeError, ValueError):
+            self._hint_font_size = 13
+        self._hint_font_size = max(8, min(40, self._hint_font_size))
+        try:
+            self._user_hint_width = int(settings.value("review/hint_panel_width", 360))
+        except (TypeError, ValueError):
+            self._user_hint_width = 360
+        self._user_hint_width = max(200, min(1600, self._user_hint_width))
+        try:
             self._timer_x_pct = float(settings.value("review/timer_x_pct", 1.0))
         except (TypeError, ValueError):
             self._timer_x_pct = 1.0
@@ -1001,46 +1220,26 @@ class ReviewScreen(QWidget):
     def _set_hint_panel_visible(self, visible: bool):
         if visible:
             self._hint_panel.show()
+            self._hint_panel.raise_()
+            if getattr(self, "_floating_hint_button", None):
+                self._floating_hint_button.raise_()
             self._btn_note.setChecked(True)
-            QTimer.singleShot(50, self._apply_hint_panel_width)
+            self._reposition_hint_panel()
         else:
             self._hint_panel.hide()
             self._btn_note.setChecked(False)
-
-    def _apply_hint_panel_width(self):
-        def log_debug(message):
-            try:
-                import os
-                app_data_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "AnkiOcclusion")
-                log_file_path = os.path.join(app_data_dir, "anki_occlusion.log")
-                with open(log_file_path, "a", encoding="utf-8") as f:
-                    f.write(f"[DEBUG][hint_panel] {message}\n")
-            except Exception:
-                pass
-
-        if not self._hint_panel.isVisible():
-            log_debug("Not visible, skipping resize.")
-            return
-        target_w = getattr(self, "_last_calculated_hint_width", 360)
-        sizes = self._canvas_splitter.sizes()
-        log_debug(f"_apply_hint_panel_width: target_w={target_w}, current_sizes={sizes}")
-        if len(sizes) >= 2:
-            total_width = sum(sizes)
-            if total_width > 0:
-                left_width = total_width - target_w
-                self._canvas_splitter.setSizes([left_width, target_w])
-                log_debug(f"_apply_hint_panel_width: Set sizes to: {[left_width, target_w]}. New sizes: {self._canvas_splitter.sizes()}")
 
     def _toggle_hint_panel(self):
         self._set_hint_panel_visible(not self._hint_panel.isVisible())
         self.setFocus()
 
-    def _update_mask_note_ui(self):
-        self._btn_note.setChecked(False)
-        self._hint_browser.clear()
-        self._hint_panel.hide()
-        if getattr(self, "_floating_hint_button", None):
-            self._floating_hint_button.hide()
+    def _update_mask_note_ui(self, keep_visible=False):
+        if not keep_visible:
+            self._btn_note.setChecked(False)
+            self._hint_browser.clear()
+            self._hint_panel.hide()
+            if getattr(self, "_floating_hint_button", None):
+                self._floating_hint_button.hide()
 
         if not (0 <= self._idx < len(self._items)):
             self._btn_note.setEnabled(False)
@@ -1066,6 +1265,7 @@ class ReviewScreen(QWidget):
             note_content = card.get("notes", "")
 
         note_content = (note_content or "").strip()
+        self._current_note_content = note_content
 
         self._btn_note.setEnabled(True)
         if getattr(self, "_floating_hint_button", None):
@@ -1078,12 +1278,13 @@ class ReviewScreen(QWidget):
         subtext_color = p.get("C_SUBTEXT", "#A6ADC8")
         accent_color = p.get("C_ACCENT", "#7C6AF7")
         font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
+        border_color = p.get("C_BORDER", "#313244")
 
         css = f"""
         body {{
             color: {text_color};
             font-family: '{font_family}', 'Segoe UI', sans-serif;
-            font-size: 13px;
+            font-size: {self._hint_font_size}px;
             line-height: 1.4;
         }}
         a {{
@@ -1095,15 +1296,36 @@ class ReviewScreen(QWidget):
             border-radius: 4px;
             margin: 6px 0;
         }}
+        table {{
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+            border: 1px solid {border_color};
+        }}
+        th, td {{
+            padding: 8px 10px;
+            border: 1px solid {border_color};
+        }}
+        th {{
+            background-color: rgba(255, 255, 255, 0.08);
+            font-weight: bold;
+        }}
         """
 
         def format_field(text):
             if not text:
                 return ""
-            if "<img" in text or "<html>" in text or "<p>" in text or "<div" in text or "<span>" in text or "<br" in text:
-                return text
-            import html
-            return html.escape(text).replace("\n", "<br>")
+            
+            is_html = ("<p>" in text or "<div>" in text or "<span>" in text or "<br" in text or "<table" in text or "<img" in text or "<html>" in text)
+            
+            processed = text
+            if not is_html:
+                import html
+                processed = html.escape(text)
+                processed = parse_markdown_tables(processed)
+            
+            processed = parse_latex_math(processed, text_color)
+            return processed
 
         if note_content:
             n_html = format_field(note_content)
@@ -1147,17 +1369,15 @@ class ReviewScreen(QWidget):
                         max_img_width = max(max_img_width, w)
                         img_info.append((src, abs_path, w, pixmap))
 
-        target_panel_width = 360
+        target_panel_width = getattr(self, "_user_hint_width", 360)
         if max_img_width > 0:
-            target_panel_width = max_img_width + 40
-            sizes = self._canvas_splitter.sizes()
-            if len(sizes) >= 2:
-                total_width = sum(sizes)
-                if total_width > 0:
-                    max_limit = min(750, int(total_width * 0.55))
-                    target_panel_width = max(360, min(target_panel_width, max_limit))
+            target_panel_width = max(target_panel_width, max_img_width + 40)
+            total_width = self._canvas_stage.width()
+            if total_width > 0:
+                max_limit = int(total_width * 0.80)
+                target_panel_width = max(360, min(target_panel_width, max_limit))
             else:
-                target_panel_width = max(360, min(target_panel_width, 750))
+                target_panel_width = max(360, target_panel_width)
 
         self._last_calculated_hint_width = target_panel_width
         log_debug(f"Calculated last width: {self._last_calculated_hint_width} (max_img_width={max_img_width})")
@@ -1189,7 +1409,6 @@ class ReviewScreen(QWidget):
             
             def replace_src(match):
                 tag = match.group(0)
-                # Strip existing width, height, and style attributes that could interfere
                 tag = re.sub(r'\bwidth\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
                 tag = re.sub(r'\bheight\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
                 tag = re.sub(r'\bstyle\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
@@ -1206,7 +1425,6 @@ class ReviewScreen(QWidget):
                         tag,
                         flags=re.IGNORECASE
                     )
-                    # Inject display width
                     display_w = scaled_widths.get(src, panel_w)
                     tag_clean = tag.strip().rstrip('>').rstrip('/')
                     tag = tag_clean.strip() + f' width="{display_w}">'
@@ -1401,6 +1619,11 @@ class ReviewScreen(QWidget):
                 card_img_size=card_img_size
             )
             if dialog.exec_() != QDialog.Accepted:
+                if getattr(self, "_was_ink_active_before_ctrl", False):
+                    if getattr(self, "canvas", None):
+                        self.canvas.ink_set_active(True)
+                        self._update_ink_hint()
+                    self._was_ink_active_before_ctrl = False
                 return # Cancelled
             px = dialog.get_cropped_pixmap()
             
@@ -1439,14 +1662,42 @@ class ReviewScreen(QWidget):
                         
                     current_note = (current_note or "").strip()
                     
-                    img_tag = f'<img src="{relative_path}" width="{px.width()}" height="{px.height()}">'
-                    if current_note:
-                        if "<img" in current_note or "<html>" in current_note or "<p>" in current_note or "<div" in current_note or "<br" in current_note:
-                            new_note = f"{current_note}<br><br>{img_tag}"
+                    import base64
+                    import json
+                    stroke_data_list = []
+                    for stroke in self.canvas._ink_strokes:
+                        color_hex = stroke[0].name() if hasattr(stroke[0], "name") else str(stroke[0])
+                        pts = [{"x": pt.x(), "y": pt.y()} for pt in stroke[1:]]
+                        stroke_data_list.append({
+                            "color": color_hex,
+                            "points": pts,
+                            "implementation": getattr(stroke, "_implementation", "classic"),
+                            "path_key": getattr(stroke, "_path_key", None)
+                        })
+                    serialized_strokes = json.dumps(stroke_data_list)
+                    b64_strokes = base64.b64encode(serialized_strokes.encode('utf-8')).decode('utf-8')
+                    img_tag = f'<img src="{relative_path}" width="{px.width()}" height="{px.height()}" data-strokes="{b64_strokes}">'
+                    restored_info = getattr(self, "_restored_image_info", None)
+                    replaced = False
+                    if restored_info:
+                        restored_idx, restored_box_idx, restored_filename = restored_info
+                        if restored_idx == self._idx and restored_box_idx == box_idx:
+                            import re
+                            pattern = re.compile(rf'<img[^>]+?{re.escape(restored_filename)}[^>]*?>')
+                            if pattern.search(current_note):
+                                new_note = pattern.sub(img_tag, current_note)
+                                replaced = True
+                                
+                    if not replaced:
+                        if current_note:
+                            if "<img" in current_note or "<html>" in current_note or "<p>" in current_note or "<div" in current_note or "<br" in current_note:
+                                new_note = f"{current_note}<br><br>{img_tag}"
+                            else:
+                                new_note = f"{current_note}\n\n{img_tag}"
                         else:
-                            new_note = f"{current_note}\n\n{img_tag}"
-                    else:
-                        new_note = img_tag
+                            new_note = img_tag
+                            
+                    self._restored_image_info = None
                         
                     if active_box is not None:
                         if hasattr(active_box, "__setitem__"):
@@ -1483,6 +1734,13 @@ class ReviewScreen(QWidget):
                 self._show_review_toast("📋 Copied drawing to clipboard!")
         else:
             self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
+
+        # Restore ink state if it was temporarily disabled by holding Ctrl
+        if getattr(self, "_was_ink_active_before_ctrl", False):
+            if getattr(self, "canvas", None):
+                self.canvas.ink_set_active(True)
+                self._update_ink_hint()
+            self._was_ink_active_before_ctrl = False
 
     def _open_quick_note_editor(self):
         if not (0 <= self._idx < len(self._items)):
@@ -1543,6 +1801,119 @@ class ReviewScreen(QWidget):
             if not self._reveal_bar.isVisible():
                 self._set_hint_panel_visible(True)
         dialog.deleteLater()
+
+    def _show_hint_context_menu(self, pos):
+        # Create the standard context menu
+        menu = self._hint_browser.createStandardContextMenu(pos)
+        if not menu:
+            from PyQt5.QtWidgets import QMenu
+            menu = QMenu(self)
+            
+        # Get image source using document layout
+        img_src = self._hint_browser.document().documentLayout().imageAt(pos)
+        
+        # Fallback to character format
+        if not img_src:
+            cursor = self._hint_browser.cursorForPosition(pos)
+            char_format = cursor.charFormat()
+            if not char_format.isImageFormat():
+                left_cursor = self._hint_browser.cursorForPosition(pos)
+                left_cursor.movePosition(left_cursor.Left)
+                char_format = left_cursor.charFormat()
+            if char_format.isImageFormat():
+                img_src = char_format.toImageFormat().name()
+            
+        if img_src:
+            b64_strokes = self._get_strokes_for_image_src(img_src)
+            if b64_strokes:
+                # Create our custom action
+                restore_action = menu.addAction("✏️ Restore drawing to canvas")
+                
+                # Prepend it to the menu so it's at the very top
+                actions = menu.actions()
+                if actions:
+                    menu.insertAction(actions[0], restore_action)
+                    menu.insertSeparator(actions[0])
+                
+                # Extract filename
+                filename = img_src.split('/')[-1].split('\\')[-1]
+                # Connect the action
+                restore_action.triggered.connect(lambda checked=False, bs=b64_strokes, fn=filename: self._restore_ink_from_b64(bs, fn))
+                
+        menu.exec_(self._hint_browser.mapToGlobal(pos))
+
+    def _get_strokes_for_image_src(self, src):
+        if not getattr(self, "_current_note_content", None) or not src:
+            return None
+        # Extract filename (e.g., "sketch_abc.png") from the URL/path
+        filename = src.split('/')[-1].split('\\')[-1]
+        if not filename:
+            return None
+        import re
+        img_tags = re.findall(r'<img[^>]+>', self._current_note_content)
+        for tag in img_tags:
+            if filename in tag:
+                match = re.search(r'data-strokes=["\']([^"\']+)["\']', tag)
+                if match:
+                    return match.group(1)
+        return None
+
+    def _restore_ink_from_b64(self, b64_strokes, filename):
+        if not getattr(self, "canvas", None):
+            return
+            
+        import base64
+        import json
+        from PyQt5.QtGui import QColor
+        from PyQt5.QtCore import QPointF
+        from ui.canvas.interaction import StrokeList
+        
+        try:
+            serialized = base64.b64decode(b64_strokes).decode('utf-8')
+            stroke_data_list = json.loads(serialized)
+            
+            strokes = []
+            for stroke_data in stroke_data_list:
+                color = QColor(stroke_data["color"])
+                seq = [color]
+                for pt in stroke_data["points"]:
+                    seq.append(QPointF(pt["x"], pt["y"]))
+                stroke = StrokeList(seq)
+                stroke._implementation = stroke_data.get("implementation", "classic")
+                stroke._path_key = stroke_data.get("path_key")
+                strokes.append(stroke)
+                
+            if hasattr(self.canvas, "_push_ink_undo"):
+                self.canvas._push_ink_undo()
+            self.canvas._ink_strokes = strokes
+            
+            # Store restoration info (idx, box_idx, filename) so we can replace it when saving edits
+            card, box_idx, active_box = self._items[self._idx]
+            self._restored_image_info = (self._idx, box_idx, filename)
+            if hasattr(self.canvas, "_ink_path_cache"):
+                self.canvas._ink_path_cache = {}
+            self.canvas.update()
+            
+            # Refresh the hint box to ensure the image is displayed correctly
+            self._update_mask_note_ui(keep_visible=True)
+            
+            self._show_review_toast(f"✏️ Restored {len(strokes)} drawing strokes to canvas!")
+        except Exception as e:
+            self._show_review_toast("⚠️ Failed to restore drawing!")
+            print("Error restoring ink:", e)
+
+    def _copy_image_to_clipboard(self, img_src):
+        import os
+        import storage_paths
+        from PyQt5.QtGui import QPixmap, QApplication
+        
+        image_dir = storage_paths.archive_image_dir()
+        if image_dir and img_src.startswith("images/"):
+            filename = img_src[len("images/"):]
+            abs_path = os.path.join(image_dir, filename)
+            if os.path.exists(abs_path):
+                pixmap = QPixmap(abs_path)
+                QApplication.clipboard().setPixmap(pixmap)
 
     def closeEvent(self, e):
         try:
@@ -1751,6 +2122,7 @@ class ReviewScreen(QWidget):
         self._reposition_queue_edge_handle()
         self._reposition_queue_overlay()
         self._reposition_floating_timer()
+        self._reposition_hint_panel()
         if getattr(self, "_floating_hint_button", None) is not None:
             self._floating_hint_button.raise_()
         
@@ -2348,7 +2720,7 @@ class ReviewScreen(QWidget):
             self._update_pen_button_states()
             e.accept()
             return
-        elif key == Qt.Key_Alt and not e.isAutoRepeat():
+        elif shortcut_manager.event_matches(e, "review.pen_mouse_toggle") and not e.isAutoRepeat():
             self.canvas.ink_toggle()
             active = self.canvas._ink_active
             color = self.canvas._ink_colors[self.canvas._ink_color_idx]
@@ -3133,22 +3505,13 @@ class ReviewScreen(QWidget):
         self._canvas_stage = QWidget()
         self._canvas_stage.setStyleSheet(f"background:{bg};")
 
-        # Dynamic QSplitter to allow resizing the hint panel
-        canvas_splitter = QSplitter(Qt.Horizontal, self._canvas_stage)
-        canvas_splitter.setStyleSheet(
-            f"QSplitter::handle {{ background-color: {border}; width: 2px; }}"
-        )
-        self._canvas_splitter = canvas_splitter
-        
         canvas_stage_l = QVBoxLayout(self._canvas_stage)
         canvas_stage_l.setContentsMargins(0, 0, 0, 0)
-        canvas_stage_l.addWidget(canvas_splitter)
-        
-        canvas_splitter.addWidget(self._stacked_widget)
+        canvas_stage_l.addWidget(self._stacked_widget)
         self._stacked_widget.setMinimumWidth(300)
 
-        # Slide-out Solution Drawer / Hint Panel
-        self._hint_panel = QFrame()
+        # Slide-out Solution Drawer / Hint Panel (floating overlay)
+        self._hint_panel = QFrame(self._canvas_stage)
         if dojo:
             self._hint_panel.setStyleSheet(
                 f"QFrame{{background:{surface};border-left:2px solid {accent};border-radius:0;}}"
@@ -3158,6 +3521,7 @@ class ReviewScreen(QWidget):
                 f"QFrame{{background:{surface};border-left:1px solid {border};border-radius:0;}}"
             )
         self._hint_panel.setMinimumWidth(200)
+        self._hint_panel.hide()
 
         hp_layout = QVBoxLayout(self._hint_panel)
         hp_layout.setContentsMargins(12, 12, 12, 12)
@@ -3170,6 +3534,34 @@ class ReviewScreen(QWidget):
         hp_title.setStyleSheet(f"color:{accent};background:transparent;border:none;")
         hp_hdr.addWidget(hp_title)
         hp_hdr.addStretch()
+
+        # Font size adjustment buttons
+        self._hp_zoom_out = QPushButton("A-")
+        self._hp_zoom_out.setToolTip("Decrease Font Size")
+        self._hp_zoom_out.setFixedSize(24, 24)
+        
+        self._hp_zoom_in = QPushButton("A+")
+        self._hp_zoom_in.setToolTip("Increase Font Size")
+        self._hp_zoom_in.setFixedSize(24, 24)
+        
+        if dojo:
+            btn_style = (
+                f"QPushButton{{background:transparent;color:{text};border:none;font-family:'{font}';font-weight:bold;font-size:12px;}}"
+                f"QPushButton:hover{{color:{accent};}}"
+            )
+        else:
+            btn_style = (
+                f"QPushButton{{background:transparent;color:{subtext};border:none;font-family:'Segoe UI';font-weight:bold;font-size:12px;}}"
+                f"QPushButton:hover{{color:{accent};}}"
+            )
+        self._hp_zoom_out.setStyleSheet(btn_style)
+        self._hp_zoom_in.setStyleSheet(btn_style)
+        
+        self._hp_zoom_out.clicked.connect(self._zoom_hint_out)
+        self._hp_zoom_in.clicked.connect(self._zoom_hint_in)
+        
+        hp_hdr.addWidget(self._hp_zoom_out)
+        hp_hdr.addWidget(self._hp_zoom_in)
 
         hp_close = QPushButton("✕")
         hp_close.setFixedSize(24, 24)
@@ -3189,17 +3581,17 @@ class ReviewScreen(QWidget):
 
         self._hint_browser = QTextBrowser()
         self._hint_browser.setOpenExternalLinks(True)
+        self._hint_browser.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._hint_browser.customContextMenuRequested.connect(self._show_hint_context_menu)
         self._hint_browser.setStyleSheet(
             f"QTextBrowser{{background:transparent;color:{text};border:none;"
-            f"font-size:13px;line-height:1.4;}}"
+            f"font-size:{self._hint_font_size}px;line-height:1.4;}}"
             f"QScrollBar:vertical{{background:{surface};width:6px;border-radius:3px;}}"
             f"QScrollBar::handle:vertical{{background:{border};border-radius:3px;}}"
         )
         hp_layout.addWidget(self._hint_browser)
-
-        canvas_splitter.addWidget(self._hint_panel)
-        self._hint_panel.hide()
-        canvas_splitter.setSizes([800, 360])
+        
+        self._resize_handle = ResizeHandle(self._hint_panel, self._on_hint_panel_resize)
 
         # Configure floating action buttons based on the active theme
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
@@ -3772,6 +4164,59 @@ class ReviewScreen(QWidget):
     def _update_ink_hint(self):
         """Canvas toasts handle the visible pen status in review mode."""
         pass
+
+    def _zoom_hint_in(self):
+        if self._hint_font_size < 40:
+            self._hint_font_size += 1
+            self._apply_hint_font_size()
+
+    def _zoom_hint_out(self):
+        if self._hint_font_size > 8:
+            self._hint_font_size -= 1
+            self._apply_hint_font_size()
+
+    def _zoom_hint_reset(self):
+        self._hint_font_size = 13
+        self._apply_hint_font_size()
+
+    def _apply_hint_font_size(self):
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        text_color = p.get("C_TEXT", "#CDD6F4")
+        surface_color = p.get("C_SURFACE", "#1E1E2E")
+        border_color = p.get("C_BORDER", "#313244")
+        
+        self._hint_browser.setStyleSheet(
+            f"QTextBrowser{{background:transparent;color:{text_color};border:none;"
+            f"font-size:{self._hint_font_size}px;line-height:1.4;}}"
+            f"QScrollBar:vertical{{background:{surface_color};width:6px;border-radius:3px;}}"
+            f"QScrollBar::handle:vertical{{background:{border_color};border-radius:3px;}}"
+        )
+        
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("review/hint_font_size", self._hint_font_size)
+        settings.sync()
+        
+        if self._hint_panel.isVisible():
+            self._update_mask_note_ui(keep_visible=True)
+
+    def _on_hint_panel_resize(self, new_width):
+        self._user_hint_width = new_width
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("review/hint_panel_width", self._user_hint_width)
+        settings.sync()
+        self._reposition_hint_panel()
+
+    def _reposition_hint_panel(self):
+        if not hasattr(self, "_hint_panel") or self._hint_panel is None:
+            return
+        w = self._canvas_stage.width()
+        h = self._canvas_stage.height()
+        panel_w = getattr(self, "_user_hint_width", 360)
+        self._hint_panel.setGeometry(w - panel_w, 0, panel_w, h)
+        if hasattr(self, "_resize_handle"):
+            self._resize_handle.setGeometry(0, 0, 6, h)
 
     def _activate_default_review_pen(self):
         canvas = self.__dict__.get("canvas", None)
