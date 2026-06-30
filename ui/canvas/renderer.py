@@ -167,7 +167,7 @@ class CanvasRendererMixin:
         p.fillRect(clip, _C_BG_CANVAS)
 
         p.save()
-        if getattr(self, "_focus_mode", False):
+        if getattr(self, "_focus_mode", False) and getattr(self, "_mode", "review") == "review":
             p.setOpacity(getattr(self, "_bg_opacity", 0.2))
 
         if self._px and not self._px.isNull():
@@ -342,7 +342,7 @@ class CanvasRendererMixin:
                 else:
                     brush = cc["C_MASK_BRUSH"]
                     pen = cc["C_BORDER_PEN_2"]
-                    if getattr(self, "_focus_mode", False):
+                    if getattr(self, "_focus_mode", False) and getattr(self, "_mode", "review") == "review":
                         factor = self._bg_opacity
                         bg = _C_BG_CANVAS
                         def blend(c1, c2, f):
