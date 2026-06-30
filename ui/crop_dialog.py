@@ -383,6 +383,10 @@ class CropInkDialog(QDialog):
         from PyQt5.QtGui import QKeySequence
         self.save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
         self.save_shortcut.activated.connect(self.accept)
+        self.enter_shortcut = QShortcut(QKeySequence("Return"), self)
+        self.enter_shortcut.activated.connect(self.accept)
+        self.enter_shortcut_2 = QShortcut(QKeySequence("Enter"), self)
+        self.enter_shortcut_2.activated.connect(self.accept)
 
     def _select_scratchpad_only(self):
         self.crop_canvas.select_scratchpad_only()
@@ -642,6 +646,10 @@ class CropImageDialog(QDialog):
         from PyQt5.QtGui import QKeySequence
         self.save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
         self.save_shortcut.activated.connect(self.accept)
+        self.enter_shortcut = QShortcut(QKeySequence("Return"), self)
+        self.enter_shortcut.activated.connect(self.accept)
+        self.enter_shortcut_2 = QShortcut(QKeySequence("Enter"), self)
+        self.enter_shortcut_2.activated.connect(self.accept)
 
     def get_cropped_pixmap(self):
         return self.crop_canvas.get_cropped_pixmap()
