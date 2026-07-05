@@ -411,6 +411,8 @@ Useful terminal diagnostics while this performance work is being observed:
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+S` | Save PDF annotations |
+| `Ctrl+C` | Copy selected pasted image |
+| `Ctrl+X` | Cut selected pasted image |
 | `Ctrl+V` | Paste clipboard image |
 | `Delete` | Delete selected pasted image |
 | `Ctrl+Z` | Undo |

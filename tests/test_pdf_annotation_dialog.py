@@ -4,11 +4,11 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt5.QtCore import QPointF, QRectF
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication
 
 from ui.pdf_annotation_dialog import PdfAnnotationCanvas, PdfAnnotationDialog
-
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -200,6 +200,8 @@ class PdfAnnotationDialogTests(unittest.TestCase):
         self.assertEqual(dialog._annotation_pen_color, PdfAnnotationDialog.PEN_DEFAULT_COLOR)
         self.assertEqual(dialog._annotation_pen_width, PdfAnnotationDialog.PEN_DEFAULT_WIDTH)
 
+
+
     def test_choose_pen_color_updates_annotation_pen_only(self):
         dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
         dialog._annotation_pen_color = "#FF4444"
@@ -225,6 +227,75 @@ class PdfAnnotationDialogTests(unittest.TestCase):
         dialog._save_pdf()
 
         dialog.session.save.assert_not_called()
+
+    def test_copy_selected_image_no_selection(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog.canvas = MagicMock()
+        dialog.canvas.selected_image.return_value = (None, None)
+        dialog.lbl_status = MagicMock()
+
+        res = dialog._copy_selected_image()
+        self.assertFalse(res)
+        dialog.lbl_status.setText.assert_called_with("no screenshot selected to copy")
+
+    def test_copy_selected_image_success(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog.canvas = MagicMock()
+        dialog.canvas.selected_image.return_value = (1, "image_id")
+        dialog.lbl_status = MagicMock()
+
+        mock_item = {"pixmap": QPixmap(10, 10)}
+        dialog.session = MagicMock()
+        dialog.session._find_new_item.return_value = mock_item
+
+        clipboard = MagicMock()
+        with patch("ui.pdf_annotation_dialog.QApplication.clipboard", return_value=clipboard):
+            res = dialog._copy_selected_image()
+
+        self.assertTrue(res)
+        clipboard.setPixmap.assert_called_once()
+        dialog.lbl_status.setText.assert_called_with("copied screenshot to clipboard")
+
+    def test_cut_selected_image_success(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog._copy_selected_image = MagicMock(return_value=True)
+        dialog._delete_selected_image = MagicMock()
+        dialog.lbl_status = MagicMock()
+
+        dialog._cut_selected_image()
+
+        dialog._copy_selected_image.assert_called_once()
+        dialog._delete_selected_image.assert_called_once()
+        dialog.lbl_status.setText.assert_called_with("cut selected screenshot")
+
+
+class PdfAnnotationCanvasItemsKeyTests(unittest.TestCase):
+    def test_get_page_items_key_with_qrectf_and_tuples(self):
+        canvas = PdfAnnotationCanvas()
+        canvas._tool = "image"
+        canvas._image_drag_item = None
+        
+        item_qrect = {
+            "id": "1",
+            "points": [QPointF(0, 0), QPointF(10, 10)],
+            "rect": QRectF(10, 20, 30, 40)
+        }
+        item_tuple = {
+            "id": "2",
+            "points": [(0, 0), (10, 10)],
+            "rect": (50, 60, 70, 80)
+        }
+        
+        canvas.set_overlay_provider(lambda page_num: [item_qrect, item_tuple])
+        
+        sig = canvas._get_page_items_key(0)
+        self.assertEqual(len(sig), 2)
+        self.assertEqual(sig[0][0], "1")
+        self.assertEqual(sig[0][2], (0.0, 0.0, 10.0, 10.0))
+        self.assertEqual(sig[0][3], (10.0, 20.0, 30.0, 40.0))
+        self.assertEqual(sig[1][0], "2")
+        self.assertEqual(sig[1][2], (0, 0, 10, 10))
+        self.assertEqual(sig[1][3], (50, 60, 70, 80))
 
 
 if __name__ == "__main__":
