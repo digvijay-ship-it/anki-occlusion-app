@@ -20,10 +20,7 @@ def _is_debug_message(args):
 
 
 def install_debug_output_filter():
-    if _debug_logs_enabled():
-        return
-    if getattr(builtins.print, "_anki_debug_filter", False):
-        return
+    return
 
     def filtered_print(*args, **kwargs):
         if _debug_logs_enabled():
