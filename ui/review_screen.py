@@ -280,14 +280,14 @@ class ScrollFadeOverlay(QWidget):
         painter.fillRect(rect, gradient)
         
         painter.setRenderHint(QPainter.Antialiasing)
-        accent_hex = p.get("C_ACCENT", "#FFB7C5")
+        accent_hex = p.get("C_GREEN", "#39FF14")
         accent_color = QColor(accent_hex)
         
         t = time.time() * 5.0
         alpha = int(160 + 95 * math.sin(t))
         accent_color.setAlpha(alpha)
         
-        pen = QPen(accent_color, 2.5)
+        pen = QPen(accent_color, 4.5)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
@@ -298,15 +298,15 @@ class ScrollFadeOverlay(QWidget):
         
         if self.direction == "bottom":
             points = [
-                QPointF(cx - 8, cy - 3),
-                QPointF(cx, cy + 3),
-                QPointF(cx + 8, cy - 3)
+                QPointF(cx - 12, cy - 5),
+                QPointF(cx, cy + 5),
+                QPointF(cx + 12, cy - 5)
             ]
         else:
             points = [
-                QPointF(cx - 8, cy + 3),
-                QPointF(cx, cy - 3),
-                QPointF(cx + 8, cy + 3)
+                QPointF(cx - 12, cy + 5),
+                QPointF(cx, cy - 5),
+                QPointF(cx + 12, cy + 5)
             ]
             
         painter.drawPolyline(QPolygonF(points))
@@ -1071,6 +1071,7 @@ class ReviewScreen(QWidget):
 
         self._cache_panel = None
         self._items = []
+        self._hint_view_mode = "mask"
         self._pdf_cache = {}
         from collections import OrderedDict
         self._text_card_cache = OrderedDict()
@@ -1404,11 +1405,54 @@ class ReviewScreen(QWidget):
             processed = parse_latex_math(processed, text_color)
             return processed
 
-        if note_content:
-            n_html = format_field(note_content)
+        # Fetch PDF metadata if available
+        pdf_path = card.get("pdf_path")
+        pdf_meta = None
+        if pdf_path:
+            from data_manager import store
+            metadata_dict = store._data.setdefault("pdf_metadata", {})
+            pdf_meta = metadata_dict.get(pdf_path)
+            if not pdf_meta:
+                base_name = os.path.basename(pdf_path)
+                for k, v in metadata_dict.items():
+                    if os.path.basename(k) == base_name:
+                        pdf_meta = v
+                        break
+
+        # Combine active note and PDF note content for image scanning
+        all_notes_for_img_scan = note_content or ""
+        if pdf_meta and pdf_meta.get("notes"):
+            all_notes_for_img_scan += " " + pdf_meta.get("notes", "")
+
+        # Check current view mode
+        view_mode = getattr(self, "_hint_view_mode", "mask")
+        
+        if view_mode == "mask":
+            if note_content:
+                n_html = format_field(note_content)
+            else:
+                themed_text = "Jutsu" if theme == "dojo" else ("Spell" if theme == "arcanum" else "Mask")
+                n_html = f"<i style='color:{subtext_color};'>No {themed_text.lower()} hint or note yet.</i><br><br><span style='font-size:11px;color:{subtext_color};'>Press <b>Ctrl+N</b> to add a hint/note or sketch a diagram.</span>"
         else:
-            themed_text = "Jutsu" if theme == "dojo" else ("Spell" if theme == "arcanum" else "Mask")
-            n_html = f"<i style='color:{subtext_color};'>No {themed_text.lower()} hint or note yet.</i><br><br><span style='font-size:11px;color:{subtext_color};'>Press <b>Ctrl+N</b> to add a hint/note or sketch a diagram.</span>"
+            pdf_html = ""
+            if pdf_meta:
+                lecture = pdf_meta.get("lecture_num", "").strip()
+                notes = pdf_meta.get("notes", "").strip()
+                if lecture or notes:
+                    pdf_html = f"""
+                    <div>
+                        <div style="color: {accent_color}; font-weight: bold; font-size: 11px; letter-spacing: 0.5px; margin-bottom: 6px;">📄 PDF REFERENCE NOTES</div>
+                    """
+                    if lecture:
+                        pdf_html += f'<div style="font-weight: bold; margin-bottom: 6px; font-size: 12px;">Lecture: {lecture}</div>'
+                    if notes:
+                        pdf_html += f'<div style="color: {subtext_color}; font-size: 12px; line-height: 1.4;">{format_field(notes)}</div>'
+                    pdf_html += "</div>"
+            
+            if pdf_html:
+                n_html = pdf_html
+            else:
+                n_html = f"<i style='color:{subtext_color};'>No PDF reference notes saved for this document.</i><br><br><span style='font-size:11px;color:{subtext_color};'>Click the <b>📄 PDF Notes</b> button in the top toolbar to add lecture notes or formulas.</span>"
 
         # Define log helper
         def log_debug(message):
@@ -1427,11 +1471,11 @@ class ReviewScreen(QWidget):
         # Calculate target panel width based on image size in hint content
         max_img_width = 0
         img_info = []
-        if note_content:
+        if all_notes_for_img_scan:
             from storage_paths import resolve_asset_path
             # Use robust regex that matches src attributes with optional spaces around '='
             _RE_IMG_SRC_ROBUST = re.compile(r'<img\s+[^>]*src\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
-            sources = _RE_IMG_SRC_ROBUST.findall(note_content)
+            sources = _RE_IMG_SRC_ROBUST.findall(all_notes_for_img_scan)
             log_debug(f"Found image sources: {sources}")
             for src in sources:
                 abs_path = resolve_asset_path(src)
@@ -1462,16 +1506,19 @@ class ReviewScreen(QWidget):
         # Clear document to remove old registered resources
         self._hint_browser.document().clear()
         
-        # Calculate maximum display width inside the text browser container
-        panel_w = max(200, target_panel_width - 32)
+        # Calculate maximum display width inside the text browser container based on the actual physical panel width
+        panel_w = max(200, getattr(self, "_user_hint_width", 360) - 32)
         scaled_widths = {}
+        scaled_heights = {}
         
         # Scale and register each image as a local document resource
         for src, abs_path, w, pixmap in img_info:
             display_w = min(w, panel_w)
-            scaled_widths[src] = display_w
-            
             scaled_pixmap = pixmap.scaledToWidth(display_w, Qt.SmoothTransformation)
+            
+            scaled_widths[src] = display_w
+            scaled_heights[src] = scaled_pixmap.height()
+            
             doc = self._hint_browser.document()
             doc.addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
             doc.addResource(QTextDocument.ImageResource, QUrl.fromLocalFile(abs_path), scaled_pixmap)
@@ -1486,13 +1533,18 @@ class ReviewScreen(QWidget):
             
             def replace_src(match):
                 tag = match.group(0)
-                tag = re.sub(r'\bwidth\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
-                tag = re.sub(r'\bheight\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
-                tag = re.sub(r'\bstyle\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
-                
                 src_match = re.search(r'src\s*=\s*["\']([^"\']+)["\']', tag, flags=re.IGNORECASE)
                 if src_match:
                     src = src_match.group(1)
+                    # If it's a remote URL, data URL, or existing file URL, keep it as is
+                    if src.lower().startswith(('http://', 'https://', 'data:', 'file:')):
+                        return tag
+                    
+                    # Clean width/height/style on local images to allow scaling
+                    tag = re.sub(r'\bwidth\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
+                    tag = re.sub(r'\bheight\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
+                    tag = re.sub(r'\bstyle\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
+                    
                     abs_path = resolve_asset_path(src)
                     abs_path = os.path.normpath(abs_path)
                     abs_path_url = QUrl.fromLocalFile(abs_path).toString()
@@ -1503,13 +1555,22 @@ class ReviewScreen(QWidget):
                         flags=re.IGNORECASE
                     )
                     display_w = scaled_widths.get(src, panel_w)
+                    display_h = scaled_heights.get(src)
                     tag_clean = tag.strip().rstrip('>').rstrip('/')
-                    tag = tag_clean.strip() + f' width="{display_w}">'
+                    if display_h is not None:
+                        tag = tag_clean.strip() + f' width="{display_w}" height="{display_h}">'
+                    else:
+                        tag = tag_clean.strip() + f' width="{display_w}">'
                 return tag
                 
             return re.sub(r'<img[^>]+>', replace_src, html_content, flags=re.IGNORECASE)
 
         html_body = f"<html><head><style>{css}</style></head><body>{process_html_images(n_html)}</body></html>"
+        try:
+            with open("C:/Users/Digvijay/.gemini/antigravity/brain/f1ad6817-33d3-4eb7-b150-94ad205f7304/scratch/rendered.html", "w", encoding="utf-8") as f:
+                f.write(html_body)
+        except Exception:
+            pass
         self._hint_browser.setHtml(html_body)
         
         # Trigger scroll indicator update after layout recalculates
@@ -1799,7 +1860,7 @@ class ReviewScreen(QWidget):
                                     b["note"] = new_note
                                     
                     from data_manager import store
-                    store.save_force(async_save=True)
+                    store.save_force(async_save=True, force_gdrive=False)
                     
                     self._update_mask_note_ui()
                     if not self._reveal_bar.isVisible():
@@ -1824,6 +1885,215 @@ class ReviewScreen(QWidget):
                 self._update_ink_hint()
                 self._update_pen_button_states()
             self._was_ink_active_before_ctrl = False
+
+    def _open_quick_note_editor_for_box_idx(self, box_idx_to_edit):
+        if not (0 <= self._idx < len(self._items)):
+            return
+            
+        card, current_box_idx, active_box = self._items[self._idx]
+        
+        if not (0 <= box_idx_to_edit < len(card.get("boxes", []))):
+            self._open_quick_note_editor()
+            return
+            
+        target_box = card.get("boxes")[box_idx_to_edit]
+        
+        current_note = ""
+        if hasattr(target_box, "get"):
+            current_note = target_box.get("note", "")
+        else:
+            current_note = getattr(target_box, "note", "")
+            
+        current_note = current_note or ""
+        
+        dialog = QuickNoteDialog(current_note, parent=self)
+        dialog.setWindowTitle(f"Edit Mask Note / Hint - Mask #{box_idx_to_edit + 1}")
+        accepted = (dialog.exec_() == QDialog.Accepted)
+        
+        if getattr(self, "_was_ink_active_before_ctrl", False):
+            if getattr(self, "canvas", None):
+                self.canvas.ink_set_active(True)
+                self._update_ink_hint()
+                self._update_pen_button_states()
+            self._was_ink_active_before_ctrl = False
+            
+        if accepted:
+            if "<img" in dialog.note_edit.toHtml():
+                new_note = dialog.note_edit.toHtml()
+            else:
+                new_note = dialog.note_edit.toPlainText().strip()
+                
+            gid = target_box.get("group_id") if hasattr(target_box, "get") else getattr(target_box, "group_id", None)
+            
+            # Update the card database representation
+            if gid:
+                for b in card.get("boxes", []):
+                    b_gid = b.get("group_id") if hasattr(b, "get") else getattr(b, "group_id", None)
+                    if b_gid == gid:
+                        if hasattr(b, "__setitem__"):
+                            b["note"] = new_note
+                        elif hasattr(b, "note"):
+                            b.note = new_note
+            else:
+                if hasattr(target_box, "__setitem__"):
+                    target_box["note"] = new_note
+                elif hasattr(target_box, "note"):
+                    target_box.note = new_note
+                    
+            # Update canvas in-memory boxes in real-time
+            if getattr(self, "canvas", None) is not None:
+                if gid:
+                    for b in self.canvas._boxes:
+                        if b.get("group_id") == gid:
+                            b["note"] = new_note
+                elif 0 <= box_idx_to_edit < len(self.canvas._boxes):
+                    self.canvas._boxes[box_idx_to_edit]["note"] = new_note
+                    
+            from data_manager import store
+            store.save_force(async_save=True, force_gdrive=False)
+            
+            # If the edited box matches the active box under review, update UI
+            is_active_match = False
+            if isinstance(current_box_idx, int) and current_box_idx == box_idx_to_edit:
+                is_active_match = True
+            elif isinstance(current_box_idx, tuple) and current_box_idx[0] == "group" and gid and current_box_idx[1] == gid:
+                is_active_match = True
+                
+            if is_active_match:
+                self._update_mask_note_ui(keep_visible=True)
+                if not self._reveal_bar.isVisible():
+                    self._set_hint_panel_visible(True)
+            else:
+                self._show_review_toast(f"💾 Saved note for Mask #{box_idx_to_edit + 1}!")
+                
+        dialog.deleteLater()
+
+    def _on_canvas_right_clicked_box(self, box_idx, global_pos):
+        if not (0 <= self._idx < len(self._items)):
+            return
+            
+        card, current_box_idx, _ = self._items[self._idx]
+        if not (0 <= box_idx < len(card.get("boxes", []))):
+            return
+            
+        from PyQt5.QtWidgets import QMenu
+        menu = QMenu(self)
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = p.get("C_SURFACE", "#24283B")
+        text = p.get("C_TEXT", "#CDD6F4")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        border = p.get("C_BORDER", "#45475A")
+        
+        menu.setStyleSheet(
+            f"QMenu {{ background-color: {bg}; color: {text}; border: 1px solid {border}; border-radius: 4px; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 20px 6px 20px; border-radius: 2px; }}"
+            f"QMenu::item:selected {{ background-color: {accent}; color: {bg}; }}"
+        )
+        
+        target_box = card.get("boxes")[box_idx]
+        gid = target_box.get("group_id") if hasattr(target_box, "get") else getattr(target_box, "group_id", None)
+        
+        is_active = False
+        if isinstance(current_box_idx, int) and current_box_idx == box_idx:
+            is_active = True
+        elif isinstance(current_box_idx, tuple) and current_box_idx[0] == "group" and gid and current_box_idx[1] == gid:
+            is_active = True
+            
+        if is_active:
+            label_text = "💡 Edit Hint for Active Mask (Current)"
+        elif gid:
+            label_text = f"✏️ Edit Hint for Group '{gid}' (Mask #{box_idx + 1})"
+        else:
+            label_text = f"✏️ Edit Hint for Mask #{box_idx + 1}"
+            
+        action_edit = menu.addAction(label_text)
+        action_cancel = menu.addAction("✕ Cancel")
+        
+        action = menu.exec_(global_pos)
+        if action == action_edit:
+            self._open_quick_note_editor_for_box_idx(box_idx)
+
+    def _update_hint_tab_styles(self):
+        if not hasattr(self, "_btn_hint_tab_mask") or not hasattr(self, "_btn_hint_tab_pdf"):
+            return
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        subtext = p.get("C_SUBTEXT", "#A6ADC8")
+        bg = p.get("C_BG", "#1E1E2E")
+        surface = p.get("C_SURFACE", "#24283B")
+        border = p.get("C_BORDER", "#45475A")
+        font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
+        
+        from PyQt5.QtGui import QColor
+        color_obj = QColor(accent)
+        accent_raw = f"{color_obj.red()},{color_obj.green()},{color_obj.blue()}"
+        
+        active_style = (
+            f"QPushButton {{ background: {accent}; color: {bg if theme != 'classic' else 'white'}; border: none; border-radius: 12px; "
+            f"font-family: '{font_family}'; font-weight: bold; font-size: 11px; padding: 4px 12px; }}"
+        )
+        inactive_style = (
+            f"QPushButton {{ background: {surface}; color: {subtext}; border: 1px solid {border}; border-radius: 12px; "
+            f"font-family: '{font_family}'; font-weight: bold; font-size: 11px; padding: 4px 12px; }}"
+            f"QPushButton:hover {{ background: rgba({accent_raw}, 0.15); color: {accent}; border-color: {accent}; }}"
+        )
+        
+        if getattr(self, "_hint_view_mode", "mask") == "mask":
+            self._btn_hint_tab_mask.setStyleSheet(active_style)
+            self._btn_hint_tab_pdf.setStyleSheet(inactive_style)
+        else:
+            self._btn_hint_tab_mask.setStyleSheet(inactive_style)
+            self._btn_hint_tab_pdf.setStyleSheet(active_style)
+
+    def _set_hint_view_mode(self, mode):
+        self._hint_view_mode = mode
+        self._update_hint_tab_styles()
+        self._update_mask_note_ui(keep_visible=True)
+
+    def _open_pdf_notes_editor(self):
+        if not (0 <= self._idx < len(self._items)):
+            return
+            
+        card, _, _ = self._items[self._idx]
+        pdf_path = card.get("pdf_path")
+        if not pdf_path:
+            self._show_review_toast("⚠️ No PDF associated with this card!")
+            return
+            
+        from data_manager import store
+        metadata_dict = store._data.setdefault("pdf_metadata", {})
+        pdf_meta = metadata_dict.get(pdf_path, {})
+        
+        lecture = pdf_meta.get("lecture_num", "")
+        notes = pdf_meta.get("notes", "")
+        
+        dialog = PdfMetadataDialog(lecture, notes, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            new_lecture = dialog.inp_lecture.text().strip()
+            if "<img" in dialog.inp_notes.toHtml():
+                new_notes = dialog.inp_notes.toHtml()
+            else:
+                new_notes = dialog.inp_notes.toPlainText().strip()
+                
+            metadata_dict[pdf_path] = {
+                "lecture_num": new_lecture,
+                "notes": new_notes,
+                "updated": datetime.now().isoformat()
+            }
+            
+            store.save_force(async_save=True, force_gdrive=False)
+            self._show_review_toast("💾 Saved PDF reference notes!")
+            
+            # Refresh UI to show the updated notes immediately
+            self._update_mask_note_ui(keep_visible=True)
+            
+        dialog.deleteLater()
 
     def _open_quick_note_editor(self):
         if not (0 <= self._idx < len(self._items)):
@@ -1879,7 +2149,7 @@ class ReviewScreen(QWidget):
                             b["note"] = new_note
                             
             from data_manager import store
-            store.save_force(async_save=True)
+            store.save_force(async_save=True, force_gdrive=False)
             
             self._update_mask_note_ui()
             if not self._reveal_bar.isVisible():
@@ -2489,8 +2759,11 @@ class ReviewScreen(QWidget):
 
     def _load_item(self):
         load_t0 = time.perf_counter()
+        if self._idx < 0 or self._idx >= len(self._items):
+            self._finish()
+            return
         # [O(1) FIX] Skip tombstoned (deleted) boxes
-        while self._idx < len(self._items):
+        while 0 <= self._idx < len(self._items):
             _, b, _ = self._items[self._idx]
             bid = b[1] if isinstance(b, tuple) else (b if isinstance(b, str) else "")
             if bid and bid in self._deleted_ids:
@@ -2498,11 +2771,18 @@ class ReviewScreen(QWidget):
             else:
                 break
 
-        if self._idx >= len(self._items):
+        if self._idx < 0 or self._idx >= len(self._items):
             self._finish()
             return
 
         card, box_idx, sm2_obj = self._items[self._idx]
+        if hasattr(self.parent(), "save_last_review_session") and self._items:
+            self.parent().save_last_review_session([item[0] for item in self._items], self._idx)
+        self._hint_view_mode = "mask"
+        self._update_hint_tab_styles()
+        has_pdf = bool(card.get("pdf_path"))
+        if hasattr(self, "_btn_pdf_note"):
+            self._btn_pdf_note.setEnabled(has_pdf)
         item_title = card.get("title", "Untitled")
         if self._stimer:
             self._stimer.set_current_pdf(card.get("pdf_path", ""))
@@ -2799,6 +3079,18 @@ class ReviewScreen(QWidget):
             self._update_pen_button_states()
             e.accept()
             return
+        elif shortcut_manager.event_matches(e, "review.pen_eraser_toggle") and not e.isAutoRepeat():
+            if not getattr(self.canvas, "_ink_active", False):
+                self.canvas.ink_set_active(True)
+                self.canvas.ink_set_mode("pen")
+            else:
+                current_mode = self.canvas.ink_get_mode()
+                new_mode = "eraser" if current_mode == "pen" else "pen"
+                self.canvas.ink_set_mode(new_mode)
+            self._update_ink_hint()
+            self._update_pen_button_states()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.pen_toggle") and not e.isAutoRepeat():
             self.canvas.ink_set_active(True)
             self.canvas.ink_set_mode("pen")
@@ -2826,20 +3118,20 @@ class ReviewScreen(QWidget):
             key in (Qt.Key_Equal, Qt.Key_Plus)
             and not (mods & Qt.ControlModifier)
         ):
-            if getattr(self.canvas, "_focus_mode", False) is True:
-                self._adjust_focus_opacity(-0.05)
-            elif getattr(self.canvas, "_ink_active", False):
+            if getattr(self.canvas, "_ink_active", False):
                 self.canvas.ink_adjust_width(0.4)
                 self._capture_review_ink_width("width_plus")
+            elif getattr(self.canvas, "_focus_mode", False) is True:
+                self._adjust_focus_opacity(-0.05)
         elif (
             key == Qt.Key_Minus
             and not (mods & Qt.ControlModifier)
         ):
-            if getattr(self.canvas, "_focus_mode", False) is True:
-                self._adjust_focus_opacity(0.05)
-            elif getattr(self.canvas, "_ink_active", False):
+            if getattr(self.canvas, "_ink_active", False):
                 self.canvas.ink_adjust_width(-0.4)
                 self._capture_review_ink_width("width_minus")
+            elif getattr(self.canvas, "_focus_mode", False) is True:
+                self._adjust_focus_opacity(0.05)
         elif shortcut_manager.event_matches(e, "review.pen_color") and not e.isAutoRepeat():
             if self.canvas._ink_active:
                 if bool(mods & Qt.ShiftModifier):
@@ -3088,6 +3380,10 @@ class ReviewScreen(QWidget):
         self._btn_note.clicked.connect(self._toggle_hint_panel)
         self._btn_note.setEnabled(False)
 
+        self._btn_pdf_note = _hdr_btn("📄 PDF Notes")
+        self._btn_pdf_note.clicked.connect(self._open_pdf_notes_editor)
+        self._btn_pdf_note.setEnabled(False)
+
         self._btn_save_ink = _hdr_btn("🎨 Save Ink")
         self._btn_save_ink.clicked.connect(self._save_review_ink_to_note)
         self._btn_save_ink.setEnabled(False)
@@ -3131,6 +3427,7 @@ class ReviewScreen(QWidget):
         row1.addWidget(b_edit)
         row1.addWidget(self._btn_annot)
         row1.addWidget(self._btn_note)
+        row1.addWidget(self._btn_pdf_note)
         row1.addWidget(self._btn_save_ink)
         row1.addWidget(self._btn_focus_canvas)
         row1.addWidget(self._btn_focus_opacity_minus)
@@ -3547,6 +3844,7 @@ class ReviewScreen(QWidget):
         self._activate_default_review_pen()
         self._update_pen_button_states()
         self.canvas.right_clicked.connect(self._toggle_chrome)
+        self.canvas.right_clicked_box.connect(self._on_canvas_right_clicked_box)
 
         self._canvas_scroll.setWidget(self.canvas)
         self._canvas_scroll.set_canvas(self.canvas)
@@ -3577,6 +3875,13 @@ class ReviewScreen(QWidget):
         self._sc_next_page.setContext(Qt.WidgetWithChildrenShortcut)
         self._sc_next_page.setAutoRepeat(False)
         self._sc_next_page.activated.connect(self._go_next_review_page)
+
+        self._sc_pdf_metadata = QShortcut(
+            QKeySequence(shortcut_manager.shortcut_text("review.pdf_metadata")), self
+        )
+        self._sc_pdf_metadata.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_pdf_metadata.setAutoRepeat(False)
+        self._sc_pdf_metadata.activated.connect(self._open_pdf_notes_editor)
 
         self._pdf_viewer = PdfViewerController(
             canvas=self.canvas,
@@ -3622,31 +3927,38 @@ class ReviewScreen(QWidget):
 
         hp_hdr = QHBoxLayout()
         hp_hdr.setSpacing(6)
-        hp_title = QLabel("💡 Solution / Hint")
-        hp_title.setFont(QFont(font if dojo else "Segoe UI", 11, QFont.Bold))
-        hp_title.setStyleSheet(f"color:{accent};background:transparent;border:none;")
-        hp_hdr.addWidget(hp_title)
+        self._btn_hint_tab_mask = QPushButton("💡 Mask")
+        self._btn_hint_tab_pdf = QPushButton("📄 PDF")
+        self._btn_hint_tab_mask.setFont(QFont(font if dojo else "Segoe UI", 10, QFont.Bold))
+        self._btn_hint_tab_pdf.setFont(QFont(font if dojo else "Segoe UI", 10, QFont.Bold))
+        self._btn_hint_tab_mask.setCursor(Qt.PointingHandCursor)
+        self._btn_hint_tab_pdf.setCursor(Qt.PointingHandCursor)
+        
+        self._btn_hint_tab_mask.clicked.connect(lambda: self._set_hint_view_mode("mask"))
+        self._btn_hint_tab_pdf.clicked.connect(lambda: self._set_hint_view_mode("pdf"))
+        
+        self._update_hint_tab_styles()
+        
+        hp_hdr.addWidget(self._btn_hint_tab_mask)
+        hp_hdr.addWidget(self._btn_hint_tab_pdf)
         hp_hdr.addStretch()
 
         # Font size adjustment buttons
         self._hp_zoom_out = QPushButton("A-")
         self._hp_zoom_out.setToolTip("Decrease Font Size")
-        self._hp_zoom_out.setFixedSize(24, 24)
+        self._hp_zoom_out.setFixedSize(28, 28)
+        self._hp_zoom_out.setCursor(Qt.PointingHandCursor)
         
         self._hp_zoom_in = QPushButton("A+")
         self._hp_zoom_in.setToolTip("Increase Font Size")
-        self._hp_zoom_in.setFixedSize(24, 24)
+        self._hp_zoom_in.setFixedSize(28, 28)
+        self._hp_zoom_in.setCursor(Qt.PointingHandCursor)
         
-        if dojo:
-            btn_style = (
-                f"QPushButton{{background:transparent;color:{text};border:none;font-family:'{font}';font-weight:bold;font-size:12px;}}"
-                f"QPushButton:hover{{color:{accent};}}"
-            )
-        else:
-            btn_style = (
-                f"QPushButton{{background:transparent;color:{subtext};border:none;font-family:'Segoe UI';font-weight:bold;font-size:12px;}}"
-                f"QPushButton:hover{{color:{accent};}}"
-            )
+        btn_style = (
+            f"QPushButton{{background:{surface};color:{text};border:1px solid {border};border-radius:6px;"
+            f"font-family:'{font if dojo else 'Segoe UI'}';font-weight:bold;font-size:11px;}}"
+            f"QPushButton:hover{{background:{accent};color:{bg if theme != 'classic' else 'white'};border-color:{accent};}}"
+        )
         self._hp_zoom_out.setStyleSheet(btn_style)
         self._hp_zoom_in.setStyleSheet(btn_style)
         
@@ -3657,17 +3969,13 @@ class ReviewScreen(QWidget):
         hp_hdr.addWidget(self._hp_zoom_in)
 
         hp_close = QPushButton("✕")
-        hp_close.setFixedSize(24, 24)
-        if dojo:
-            hp_close.setStyleSheet(
-                f"QPushButton{{background:transparent;color:{text};border:none;font-weight:bold;}}"
-                f"QPushButton:hover{{color:{accent};}}"
-            )
-        else:
-            hp_close.setStyleSheet(
-                f"QPushButton{{background:transparent;color:{subtext};border:none;font-weight:bold;font-size:14px;}}"
-                f"QPushButton:hover{{color:{accent};}}"
-            )
+        hp_close.setFixedSize(28, 28)
+        hp_close.setCursor(Qt.PointingHandCursor)
+        hp_close.setStyleSheet(
+            f"QPushButton{{background:{surface};color:{text};border:1px solid {border};border-radius:6px;"
+            f"font-family:'{font if dojo else 'Segoe UI'}';font-weight:bold;font-size:11px;}}"
+            f"QPushButton:hover{{background:#EF4444;color:white;border-color:#EF4444;}}"
+        )
         hp_close.clicked.connect(self._toggle_hint_panel)
         hp_hdr.addWidget(hp_close)
         hp_layout.addLayout(hp_hdr)
@@ -6999,6 +7307,8 @@ class ReviewScreen(QWidget):
 
     def _show_session_summary(self):
         """Session khatam — stats dialog dikhao."""
+        if hasattr(self.parent(), "clear_last_review_session"):
+            self.parent().clear_last_review_session()
         has_pdf = any(bool(card.get("pdf_path")) for card, _, _ in self._items) if self._items else False
         if has_pdf and self.__dict__.get("_show_summary_popup", True):
             from ui.review.summary_dialog import ReviewSessionSummaryDialog
@@ -7020,3 +7330,92 @@ class ReviewScreen(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+class PdfMetadataDialog(QDialog):
+    def __init__(self, lecture_num, notes_html, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit PDF Reference Notes & Metadata")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint)
+        self.setWindowState(Qt.WindowMaximized)
+        self.resize(750, 550)
+        
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = p.get("C_BG", "#1E1E2E")
+        surface = p.get("C_SURFACE", "#24283B")
+        text = p.get("C_TEXT", "#CDD6F4")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        border = p.get("C_BORDER", "#45475A")
+        font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
+        
+        self.setStyleSheet(
+            f"QDialog{{background:{bg};}}"
+            f"QLabel{{color:{text};font-family:'{font_family}';font-size:12px;font-weight:bold;}}"
+            f"QLineEdit{{background:{surface};color:{text};border:1px solid {border};border-radius:4px;padding:6px;font-size:12px;}}"
+            f"QPushButton{{font-family:'{font_family}';font-size:12px;font-weight:bold;}}"
+        )
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        
+        # Lecture field
+        lbl_lec = QLabel("Lecture Info (e.g., Lecture 5 / Chapter 2):")
+        self.inp_lecture = QLineEdit()
+        self.inp_lecture.setText(lecture_num)
+        self.inp_lecture.setPlaceholderText("Enter lecture info, chapter number, or key topics...")
+        
+        layout.addWidget(lbl_lec)
+        layout.addWidget(self.inp_lecture)
+        
+        # Notes field
+        lbl_notes = QLabel("PDF-wide Reference Notes / Formulas / Images:")
+        layout.addWidget(lbl_notes)
+        
+        from editor_ui import RichTextEdit
+        self.inp_notes = RichTextEdit()
+        self.inp_notes.setPlaceholderText("Type formulas, paste screen grabs (Ctrl+V), or drag and drop images here...")
+        self.inp_notes.setStyleSheet(
+            f"QTextEdit{{background:{surface};color:{text};border:1px solid {border};"
+            f"border-radius:6px;padding:8px;font-size:13px;}}"
+        )
+        if "<img" in notes_html or "<html>" in notes_html or "<p>" in notes_html:
+            self.inp_notes.setHtml(notes_html)
+        else:
+            self.inp_notes.setPlainText(notes_html)
+            
+        self.inp_notes.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.inp_notes, stretch=1)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        
+        self.btn_save = QPushButton("💾 Save PDF Data")
+        self.btn_save.setFixedHeight(34)
+        if theme != "classic":
+            self.btn_save.setStyleSheet(
+                f"QPushButton{{background:{accent};color:{bg};border:none;border-radius:6px;padding:0 24px;font-size:13px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:white;color:{bg};}}"
+            )
+        else:
+            self.btn_save.setStyleSheet(
+                f"QPushButton{{background:{accent};color:white;border:none;border-radius:6px;padding:0 24px;font-size:13px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:#6A58E0;}}"
+            )
+        self.btn_save.clicked.connect(self.accept)
+        
+        self.btn_cancel = QPushButton("✕ Cancel")
+        self.btn_cancel.setFixedHeight(34)
+        self.btn_cancel.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{text};border:1px solid {border};border-radius:6px;padding:0 20px;font-size:13px;}}"
+            f"QPushButton:hover{{background:{surface};}}"
+        )
+        self.btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_save)
+        layout.addLayout(btn_layout)

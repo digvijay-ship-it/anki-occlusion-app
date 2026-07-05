@@ -1181,6 +1181,7 @@ class HomeScreen(QWidget):
         self._restore_in_progress = False
         self._prune_in_progress = False
         self._setup_ui()
+        self._check_resume_button_state()
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
@@ -1223,6 +1224,7 @@ class HomeScreen(QWidget):
 
         btn_math = _topbtn("🧮 MATH TRAINER", "Practice Tables, Squares & Cubes")
         btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
+        self._btn_resume = _topbtn("⚡ RESUME LAST MISSION", "Resume last review session (R)")
         self._btn_save = _topbtn("💾 SAVE", "Save now  Ctrl+S")
         self._btn_settings = _topbtn("⚙ SETTINGS", "Visual scale and Mission Archive")
         self._btn_shortcuts = _topbtn("⌨ SHORTCUTS", "Set or modify keyboard shortcuts")
@@ -1231,6 +1233,7 @@ class HomeScreen(QWidget):
 
         btn_math.clicked.connect(self._show_math_trainer)
         btn_journal.clicked.connect(self._show_journal)
+        self._btn_resume.clicked.connect(self.resume_last_review)
         self._btn_save.clicked.connect(self._on_classic_save_clicked)
         self._btn_settings.clicked.connect(self._toggle_classic_settings_panel)
         self._btn_shortcuts.clicked.connect(self._show_shortcuts)
@@ -1270,6 +1273,7 @@ class HomeScreen(QWidget):
 
         tl.addWidget(btn_math)
         tl.addWidget(btn_journal)
+        tl.addWidget(self._btn_resume)
         tl.addWidget(self._btn_save)
         tl.addWidget(self._btn_settings)
         tl.addWidget(self._btn_shortcuts)
@@ -1632,6 +1636,7 @@ class HomeScreen(QWidget):
             if split:
                 split.setSizes(sizes)
         self.refresh()
+        self._check_resume_button_state()
         QTimer.singleShot(100, self._clear_home_ram_caches)
 
     def _get_splitter(self):
@@ -1642,6 +1647,126 @@ class HomeScreen(QWidget):
             if isinstance(child, QSplitter):
                 return child
         return None
+
+    def save_last_review_session(self, cards, current_idx=0):
+        try:
+            import json
+            session_data = {
+                "card_identifiers": [
+                    {
+                        "pdf_path": card.get("pdf_path"),
+                        "image_path": card.get("image_path"),
+                        "title": card.get("title"),
+                        "visual_hash": card.get("visual_hash")
+                    } for card in cards
+                ],
+                "idx": current_idx
+            }
+            from storage_paths import current_data_file
+            app_dir = os.path.dirname(current_data_file())
+            session_file = os.path.join(app_dir, "last_review_session.json")
+            with open(session_file, "w", encoding="utf-8") as f:
+                json.dump(session_data, f, indent=2)
+        except Exception as e:
+            print("[DEBUG] Failed to save last review session:", e)
+
+    def load_last_review_session(self):
+        try:
+            import json
+            from storage_paths import current_data_file
+            app_dir = os.path.dirname(current_data_file())
+            session_file = os.path.join(app_dir, "last_review_session.json")
+            if not os.path.exists(session_file):
+                return None
+            with open(session_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def clear_last_review_session(self):
+        try:
+            from storage_paths import current_data_file
+            app_dir = os.path.dirname(current_data_file())
+            session_file = os.path.join(app_dir, "last_review_session.json")
+            if os.path.exists(session_file):
+                os.remove(session_file)
+        except Exception:
+            pass
+        if hasattr(self, "_btn_resume") and self._btn_resume:
+            self._btn_resume.setEnabled(False)
+            self._btn_resume.setStyleSheet("")
+        if hasattr(self, "_tmnt_layout") and self._tmnt_layout:
+            self._tmnt_layout.set_resume_enabled(False)
+
+    def resume_last_review(self):
+        session = self.load_last_review_session()
+        if not session:
+            QMessageBox.information(self, "No session", "No previous review session found.")
+            return
+        
+        identifiers = session.get("card_identifiers", [])
+        idx = session.get("idx", 0)
+        if not identifiers:
+            return
+            
+        resolved_cards = []
+        all_db_cards = []
+        def _walk(d):
+            all_db_cards.extend(d.get("cards", []))
+            for child in d.get("children", []):
+                _walk(child)
+                
+        for deck in self._data.get("decks", []):
+            _walk(deck)
+            
+        for idf in identifiers:
+            pdf_path = idf.get("pdf_path")
+            image_path = idf.get("image_path")
+            title = idf.get("title")
+            visual_hash = idf.get("visual_hash")
+            
+            matched_card = None
+            for card in all_db_cards:
+                if visual_hash and card.get("visual_hash") == visual_hash:
+                    matched_card = card
+                    break
+                if pdf_path and card.get("pdf_path") == pdf_path and card.get("title") == title:
+                    matched_card = card
+                    break
+                if image_path and card.get("image_path") == image_path and card.get("title") == title:
+                    matched_card = card
+                    break
+            
+            if matched_card:
+                resolved_cards.append(matched_card)
+                
+        if not resolved_cards:
+            QMessageBox.information(self, "Resume Failed", "Could not find the cards of the last session in the database.")
+            return
+            
+        self.show_review(resolved_cards, self._data)
+        
+        if hasattr(self, "_active_review") and self._active_review:
+            if self._active_review._items:
+                self._active_review._idx = max(0, min(idx, len(self._active_review._items) - 1))
+                self._active_review._load_item()
+            else:
+                self._active_review._idx = 0
+                self._active_review._finish()
+
+    def _check_resume_button_state(self):
+        session = self.load_last_review_session()
+        has_session = bool(session and session.get("card_identifiers"))
+        if has_session:
+            self._btn_resume.setEnabled(True)
+            from theme_manager import get_palette
+            p = get_palette(self._current_theme)
+            self._btn_resume.setStyleSheet(f"QPushButton {{ color: {p.get('C_ORANGE', '#FFB86C')}; font-weight: bold; }}")
+        else:
+            self._btn_resume.setEnabled(False)
+            self._btn_resume.setStyleSheet("")
+        if hasattr(self, "_tmnt_layout") and self._tmnt_layout:
+            self._tmnt_layout.set_resume_enabled(has_session)
 
     def _on_deck_selected(self, deck):
         t0 = time.perf_counter()
@@ -1816,6 +1941,7 @@ class HomeScreen(QWidget):
         layout.btn_save_clicked.connect(self._save_current_data_now)
         layout.btn_math_clicked.connect(self._show_math_trainer)
         layout.btn_journal_clicked.connect(self._show_journal)
+        layout.btn_resume_clicked.connect(self.resume_last_review)
         layout.btn_theme_clicked.connect(self._toggle_theme)
         layout.btn_help_clicked.connect(self._show_help)
         layout.btn_about_clicked.connect(self._show_about)
@@ -2618,6 +2744,15 @@ class HomeScreen(QWidget):
         mods = e.modifiers()
         ctrl = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
+
+        if shortcut_manager.event_matches(e, "home.resume_review"):
+            if getattr(self, "_active_review", None) is None:
+                fw = self.focusWidget()
+                from PyQt5.QtWidgets import QLineEdit, QTextEdit
+                if not (fw and isinstance(fw, (QLineEdit, QTextEdit))):
+                    self.resume_last_review()
+                    e.accept()
+                    return
 
         if shortcut_manager.event_matches(e, "home.save"):
             store.mark_dirty()

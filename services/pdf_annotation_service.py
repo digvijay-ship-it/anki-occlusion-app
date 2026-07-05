@@ -105,6 +105,9 @@ def _page_rect_tuple(rect):
 
 
 def _rect_contains_point(rect_tuple, point: QPointF, padding: float = 0.0) -> bool:
+    if isinstance(rect_tuple, QRectF):
+        rect = QRectF(rect_tuple).adjusted(-padding, -padding, padding, padding)
+        return rect.contains(point)
     rect = QRectF(
         rect_tuple[0] - padding,
         rect_tuple[1] - padding,
@@ -350,6 +353,7 @@ class PdfAnnotationSession:
             info.get("title") == "AnkiOcclusion"
             and info.get("subject") == "anki_occlusion_image"
         )
+        is_visual_type = is_app_image or (subtype in {"image", "stamp"})
 
         rect = (
             QRectF(
@@ -358,7 +362,7 @@ class PdfAnnotationSession:
                 max(1.0, rect_bounds[2] - rect_bounds[0]),
                 max(1.0, rect_bounds[3] - rect_bounds[1]),
             )
-            if is_app_image
+            if is_visual_type
             else rect_bounds
         )
 
@@ -373,7 +377,7 @@ class PdfAnnotationSession:
             "points": vertices,
             "width": self._pdf_width_to_canvas(page_num, width),
         }
-        if is_app_image:
+        if is_visual_type:
             image_payload = self._image_payload_from_annot(annot)
             if image_payload:
                 item.update(image_payload)
