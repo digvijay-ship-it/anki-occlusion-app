@@ -599,7 +599,7 @@ class HomeScreenResumeSessionTests(unittest.TestCase):
         # Verify shortcut is created and connected
         self.assertTrue(hasattr(home, "_resume_review_shortcut"))
         self.assertIsInstance(home._resume_review_shortcut, QShortcut)
-        self.assertEqual(home._resume_review_shortcut.context(), Qt.WidgetWithChildrenShortcut)
+        self.assertEqual(home._resume_review_shortcut.context(), Qt.WindowShortcut)
 
 
 if __name__ == "__main__":

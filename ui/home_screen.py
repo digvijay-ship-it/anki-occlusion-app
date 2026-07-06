@@ -1182,6 +1182,10 @@ class HomeScreen(QWidget):
         self._prune_in_progress = False
         self._setup_ui()
         self._check_resume_button_state()
+        from PyQt5.QtWidgets import QApplication
+        app_inst = QApplication.instance()
+        if app_inst:
+            app_inst.focusChanged.connect(self._on_global_focus_changed)
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
@@ -1370,15 +1374,32 @@ class HomeScreen(QWidget):
         sc_text = shortcut_manager.shortcut_text("home.resume_review")
         if sc_text:
             self._resume_review_shortcut = QShortcut(QKeySequence(sc_text), self)
-            self._resume_review_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._resume_review_shortcut.setContext(Qt.WindowShortcut)
             self._resume_review_shortcut.activated.connect(self._on_resume_review_shortcut_activated)
 
     def _on_resume_review_shortcut_activated(self):
+        import sys
+        sys.stderr.write("[ANNO-LOG] R key pressed on Home Screen!\n")
+        if not self.isVisible():
+            sys.stderr.write("[ANNO-LOG] Resume shortcut ignored: Home Screen is not visible\n")
+            return
+        fw = self.focusWidget()
+        sys.stderr.write(f"[ANNO-LOG] Active review check: {getattr(self, '_active_review', None) is None}, Focus widget: {fw.__class__.__name__ if fw else 'None'} ({fw})\n")
         if getattr(self, "_active_review", None) is None:
-            fw = self.focusWidget()
             from PyQt5.QtWidgets import QLineEdit, QTextEdit
             if not (fw and isinstance(fw, (QLineEdit, QTextEdit))):
+                sys.stderr.write("[ANNO-LOG] Resume shortcut criteria matched. Calling resume_last_review()\n")
                 self.resume_last_review()
+            else:
+                sys.stderr.write("[ANNO-LOG] Resume shortcut ignored: focus is in line/text edit\n")
+        else:
+            sys.stderr.write("[ANNO-LOG] Resume shortcut ignored: an active review session already exists\n")
+
+    def _on_global_focus_changed(self, old, new):
+        import sys
+        old_name = old.__class__.__name__ if old else "None"
+        new_name = new.__class__.__name__ if new else "None"
+        sys.stderr.write(f"[ANNO-LOG] Focus Changed: {old_name} ({old}) -> {new_name} ({new})\n")
 
     def _clear_home_ram_caches(self):
         try:
