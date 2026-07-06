@@ -145,6 +145,21 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
 
         screen._open_annotation_beta.assert_called_once_with()
 
+    @patch("data_manager.store.save_force")
+    def test_ctrl_s_manual_save_disabled_in_review(self, mock_save_force):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        from PyQt5.QtWidgets import QWidget
+        QWidget.__init__(screen)
+        screen.canvas = MagicMock()
+        screen.canvas._mode = "review"
+        screen._rating_frame = MagicMock()
+        screen._rating_frame.isVisible.return_value = False
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_S, Qt.ControlModifier)
+        screen.keyPressEvent(event)
+        self.assertFalse(event.isAccepted())
+        mock_save_force.assert_not_called()
+
     def test_alt_t_shortcut_toggles_floating_timer(self):
         screen = ReviewScreen.__new__(ReviewScreen)
         screen.canvas = MagicMock()
@@ -276,6 +291,8 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
 
     def test_show_session_summary_shown_for_pdf_cards(self):
         screen = ReviewScreen.__new__(ReviewScreen)
+        from PyQt5.QtWidgets import QWidget
+        QWidget.__init__(screen)
         screen.finished = MagicMock()
         screen.prog = MagicMock()
         screen.mgr = MagicMock()
@@ -293,6 +310,8 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
 
     def test_show_session_summary_skipped_for_image_cards(self):
         screen = ReviewScreen.__new__(ReviewScreen)
+        from PyQt5.QtWidgets import QWidget
+        QWidget.__init__(screen)
         screen.finished = MagicMock()
         screen.prog = MagicMock()
         screen.mgr = MagicMock()
@@ -1882,6 +1901,61 @@ class QuickNoteTests(unittest.TestCase):
             screen.canvas.ink_set_mode.assert_any_call("eraser")
             screen.canvas.ink_toggle.assert_not_called()
 
+    def test_pen_eraser_toggle_shortcut(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"):
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            screen.canvas = MagicMock()
+            screen._update_ink_hint = MagicMock()
+            screen._update_pen_button_states = MagicMock()
+            screen.mgr = MagicMock()
+            screen.mgr._items = []
+            screen.mgr._idx = 0
+            screen._rating_frame = MagicMock()
+            screen._rating_frame.isVisible.return_value = False
+            
+            from services import shortcut_manager
+            
+            # Case 1: Ink is OFF -> pressing Q should activate pen mode
+            screen.canvas._ink_active = False
+            screen.canvas.ink_get_mode.return_value = "pen"
+            
+            event_q = QKeyEvent(QEvent.KeyPress, Qt.Key_Q, Qt.NoModifier)
+            with patch.object(shortcut_manager, "event_matches", side_effect=lambda ev, action: action == "review.pen_eraser_toggle"):
+                screen.keyPressEvent(event_q)
+                
+            screen.canvas.ink_set_active.assert_any_call(True)
+            screen.canvas.ink_set_mode.assert_any_call("pen")
+            
+            # Reset and check Case 2: Ink is ON and mode is pen -> should toggle to eraser
+            screen.canvas.ink_set_active.reset_mock()
+            screen.canvas.ink_set_mode.reset_mock()
+            screen.canvas._ink_active = True
+            screen.canvas.ink_get_mode.return_value = "pen"
+            with patch.object(shortcut_manager, "event_matches", side_effect=lambda ev, action: action == "review.pen_eraser_toggle"):
+                screen.keyPressEvent(event_q)
+                
+            screen.canvas.ink_set_mode.assert_any_call("eraser")
+            
+            # Reset and check Case 3: Ink is ON and mode is eraser -> should toggle to pen
+            screen.canvas.ink_set_active.reset_mock()
+            screen.canvas.ink_set_mode.reset_mock()
+            screen.canvas._ink_active = True
+            screen.canvas.ink_get_mode.return_value = "eraser"
+            with patch.object(shortcut_manager, "event_matches", side_effect=lambda ev, action: action == "review.pen_eraser_toggle"):
+                screen.keyPressEvent(event_q)
+                
+            screen.canvas.ink_set_mode.assert_any_call("pen")
+
     def test_save_review_ink_to_note_multiple_copies(self):
         from ui.review_screen import ReviewScreen
         from PyQt5.QtCore import QSize, QPointF
@@ -2034,6 +2108,346 @@ class QuickNoteTests(unittest.TestCase):
             screen._on_hint_panel_resize(500)
             self.assertEqual(screen._user_hint_width, 500)
             self.assertEqual(fake_settings.get("review/hint_panel_width"), 500)
+
+    def test_on_canvas_right_clicked_box_shows_menu_and_edits_note(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtCore import QPoint
+        from PyQt5.QtWidgets import QAction
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"), \
+             patch("ui.review_screen.QMenu") as MockMenu:
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            
+            screen.mgr = MagicMock()
+            screen.mgr._idx = 0
+            screen.mgr._items = []
+            
+            # Setup dummy card and items
+            dummy_box = {"note": "Test Note", "group_id": "test_group"}
+            dummy_card = {"boxes": [dummy_box], "card_type": "occlusion"}
+            screen._items = [(dummy_card, 0, dummy_box)]
+            
+            # Setup mock menu and action
+            menu_inst = MockMenu.return_value
+            action_edit_mock = MagicMock(spec=QAction)
+            menu_inst.addAction.side_effect = [action_edit_mock, MagicMock(spec=QAction)]
+            menu_inst.exec_.return_value = action_edit_mock
+            
+            screen._open_quick_note_editor_for_box_idx = MagicMock()
+            
+            screen._on_canvas_right_clicked_box(0, QPoint(100, 100))
+            
+            menu_inst.exec_.assert_called_once_with(QPoint(100, 100))
+            screen._open_quick_note_editor_for_box_idx.assert_called_once_with(0)
+
+    def test_open_pdf_notes_editor_saves_metadata(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QDialog
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"), \
+             patch("ui.review_screen.PdfMetadataDialog") as MockDialog, \
+             patch("data_manager.store") as MockStore:
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            
+            screen.mgr = MagicMock()
+            screen.mgr._idx = 0
+            screen.mgr._items = []
+            
+            dummy_card = {"pdf_path": "c:/path/to/lecture.pdf", "card_type": "occlusion"}
+            screen._items = [(dummy_card, 0, None)]
+            
+            # Mock store data
+            MockStore._data = {}
+            
+            # Setup Dialog Mock
+            dlg_inst = MockDialog.return_value
+            dlg_inst.exec_.return_value = QDialog.Accepted
+            dlg_inst.inp_lecture.text.return_value = "Lecture 5"
+            dlg_inst.inp_notes.toPlainText.return_value = "Important formulas..."
+            dlg_inst.inp_notes.toHtml.return_value = "Important formulas..."
+            
+            screen._show_review_toast = MagicMock()
+            screen._update_mask_note_ui = MagicMock()
+            
+            screen._open_pdf_notes_editor()
+            
+            # Check store._data updated
+            pdf_meta = MockStore._data.get("pdf_metadata", {}).get("c:/path/to/lecture.pdf")
+            self.assertIsNotNone(pdf_meta)
+            self.assertEqual(pdf_meta["lecture_num"], "Lecture 5")
+            self.assertEqual(pdf_meta["notes"], "Important formulas...")
+            
+            MockStore.save_force.assert_called_once_with(async_save=True)
+            screen._update_mask_note_ui.assert_called_once_with(keep_visible=True)
+
+    def test_hint_view_mode_switching(self):
+        from ui.review_screen import ReviewScreen
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"):
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            
+            screen._btn_hint_tab_mask = MagicMock()
+            screen._btn_hint_tab_pdf = MagicMock()
+            screen._hint_view_mode = "mask"
+            screen._update_mask_note_ui = MagicMock()
+            screen._update_hint_tab_styles = MagicMock()
+            
+            screen._set_hint_view_mode("pdf")
+            self.assertEqual(screen._hint_view_mode, "pdf")
+            screen._update_hint_tab_styles.assert_called_once()
+            screen._update_mask_note_ui.assert_called_once_with(keep_visible=True)
+
+    def test_pdf_metadata_default_shortcut(self):
+        from services import shortcut_manager
+        self.assertEqual(shortcut_manager.default_shortcut("review.pdf_metadata"), "Ctrl+M")
+
+    def test_quick_note_dialog_custom_color_picker(self):
+        from ui.quick_note_dialog import QuickNoteDialog
+        from PyQt5.QtGui import QColor
+        from PyQt5.QtWidgets import QColorDialog
+        
+        with patch("ui.quick_note_dialog.QSettings") as MockSettings, \
+             patch("ui.quick_note_dialog.QColorDialog.getColor", return_value=QColor("#FF00FF")):
+             
+            # Setup settings mock to return values
+            settings_inst = MockSettings.return_value
+            settings_inst.value.side_effect = lambda key, default=None: default
+            
+            dialog = QuickNoteDialog("Test Note")
+            self.assertEqual(dialog._selected_color_hex, "#FFFFFF")
+            self.assertEqual(dialog.draw_canvas._pen_color, QColor("#FFFFFF"))
+            
+            # Click pick custom color
+            dialog._pick_custom_color()
+            
+            # Assert color changed to mock selected color (#FF00FF)
+            self.assertEqual(dialog._selected_color_hex, "#FF00FF")
+            self.assertEqual(dialog.draw_canvas._pen_color, QColor("#FF00FF"))
+            
+            # Verify settings saved
+            settings_inst.setValue.assert_any_call("sketch/last_custom_color", "#FF00FF")
+            settings_inst.setValue.assert_any_call("sketch/last_selected_color", "#FF00FF")
+
+
+class ReviewScreenEdgeCaseIntegrationTests(unittest.TestCase):
+    def test_mask_deletion_mid_session(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QDialog
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"), \
+             patch("ui.review_screen.store") as MockStore:
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            
+            screen.mgr = MagicMock()
+            screen.mgr._idx = 0
+            screen.mgr._items = []
+            screen._data = {}
+            screen._queued_ids = {"box_a", "box_b", "box_c"}
+            screen._reload_current_canvas = MagicMock() # mock canvas reloading to bypass UI dependency
+            
+            # Setup card with 3 boxes
+            box_a = {"box_id": "box_a", "group_id": ""}
+            box_b = {"box_id": "box_b", "group_id": ""}
+            box_c = {"box_id": "box_c", "group_id": ""}
+            card = {"_id": 101, "boxes": [box_a, box_b, box_c], "card_type": "occlusion"}
+            
+            # 3 active items in queue
+            screen._items = [
+                (card, 0, box_a),
+                (card, 1, box_b),
+                (card, 2, box_c)
+            ]
+            
+            # Mock editor dialog returned card (deleted box_b)
+            edited_card = {
+                "_id": 101,
+                "boxes": [box_a, box_c],
+                "card_type": "occlusion"
+            }
+            dlg_mock = MagicMock()
+            dlg_mock.get_card.return_value = edited_card
+            
+            # Mock is_due_today to return True
+            with patch("ui.review_screen.is_due_today", return_value=True):
+                before_ids = {"box_a": "", "box_b": "", "box_c": ""}
+                screen._finish_edit_current_card(dlg_mock, card, before_ids, QDialog.Accepted)
+                
+            # Verify screen._items updated (box_b deleted, so only box_a and box_c remain)
+            self.assertEqual(len(screen._items), 2)
+            self.assertEqual(screen._items[0][2]["box_id"], "box_a")
+            self.assertEqual(screen._items[1][2]["box_id"], "box_c")
+
+    def test_ink_canvas_cleared_on_card_transition(self):
+        from ui.review_screen import ReviewScreen
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch("ui.review_screen.QSettings"):
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            
+            screen.mgr = MagicMock()
+            screen._data = {}
+            screen.canvas = MagicMock()
+            
+            box_a = {"box_id": "box_a"}
+            card = {"_id": 101, "boxes": [box_a]}
+            screen._items = [(card, 0, box_a)]
+            screen._idx = 0
+            
+            # Mock progress bars, labels, and timers to avoid Qt UI errors
+            screen.prog = MagicMock()
+            screen.lbl_prog = MagicMock()
+            screen.lbl_sm2 = MagicMock()
+            screen.lbl_title = MagicMock()
+            screen._stimer = MagicMock()
+            screen.parent = MagicMock()
+            screen._reveal_bar = MagicMock()
+            screen._rating_frame = MagicMock()
+            screen._wait_bar = MagicMock()
+            screen._floating_hint_button = MagicMock()
+            
+            # Use a bypass exception to stop _load_item execution after clear_review_ink call
+            class BypassException(Exception):
+                pass
+            screen._sync_queue_state = MagicMock(side_effect=BypassException)
+            
+            try:
+                screen._load_item()
+            except BypassException:
+                pass
+            
+            # Verify clear_review_ink_for_card_switch was called
+            screen.canvas.clear_review_ink_for_card_switch.assert_called_once()
+
+    def test_active_page_auto_scroll_on_load(self):
+        from ui.review_screen import ReviewScreen
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch.object(ReviewScreen, "_load_item"), \
+             patch("ui.review_screen.QSettings"):
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            
+            screen.mgr = MagicMock()
+            screen._data = {}
+            
+            # Mock scrollbars
+            screen._canvas_scroll = MagicMock()
+            h_bar = MagicMock()
+            v_bar = MagicMock()
+            screen._canvas_scroll.horizontalScrollBar.return_value = h_bar
+            screen._canvas_scroll.verticalScrollBar.return_value = v_bar
+            
+            # Mock canvas and target scroll position
+            screen.canvas = MagicMock()
+            screen.canvas.get_target_scroll_pos.return_value = (150, 300)
+            
+            screen._items = [({"_id": 101}, 0, {"box_id": "box_a"})]
+            screen._idx = 0
+            
+            screen._do_center_on_target()
+            
+            # Scrollbars should be set to computed target position
+            h_bar.setValue.assert_called_once_with(150)
+            v_bar.setValue.assert_called_once_with(300)
+
+    def test_empty_queue_entry_graceful(self):
+        from ui.review_screen import ReviewScreen
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch("ui.review_screen.QSettings"):
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            from PyQt5.QtWidgets import QWidget
+            QWidget.__init__(screen)
+            
+            screen.mgr = MagicMock()
+            screen._data = {}
+            
+            screen.prog = MagicMock()
+            screen._stimer = MagicMock()
+            screen.parent = MagicMock()
+            screen.finished = MagicMock()
+            
+            # 0 items in queue
+            screen._items = []
+            screen._idx = 0
+            
+            screen._load_item()
+            
+            # finished signal should be emitted to close session gracefully
+            screen.finished.emit.assert_called_once()
+
+
+class SelectableTextBrowserTests(unittest.TestCase):
+    def test_selectable_text_browser_copy_image(self):
+        from ui.review_screen import SelectableTextBrowser
+        from PyQt5.QtGui import QImage, QPixmap
+        
+        browser = SelectableTextBrowser()
+        
+        # Test copying without selection or image format -> should fallback to standard copy
+        with patch.object(browser, "textCursor") as mock_cursor:
+            cursor_inst = mock_cursor.return_value
+            cursor_inst.charFormat.return_value.isImageFormat.return_value = False
+            cursor_inst.hasSelection.return_value = False
+            
+            with patch("PyQt5.QtWidgets.QTextBrowser.copy") as mock_super_copy:
+                browser.copy()
+                mock_super_copy.assert_called_once()
+                
+        # Test copying with an image format
+        with patch("storage_paths.resolve_asset_path", return_value="/mock/test_image.png"), \
+             patch("os.path.exists", return_value=True), \
+             patch("PyQt5.QtWidgets.QApplication.clipboard") as mock_clipboard:
+             
+            real_image = QImage(10, 10, QImage.Format_RGB32)
+            real_image.fill(0xFFFFFF)
+            real_pixmap = QPixmap.fromImage(real_image)
+            
+            with patch("PyQt5.QtGui.QPixmap", return_value=real_pixmap):
+                with patch.object(browser, "textCursor") as mock_cursor:
+                    cursor_inst = mock_cursor.return_value
+                    char_format = cursor_inst.charFormat.return_value
+                    char_format.isImageFormat.return_value = True
+                    image_format = char_format.toImageFormat.return_value
+                    image_format.name.return_value = "test_image.png"
+                    
+                    browser.copy()
+                    
+                    # Verify QApplication.clipboard().setMimeData is called
+                    clipboard_inst = mock_clipboard.return_value
+                    clipboard_inst.setMimeData.assert_called_once()
 
 
 if __name__ == "__main__":

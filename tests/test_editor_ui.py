@@ -707,11 +707,218 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertAlmostEqual(boxes[0]["rect"][3], 24.0)
 
         # Box B: on page 1. Page 1 top shifted from 112 to 132 (+20px).
-        # Box local Y was 120 - 112 = 8. It should remain 8.
-        # New Y should be 132 + 8 = 140.0. Width and height should be unchanged.
         self.assertAlmostEqual(boxes[1]["rect"][1], 140.0)
         self.assertAlmostEqual(boxes[1]["rect"][3], 20.0)
 
+    def test_cursor_shapes_on_hover(self):
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_boxes_with_state([
+            {"rect": [10, 10, 30, 30], "label": "", "shape": "rect", "angle": 0.0, "group_id": "", "box_id": "a", "revealed": False}
+        ])
+        self.canvas.set_mode("edit")
+        self.canvas.set_tool("select")
+        
+        # Select the box
+        self.canvas._selected_idx = 0
+        self.canvas._selected_indices = {0}
+        
+        # Create a mouse move event hovering over the center of the box (25, 25)
+        # Should change cursor to SizeAllCursor
+        move_center = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(25, 25),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        self.canvas.mouseMoveEvent(move_center)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeAllCursor)
+        
+        # Hovering over top-left handle (which is at 10, 10)
+        # In _hit_handle we have tolerance r = 14, so QPointF(10, 10) hits it.
+        # Top-left is index 0 -> should be SizeFDiagCursor
+        move_tl = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(10, 10),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        self.canvas.mouseMoveEvent(move_tl)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeFDiagCursor)
+        
+        move_tr = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(40, 10),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        self.canvas.mouseMoveEvent(move_tr)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeBDiagCursor)
+
+    def test_cursor_shapes_during_dragging_and_unselected_hover(self):
+        self.canvas.load_pixmap(self._pixmap(100, 100))
+        self.canvas.set_boxes_with_state([
+            {"rect": [10, 10, 30, 30], "label": "", "shape": "rect", "angle": 0.0, "group_id": "", "box_id": "a", "revealed": False},
+            {"rect": [50, 50, 30, 30], "label": "", "shape": "rect", "angle": 0.0, "group_id": "", "box_id": "b", "revealed": False}
+        ])
+        self.canvas.set_mode("edit")
+        self.canvas.set_tool("select")
+        
+        self.canvas._selected_idx = 0
+        self.canvas._selected_indices = {0}
+        
+        move_unselected_tl = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(50, 50),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        self.canvas.mouseMoveEvent(move_unselected_tl)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeFDiagCursor)
+        self.assertEqual(self.canvas._hovered_box_idx, 1)
+        self.assertEqual(self.canvas._hovered_handle_idx, ("resize", 0))
+        
+        from PyQt5.QtCore import QPoint
+        
+        self.canvas._drag_op = "resize"
+        self.canvas._drag_handle = 0
+        self.canvas._update_cursor_for_position(QPoint(90, 90))
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeFDiagCursor)
+        self.assertEqual(self.canvas._hovered_box_idx, 0)
+        self.assertEqual(self.canvas._hovered_handle_idx, ("resize", 0))
+        
+        self.canvas._drag_op = "move"
+        self.canvas._update_cursor_for_position(QPoint(90, 90))
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeAllCursor)
+        
+        self.canvas._drag_op = "rotate"
+        self.canvas._update_cursor_for_position(QPoint(90, 90))
+        self.assertEqual(self.canvas.cursor().shape(), Qt.PointingHandCursor)
+        
+        self.canvas._drag_op = None
+
+        # Test hover on handles when active tool is 'rect' (should still show resize cursor)
+        self.canvas.set_tool("rect")
+        move_unselected_tl = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(50, 50),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        self.canvas.mouseMoveEvent(move_unselected_tl)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeFDiagCursor)
+
+        # Hovering elsewhere in 'rect' tool should show CrossCursor
+        move_elsewhere_rect = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(90, 90),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        self.canvas.mouseMoveEvent(move_elsewhere_rect)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.CrossCursor)
+
+        # Test circular Euclidean distance tolerance in _hit_handle
+        # dx=9, dy=9 is 12.72px Euclidean (within 14px radius), but 18px Manhattan (outside 14px diamond).
+        # Circular Euclidean distance tolerance means this is a hit!
+        move_diagonal_near = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(59, 59),
+            Qt.NoButton,
+            Qt.NoButton,
+            Qt.NoModifier,
+        )
+        self.canvas.mouseMoveEvent(move_diagonal_near)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeFDiagCursor)
+
+    def test_rich_text_edit_copy_image(self):
+        from editor_ui import RichTextEdit
+        from PyQt5.QtGui import QImage, QPixmap
+        from PyQt5.QtCore import QUrl
+        
+        editor = RichTextEdit()
+        
+        # Test copying without selection or image format -> should fallback to standard copy
+        with patch.object(editor, "textCursor") as mock_cursor:
+            cursor_inst = mock_cursor.return_value
+            cursor_inst.charFormat.return_value.isImageFormat.return_value = False
+            cursor_inst.hasSelection.return_value = False
+            
+            with patch("editor_ui.QTextEdit.copy") as mock_super_copy:
+                editor.copy()
+                mock_super_copy.assert_called_once()
+                
+        # Test copying with an image format
+        with patch("storage_paths.resolve_asset_path", return_value="/mock/test_image.png"), \
+             patch("os.path.exists", return_value=True), \
+             patch("PyQt5.QtWidgets.QApplication.clipboard") as mock_clipboard:
+             
+            # Create a real small image/pixmap
+            real_image = QImage(10, 10, QImage.Format_RGB32)
+            real_image.fill(0xFFFFFF)
+            real_pixmap = QPixmap.fromImage(real_image)
+            
+            with patch("editor_ui.QPixmap", return_value=real_pixmap):
+                with patch.object(editor, "textCursor") as mock_cursor:
+                    cursor_inst = mock_cursor.return_value
+                    char_format = cursor_inst.charFormat.return_value
+                    char_format.isImageFormat.return_value = True
+                    image_format = char_format.toImageFormat.return_value
+                    image_format.name.return_value = "test_image.png"
+                    
+                    editor.copy()
+                    
+                    # Verify QApplication.clipboard().setMimeData is called
+                    clipboard_inst = mock_clipboard.return_value
+                    clipboard_inst.setMimeData.assert_called_once()
+
+    def test_rich_text_edit_paste_image_fallback(self):
+        from editor_ui import RichTextEdit
+        from PyQt5.QtGui import QImage
+        
+        editor = RichTextEdit()
+        editor.insert_qimage = MagicMock()
+        
+        # Mock mimeData with hasImage return value True but imageData returns None (simulating the QVariant bug)
+        mimeData = MagicMock()
+        mimeData.hasImage.return_value = True
+        mimeData.imageData.return_value = None
+        mimeData.hasUrls.return_value = False
+        
+        # Mock clipboard return value to have a valid QImage
+        mock_image = QImage(10, 10, QImage.Format_RGB32)
+        clipboard = MagicMock()
+        clipboard.image.return_value = mock_image
+        
+        with patch("PyQt5.QtWidgets.QApplication.clipboard", return_value=clipboard):
+            editor.insertFromMimeData(mimeData)
+            
+        # Verify that insert_qimage was called with the clipboard's image
+        editor.insert_qimage.assert_called_once_with(mock_image)
+
+    def test_rich_text_edit_key_press_event_shortcuts(self):
+        from editor_ui import RichTextEdit
+        from PyQt5.QtGui import QKeyEvent, QKeySequence
+        from PyQt5.QtCore import Qt
+        
+        editor = RichTextEdit()
+        editor.copy = MagicMock()
+        editor.cut = MagicMock()
+        
+        # Test Ctrl+C
+        event_copy = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_C, Qt.ControlModifier)
+        editor.keyPressEvent(event_copy)
+        editor.copy.assert_called_once()
+        
+        # Test Ctrl+X
+        event_cut = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_X, Qt.ControlModifier)
+        editor.keyPressEvent(event_cut)
+        editor.cut.assert_called_once()
 
 
 class ZoomableScrollAreaTests(unittest.TestCase):

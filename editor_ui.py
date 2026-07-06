@@ -227,11 +227,131 @@ class RichTextEdit(QTextEdit):
         self.document().setDefaultStyleSheet("img { max-width: 100%; }")
         self.setCursorWidth(2)
 
+    def keyPressEvent(self, event):
+        from PyQt5.QtGui import QKeySequence
+        if event.matches(QKeySequence.Copy):
+            self.copy()
+            event.accept()
+            return
+        if event.matches(QKeySequence.Cut):
+            self.cut()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def copy(self):
+        cursor = self.textCursor()
+        if self._try_copy_image(cursor):
+            return
+        super().copy()
+
+    def cut(self):
+        cursor = self.textCursor()
+        if self._try_copy_image(cursor):
+            cursor.removeSelectedText()
+            return
+        super().cut()
+
+    def _try_copy_image(self, cursor):
+        char_format = cursor.charFormat()
+        # 2. Try character format after cursor (if not at end of document)
+        if not char_format.isImageFormat() and cursor.position() < self.document().characterCount():
+            temp = self.textCursor()
+            temp.setPosition(cursor.position() + 1)
+            char_format = temp.charFormat()
+            
+        # 3. If there is a selection, check within the selection range
+        if not char_format.isImageFormat() and cursor.hasSelection():
+            start_pos = cursor.selectionStart()
+            end_pos = cursor.selectionEnd()
+            temp = self.textCursor()
+            for pos in range(start_pos + 1, end_pos + 1):
+                temp.setPosition(pos)
+                fmt = temp.charFormat()
+                if fmt.isImageFormat():
+                    char_format = fmt
+                    break
+            
+        if char_format.isImageFormat():
+            image_format = char_format.toImageFormat()
+            image_name = image_format.name()
+            
+            from storage_paths import resolve_asset_path
+            abs_path = resolve_asset_path(image_name)
+            import os
+            if abs_path and os.path.exists(abs_path):
+                pixmap = QPixmap(abs_path)
+                if not pixmap.isNull():
+                    from PyQt5.QtCore import QMimeData, QByteArray, QBuffer, QIODevice
+                    mime_data = QMimeData()
+                    
+                    data = QByteArray()
+                    buffer = QBuffer(data)
+                    buffer.open(QIODevice.WriteOnly)
+                    pixmap.toImage().save(buffer, "PNG")
+                    png_bytes = bytes(data)
+                    
+                    mime_data.setData("image/png", QByteArray(png_bytes))
+                    mime_data.setImageData(pixmap.toImage())
+                    
+                    clipboard = QApplication.clipboard()
+                    clipboard.setMimeData(mime_data)
+                    return True
+        return False
+
     def contextMenuEvent(self, event):
-        menu = self.createStandardContextMenu()
         cursor = self.cursorForPosition(event.pos())
         char_format = cursor.charFormat()
         
+        is_img = False
+        pos = cursor.position()
+        doc = self.document()
+        select_start = pos
+        
+        char_at = doc.characterAt(pos)
+        char_prev = doc.characterAt(pos - 1) if pos > 0 else ""
+        
+        if char_at == '\ufffc':
+            is_img = True
+            select_start = pos
+        elif char_prev == '\ufffc':
+            is_img = True
+            select_start = pos - 1
+            
+        if is_img:
+            img_cursor = self.cursorForPosition(event.pos())
+            img_cursor.setPosition(select_start)
+            img_cursor.setPosition(select_start + 1, img_cursor.KeepAnchor)
+            self.setTextCursor(img_cursor)
+            cursor = img_cursor
+            char_format = cursor.charFormat()
+            
+        menu = self.createStandardContextMenu()
+        
+        from PyQt5.QtGui import QKeySequence
+        copy_action = None
+        cut_action = None
+        for action in menu.actions():
+            text = action.text().replace("&", "")
+            if text == "Copy" or (action.shortcut() and action.shortcut().matches(QKeySequence.Copy)):
+                copy_action = action
+            elif text == "Cut" or (action.shortcut() and action.shortcut().matches(QKeySequence.Cut)):
+                cut_action = action
+                
+        if copy_action:
+            custom_copy = menu.addAction("Copy")
+            custom_copy.setShortcut(QKeySequence.Copy)
+            custom_copy.triggered.connect(self.copy)
+            menu.insertAction(copy_action, custom_copy)
+            menu.removeAction(copy_action)
+            
+        if cut_action:
+            custom_cut = menu.addAction("Cut")
+            custom_cut.setShortcut(QKeySequence.Cut)
+            custom_cut.triggered.connect(self.cut)
+            menu.insertAction(cut_action, custom_cut)
+            menu.removeAction(cut_action)
+            
         if char_format.isImageFormat():
             image_format = char_format.toImageFormat()
             image_name = image_format.name()
@@ -313,11 +433,18 @@ class RichTextEdit(QTextEdit):
                     QMessageBox.warning(self, "Error", "Could not save edited sketch.")
 
     def insertFromMimeData(self, mimeData):
+        from PyQt5.QtGui import QImage
+        image = QImage()
         if mimeData.hasImage():
-            image = mimeData.imageData()
-            if image is not None:
-                self.insert_qimage(image)
-                return
+            val = mimeData.imageData()
+            if val is not None:
+                image = val.value() if hasattr(val, "value") else val
+            if not isinstance(image, QImage) or image.isNull():
+                image = QApplication.clipboard().image()
+
+        if not image.isNull():
+            self.insert_qimage(image)
+            return
         if mimeData.hasUrls():
             for url in mimeData.urls():
                 file_path = url.toLocalFile()

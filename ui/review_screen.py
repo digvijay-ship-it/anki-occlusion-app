@@ -775,6 +775,135 @@ from ui.quick_note_dialog import QuickNoteDialog
 from ui.review.queue_delegate import QueueDelegate
 
 
+class SelectableTextBrowser(QTextBrowser):
+    def keyPressEvent(self, event):
+        from PyQt5.QtGui import QKeySequence
+        if event.matches(QKeySequence.Copy):
+            self.copy()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def copy(self):
+        from PyQt5.QtGui import QCursor
+        from PyQt5.QtCore import QPointF
+        
+        # If no active text selection, detect image under mouse pointer
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            pos = self.mapFromGlobal(QCursor.pos())
+            layout_pos = QPointF(
+                pos.x() + self.horizontalScrollBar().value(),
+                pos.y() + self.verticalScrollBar().value()
+            )
+            img_src = self.document().documentLayout().imageAt(layout_pos)
+            if not img_src:
+                # Fallback to text cursor position under mouse
+                c = self.cursorForPosition(pos)
+                char_format = c.charFormat()
+                if not char_format.isImageFormat():
+                    temp = self.cursorForPosition(pos)
+                    temp.movePosition(temp.Left)
+                    char_format = temp.charFormat()
+                if char_format.isImageFormat():
+                    img_src = char_format.toImageFormat().name()
+                    
+            if img_src:
+                import urllib.parse
+                img_src = urllib.parse.unquote(img_src)
+                if img_src.startswith("file:///"):
+                    img_src_path = img_src[8:]
+                    if len(img_src_path) > 2 and img_src_path[0] == '/' and img_src_path[2] == ':':
+                        img_src_path = img_src_path[1:]
+                elif img_src.startswith("file://"):
+                    img_src_path = img_src[7:]
+                else:
+                    img_src_path = img_src
+                    
+                from storage_paths import resolve_asset_path
+                import os
+                abs_path = resolve_asset_path(img_src_path)
+                if abs_path and os.path.exists(abs_path):
+                    from PyQt5.QtGui import QPixmap
+                    from PyQt5.QtWidgets import QApplication
+                    pixmap = QPixmap(abs_path)
+                    if not pixmap.isNull():
+                        from PyQt5.QtCore import QMimeData, QByteArray, QBuffer, QIODevice
+                        mime_data = QMimeData()
+                        
+                        data = QByteArray()
+                        buffer = QBuffer(data)
+                        buffer.open(QIODevice.WriteOnly)
+                        pixmap.toImage().save(buffer, "PNG")
+                        png_bytes = bytes(data)
+                        
+                        mime_data.setData("image/png", QByteArray(png_bytes))
+                        mime_data.setImageData(pixmap.toImage())
+                        
+                        clipboard = QApplication.clipboard()
+                        clipboard.setMimeData(mime_data)
+                        print(f"[ANNO-LOG] Copy shortcut: Copied hovered image: {abs_path}")
+                        return
+
+        if self._try_copy_image(cursor):
+            return
+        super().copy()
+
+    def _try_copy_image(self, cursor):
+        char_format = cursor.charFormat()
+        if not char_format.isImageFormat():
+            temp = self.textCursor()
+            temp.movePosition(temp.Left)
+            char_format = temp.charFormat()
+
+        # 2. Try character format after cursor (if not at end of document)
+        if not char_format.isImageFormat() and cursor.position() < self.document().characterCount():
+            temp = self.textCursor()
+            temp.setPosition(cursor.position() + 1)
+            char_format = temp.charFormat()
+            
+        # 3. If there is a selection, check within the selection range
+        if not char_format.isImageFormat() and cursor.hasSelection():
+            start_pos = cursor.selectionStart()
+            end_pos = cursor.selectionEnd()
+            temp = self.textCursor()
+            for pos in range(start_pos + 1, end_pos + 1):
+                temp.setPosition(pos)
+                fmt = temp.charFormat()
+                if fmt.isImageFormat():
+                    char_format = fmt
+                    break
+            
+        if char_format.isImageFormat():
+            image_format = char_format.toImageFormat()
+            image_name = image_format.name()
+            
+            from storage_paths import resolve_asset_path
+            import os
+            abs_path = resolve_asset_path(image_name)
+            if abs_path and os.path.exists(abs_path):
+                from PyQt5.QtGui import QPixmap
+                from PyQt5.QtWidgets import QApplication
+                pixmap = QPixmap(abs_path)
+                if not pixmap.isNull():
+                    from PyQt5.QtCore import QMimeData, QByteArray, QBuffer, QIODevice
+                    mime_data = QMimeData()
+                    
+                    data = QByteArray()
+                    buffer = QBuffer(data)
+                    buffer.open(QIODevice.WriteOnly)
+                    pixmap.toImage().save(buffer, "PNG")
+                    png_bytes = bytes(data)
+                    
+                    mime_data.setData("image/png", QByteArray(png_bytes))
+                    mime_data.setImageData(pixmap.toImage())
+                    
+                    clipboard = QApplication.clipboard()
+                    clipboard.setMimeData(mime_data)
+                    return True
+        return False
+
+
 class ReviewScreen(QWidget):
     finished = pyqtSignal()
     cancelled = pyqtSignal()
@@ -2163,21 +2292,84 @@ class ReviewScreen(QWidget):
             from PyQt5.QtWidgets import QMenu
             menu = QMenu(self)
             
+        # Map viewport position to document layout coordinate space (adding scroll offset)
+        from PyQt5.QtCore import QPointF
+        viewport = self._hint_browser.viewport()
+        viewport_pos = viewport.mapFrom(self._hint_browser, pos)
+
+        layout_pos = QPointF(
+            viewport_pos.x() + self._hint_browser.horizontalScrollBar().value(),
+            viewport_pos.y() + self._hint_browser.verticalScrollBar().value()
+        )
+        
         # Get image source using document layout
-        img_src = self._hint_browser.document().documentLayout().imageAt(pos)
+        img_src = self._hint_browser.document().documentLayout().imageAt(layout_pos)
         
         # Fallback to character format
         if not img_src:
-            cursor = self._hint_browser.cursorForPosition(pos)
+            cursor = self._hint_browser.cursorForPosition(viewport_pos)
             char_format = cursor.charFormat()
             if not char_format.isImageFormat():
-                left_cursor = self._hint_browser.cursorForPosition(pos)
+                left_cursor = self._hint_browser.cursorForPosition(viewport_pos)
                 left_cursor.movePosition(left_cursor.Left)
                 char_format = left_cursor.charFormat()
+            if not char_format.isImageFormat():
+                right_cursor = self._hint_browser.cursorForPosition(viewport_pos)
+                right_cursor.movePosition(right_cursor.Right)
+                char_format = right_cursor.charFormat()
             if char_format.isImageFormat():
                 img_src = char_format.toImageFormat().name()
             
         if img_src:
+            import urllib.parse
+            img_src = urllib.parse.unquote(img_src)
+            if img_src.startswith("file:///"):
+                img_src_path = img_src[8:]
+                if len(img_src_path) > 2 and img_src_path[0] == '/' and img_src_path[2] == ':':
+                    img_src_path = img_src_path[1:]
+            elif img_src.startswith("file://"):
+                img_src_path = img_src[7:]
+            else:
+                img_src_path = img_src
+                
+            from storage_paths import resolve_asset_path
+            import os
+            abs_path = resolve_asset_path(img_src_path)
+            if abs_path and os.path.exists(abs_path):
+                from PyQt5.QtGui import QKeySequence
+                copy_action = None
+                for action in menu.actions():
+                    text = action.text().replace("&", "")
+                    if text == "Copy" or (action.shortcut() and action.shortcut().matches(QKeySequence.Copy)):
+                        copy_action = action
+                        break
+                if copy_action:
+                    custom_copy = menu.addAction("Copy")
+                    custom_copy.setShortcut(QKeySequence.Copy)
+                    
+                    def do_copy(checked=False):
+                        from PyQt5.QtGui import QPixmap
+                        from PyQt5.QtWidgets import QApplication
+                        pixmap = QPixmap(abs_path)
+                        if not pixmap.isNull():
+                            from PyQt5.QtCore import QMimeData, QByteArray, QBuffer, QIODevice
+                            mime_data = QMimeData()
+                            
+                            data = QByteArray()
+                            buffer = QBuffer(data)
+                            buffer.open(QIODevice.WriteOnly)
+                            pixmap.toImage().save(buffer, "PNG")
+                            png_bytes = bytes(data)
+                            
+                            mime_data.setData("image/png", QByteArray(png_bytes))
+                            mime_data.setImageData(pixmap.toImage())
+                            
+                            clipboard = QApplication.clipboard()
+                            clipboard.setMimeData(mime_data)
+                    custom_copy.triggered.connect(do_copy)
+                    menu.insertAction(copy_action, custom_copy)
+                    menu.removeAction(copy_action)
+
             b64_strokes = self._get_strokes_for_image_src(img_src)
             if b64_strokes:
                 # Create our custom action
@@ -2194,7 +2386,12 @@ class ReviewScreen(QWidget):
                 # Connect the action
                 restore_action.triggered.connect(lambda checked=False, bs=b64_strokes, fn=filename: self._restore_ink_from_b64(bs, fn))
                 
-        menu.exec_(self._hint_browser.mapToGlobal(pos))
+        self._context_menu_active = True
+        try:
+            menu.exec_(self._hint_browser.mapToGlobal(pos))
+        finally:
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(100, lambda: setattr(self, "_context_menu_active", False))
 
     def _get_strokes_for_image_src(self, src):
         if not getattr(self, "_current_note_content", None) or not src:
@@ -2417,7 +2614,15 @@ class ReviewScreen(QWidget):
             
         # Tap outside the floating hint panel to hide it
         if et == QEvent.MouseButtonPress:
+            if getattr(self, "_context_menu_active", False):
+                return super().eventFilter(obj, event)
             if hasattr(self, "_hint_panel") and self._hint_panel.isVisible():
+                from PyQt5.QtCore import QRect
+                global_top_left = self._hint_panel.mapToGlobal(self._hint_panel.rect().topLeft())
+                global_rect = QRect(global_top_left, self._hint_panel.size())
+                if global_rect.contains(event.globalPos()):
+                    # Click was inside the hint panel (including child widgets/images), ignore it
+                    return super().eventFilter(obj, event)
                 if obj in (self.canvas, self._canvas_scroll.viewport(), self):
                     self._set_hint_panel_visible(False)
                     
@@ -3980,7 +4185,7 @@ class ReviewScreen(QWidget):
         hp_hdr.addWidget(hp_close)
         hp_layout.addLayout(hp_hdr)
 
-        self._hint_browser = QTextBrowser()
+        self._hint_browser = SelectableTextBrowser()
         self._hint_browser.setOpenExternalLinks(True)
         self._hint_browser.setContextMenuPolicy(Qt.CustomContextMenu)
         self._hint_browser.customContextMenuRequested.connect(self._show_hint_context_menu)
