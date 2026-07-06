@@ -1741,7 +1741,55 @@ class PdfAnnotationDialog(QDialog):
                 except Exception:
                     pass
 
-        # 4. Check if we found a valid image
+        # 4. Try HTML fallback (extracting image src from HTML tag)
+        if image.isNull() and mime.hasHtml():
+            try:
+                html = mime.html()
+                import re
+                match = re.search(r'src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                if match:
+                    src = match.group(1)
+                    
+                    import urllib.parse
+                    src = urllib.parse.unquote(src)
+                    
+                    if src.startswith("data:image/") and ";base64," in src:
+                        try:
+                            import base64
+                            header, base64_data = src.split(";base64,", 1)
+                            img_data = base64.b64decode(base64_data)
+                            img = QImage.fromData(img_data)
+                            if not img.isNull():
+                                image = img
+                        except Exception:
+                            pass
+                    else:
+                        if src.startswith("file:///"):
+                            src_path = src[8:]
+                            if len(src_path) > 2 and src_path[0] == '/' and src_path[2] == ':':
+                                src_path = src_path[1:]
+                        elif src.startswith("file://"):
+                            src_path = src[7:]
+                        else:
+                            src_path = src
+                            
+                        if not os.path.isabs(src_path):
+                            try:
+                                from storage_paths import resolve_asset_path
+                                resolved = resolve_asset_path(src_path)
+                                if resolved and os.path.exists(resolved):
+                                    src_path = resolved
+                            except Exception:
+                                pass
+                                
+                        if os.path.exists(src_path):
+                            img = QImage(src_path)
+                            if not img.isNull():
+                                image = img
+            except Exception:
+                pass
+
+        # 5. Check if we found a valid image
         if image.isNull():
             self.lbl_status.setText("clipboard has no valid image")
             return
