@@ -358,6 +358,255 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
         self.assertEqual(card["boxes"][0]["sm2_due"], "2026-05-23T00:00:00")
         self.assertEqual(card["boxes"][1]["sm2_due"], "2026-05-23T00:00:00")
 
+    def test_ungrouping_retains_scheduling_and_splits_queue(self):
+        rs = MagicMock()
+        card = {
+            "_id": 101,
+            "title": "Test PDF Card",
+            "pdf_path": "dummy.pdf",
+            "boxes": [
+                {
+                    "box_id": "box_a",
+                    "group_id": "g1",
+                    "rect": [10, 10, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                    "sched_state": "review",
+                    "sched_step": 0,
+                    "sm2_interval": 1,
+                    "sm2_ease": 2.5,
+                    "sm2_due": "2026-07-05T00:00:00",
+                    "sm2_repetitions": 1,
+                    "reviews": 1,
+                },
+                {
+                    "box_id": "box_b",
+                    "group_id": "g1",
+                    "rect": [100, 100, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                    "sched_state": "review",
+                    "sched_step": 0,
+                    "sm2_interval": 1,
+                    "sm2_ease": 2.5,
+                    "sm2_due": "2026-07-05T00:00:00",
+                    "sm2_repetitions": 1,
+                    "reviews": 1,
+                }
+            ]
+        }
+        rs._data = {"decks": [{"_id": 1, "name": "Deck", "cards": [card], "children": []}]}
+        manager = ReviewSessionManager(rs)
+        manager._items = [(card, ("group", "g1"), card["boxes"][0])]
+
+        # 1. Simulate rating the group which updates SM2 parameters
+        with patch("services.review_manager.store.mark_dirty"), patch(
+            "services.review_manager.store.save_soon"
+        ), patch(
+            "services.review_manager.recovery_manager.record_review_event"
+        ), patch("builtins.print"):
+            manager._rate(4)
+
+        # Repetitions should increase to 2 for both boxes in group
+        self.assertEqual(card["boxes"][0]["sm2_repetitions"], 2)
+        self.assertEqual(card["boxes"][1]["sm2_repetitions"], 2)
+
+        # 2. Simulate ungrouping (editor clearing group_id)
+        edited_card = {
+            "_id": 101,
+            "title": "Test PDF Card",
+            "pdf_path": "dummy.pdf",
+            "boxes": [
+                {
+                    "box_id": "box_a",
+                    "group_id": "",
+                    "rect": [10, 10, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                },
+                {
+                    "box_id": "box_b",
+                    "group_id": "",
+                    "rect": [100, 100, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                }
+            ]
+        }
+
+        # Merge SM-2 state like the editor saving does
+        old_boxes_by_id = {b.get("box_id", ""): b for b in card.get("boxes", [])}
+        SM2_KEYS = (
+            "sched_state",
+            "sched_step",
+            "sm2_interval",
+            "sm2_ease",
+            "sm2_due",
+            "sm2_last_quality",
+            "sm2_repetitions",
+            "reviews",
+        )
+        for new_box in edited_card.get("boxes", []):
+            bid = new_box.get("box_id", "")
+            if bid and bid in old_boxes_by_id:
+                old = old_boxes_by_id[bid]
+                for k in SM2_KEYS:
+                    if k in old:
+                        new_box[k] = old[k]
+
+        card.update(edited_card)
+
+        # 3. Rebuild queue simulating ReviewScreen._finish_edit_current_card logic
+        manager._items = [item for item in manager._items if id(item[0]) != id(card)]
+        
+        # Force due dates to be due today so they get queued in active items
+        for box in card["boxes"]:
+            box["sm2_due"] = sm2_engine._now_iso()
+
+        # Re-queue active/due boxes
+        for box in card.get("boxes", []):
+            if sm2_engine.is_due_today(box):
+                i = card.get("boxes", []).index(box)
+                manager._items.append((card, i, box))
+
+        # Check that both boxes are now in queue as separate items
+        self.assertEqual(len(manager._items), 2)
+        self.assertEqual(manager._items[0][1], 0)
+        self.assertEqual(manager._items[1][1], 1)
+
+    def test_grouping_collapses_queue(self):
+        rs = MagicMock()
+        card = {
+            "_id": 102,
+            "title": "Test Grouping PDF Card",
+            "pdf_path": "dummy.pdf",
+            "boxes": [
+                {
+                    "box_id": "box_a",
+                    "group_id": "", # Ungrouped initially
+                    "rect": [10, 10, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                    "sched_state": "review",
+                    "sched_step": 0,
+                    "sm2_interval": 1,
+                    "sm2_ease": 2.5,
+                    "sm2_due": "2026-07-05T00:00:00",
+                    "sm2_repetitions": 1,
+                    "reviews": 1,
+                },
+                {
+                    "box_id": "box_b",
+                    "group_id": "", # Ungrouped initially
+                    "rect": [100, 100, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                    "sched_state": "review",
+                    "sched_step": 0,
+                    "sm2_interval": 1,
+                    "sm2_ease": 2.5,
+                    "sm2_due": "2026-07-05T00:00:00",
+                    "sm2_repetitions": 1,
+                    "reviews": 1,
+                }
+            ]
+        }
+        rs._data = {"decks": [{"_id": 1, "name": "Deck", "cards": [card], "children": []}]}
+        manager = ReviewSessionManager(rs)
+        
+        # Initially, both are in the queue as separate items
+        manager._items = [
+            (card, 0, card["boxes"][0]),
+            (card, 1, card["boxes"][1])
+        ]
+        
+        # 1. User groups them in the editor under group_id "g1" and saves
+        edited_card = {
+            "_id": 102,
+            "title": "Test Grouping PDF Card",
+            "pdf_path": "dummy.pdf",
+            "boxes": [
+                {
+                    "box_id": "box_a",
+                    "group_id": "g1",
+                    "rect": [10, 10, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                },
+                {
+                    "box_id": "box_b",
+                    "group_id": "g1",
+                    "rect": [100, 100, 50, 50],
+                    "page_num": 0,
+                    "shape": "rect",
+                    "angle": 0,
+                }
+            ]
+        }
+        
+        # Merge SM-2 state like the editor saving does
+        old_boxes_by_id = {b.get("box_id", ""): b for b in card.get("boxes", [])}
+        SM2_KEYS = (
+            "sched_state",
+            "sched_step",
+            "sm2_interval",
+            "sm2_ease",
+            "sm2_due",
+            "sm2_last_quality",
+            "sm2_repetitions",
+            "reviews",
+        )
+        for new_box in edited_card.get("boxes", []):
+            bid = new_box.get("box_id", "")
+            if bid and bid in old_boxes_by_id:
+                old = old_boxes_by_id[bid]
+                for k in SM2_KEYS:
+                    if k in old:
+                        new_box[k] = old[k]
+                        
+        card.update(edited_card)
+        
+        # 2. Rebuild queue simulating ReviewScreen._finish_edit_current_card logic
+        # Discard old queue items for this card
+        manager._items = [item for item in manager._items if id(item[0]) != id(card)]
+        manager._queued_ids = set()
+        
+        # Force due dates to be due today so they get queued in active items
+        for box in card["boxes"]:
+            box["sm2_due"] = sm2_engine._now_iso()
+            
+        # Re-queue active/due boxes with group collapsing logic
+        seen_new_groups = set()
+        for box in card.get("boxes", []):
+            bid = box.get("box_id", "")
+            gid = box.get("group_id", "")
+            track_id = gid if gid else bid
+            if not track_id:
+                continue
+                
+            if track_id in seen_new_groups or track_id in manager._queued_ids:
+                continue
+                
+            if sm2_engine.is_due_today(box):
+                manager._queued_ids.add(track_id)
+                if gid:
+                    seen_new_groups.add(gid)
+                    manager._items.append((card, ("group", gid), box))
+                else:
+                    i = card.get("boxes", []).index(box)
+                    manager._items.append((card, i, box))
+                    
+        # Check that they have collapsed into a single item in the review queue
+        self.assertEqual(len(manager._items), 1)
+        self.assertEqual(manager._items[0][1], ("group", "g1"))
+
 
 if __name__ == "__main__":
     unittest.main()

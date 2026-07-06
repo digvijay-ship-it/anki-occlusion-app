@@ -221,13 +221,28 @@ class CanvasInteractionMixin:
         if not hps:
             return None
         sp = QPointF(sp)
-        r = self._HANDLE_R + 2
-        if (sp - hps["rotate"]).manhattanLength() <= r:
+        r = 14  # Grab tolerance: 14 pixels (up from 6px) to make grabbing easy and lenient
+        r2 = r * r
+        rot_pt = hps["rotate"]
+        if (sp.x() - rot_pt.x())**2 + (sp.y() - rot_pt.y())**2 <= r2:
             return ("rotate", -1)
         for hi, hpt in enumerate(hps["resize"]):
-            if (sp - hpt).manhattanLength() <= r:
+            if (sp.x() - hpt.x())**2 + (sp.y() - hpt.y())**2 <= r2:
                 return ("resize", hi)
         return None
+
+    def _find_handle_hit(self, sp):
+        if self._selected_idx >= 0:
+            hit = self._hit_handle(sp, self._selected_idx)
+            if hit:
+                return self._selected_idx, hit
+        for idx in range(len(self._boxes) - 1, -1, -1):
+            if idx == self._selected_idx:
+                continue
+            hit = self._hit_handle(sp, idx)
+            if hit:
+                return idx, hit
+        return None, None
 
     def _select_box(self, hit: int, add_to_selection: bool = False, solo: bool = False):
         if hit < 0:
@@ -624,22 +639,28 @@ class CanvasInteractionMixin:
             return
 
         if self._mode == "review" and e.button() == Qt.RightButton:
+            hit = self._hit_box(ip)
+            if hit >= 0:
+                self.right_clicked_box.emit(hit, e.globalPos())
+                e.accept()
+                return
             self.right_clicked.emit()
             return
 
         if self._mode != "edit" or e.button() != Qt.LeftButton:
             return
 
-        if self._selected_idx >= 0:
-            hit_h = self._hit_handle(sp, self._selected_idx)
-            if hit_h:
-                op, hi = hit_h
-                self._drag_op = op
-                self._drag_handle = hi
-                self._drag_start_pos = sp
-                self._drag_orig_box = self._clone_box(self._boxes[self._selected_idx])
-                self._push_undo()
-                return
+        idx, hit_h = self._find_handle_hit(sp)
+        if idx is not None and hit_h:
+            if self._selected_idx != idx:
+                self._select_box(idx)
+            op, hi = hit_h
+            self._drag_op = op
+            self._drag_handle = hi
+            self._drag_start_pos = sp
+            self._drag_orig_box = self._clone_box(self._boxes[idx])
+            self._push_undo()
+            return
 
         hit = self._hit_box(ip)
         if hit >= 0:
@@ -780,11 +801,7 @@ class CanvasInteractionMixin:
             self.update(dirty.toRect())
             return
 
-        if self._tool == "select" and self._mode == "edit":
-            if self._selected_idx >= 0 and self._hit_handle(sp, self._selected_idx):
-                self.setCursor(QCursor(Qt.SizeFDiagCursor))
-            else:
-                self.setCursor(QCursor(Qt.ArrowCursor))
+        self._update_cursor_for_position(e.pos())
 
     def mouseReleaseEvent(self, e):
         stylus_like = self._is_recent_stylus_mouse_event(e)
@@ -864,6 +881,7 @@ class CanvasInteractionMixin:
             self._drag_current_pos = None
             self.boxes_changed.emit(self.get_boxes())
             self.update()
+            self._update_cursor_for_position(e.pos())
 
     def _do_resize(self, sp: QPointF):
         idx = self._selected_idx
@@ -927,6 +945,9 @@ class CanvasInteractionMixin:
     def leaveEvent(self, e):
         self._ink_erasing = False
         self._ink_pre_erase_snapshot = None
+        self._hovered_box_idx = -1
+        self._hovered_handle_idx = None
+        self.update()
         sc = self.parent()
         while sc and not hasattr(sc, "_pan_active"):
             sc = sc.parent()
@@ -939,3 +960,73 @@ class CanvasInteractionMixin:
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+
+    def _update_cursor_for_position(self, pos):
+        if getattr(self, "_ink_active", False):
+            return
+        if self._mode == "edit":
+            drag_op = getattr(self, "_drag_op", None)
+            old_box = getattr(self, "_hovered_box_idx", -1)
+            old_handle = getattr(self, "_hovered_handle_idx", None)
+
+            if drag_op == "resize":
+                hi = getattr(self, "_drag_handle", -1)
+                self._hovered_box_idx = self._selected_idx
+                self._hovered_handle_idx = ("resize", hi)
+                if hi in (0, 7):
+                    self.setCursor(QCursor(Qt.SizeFDiagCursor))
+                elif hi in (2, 5):
+                    self.setCursor(QCursor(Qt.SizeBDiagCursor))
+                elif hi in (1, 6):
+                    self.setCursor(QCursor(Qt.SizeVerCursor))
+                elif hi in (3, 4):
+                    self.setCursor(QCursor(Qt.SizeHorCursor))
+                if self._hovered_box_idx != old_box or self._hovered_handle_idx != old_handle:
+                    self.update()
+                return
+            elif drag_op == "move":
+                self._hovered_box_idx = -1
+                self._hovered_handle_idx = None
+                self.setCursor(QCursor(Qt.SizeAllCursor))
+                if self._hovered_box_idx != old_box or self._hovered_handle_idx != old_handle:
+                    self.update()
+                return
+            elif drag_op == "rotate":
+                self._hovered_box_idx = self._selected_idx
+                self._hovered_handle_idx = ("rotate", -1)
+                self.setCursor(QCursor(Qt.PointingHandCursor))
+                if self._hovered_box_idx != old_box or self._hovered_handle_idx != old_handle:
+                    self.update()
+                return
+
+            sp = QPointF(pos)
+            ip = self._ip(pos)
+            idx, handle_hit = self._find_handle_hit(sp)
+            self._hovered_box_idx = idx if idx is not None else -1
+            self._hovered_handle_idx = handle_hit
+
+            if self._hovered_box_idx != old_box or self._hovered_handle_idx != old_handle:
+                self.update()
+
+            if handle_hit:
+                op, hi = handle_hit
+                if op == "rotate":
+                    self.setCursor(QCursor(Qt.PointingHandCursor))
+                elif op == "resize":
+                    if hi in (0, 7):
+                        self.setCursor(QCursor(Qt.SizeFDiagCursor))
+                    elif hi in (2, 5):
+                        self.setCursor(QCursor(Qt.SizeBDiagCursor))
+                    elif hi in (1, 6):
+                        self.setCursor(QCursor(Qt.SizeVerCursor))
+                    elif hi in (3, 4):
+                        self.setCursor(QCursor(Qt.SizeHorCursor))
+            else:
+                if self._tool == "select":
+                    hit_box = self._hit_box(ip)
+                    if hit_box >= 0 and (hit_box == self._selected_idx or hit_box in getattr(self, "_selected_indices", set())):
+                        self.setCursor(QCursor(Qt.SizeAllCursor))
+                    else:
+                        self.setCursor(QCursor(Qt.ArrowCursor))
+                elif self._tool in ("rect", "ellipse"):
+                    self.setCursor(QCursor(Qt.CrossCursor))

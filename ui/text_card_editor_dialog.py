@@ -25,12 +25,71 @@ class RichTextEdit(QTextEdit):
         self.document().setBaseUrl(get_base_url())
         self.document().setDefaultStyleSheet("img { width: 100%; }")
 
+    def copy(self):
+        cursor = self.textCursor()
+        if self._try_copy_image(cursor):
+            return
+        super().copy()
+
+    def cut(self):
+        cursor = self.textCursor()
+        if self._try_copy_image(cursor):
+            cursor.removeSelectedText()
+            return
+        super().cut()
+
+    def _try_copy_image(self, cursor):
+        char_format = cursor.charFormat()
+        if not char_format.isImageFormat() and cursor.hasSelection():
+            start_pos = cursor.selectionStart()
+            temp_cursor = self.textCursor()
+            temp_cursor.setPosition(start_pos)
+            char_format = temp_cursor.charFormat()
+            
+        if char_format.isImageFormat():
+            image_format = char_format.toImageFormat()
+            image_name = image_format.name()
+            
+            from storage_paths import resolve_asset_path
+            from PyQt5.QtGui import QPixmap
+            abs_path = resolve_asset_path(image_name)
+            if abs_path and os.path.exists(abs_path):
+                pixmap = QPixmap(abs_path)
+                if not pixmap.isNull():
+                    clipboard = QApplication.clipboard()
+                    clipboard.setImage(pixmap.toImage())
+                    return True
+        return False
+
     def contextMenuEvent(self, event):
-        menu = self.createStandardContextMenu()
         cursor = self.cursorForPosition(event.pos())
         char_format = cursor.charFormat()
         
         if char_format.isImageFormat():
+            pos = cursor.position()
+            doc = self.document()
+            is_img = False
+            select_start = pos
+            
+            char_at = doc.characterAt(pos)
+            char_prev = doc.documentLayout().anchorAt(pos) if hasattr(doc, "documentLayout") else ""
+            char_prev_char = doc.characterAt(pos - 1) if pos > 0 else ""
+            
+            if char_at == '\ufffc':
+                is_img = True
+                select_start = pos
+            elif char_prev_char == '\ufffc':
+                is_img = True
+                select_start = pos - 1
+                
+            if is_img:
+                img_cursor = self.cursorForPosition(event.pos())
+                img_cursor.setPosition(select_start)
+                img_cursor.setPosition(select_start + 1, img_cursor.KeepAnchor)
+                self.setTextCursor(img_cursor)
+                cursor = img_cursor
+                
+            menu = self.createStandardContextMenu()
             image_format = char_format.toImageFormat()
             image_name = image_format.name()
             
@@ -44,6 +103,7 @@ class RichTextEdit(QTextEdit):
             elif action == edit_sketch_action:
                 self._edit_inline_sketch(image_name, char_format, cursor)
         else:
+            menu = self.createStandardContextMenu()
             menu.exec_(event.globalPos())
 
     def _crop_inline_image(self, image_name, char_format, cursor):

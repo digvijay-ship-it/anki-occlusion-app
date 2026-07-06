@@ -572,7 +572,7 @@ function PdfReviewSurface(props) {
 
   function centerOnTarget() {
     if (!frameRef.current || !documentSize.width) return;
-    const targetRect = targetRectForItem(boxes, item);
+    const targetRect = targetRectForItem(boxes, item, docState.pageTops);
     const scroll = centerScrollForRect(
       { width: frameRef.current.clientWidth, height: frameRef.current.clientHeight },
       documentSize,
@@ -749,47 +749,58 @@ function PdfReviewSurface(props) {
             <div className="review-document-empty">{docState.error}</div>
           ) : (
             <div className="pdf-page-stack">
-              {docState.pageDims.map((dim, index) => (
-                <div
-                  className="pdf-page-shell"
-                  key={index}
-                  style={{
-                    height: `${dim.height}px`,
-                    top: `${docState.pageTops[index] || 0}px`,
-                    width: `${dim.width}px`,
-                  }}
-                >
-                  <canvas
-                    height="0"
-                    ref={(node) => {
-                      if (node) {
-                        canvasRefs.current.set(index, node);
-                      } else {
-                        canvasRefs.current.delete(index);
-                      }
+              {docState.pageDims.map((dim, index) => {
+                const pageMasks = boxes.filter(box => {
+                  const p = box.page_num !== undefined && box.page_num !== null
+                    ? box.page_num
+                    : inferBoxPage(box, docState.pageTops, docState.pageDims);
+                  return p === index;
+                });
+                return (
+                  <div
+                    className="pdf-page-shell"
+                    key={index}
+                    style={{
+                      height: `${dim.height}px`,
+                      top: `${docState.pageTops[index] || 0}px`,
+                      width: `${dim.width}px`,
+                      position: 'relative',
                     }}
-                    width="0"
-                  />
-                </div>
-              ))}
+                  >
+                    <canvas
+                      height="0"
+                      ref={(node) => {
+                        if (node) {
+                          canvasRefs.current.set(index, node);
+                        } else {
+                          canvasRefs.current.delete(index);
+                        }
+                      }}
+                      width="0"
+                    />
+                    {pageMasks.map((box, bIdx) => {
+                      const hasPageNum = box.page_num !== undefined && box.page_num !== null;
+                      const pageTop = hasPageNum ? 0 : (docState.pageTops[index] || 0);
+                      return (
+                        <ReviewMask
+                          box={box}
+                          index={box.box_index ?? bIdx}
+                          item={item}
+                          key={`${box.box_id || bIdx}`}
+                          onToggleReveal={onToggleBoxReveal}
+                          pageTop={pageTop}
+                          revealed={revealed}
+                          revealedBoxes={revealedBoxes}
+                          reviewStyle={reviewStyle}
+                          surfaceSize={dim}
+                        />
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </div>
           )}
-          {documentSize.width && documentSize.height
-            ? boxes.map((box, index) => (
-                <ReviewMask
-                  box={box}
-                  index={box.box_index ?? index}
-                  item={item}
-                  key={`${box.box_id || index}`}
-                  onToggleReveal={onToggleBoxReveal}
-                  pageTop={0}
-                  revealed={revealed}
-                  revealedBoxes={revealedBoxes}
-                  reviewStyle={reviewStyle}
-                  surfaceSize={documentSize}
-                />
-              ))
-            : null}
           {documentSize.width && documentSize.height ? (
             <InkLayer
               active={penActive}

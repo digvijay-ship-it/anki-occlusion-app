@@ -280,7 +280,6 @@ def apply_annotation_beta_refresh(
     self, path: str, changed_pages, return_page: int | None
 ):
     if not changed_pages:
-        self._trigger_center_fit()
         return
     refreshed_pages = sorted(set(int(pn) for pn in changed_pages))
     
@@ -313,4 +312,3 @@ def apply_annotation_beta_refresh(
     self._canvas_scroll._emit_visible_pages()
     
     self._update_review_page_nav_ui()
-    self._trigger_center_fit()

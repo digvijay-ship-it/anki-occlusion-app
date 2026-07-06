@@ -3,9 +3,9 @@ import os
 import uuid
 from PyQt5.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QStackedWidget, QSlider, QFrame, QApplication
+    QStackedWidget, QSlider, QFrame, QApplication, QColorDialog
 )
-from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtCore import Qt, QPoint, QSettings
 from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QTextCharFormat, QKeySequence, QCursor
 
 import storage_paths
@@ -202,6 +202,9 @@ class DrawingCanvas(QWidget):
 class QuickNoteDialog(QDialog):
     def __init__(self, current_note, parent=None):
         super().__init__(parent)
+        settings = QSettings("AnkiOcclusion", "App")
+        self._last_custom_color = settings.value("sketch/last_custom_color", "#A6E3A1")
+        self._selected_color_hex = settings.value("sketch/last_selected_color", "#FFFFFF")
         self.setWindowTitle("Edit Mask Note / Hint")
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint)
         self.setWindowState(Qt.WindowMaximized)
@@ -298,6 +301,7 @@ class QuickNoteDialog(QDialog):
         canvas_layout.setContentsMargins(1, 1, 1, 1)
         
         self.draw_canvas = DrawingCanvas()
+        self.draw_canvas.set_pen_color(self._selected_color_hex)
         canvas_layout.addWidget(self.draw_canvas)
         sketch_v.addWidget(canvas_frame, stretch=1)
 
@@ -327,7 +331,14 @@ class QuickNoteDialog(QDialog):
             colors_layout.addWidget(btn)
             self.color_buttons.append(btn)
 
-        self._selected_color_hex = "#FFFFFF"
+        # Custom Color Picker button
+        self.btn_custom_color = QPushButton("🎨")
+        self.btn_custom_color.setFixedSize(20, 20)
+        self.btn_custom_color.setCursor(Qt.PointingHandCursor)
+        self.btn_custom_color.setToolTip("Pick Custom Color")
+        self.btn_custom_color.clicked.connect(self._pick_custom_color)
+        colors_layout.addWidget(self.btn_custom_color)
+
         self._update_color_buttons_style()
         controls_h.addLayout(colors_layout)
 
@@ -450,25 +461,58 @@ class QuickNoteDialog(QDialog):
         self.btn_toggle_text.setStyleSheet(left_style)
         self.btn_toggle_draw.setStyleSheet(right_style)
 
+    def _pick_custom_color(self):
+        color = QColorDialog.getColor(QColor(self._last_custom_color), self, "Select Custom Pen Color")
+        if color.isValid():
+            hex_val = color.name()
+            self._last_custom_color = hex_val
+            self._selected_color_hex = hex_val
+            
+            # Save to QSettings
+            settings = QSettings("AnkiOcclusion", "App")
+            settings.setValue("sketch/last_custom_color", hex_val)
+            settings.setValue("sketch/last_selected_color", hex_val)
+            
+            self.draw_canvas.set_pen_color(hex_val)
+            self._update_color_buttons_style()
+
     def _change_pen_color(self):
         btn = self.sender()
         if btn:
             color_hex = btn.property("color_val")
             self._selected_color_hex = color_hex
+            
+            # Save to QSettings
+            settings = QSettings("AnkiOcclusion", "App")
+            settings.setValue("sketch/last_selected_color", color_hex)
+            
             self.draw_canvas.set_pen_color(color_hex)
             self._update_color_buttons_style()
 
     def _update_color_buttons_style(self):
+        is_standard_selected = False
         for btn in self.color_buttons:
             c = btn.property("color_val")
             if c == self._selected_color_hex:
                 btn.setStyleSheet(
                     f"QPushButton {{ background-color: {c}; border: 2px solid white; border-radius: 10px; }}"
                 )
+                is_standard_selected = True
             else:
                 btn.setStyleSheet(
                     f"QPushButton {{ background-color: {c}; border: 1px solid #45475A; border-radius: 10px; }}"
                 )
+                
+        # Custom button styling
+        cust_color = self._last_custom_color
+        if not is_standard_selected:
+            self.btn_custom_color.setStyleSheet(
+                f"QPushButton {{ background-color: {self._selected_color_hex}; border: 2px solid white; border-radius: 10px; color: white; font-size: 9px; }}"
+            )
+        else:
+            self.btn_custom_color.setStyleSheet(
+                f"QPushButton {{ background-color: {cust_color}; border: 1px solid #45475A; border-radius: 10px; color: white; font-size: 9px; }}"
+            )
 
     def _change_pen_width(self, val):
         self.draw_canvas.set_pen_width(val)

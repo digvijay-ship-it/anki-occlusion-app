@@ -92,13 +92,13 @@ test("review mask state reveals only the active target", () => {
 test("review target rect and hit testing support center and ctrl reveal", () => {
   const boxes = [
     { box_id: "a", box_index: 0, rect: [10, 20, 100, 40] },
-    { box_id: "b", box_index: 1, group_id: "g1", rect: [200, 20, 60, 60] },
-    { box_id: "c", box_index: 2, group_id: "g1", rect: [280, 40, 60, 80] },
+    { box_id: "b", box_index: 1, group_id: "g1", rect: [200, 20, 60, 60], page_num: 1 },
+    { box_id: "c", box_index: 2, group_id: "g1", rect: [280, 40, 60, 80], page_num: 1 },
   ];
 
-  assert.deepEqual(targetRectForItem(boxes, { group_id: "g1" }), {
+  assert.deepEqual(targetRectForItem(boxes, { group_id: "g1" }, [0, 800]), {
     x: 200,
-    y: 20,
+    y: 820,
     width: 140,
     height: 100,
   });

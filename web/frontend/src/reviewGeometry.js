@@ -232,15 +232,19 @@ export function fitWidthScale(frameSize, documentSize, paddingX = 32) {
   return Math.max(0.05, Math.min(8, availableWidth / documentWidth));
 }
 
-export function targetRectForItem(boxes, item) {
+export function targetRectForItem(boxes, item, pageTops = []) {
   const rects = (boxes || [])
     .filter((box, index) => isTargetReviewBox(box, item, box.box_index ?? index))
     .map((box) => {
       const rect = Array.isArray(box?.rect) ? box.rect : [];
       if (rect.length < 4) return null;
+      const hasPageNum = box.page_num !== undefined && box.page_num !== null;
+      const pageNum = hasPageNum ? box.page_num : 0;
+      const pageTop = pageTops[pageNum] || 0;
+      const yCoord = hasPageNum ? Number(rect[1] || 0) + pageTop : Number(rect[1] || 0);
       return {
         x: Number(rect[0] || 0),
-        y: Number(rect[1] || 0),
+        y: yCoord,
         width: Number(rect[2] || 0),
         height: Number(rect[3] || 0),
       };

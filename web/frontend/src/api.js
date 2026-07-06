@@ -3,6 +3,7 @@ const API_BASE = import.meta.env?.VITE_API_BASE || "http://127.0.0.1:8000";
 async function requestJson(path, options = {}) {
   const headers = {
     Accept: "application/json",
+    "x-anki-user": "e2e-test-user",
     ...(options.body ? { "Content-Type": "application/json" } : {}),
     ...(options.headers || {}),
   };

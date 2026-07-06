@@ -99,7 +99,7 @@ def _get_canvas_colors_objects(invert: bool):
 
 class CanvasRendererMixin:
     CANVAS_PAINT_PROFILE_ENV = "ANKI_CANVAS_PAINT_PROFILE"
-    _LABEL_FONT = QFont("Segoe UI", 9)
+    _LABEL_FONT = QFont("Segoe UI", 12, QFont.Bold)
     _SMALL_FONT = QFont("Segoe UI", 7)
 
     def _canvas_paint_profile_enabled(self):
@@ -354,7 +354,6 @@ class CanvasRendererMixin:
                             )
                         b_color = blend(brush.color(), bg, factor)
                         p_color = blend(pen.color(), bg, factor)
-                        from PyQt5.QtGui import QBrush, QPen
                         brush = QBrush(b_color)
                         pen = QPen(p_color, pen.widthF(), pen.style(), pen.capStyle(), pen.joinStyle())
 
@@ -384,15 +383,30 @@ class CanvasRendererMixin:
             p.setBrush(brush)
             p.setPen(pen)
             (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
-            p.setPen(pen_text)
+
+            if i == getattr(self, "_hovered_box_idx", -1):
+                p.save()
+                p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(cc["C_ACCENT_PEN_1"].color(), 2.0, Qt.SolidLine))
+                (p.drawEllipse if shape == "ellipse" else p.drawRect)(local.adjusted(-2, -2, 2, 2))
+                p.restore()
+
             p.setFont(self._LABEL_FONT)
             dlbl = (
                 f"[{gid[:4]}] {lbl}" if gid and lbl else f"[{gid[:4]}]" if gid else lbl
             )
+            # Draw outline/shadow (black)
+            p.setPen(QColor("#000000"))
+            p.drawText(local.translated(-1, -1), Qt.AlignCenter, dlbl)
+            p.drawText(local.translated(1, -1), Qt.AlignCenter, dlbl)
+            p.drawText(local.translated(-1, 1), Qt.AlignCenter, dlbl)
+            p.drawText(local.translated(1, 1), Qt.AlignCenter, dlbl)
+            # Draw main text (white)
+            p.setPen(QColor("#FFFFFF"))
             p.drawText(local, Qt.AlignCenter, dlbl)
 
         p.restore()
-        if self._mode == "edit" and i == self._selected_idx:
+        if self._mode == "edit" and (i == self._selected_idx or i == getattr(self, "_hovered_box_idx", -1)):
             self._draw_handles(p, i, cc)
 
     def _draw_handles(self, p: QPainter, idx: int, cc=None):
@@ -401,19 +415,41 @@ class CanvasRendererMixin:
             return
         if cc is None:
             cc = self._get_canvas_colors()
-        p.setPen(cc["C_GREEN_PEN_1"])
-        p.setBrush(cc["C_HANDLE_BG_BRUSH"])
+        
+        is_hovered_box = (idx == getattr(self, "_hovered_box_idx", -1))
+        hovered_handle = getattr(self, "_hovered_handle_idx", None) if is_hovered_box else None
+        
         hr = self._HANDLE_R
-        for hpt in hps["resize"]:
-            p.drawEllipse(hpt, hr, hr)
+        for hi, hpt in enumerate(hps["resize"]):
+            p.save()
+            if hovered_handle == ("resize", hi):
+                p.setPen(QPen(cc["C_ACCENT_PEN_1"].color(), 2.0))
+                p.setBrush(cc["C_ACCENT_BRUSH"])
+                p.drawEllipse(hpt, hr + 2, hr + 2)
+            else:
+                p.setPen(cc["C_GREEN_PEN_1"])
+                p.setBrush(cc["C_HANDLE_BG_BRUSH"])
+                p.drawEllipse(hpt, hr, hr)
+            p.restore()
+
         rpt = hps["rotate"]
         top_c = hps["resize"][1]
         p.setPen(cc["C_ACCENT_PEN_1"])
         p.drawLine(top_c, rpt)
-        p.setBrush(cc["C_ACCENT_BRUSH"])
-        p.setPen(cc["C_WHITE_PEN_1"])
-        p.drawEllipse(rpt, hr + 1, hr + 1)
+        
+        p.save()
+        if hovered_handle == ("rotate", -1):
+            p.setPen(QPen(cc["C_ACCENT_PEN_1"].color(), 2.0))
+            p.setBrush(cc["C_ACCENT_BRUSH"])
+            p.drawEllipse(rpt, hr + 3, hr + 3)
+        else:
+            p.setBrush(cc["C_ACCENT_BRUSH"])
+            p.setPen(cc["C_WHITE_PEN_1"])
+            p.drawEllipse(rpt, hr + 1, hr + 1)
+        p.restore()
+        
         p.setFont(self._SMALL_FONT)
+        p.setPen(cc["C_WHITE_PEN_1"])
         p.drawText(QRectF(rpt.x() - 6, rpt.y() - 6, 12, 12), Qt.AlignCenter, "↻")
 
     def _draw_live(self, p: QPainter, cc=None):

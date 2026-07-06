@@ -25,6 +25,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("home.music_next", "Home", "Next music track", "N"),
     ShortcutAction("home.edit_card", "Home", "Edit selected card", "E"),
     ShortcutAction("home.add_card", "Home", "Add card to selected deck", "A"),
+    ShortcutAction("home.resume_review", "Home", "Resume last review session", "R"),
     ShortcutAction("review.fullscreen", "Review", "Toggle fullscreen", "F11"),
     ShortcutAction("review.cancel", "Review", "Leave review", "Esc"),
     ShortcutAction("review.reveal", "Review", "Reveal answer", "Space"),
@@ -60,7 +61,9 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.save_ink_clear", "Review", "Save review ink & clear canvas", "Ctrl+A"),
     ShortcutAction("review.save_ink_keep", "Review", "Save review ink & keep on canvas", "Ctrl+Shift+A"),
     ShortcutAction("review.eraser_toggle", "Review", "Toggle eraser drawing", "E"),
+    ShortcutAction("review.pen_eraser_toggle", "Review", "Toggle pen/eraser", "Q"),
     ShortcutAction("review.toggle_focus", "Review", "Toggle Focus Canvas Mode", "Ctrl+F"),
+    ShortcutAction("review.pdf_metadata", "Review", "Edit PDF reference notes", "Ctrl+M"),
 )
 
 

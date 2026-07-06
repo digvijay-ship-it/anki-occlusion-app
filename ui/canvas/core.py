@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QWidget, QScrollArea, QApplication, QLabel
-from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QEvent, QPoint
 from PyQt5.QtGui import (
     QCursor,
     QPainter,
@@ -40,6 +40,7 @@ class OcclusionCanvas(
     zoom_changed = pyqtSignal(float)
     ink_changed = pyqtSignal()
     right_clicked = pyqtSignal()
+    right_clicked_box = pyqtSignal(int, QPoint)
 
     def __init__(self, parent=None):
         super().__init__(parent)

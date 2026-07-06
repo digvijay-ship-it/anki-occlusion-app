@@ -545,6 +545,48 @@ class TMNTBangaDrawerTests(unittest.TestCase):
         self.assertLess(layout.sidebar.minimumWidth(), 300)
         self.assertGreater(layout.sidebar.maximumWidth(), 1000)
 
+    def test_tmnt_layout_sidebar_hover_expand_logic(self):
+        with patch("builtins.print"):
+            layout = TMNTHomeLayout({"decks": [], "_font_size": 11})
+        self.addCleanup(layout.close)
+
+        layout.resize(1000, 600)
+        layout.show()
+        QApplication.processEvents()
+
+        body = layout._body_w
+        self.assertIsNotNone(body)
+
+        # Initially, sidebar is not expanded
+        self.assertFalse(layout._sidebar_expanded)
+
+        from PyQt5.QtCore import QPoint
+        # Hover inside the collapsed sidebar zone (< 30% of body width, e.g. x = 50)
+        with patch.object(body, "mapFromGlobal", return_value=QPoint(50, 300)):
+            layout._check_sidebar_hover()
+
+        self.assertTrue(layout._sidebar_expanded)
+
+        # Manually force the sidebar width to simulate the expanded state (600px width)
+        layout.sidebar.setFixedWidth(600)
+
+        # Hover inside the expanded width (e.g. x = 450, which is > 30% of body, but < 600)
+        # It should NOT trigger/start the collapse delay
+        if layout._collapse_delay.isActive():
+            layout._collapse_delay.stop()
+
+        with patch.object(body, "mapFromGlobal", return_value=QPoint(450, 300)):
+            layout._check_sidebar_hover()
+
+        self.assertFalse(layout._collapse_delay.isActive())
+
+        # Hover outside the expanded width (e.g. x = 700, which is > 600)
+        # It should trigger/start the collapse delay
+        with patch.object(body, "mapFromGlobal", return_value=QPoint(700, 300)):
+            layout._check_sidebar_hover()
+
+        self.assertTrue(layout._collapse_delay.isActive())
+
 
 if __name__ == "__main__":
     unittest.main()

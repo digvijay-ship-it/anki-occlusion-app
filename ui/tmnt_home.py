@@ -534,6 +534,7 @@ class HTMLButton(QLabel):
 class TMNTMissionBanner(QFrame):
     train_clicked = pyqtSignal()
     selected_clicked = pyqtSignal()
+    resume_clicked = pyqtSignal()
     GLOW_INTERVAL_MS = 50
 
     def __init__(self, data=None, parent=None):
@@ -715,7 +716,42 @@ class TMNTMissionBanner(QFrame):
         btn_sel_font.setBold(btn_selected_bold)
         self.btn_selected.setFont(btn_sel_font)
 
+        self.btn_resume = QPushButton("⚡  RESUME LAST MISSION")
+        self.btn_resume.setStyleSheet(
+            _scale_ss(
+                f"""
+            QPushButton {{
+                background: #ff9f43;
+                color: #07070b;
+                border: 2px solid #ff9f43;
+                border-radius: 4px;
+                font-size: {btn_selected_size}px;
+                font-weight: 900;
+                font-family: {btn_selected_family};
+                letter-spacing: 1px;
+                padding: 10px 16px;
+            }}
+            QPushButton:hover {{
+                background: white;
+                color: #07070b;
+                border-color: white;
+            }}
+            QPushButton:disabled {{
+                background: transparent;
+                color: {T_SUBTEXT};
+                border: 2px solid {T_BORDER};
+            }}
+        """,
+                self._scale,
+            )
+        )
+        self.btn_resume.clicked.connect(self.resume_clicked)
+        self.btn_resume.setVisible(True)
+        self.btn_resume.setEnabled(False)
+        _apply_glow(self.btn_resume, "#ff9f43", blur=_px(16, self._scale), alpha=120)
+
         right.addWidget(self.btn_train_container)
+        right.addWidget(self.btn_resume)
         right.addWidget(self.btn_selected)
         l.addLayout(right)
 
@@ -768,6 +804,22 @@ class TMNTMissionBanner(QFrame):
         max_w = int(base_w * 1.20)
         max_h = int(base_h * 1.20)
         self.btn_train.move((max_w - w) // 2, (max_h - h) // 2)
+
+        # Rapid Heartbeat Pulse animation on the chosen Solid Orange Resume button
+        eff = self.btn_resume.graphicsEffect()
+        if eff and isinstance(eff, QGraphicsDropShadowEffect):
+            if self.btn_resume.isEnabled():
+                t2 = (math.sin(self._glow_step * math.pi / 6.0) + 1.0) / 2.0
+                eff.setBlurRadius(_px(12 + 18 * t2, self._scale))
+                glow_c = QColor("#ff9f43")
+                glow_c.setAlpha(int(120 + 100 * t2))
+                eff.setColor(glow_c)
+            else:
+                eff.setBlurRadius(0)
+                eff.setColor(QColor(0, 0, 0, 0))
+
+    def set_resume_enabled(self, enabled):
+        self.btn_resume.setEnabled(enabled)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -860,7 +912,7 @@ class TMNTBangaLab(QFrame):
                 width: 8px;
             }}
             QScrollBar::handle:vertical {{
-                background: {T_PANEL};
+                background: {T_GREEN};
                 border-radius: 4px;
             }}
             QScrollBar::handle:vertical:hover {{
@@ -1592,7 +1644,7 @@ class TMNTDeckEngine(DeckTree):
                 width: 8px;
             }}
             QScrollBar::handle:vertical {{
-                background: {T_PANEL};
+                background: {T_GREEN};
                 border-radius: 4px;
             }}
             QScrollBar::handle:vertical:hover {{
@@ -1604,7 +1656,7 @@ class TMNTDeckEngine(DeckTree):
                 height: 8px;
             }}
             QScrollBar::handle:horizontal {{
-                background: {T_PANEL};
+                background: {T_GREEN};
                 border-radius: 4px;
             }}
             QScrollBar::handle:horizontal:hover {{
@@ -2307,7 +2359,7 @@ class TMNTMainContent(DeckView):
                 width: 8px;
             }}
             QScrollBar::handle:vertical {{
-                background: {T_PANEL};
+                background: {T_GREEN};
                 border-radius: 4px;
             }}
             QScrollBar::handle:vertical:hover {{
@@ -2548,7 +2600,7 @@ class TMNTMainContent(DeckView):
                 width: 8px;
             }}
             QScrollBar::handle:vertical {{
-                background: {T_PANEL};
+                background: {T_GREEN};
                 border-radius: 4px;
             }}
             QScrollBar::handle:vertical:hover {{
@@ -3331,12 +3383,12 @@ class TMNTTopBar(QFrame):
                     margin: 0px;
                 }}
                 QScrollBar::handle:vertical {{
-                    background: {T_CARD};
+                    background: {T_GREEN};
                     border-radius: 3px;
                     min-height: 20px;
                 }}
                 QScrollBar::handle:vertical:hover {{
-                    background: {T_NEON};
+                    background: {T_GREEN};
                 }}
                 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
                 """,
@@ -4569,6 +4621,7 @@ class TMNTHomeLayout(QWidget):
     btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
+    btn_resume_clicked = pyqtSignal()
     btn_theme_clicked = pyqtSignal(object)
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
@@ -4689,8 +4742,9 @@ class TMNTHomeLayout(QWidget):
             self._request_collapse()
             return
 
-        # Fixed hover zone: left 30% of body = sidebar zone
-        hover_zone_w = int(body.width() * 0.30)
+        # Dynamic hover zone: use the maximum of the sidebar's current actual width
+        # and 30% of body width (so it can always be triggered when collapsed).
+        hover_zone_w = max(self.sidebar.width(), int(body.width() * 0.30))
         in_sidebar_zone = pos.x() <= hover_zone_w
 
         if in_sidebar_zone:
@@ -4792,6 +4846,7 @@ class TMNTHomeLayout(QWidget):
         self.topbar.btn_save_clicked.connect(self.btn_save_clicked)
         self.topbar.btn_math_clicked.connect(self.btn_math_clicked)
         self.topbar.btn_journal_clicked.connect(self.btn_journal_clicked)
+        self.main.banner.resume_clicked.connect(self.btn_resume_clicked)
         self.topbar.btn_theme_clicked.connect(self.btn_theme_clicked)
         self.topbar.btn_help_clicked.connect(self.btn_help_clicked)
         self.topbar.btn_about_clicked.connect(self.btn_about_clicked)
@@ -4980,4 +5035,8 @@ class TMNTHomeLayout(QWidget):
         self.sidebar._selected_deck = deck
         self.sidebar.refresh()
         self._on_deck_selected(deck)
+
+    def set_resume_enabled(self, enabled):
+        if hasattr(self, "main") and hasattr(self.main, "banner") and self.main.banner:
+            self.main.banner.set_resume_enabled(enabled)
 

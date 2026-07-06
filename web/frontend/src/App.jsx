@@ -300,11 +300,21 @@ function createMaskId() {
   return `local-mask-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function normalizeMask(start, end) {
+function normalizeMask(start, end, isPdf = false) {
   const left = Math.min(start.x, end.x);
   const top = Math.min(start.y, end.y);
   const width = Math.abs(start.x - end.x);
   const height = Math.abs(start.y - end.y);
+  if (isPdf) {
+    if (width < 1 || height < 1) return null;
+    return {
+      id: createMaskId(),
+      x: left,
+      y: top,
+      width: width,
+      height: height,
+    };
+  }
   if (width < 2 || height < 2) return null;
   return {
     id: createMaskId(),
@@ -682,6 +692,8 @@ function App() {
   const [editorDragMaskStartStates, setEditorDragMaskStartStates] = useState({});
   const [editorUndoStack, setEditorUndoStack] = useState([]);
   const [editorRedoStack, setEditorRedoStack] = useState([]);
+  const [editorPdfPageDims, setEditorPdfPageDims] = useState({ width: 0, height: 0 });
+  const [isDragOver, setIsDragOver] = useState(false);
   const [sessionSeconds, setSessionSeconds] = useState(0);
   const [bgmEnabled, setBgmEnabled] = useState(false);
   const [classicMode, setClassicMode] = useState(false);
@@ -996,6 +1008,10 @@ function App() {
     async function renderPage() {
       try {
         const page = await editorPdfDoc.getPage(editorPdfPageZero + 1);
+        const nativeViewport = page.getViewport({ scale: 1.0 });
+        if (!cancelled) {
+          setEditorPdfPageDims({ width: nativeViewport.width, height: nativeViewport.height });
+        }
         const viewport = page.getViewport({ scale: 1.5 });
         const canvas = editorCanvasRef.current;
         if (!canvas || cancelled) return;
@@ -1247,10 +1263,13 @@ function App() {
     return mask ? [...draftMasks, { ...mask, id: "draft-mask-preview" }] : draftMasks;
   }, [draftMaskDrag, draftMasks]);
   const editorPreviewMasks = useMemo(() => {
-    if (!editorMaskDrag) return editorMasks;
-    const mask = normalizeMask(editorMaskDrag.start, editorMaskDrag.end);
-    return mask ? [...editorMasks, { ...mask, id: "editor-mask-preview" }] : editorMasks;
-  }, [editorMaskDrag, editorMasks]);
+    const pageMasks = editorPdfDoc
+      ? editorMasks.filter((m) => m.page_num === editorPdfPageZero)
+      : editorMasks;
+    if (!editorMaskDrag) return pageMasks;
+    const mask = normalizeMask(editorMaskDrag.start, editorMaskDrag.end, !!editorPdfDoc);
+    return mask ? [...pageMasks, { ...mask, id: "editor-mask-preview" }] : pageMasks;
+  }, [editorMaskDrag, editorMasks, editorPdfPageZero, editorPdfDoc]);
 
   function setActiveInkStrokes(strokes) {
     if (!activeInkKey) return;
@@ -2259,8 +2278,7 @@ function App() {
     recordAction("Demo image loaded in editor.");
   }
 
-  function handleEditorFileChange(event) {
-    const file = event.target.files?.[0];
+  function processLoadedFile(file) {
     if (!file) return;
     if (file.type === "application/pdf") {
       setEditorImage(null);
@@ -2299,6 +2317,28 @@ function App() {
       reader.readAsDataURL(file);
     } else {
       recordAction("Unsupported file type. Choose an image or PDF.");
+    }
+  }
+
+  function handleEditorFileChange(event) {
+    const file = event.target.files?.[0];
+    processLoadedFile(file);
+  }
+
+  function editorPointFromEvent(event) {
+    if (editorPdfDoc) {
+      const canvas = editorCanvasRef.current;
+      if (!canvas) return null;
+      const canvasRect = canvas.getBoundingClientRect();
+      const clientXOnCanvas = event.clientX - canvasRect.left;
+      const clientYOnCanvas = event.clientY - canvasRect.top;
+      const pageWidth = editorPdfPageDims.width || 1;
+      const pageHeight = editorPdfPageDims.height || 1;
+      const pdfX = Math.max(0, Math.min(pageWidth, (clientXOnCanvas / canvasRect.width) * pageWidth));
+      const pdfY = Math.max(0, Math.min(pageHeight, (clientYOnCanvas / canvasRect.height) * pageHeight));
+      return { x: pdfX, y: pdfY };
+    } else {
+      return maskPointFromEvent(event, editorStageRef);
     }
   }
 
@@ -2372,7 +2412,7 @@ function App() {
       }
       
       // Start drawing
-      const point = maskPointFromEvent(event, editorStageRef);
+      const point = editorPointFromEvent(event);
       if (!point) return;
       event.preventDefault();
       event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -2385,34 +2425,66 @@ function App() {
     if (!editorAction) return;
     
     if (editorAction === "drawing" && editorMaskDrag) {
-      const point = maskPointFromEvent(event, editorStageRef);
+      const point = editorPointFromEvent(event);
       if (!point) return;
       setEditorMaskDrag((current) => (current ? { ...current, end: point } : current));
     } else if (editorAction === "moving" && editorDragStartClient) {
-      const stage = editorStageRef.current;
-      if (!stage) return;
-      const rect = stage.getBoundingClientRect();
-      const dxPercent = ((event.clientX - editorDragStartClient.x) / rect.width) * 100;
-      const dyPercent = ((event.clientY - editorDragStartClient.y) / rect.height) * 100;
+      let dx, dy;
+      if (editorPdfDoc) {
+        const canvas = editorCanvasRef.current;
+        if (!canvas) return;
+        const canvasRect = canvas.getBoundingClientRect();
+        const pageWidth = editorPdfPageDims.width || 1;
+        const pageHeight = editorPdfPageDims.height || 1;
+        dx = ((event.clientX - editorDragStartClient.x) / canvasRect.width) * pageWidth;
+        dy = ((event.clientY - editorDragStartClient.y) / canvasRect.height) * pageHeight;
+      } else {
+        const stage = editorStageRef.current;
+        if (!stage) return;
+        const rect = stage.getBoundingClientRect();
+        dx = ((event.clientX - editorDragStartClient.x) / rect.width) * 100;
+        dy = ((event.clientY - editorDragStartClient.y) / rect.height) * 100;
+      }
       
       const newMasks = editorMasks.map((mask) => {
         const startState = editorDragMaskStartStates[mask.id];
         if (startState) {
-          return {
-            ...mask,
-            x: clampPercent(startState.x + dxPercent),
-            y: clampPercent(startState.y + dyPercent),
-          };
+          if (editorPdfDoc) {
+            const pageWidth = editorPdfPageDims.width || 1;
+            const pageHeight = editorPdfPageDims.height || 1;
+            return {
+              ...mask,
+              x: Math.max(0, Math.min(pageWidth, startState.x + dx)),
+              y: Math.max(0, Math.min(pageHeight, startState.y + dy)),
+            };
+          } else {
+            return {
+              ...mask,
+              x: clampPercent(startState.x + dx),
+              y: clampPercent(startState.y + dy),
+            };
+          }
         }
         return mask;
       });
       setEditorMasks(newMasks);
     } else if (editorAction === "resizing" && editorDragStartClient && editorActiveHandle) {
-      const stage = editorStageRef.current;
-      if (!stage) return;
-      const rect = stage.getBoundingClientRect();
-      const dxPercent = ((event.clientX - editorDragStartClient.x) / rect.width) * 100;
-      const dyPercent = ((event.clientY - editorDragStartClient.y) / rect.height) * 100;
+      let dx, dy;
+      if (editorPdfDoc) {
+        const canvas = editorCanvasRef.current;
+        if (!canvas) return;
+        const canvasRect = canvas.getBoundingClientRect();
+        const pageWidth = editorPdfPageDims.width || 1;
+        const pageHeight = editorPdfPageDims.height || 1;
+        dx = ((event.clientX - editorDragStartClient.x) / canvasRect.width) * pageWidth;
+        dy = ((event.clientY - editorDragStartClient.y) / canvasRect.height) * pageHeight;
+      } else {
+        const stage = editorStageRef.current;
+        if (!stage) return;
+        const rect = stage.getBoundingClientRect();
+        dx = ((event.clientX - editorDragStartClient.x) / rect.width) * 100;
+        dy = ((event.clientY - editorDragStartClient.y) / rect.height) * 100;
+      }
       
       const targetId = Object.keys(editorDragMaskStartStates)[0];
       const startState = editorDragMaskStartStates[targetId];
@@ -2420,26 +2492,52 @@ function App() {
         const newMasks = editorMasks.map((mask) => {
           if (mask.id === targetId) {
             let { x, y, width, height } = startState;
-            if (editorActiveHandle === "se") {
-              width = Math.max(1, width + dxPercent);
-              height = Math.max(1, height + dyPercent);
-            } else if (editorActiveHandle === "sw") {
-              const newX = x + dxPercent;
-              width = Math.max(1, width - dxPercent);
-              x = clampPercent(newX);
-              height = Math.max(1, height + dyPercent);
-            } else if (editorActiveHandle === "ne") {
-              const newY = y + dyPercent;
-              height = Math.max(1, height - dyPercent);
-              y = clampPercent(newY);
-              width = Math.max(1, width + dxPercent);
-            } else if (editorActiveHandle === "nw") {
-              const newX = x + dxPercent;
-              const newY = y + dyPercent;
-              width = Math.max(1, width - dxPercent);
-              height = Math.max(1, height - dyPercent);
-              x = clampPercent(newX);
-              y = clampPercent(newY);
+            if (editorPdfDoc) {
+              const pageWidth = editorPdfPageDims.width || 1;
+              const pageHeight = editorPdfPageDims.height || 1;
+              if (editorActiveHandle === "se") {
+                width = Math.max(1, Math.min(pageWidth - x, width + dx));
+                height = Math.max(1, Math.min(pageHeight - y, height + dy));
+              } else if (editorActiveHandle === "sw") {
+                const newX = Math.max(0, Math.min(pageWidth, x + dx));
+                width = Math.max(1, x + width - newX);
+                x = newX;
+                height = Math.max(1, Math.min(pageHeight - y, height + dy));
+              } else if (editorActiveHandle === "ne") {
+                const newY = Math.max(0, Math.min(pageHeight, y + dy));
+                height = Math.max(1, y + height - newY);
+                y = newY;
+                width = Math.max(1, Math.min(pageWidth - x, width + dx));
+              } else if (editorActiveHandle === "nw") {
+                const newX = Math.max(0, Math.min(pageWidth, x + dx));
+                const newY = Math.max(0, Math.min(pageHeight, y + dy));
+                width = Math.max(1, x + width - newX);
+                height = Math.max(1, y + height - newY);
+                x = newX;
+                y = newY;
+              }
+            } else {
+              if (editorActiveHandle === "se") {
+                width = Math.max(1, width + dx);
+                height = Math.max(1, height + dy);
+              } else if (editorActiveHandle === "sw") {
+                const newX = x + dx;
+                width = Math.max(1, width - dx);
+                x = clampPercent(newX);
+                height = Math.max(1, height + dy);
+              } else if (editorActiveHandle === "ne") {
+                const newY = y + dy;
+                height = Math.max(1, height - dy);
+                y = clampPercent(newY);
+                width = Math.max(1, width + dx);
+              } else if (editorActiveHandle === "nw") {
+                const newX = x + dx;
+                const newY = y + dy;
+                width = Math.max(1, width - dx);
+                height = Math.max(1, height - dy);
+                x = clampPercent(newX);
+                y = clampPercent(newY);
+              }
             }
             return { ...mask, x, y, width, height };
           }
@@ -2454,10 +2552,9 @@ function App() {
     if (!editorAction) return;
     
     if (editorAction === "drawing" && editorMaskDrag) {
-      const point = maskPointFromEvent(event, editorStageRef);
-      const mask = point ? normalizeMask(editorMaskDrag.start, point) : null;
+      const point = editorPointFromEvent(event);
+      const mask = point ? normalizeMask(editorMaskDrag.start, point, !!editorPdfDoc) : null;
       if (mask) {
-        // Set page_num for the new mask if PDF
         const finalMask = {
           ...mask,
           page_num: editorPdfDoc ? editorPdfPageZero : 0,
@@ -2467,7 +2564,6 @@ function App() {
       }
       setEditorMaskDrag(null);
     } else if (editorAction === "moving" || editorAction === "resizing") {
-      // If masks changed, push initial states to history
       if (editorDragInitialMasksRef.current && JSON.stringify(editorDragInitialMasksRef.current) !== JSON.stringify(editorMasks)) {
         setEditorUndoStack((prev) => [...prev, editorDragInitialMasksRef.current]);
         setEditorRedoStack([]);
@@ -2483,14 +2579,28 @@ function App() {
 
   function handleEditorAddCenterMask() {
     if (!editorImage && !editorPdfDoc) return;
-    const newMask = {
-      id: createMaskId(),
-      x: 33,
-      y: 34,
-      width: 34,
-      height: 18,
-      page_num: editorPdfDoc ? editorPdfPageZero : 0,
-    };
+    let newMask;
+    if (editorPdfDoc) {
+      const pageWidth = editorPdfPageDims.width || 612;
+      const pageHeight = editorPdfPageDims.height || 792;
+      newMask = {
+        id: createMaskId(),
+        x: pageWidth * 0.33,
+        y: pageHeight * 0.34,
+        width: pageWidth * 0.34,
+        height: pageHeight * 0.18,
+        page_num: editorPdfPageZero,
+      };
+    } else {
+      newMask = {
+        id: createMaskId(),
+        x: 33,
+        y: 34,
+        width: 34,
+        height: 18,
+        page_num: 0,
+      };
+    }
     updateEditorMasksWithHistory([...editorMasks, newMask]);
     recordAction("Editor mask added locally.");
   }
@@ -5012,20 +5122,62 @@ function App() {
                     className="ghost-button"
                     type="button"
                     disabled={editorPdfPageZero <= 0}
-                    onClick={() => setEditorPdfPageZero((prev) => Math.max(0, prev - 1))}
+                    onClick={() => setEditorPdfPageZero(0)}
+                    title="First Page"
                   >
-                    ← Previous Page
+                    «
                   </button>
-                  <span className="pdf-page-indicator" style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text)' }}>
-                    Page {editorPdfPageZero + 1} of {editorPdfDoc.numPages}
-                  </span>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    disabled={editorPdfPageZero <= 0}
+                    onClick={() => setEditorPdfPageZero((prev) => Math.max(0, prev - 1))}
+                    title="Previous Page (ArrowLeft)"
+                  >
+                    ‹ Prev
+                  </button>
+                  <div className="jump-page-input-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span>Page </span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={editorPdfDoc.numPages}
+                      value={editorPdfPageZero + 1}
+                      onChange={(e) => {
+                        const p = parseInt(e.target.value, 10);
+                        if (!isNaN(p) && p >= 1 && p <= editorPdfDoc.numPages) {
+                          setEditorPdfPageZero(p - 1);
+                        }
+                      }}
+                      style={{
+                        width: '50px',
+                        textAlign: 'center',
+                        padding: '2px',
+                        background: 'var(--panel-3)',
+                        color: 'var(--text)',
+                        border: '1px solid var(--border)',
+                        borderRadius: '4px'
+                      }}
+                    />
+                    <span> of {editorPdfDoc.numPages}</span>
+                  </div>
                   <button
                     className="ghost-button"
                     type="button"
                     disabled={editorPdfPageZero >= editorPdfDoc.numPages - 1}
                     onClick={() => setEditorPdfPageZero((prev) => Math.min(editorPdfDoc.numPages - 1, prev + 1))}
+                    title="Next Page (ArrowRight)"
                   >
-                    Next Page →
+                    Next ›
+                  </button>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    disabled={editorPdfPageZero >= editorPdfDoc.numPages - 1}
+                    onClick={() => setEditorPdfPageZero(editorPdfDoc.numPages - 1)}
+                    title="Last Page"
+                  >
+                    »
                   </button>
                 </div>
               )}
@@ -5041,56 +5193,150 @@ function App() {
                     style={{ border: 'none', borderRadius: '0' }}
                   >
                     {editorImage ? (
-                      <img alt="" draggable="false" src={editorImage.src} style={{ maxHeight: '600px', margin: '0 auto' }} />
-                    ) : (
-                      <canvas ref={editorCanvasRef} style={{ maxWidth: '100%', maxHeight: '600px', display: 'block', margin: '0 auto' }} />
-                    )}
-                    {editorPreviewMasks.map((mask) => {
-                      const isSelected = editorSelectedMaskIds.has(mask.id);
-                      return (
-                        <span
-                          className={
-                            mask.id === "editor-mask-preview"
-                              ? "draft-mask mask-box"
-                              : `mask-box ${isSelected ? "selected" : ""}`
-                          }
-                          key={mask.id}
-                          style={maskStyle(mask)}
-                          data-mask-id={mask.id}
-                        >
-                          {mask.group_id && (
-                            <span className="mask-group-badge" style={{
-                              position: "absolute",
-                              top: "2px",
-                              left: "2px",
-                              background: "rgba(167, 125, 255, 0.9)",
-                              color: "white",
-                              fontSize: "8px",
-                              padding: "1px 3px",
-                              borderRadius: "2px",
-                              pointerEvents: "none",
-                              lineHeight: "1",
-                              fontWeight: "bold",
-                            }}>
-                              {getMaskGroupLabel(mask, editorMasks)}
+                      <>
+                        <img alt="" draggable="false" src={editorImage.src} style={{ maxHeight: '600px', margin: '0 auto' }} />
+                        {editorPreviewMasks.map((mask) => {
+                          const isSelected = editorSelectedMaskIds.has(mask.id);
+                          return (
+                            <span
+                              className={
+                                mask.id === "editor-mask-preview"
+                                  ? "draft-mask mask-box"
+                                  : `mask-box ${isSelected ? "selected" : ""}`
+                              }
+                              key={mask.id}
+                              style={maskStyle(mask)}
+                              data-mask-id={mask.id}
+                            >
+                              {mask.group_id && (
+                                <span className="mask-group-badge" style={{
+                                  position: "absolute",
+                                  top: "2px",
+                                  left: "2px",
+                                  background: "rgba(167, 125, 255, 0.9)",
+                                  color: "white",
+                                  fontSize: "8px",
+                                  padding: "1px 3px",
+                                  borderRadius: "2px",
+                                  pointerEvents: "none",
+                                  lineHeight: "1",
+                                  fontWeight: "bold",
+                                }}>
+                                  {getMaskGroupLabel(mask, editorMasks)}
+                                </span>
+                              )}
+                              {isSelected && mask.id !== "editor-mask-preview" && (
+                                <>
+                                  <span className="resize-handle nw" data-handle="nw" data-mask-id={mask.id} />
+                                  <span className="resize-handle ne" data-handle="ne" data-mask-id={mask.id} />
+                                  <span className="resize-handle se" data-handle="se" data-mask-id={mask.id} />
+                                  <span className="resize-handle sw" data-handle="sw" data-mask-id={mask.id} />
+                                </>
+                              )}
                             </span>
-                          )}
-                          {isSelected && mask.id !== "editor-mask-preview" && (
-                            <>
-                              <span className="resize-handle nw" data-handle="nw" data-mask-id={mask.id} />
-                              <span className="resize-handle ne" data-handle="ne" data-mask-id={mask.id} />
-                              <span className="resize-handle se" data-handle="se" data-mask-id={mask.id} />
-                              <span className="resize-handle sw" data-handle="sw" data-mask-id={mask.id} />
-                            </>
-                          )}
-                        </span>
-                      );
-                    })}
+                          );
+                        })}
+                      </>
+                    ) : (
+                      <div
+                        className="pdf-canvas-wrapper"
+                        style={{
+                          position: 'relative',
+                          display: 'block',
+                          margin: '0 auto',
+                          width: 'fit-content',
+                          maxWidth: '100%',
+                          height: 'fit-content'
+                        }}
+                      >
+                        <canvas ref={editorCanvasRef} style={{ maxWidth: '100%', maxHeight: '600px', display: 'block', margin: '0 auto' }} />
+                        {editorPreviewMasks.map((mask) => {
+                          const isSelected = editorSelectedMaskIds.has(mask.id);
+                          const pageWidth = editorPdfPageDims.width || 1;
+                          const pageHeight = editorPdfPageDims.height || 1;
+                          const style = {
+                            left: `${(mask.x / pageWidth) * 100}%`,
+                            top: `${(mask.y / pageHeight) * 100}%`,
+                            width: `${(mask.width / pageWidth) * 100}%`,
+                            height: `${(mask.height / pageHeight) * 100}%`,
+                          };
+                          return (
+                            <span
+                              className={
+                                mask.id === "editor-mask-preview"
+                                  ? "draft-mask mask-box"
+                                  : `mask-box ${isSelected ? "selected" : ""}`
+                              }
+                              key={mask.id}
+                              style={style}
+                              data-mask-id={mask.id}
+                            >
+                              {mask.group_id && (
+                                <span className="mask-group-badge" style={{
+                                  position: "absolute",
+                                  top: "2px",
+                                  left: "2px",
+                                  background: "rgba(167, 125, 255, 0.9)",
+                                  color: "white",
+                                  fontSize: "8px",
+                                  padding: "1px 3px",
+                                  borderRadius: "2px",
+                                  pointerEvents: "none",
+                                  lineHeight: "1",
+                                  fontWeight: "bold",
+                                }}>
+                                  {getMaskGroupLabel(mask, editorMasks)}
+                                </span>
+                              )}
+                              {isSelected && mask.id !== "editor-mask-preview" && (
+                                <>
+                                  <span className="resize-handle nw" data-handle="nw" data-mask-id={mask.id} />
+                                  <span className="resize-handle ne" data-handle="ne" data-mask-id={mask.id} />
+                                  <span className="resize-handle se" data-handle="se" data-mask-id={mask.id} />
+                                  <span className="resize-handle sw" data-handle="sw" data-mask-id={mask.id} />
+                                </>
+                              )}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 ) : (
-                  <div className="mask-empty" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', gap: '8px' }}>
-                    <p style={{ margin: 0, fontSize: '13px' }}>No scroll loaded.</p>
-                    <p style={{ margin: 0, fontSize: '11px' }}>Please choose an Image or PDF from the sidebar.</p>
+                  <div
+                    className={`mask-empty ${isDragOver ? "dragover" : ""}`}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setIsDragOver(true);
+                    }}
+                    onDragLeave={() => setIsDragOver(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setIsDragOver(false);
+                      const file = e.dataTransfer.files?.[0];
+                      processLoadedFile(file);
+                    }}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'var(--muted)',
+                      gap: '8px',
+                      border: isDragOver ? '2px dashed var(--accent)' : '2px dashed transparent',
+                      background: isDragOver ? 'rgba(167, 125, 255, 0.05)' : 'transparent',
+                      transition: 'all 0.2s ease',
+                      borderRadius: '4px',
+                      height: '100%'
+                    }}
+                  >
+                    <span style={{ fontSize: '24px' }}>📂</span>
+                    <p style={{ margin: 0, fontSize: '13px', fontWeight: 'bold' }}>
+                      Drag & Drop a PDF or Image here
+                    </p>
+                    <p style={{ margin: 0, fontSize: '11px' }}>
+                      or use the sidebar buttons
+                    </p>
                   </div>
                 )}
               </div>

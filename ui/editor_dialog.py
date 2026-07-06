@@ -386,7 +386,7 @@ class CardEditorDialog(QDialog):
         self.btn_cancel = _tbtn("Cancel", "Discard changes")
         btn_save = QPushButton("💾  Save Card")
         btn_save.setFixedHeight(34)
-        btn_save.setToolTip("Save  Ctrl+S")
+        btn_save.setToolTip("Save")
         btn_save.setStyleSheet(
             "QPushButton{background:#4CAF50;color:white;border:1px solid #3A9040;"
             "border-radius:4px;padding:4px 16px;font-size:13px;min-height:32px;}"
@@ -561,7 +561,7 @@ class CardEditorDialog(QDialog):
             "V=Select  R=Rect  E=Ellipse  T=Label  |  "
             "Hold Alt=temp select  Alt+Click=multi-select  |  "
             "G=group  Shift+G=ungroup  |  "
-            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo  Ctrl+S=save  |  "
+            "Drag ↻=rotate  Del=delete  Ctrl+Z/Y=undo/redo  |  "
             "L=copy PDF  Ctrl+L=open folder  |  "
             "Middle-click drag or H = Pan  (tablet/stylus)"
         )
@@ -1025,7 +1025,10 @@ class CardEditorDialog(QDialog):
         elif shortcut_manager.event_matches(e, "review.redo"):
             self.canvas.redo()
         elif shortcut_manager.event_matches(e, "home.save"):
-            self._save()
+            self._save(keep_open=False)
+            e.accept()
+            return
+
         elif shortcut_manager.event_matches(e, "review.open_pdf"):
             self._open_in_reader()
         elif shortcut_manager.event_matches(e, "review.open_folder"):
@@ -2340,7 +2343,7 @@ class CardEditorDialog(QDialog):
 
     # ── save / close ──────────────────────────────────────────────────────────
 
-    def _save(self):
+    def _save(self, keep_open=False):
         save_t0 = time.perf_counter()
         if not self.card.get("image_path") and not self.card.get("pdf_path"):
             QMessageBox.warning(self, "No Source", "Load an image or PDF first.")
@@ -2442,15 +2445,14 @@ class CardEditorDialog(QDialog):
                             "created": datetime.now().isoformat(),
                         }
                         self._deck.setdefault("children", []).append(target_deck)
-                if has_mission_archive() and card_to_add.get("pdf_path"):
-                    deck_segments = find_deck_segments(self._data, target_deck.get("_id"))
-                    relocate_pdf_for_deck(card_to_add, deck_segments)
-                target_deck.setdefault("cards", []).append(card_to_add)
+                if card_to_add not in target_deck.setdefault("cards", []):
+                    target_deck.setdefault("cards", []).append(card_to_add)
             elif self._deck:
                 if has_mission_archive() and card_to_add.get("pdf_path"):
                     deck_segments = find_deck_segments(self._data, self._deck.get("_id"))
                     relocate_pdf_for_deck(card_to_add, deck_segments)
-                self._deck.setdefault("cards", []).append(card_to_add)
+                if card_to_add not in self._deck.setdefault("cards", []):
+                    self._deck.setdefault("cards", []).append(card_to_add)
         elif self._recovery_mode == "edit":
             orig_card = None
             card_id = self.card.get("_id")
@@ -2478,12 +2480,17 @@ class CardEditorDialog(QDialog):
         # Synchronously write data to disk
         from data_manager import store
         store.mark_dirty()
-        store.save_force(async_save=False)
+        store.save_force(async_save=False, force_gdrive=False)
         self._card_saved_once = True
 
         if hasattr(self, "btn_cancel"):
             self.btn_cancel.setText("Done")
             self.btn_cancel.setToolTip("Close window")
+
+        if keep_open:
+            self.canvas._show_toast("💾 Progress Saved (Cloud deferred)")
+            print("[EditCardDialog] Ctrl+S — local save triggered (cloud sync deferred)")
+            return
 
         self.canvas._show_toast("💾 Card saved")
 
