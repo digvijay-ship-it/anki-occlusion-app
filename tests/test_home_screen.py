@@ -456,6 +456,7 @@ class _FakeTMNTHomeLayout(QWidget):
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
     btn_shortcuts_clicked = pyqtSignal()
+    btn_resume_clicked = pyqtSignal()
     font_change = pyqtSignal(int)
     bgm_toggle = pyqtSignal()
     bgm_volume_changed = pyqtSignal(int)
@@ -474,6 +475,9 @@ class _FakeTMNTHomeLayout(QWidget):
 
     def get_selected_deck(self):
         return None
+
+    def set_resume_enabled(self, enabled):
+        pass
 
 
 class HomeScreenStartupLazyTests(unittest.TestCase):
@@ -497,6 +501,106 @@ class HomeScreenStartupLazyTests(unittest.TestCase):
         self.assertIsNotNone(home._splitter_widget)
         self.assertIsNone(home._tmnt_layout)
         self.assertIs(home._body_stack.currentWidget(), home._splitter_widget)
+
+class HomeScreenResumeSessionTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmp_dir, "anki_data.db")
+        self.patch_db = patch("storage_paths.current_data_file", return_value=self.db_path)
+        self.patch_db.start()
+
+    def tearDown(self):
+        self.patch_db.stop()
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_save_load_clear_session(self):
+        home = HomeScreen({"decks": [], "_theme": "classic"})
+        self.addCleanup(home.close)
+        
+        home._btn_resume = MagicMock()
+        
+        cards = [
+            {"pdf_path": "lecture.pdf", "title": "Page 1", "visual_hash": "vh1"},
+            {"image_path": "img.png", "title": "My Image"}
+        ]
+        
+        home.save_last_review_session(cards, 1)
+        
+        # Load and verify
+        session = home.load_last_review_session()
+        self.assertIsNotNone(session)
+        self.assertEqual(session["idx"], 1)
+        self.assertEqual(len(session["card_identifiers"]), 2)
+        self.assertEqual(session["card_identifiers"][0]["pdf_path"], "lecture.pdf")
+        self.assertEqual(session["card_identifiers"][0]["visual_hash"], "vh1")
+        self.assertEqual(session["card_identifiers"][1]["image_path"], "img.png")
+        
+        # Clear and verify
+        home.clear_last_review_session()
+        self.assertIsNone(home.load_last_review_session())
+        home._btn_resume.setEnabled.assert_called_with(False)
+
+    def test_resume_last_review_success(self):
+        card1 = {"pdf_path": "lec.pdf", "title": "Card 1", "visual_hash": "h1"}
+        card2 = {"image_path": "pic.png", "title": "Card 2", "visual_hash": "h2"}
+        
+        data = {
+            "decks": [
+                {
+                    "_id": 1,
+                    "name": "Main Deck",
+                    "cards": [card1],
+                    "children": [
+                        {
+                            "_id": 2,
+                            "name": "Sub Deck",
+                            "cards": [card2],
+                            "children": []
+                        }
+                     ]
+                }
+            ],
+            "_theme": "classic"
+        }
+        
+        home = HomeScreen(data)
+        self.addCleanup(home.close)
+        
+        home._btn_resume = MagicMock()
+        home.show_review = MagicMock()
+        home._active_review = MagicMock()
+        home._active_review._items = [(card2, 0, card2), (card1, 1, card1)]
+        
+        # Save session with card2 first, then card1
+        home.save_last_review_session([card2, card1], 1)
+        
+        # Resume session
+        home.resume_last_review()
+        
+        # Verify show_review is called with the resolved card dictionaries in order
+        home.show_review.assert_called_once_with([card2, card1], home._data)
+        self.assertEqual(home._active_review._idx, 1)
+        home._active_review._load_item.assert_called_once()
+
+    def test_global_resume_shortcut_setup(self):
+        from ui.home_screen import HomeScreen
+        from PyQt5.QtWidgets import QShortcut
+        
+        data = {
+            "decks": [],
+            "_theme": "classic"
+        }
+        
+        home = HomeScreen(data)
+        self.addCleanup(home.close)
+        
+        # Verify shortcut is created and connected
+        self.assertTrue(hasattr(home, "_resume_review_shortcut"))
+        self.assertIsInstance(home._resume_review_shortcut, QShortcut)
+        self.assertEqual(home._resume_review_shortcut.context(), Qt.WidgetWithChildrenShortcut)
+
 
 if __name__ == "__main__":
     unittest.main()

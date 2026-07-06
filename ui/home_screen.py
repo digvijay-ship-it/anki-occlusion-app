@@ -1320,6 +1320,7 @@ class HomeScreen(QWidget):
             self.top_frame.show()
             self._body_stack.setCurrentWidget(self._splitter_widget)
         self._install_home_ram_shortcut()
+        self._install_resume_review_shortcut()
 
     def _ensure_classic_layout(self):
         if self._splitter_widget is not None:
@@ -1362,6 +1363,22 @@ class HomeScreen(QWidget):
         self._clear_home_ram_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
         self._clear_home_ram_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._clear_home_ram_shortcut.activated.connect(self._clear_home_ram_caches)
+
+    def _install_resume_review_shortcut(self):
+        from PyQt5.QtGui import QKeySequence
+        from PyQt5.QtWidgets import QShortcut
+        sc_text = shortcut_manager.shortcut_text("home.resume_review")
+        if sc_text:
+            self._resume_review_shortcut = QShortcut(QKeySequence(sc_text), self)
+            self._resume_review_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._resume_review_shortcut.activated.connect(self._on_resume_review_shortcut_activated)
+
+    def _on_resume_review_shortcut_activated(self):
+        if getattr(self, "_active_review", None) is None:
+            fw = self.focusWidget()
+            from PyQt5.QtWidgets import QLineEdit, QTextEdit
+            if not (fw and isinstance(fw, (QLineEdit, QTextEdit))):
+                self.resume_last_review()
 
     def _clear_home_ram_caches(self):
         try:
