@@ -14,7 +14,7 @@ from PyQt5.QtCore import (
     pyqtSignal,
     QSettings,
 )
-from PyQt5.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QPixmap, QImage
 from PyQt5.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -1708,13 +1708,44 @@ class PdfAnnotationDialog(QDialog):
     def _paste_clipboard_image(self):
         clipboard = QApplication.clipboard()
         mime = clipboard.mimeData()
-        if not mime.hasImage():
-            self.lbl_status.setText("clipboard has no image")
-            return
-        image = clipboard.image()
+        image = QImage()
+        
+        # 1. Try standard hasImage / image()
+        if mime.hasImage():
+            image = clipboard.image()
+            
+        # 2. Try raw image formats directly from mime formats
         if image.isNull():
-            self.lbl_status.setText("clipboard image is empty")
+            for fmt in mime.formats():
+                if fmt.startswith("image/"):
+                    try:
+                        data = mime.data(fmt)
+                        if data and not data.isEmpty():
+                            img = QImage.fromData(data)
+                            if not img.isNull():
+                                image = img
+                                break
+                    except Exception:
+                        pass
+                        
+        # 3. Try files (URLs) if user copied a file from Explorer
+        if image.isNull() and mime.hasUrls():
+            urls = mime.urls()
+            if urls:
+                try:
+                    local_path = urls[0].toLocalFile()
+                    if local_path and os.path.exists(local_path):
+                        img = QImage(local_path)
+                        if not img.isNull():
+                            image = img
+                except Exception:
+                    pass
+
+        # 4. Check if we found a valid image
+        if image.isNull():
+            self.lbl_status.setText("clipboard has no valid image")
             return
+            
         data = QByteArray()
         buffer = QBuffer(data)
         buffer.open(QIODevice.WriteOnly)

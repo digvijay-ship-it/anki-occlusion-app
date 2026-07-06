@@ -268,6 +268,40 @@ class PdfAnnotationDialogTests(unittest.TestCase):
         dialog._delete_selected_image.assert_called_once()
         dialog.lbl_status.setText.assert_called_with("cut selected screenshot")
 
+    def test_paste_clipboard_image_robust_paths(self):
+        dialog = PdfAnnotationDialog.__new__(PdfAnnotationDialog)
+        dialog.lbl_status = MagicMock()
+        dialog.session = MagicMock()
+        dialog.canvas = MagicMock()
+        dialog.scroll = MagicMock()
+        dialog._default_image_rect = MagicMock(return_value=QRectF(0, 0, 100, 100))
+        dialog._set_tool = MagicMock()
+        
+        # Test case: mime has urls instead of hasImage
+        mime = MagicMock()
+        mime.hasImage.return_value = False
+        mime.formats.return_value = []
+        mime.hasUrls.return_value = True
+        
+        url = MagicMock()
+        url.toLocalFile.return_value = "assets/image.png"
+        mime.urls.return_value = [url]
+        
+        clipboard = MagicMock()
+        clipboard.mimeData.return_value = mime
+        
+        qimage_mock = MagicMock()
+        qimage_mock.isNull.return_value = False
+        
+        with patch("ui.pdf_annotation_dialog.QApplication.clipboard", return_value=clipboard), \
+             patch("ui.pdf_annotation_dialog.QImage", return_value=qimage_mock), \
+             patch("ui.pdf_annotation_dialog.QPixmap.fromImage", return_value=MagicMock()), \
+             patch("ui.pdf_annotation_dialog.os.path.exists", return_value=True):
+            dialog._paste_clipboard_image()
+            
+        dialog.session.add_image_item.assert_called_once()
+        dialog._set_tool.assert_called_once_with("image")
+
 
 class PdfAnnotationCanvasItemsKeyTests(unittest.TestCase):
     def test_get_page_items_key_with_qrectf_and_tuples(self):
