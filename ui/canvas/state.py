@@ -332,6 +332,8 @@ class CanvasStateMixin:
         self._resize_canvas()
         self.update()
         self.zoom_changed.emit(self._scale)
+        if getattr(self, "_ink_active", False) and hasattr(self, "_update_ink_cursor"):
+            self._update_ink_cursor()
 
     def _finalize_zoom(self):
         self._fast_zoom = False

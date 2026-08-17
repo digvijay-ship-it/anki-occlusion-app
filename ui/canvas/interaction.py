@@ -298,27 +298,28 @@ class CanvasInteractionMixin:
             self._clear_pending_ink_mask_action()
         self._ink_active = not self._ink_active
         self._ink_mode = "pen"
-        self.setCursor(
-            QCursor(Qt.CrossCursor if self._ink_active else Qt.PointingHandCursor)
-        )
+        if self._ink_active:
+            self._update_ink_cursor()
+        else:
+            self.setCursor(QCursor(Qt.PointingHandCursor))
 
     def ink_set_active(self, active: bool):
         if not active:
             self._clear_pending_ink_mask_action()
         self._ink_active = bool(active)
         self._ink_mode = "pen"
-        self.setCursor(
-            QCursor(Qt.CrossCursor if self._ink_active else Qt.PointingHandCursor)
-        )
+        if self._ink_active:
+            self._update_ink_cursor()
+        else:
+            self.setCursor(QCursor(Qt.PointingHandCursor))
 
     def ink_set_mode(self, mode: str):
         self._ink_mode = mode
         if self._ink_active:
+            self._update_ink_cursor()
             if mode == "eraser":
-                self.setCursor(QCursor(Qt.SizeAllCursor)) # A nice target-like cursor for eraser
                 self._show_toast("🧹 Eraser Active")
             else:
-                self.setCursor(QCursor(Qt.CrossCursor))
                 self._show_toast("✏ Pen Active")
         self.update()
 
@@ -370,6 +371,8 @@ class CanvasInteractionMixin:
 
     def ink_adjust_width(self, delta: float):
         self._ink_width = max(0.4, min(12.0, float(self._ink_width) + float(delta)))
+        if self._ink_active:
+            self._update_ink_cursor()
         self.update()
         self._show_toast(f"Ink size: {self._ink_width:.1f}")
 
@@ -883,6 +886,17 @@ class CanvasInteractionMixin:
             self.update()
             self._update_cursor_for_position(e.pos())
 
+    def focusOutEvent(self, e):
+        if getattr(self, "_mode", None) == "review" and getattr(self, "_ink_active", False):
+            if getattr(self, "_ink_current", None):
+                self._ink_release()
+            self._ink_erasing = False
+            self._ink_pre_erase_snapshot = None
+            self._clear_pending_ink_mask_action()
+        if getattr(self, "_drawing", False):
+            self._drawing = False
+        super().focusOutEvent(e)
+
     def _do_resize(self, sp: QPointF):
         idx = self._selected_idx
         b = self._boxes[idx]
@@ -918,6 +932,12 @@ class CanvasInteractionMixin:
         mods = e.modifiers()
         key = e.key()
         if self._mode == "review":
+            parent = self.parent()
+            while parent is not None:
+                if parent.__class__.__name__ == "ReviewScreen":
+                    parent.keyPressEvent(e)
+                    return
+                parent = parent.parent()
             e.ignore()
             return
         if key == Qt.Key_Delete:
@@ -958,11 +978,71 @@ class CanvasInteractionMixin:
             sc._clear_pan_cursor()
         super().leaveEvent(e)
 
+    def enterEvent(self, e):
+        super().enterEvent(e)
+        if getattr(self, "_ink_active", False):
+            self._update_ink_cursor()
+
+    def _update_ink_cursor(self):
+        if not getattr(self, "_ink_active", False):
+            return
+            
+        mode = getattr(self, "_ink_mode", "pen")
+        if mode == "eraser":
+            w = 24
+        else:
+            w = max(4, min(8, int(self._ink_width * getattr(self, "_scale", 1.0))))
+            
+        # Add a margin of 10 pixels around the shape to fit the crosshair lines cleanly
+        margin = 10
+        pix_size = w + 2 * margin
+        pix = QPixmap(pix_size, pix_size)
+        pix.fill(Qt.transparent)
+        
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        cx = margin + w // 2
+        cy = margin + w // 2
+        r = w // 2
+        gap = 2
+        length = 6
+        
+        # Draw a white outline (width 3) for the entire cursor (circle/rect and crosshairs)
+        painter.setPen(QPen(Qt.white, 3))
+        if mode == "eraser":
+            painter.drawRect(margin, margin, w, w)
+        else:
+            painter.drawEllipse(margin, margin, w, w)
+        # White crosshair lines
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+            
+        # Draw a black inner line (width 1) for contrast on light backgrounds
+        painter.setPen(QPen(Qt.black, 1))
+        if mode == "eraser":
+            painter.drawRect(margin, margin, w, w)
+        else:
+            painter.drawEllipse(margin, margin, w, w)
+        # Black crosshair lines
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+            
+        painter.end()
+        
+        # Center the cursor hot spot exactly
+        self.setCursor(QCursor(pix, cx, cy))
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
 
     def _update_cursor_for_position(self, pos):
         if getattr(self, "_ink_active", False):
+            self._update_ink_cursor()
             return
         if self._mode == "edit":
             drag_op = getattr(self, "_drag_op", None)

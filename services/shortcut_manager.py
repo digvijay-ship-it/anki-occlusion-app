@@ -57,6 +57,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.pdf_contrast", "Review", "Toggle PDF Contrast", "I"),
     ShortcutAction("review.toggle_timer", "Review", "Toggle study timer visibility", "Alt+T"),
     ShortcutAction("review.toggle_note", "Review", "Toggle mask note visibility", "N"),
+    ShortcutAction("review.toggle_pdf_notes", "Review", "Toggle PDF reference notes", "M"),
     ShortcutAction("review.quick_note", "Review", "Quick edit active mask note", "Ctrl+N"),
     ShortcutAction("review.save_ink_clear", "Review", "Save review ink & clear canvas", "Ctrl+A"),
     ShortcutAction("review.save_ink_keep", "Review", "Save review ink & keep on canvas", "Ctrl+Shift+A"),

@@ -1700,6 +1700,7 @@ class TMNTDeckEngine(DeckTree):
     def _make_item(self, deck, depth=0):
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         item = QTreeWidgetItem([deck["name"].upper()])
+        item.setToolTip(0, deck.get("name", ""))
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
@@ -2280,6 +2281,8 @@ class _TMNTDeckItem(QFrame):
         l.addWidget(icon)
 
         name_lbl = QLabel(name)
+        self.setToolTip(self._deck.get("name", ""))
+        name_lbl.setToolTip(self._deck.get("name", ""))
         name_lbl.setStyleSheet(
             _scale_ss(
                 f"color: {T_PURPLE if self._selected else T_TEXT}; "

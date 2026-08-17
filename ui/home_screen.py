@@ -85,6 +85,7 @@ from storage_paths import (
     get_mission_archive_root,
     migrate_to_mission_archive,
     resolve_asset_path,
+    is_running_tests,
 )
 
 import sys, os, copy, uuid, math, time
@@ -164,11 +165,15 @@ import tempfile
 NARUTO_FONT_FAMILY = "Segoe UI"  # Global variable for easy access
 
 
+_FONTS_LOADED = False
+
+
 def load_custom_fonts():
     """Safe font loading. Only runs if QApplication instance exists."""
-    global NARUTO_FONT_FAMILY
-    if not QApplication.instance():
+    global _FONTS_LOADED, NARUTO_FONT_FAMILY
+    if _FONTS_LOADED or not QApplication.instance():
         return
+    _FONTS_LOADED = True
 
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
@@ -1120,33 +1125,34 @@ class ToastNotification(QLabel):
         self.resize(max(self.width() + 10, 300), self.height() + 10)
         self.move_to_position()
         
-        # Opacity effect for fade animation
-        from PyQt5.QtWidgets import QGraphicsOpacityEffect
-        self._effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self._effect)
-        
-        # Animation: Fade In
-        from PyQt5.QtCore import QPropertyAnimation, QEasingCurve, QTimer
-        self._anim_in = QPropertyAnimation(self._effect, b"opacity")
-        self._anim_in.setDuration(300)
-        self._anim_in.setStartValue(0.0)
-        self._anim_in.setEndValue(1.0)
-        self._anim_in.setEasingCurve(QEasingCurve.OutCubic)
-        
-        # Animation: Fade Out
-        self._anim_out = QPropertyAnimation(self._effect, b"opacity")
-        self._anim_out.setDuration(400)
-        self._anim_out.setStartValue(1.0)
-        self._anim_out.setEndValue(0.0)
-        self._anim_out.setEasingCurve(QEasingCurve.InCubic)
-        self._anim_out.finished.connect(self.deleteLater)
-        
-        # Start
         self.show()
-        self._anim_in.start()
-        
-        # Schedule Fade Out
-        QTimer.singleShot(duration_ms, self._anim_out.start)
+        from ui.canvas.retro_effects import _home_animations_enabled
+
+        if _home_animations_enabled():
+            # Opacity effect for fade animation
+            from PyQt5.QtWidgets import QGraphicsOpacityEffect
+            self._effect = QGraphicsOpacityEffect(self)
+            self.setGraphicsEffect(self._effect)
+
+            # Animation: Fade In
+            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve, QTimer
+            self._anim_in = QPropertyAnimation(self._effect, b"opacity")
+            self._anim_in.setDuration(300)
+            self._anim_in.setStartValue(0.0)
+            self._anim_in.setEndValue(1.0)
+            self._anim_in.setEasingCurve(QEasingCurve.OutCubic)
+
+            # Animation: Fade Out
+            self._anim_out = QPropertyAnimation(self._effect, b"opacity")
+            self._anim_out.setDuration(400)
+            self._anim_out.setStartValue(1.0)
+            self._anim_out.setEndValue(0.0)
+            self._anim_out.setEasingCurve(QEasingCurve.InCubic)
+            self._anim_out.finished.connect(self.deleteLater)
+            self._anim_in.start()
+            QTimer.singleShot(duration_ms, self._anim_out.start)
+        else:
+            QTimer.singleShot(duration_ms, self.deleteLater)
         
     def move_to_position(self):
         if not self.parent():
@@ -1155,6 +1161,23 @@ class ToastNotification(QLabel):
         x = (parent_rect.width() - self.width()) // 2
         y = parent_rect.height() - self.height() - 40
         self.move(x, y)
+
+
+class RecoveryScanThread(QThread):
+    finished_scan = pyqtSignal(dict)
+
+    def __init__(self, data, startup=False, parent=None):
+        super().__init__(parent)
+        self.data = data
+        self.startup = startup
+
+    def run(self):
+        try:
+            summary = recovery_manager.scan_recovery(self.data, startup=self.startup)
+            self.finished_scan.emit(summary)
+        except Exception as e:
+            print(f"[recovery] Background scan failed: {e}")
+            self.finished_scan.emit({"drafts": [], "review_events": []})
 
 
 class HomeScreen(QWidget):
@@ -1167,7 +1190,7 @@ class HomeScreen(QWidget):
         self._data = data
         self._preload_thread = None  # background PDF preload thread
         self._active_editor = None
-        self._classic_settings_panel = None
+        self._lazy_classic_settings_panel = None
         self._classic_archive_value = None
         self._classic_archive_box = None
         self._classic_archive_btn = None
@@ -1182,10 +1205,23 @@ class HomeScreen(QWidget):
         self._prune_in_progress = False
         self._setup_ui()
         self._check_resume_button_state()
-        from PyQt5.QtWidgets import QApplication
-        app_inst = QApplication.instance()
-        if app_inst:
-            app_inst.focusChanged.connect(self._on_global_focus_changed)
+
+    @property
+    def _classic_settings_panel(self):
+        if getattr(self, "_lazy_classic_settings_panel", None) is None:
+            self._lazy_classic_settings_panel = self._build_classic_settings_panel()
+        return self._lazy_classic_settings_panel
+
+    @_classic_settings_panel.setter
+    def _classic_settings_panel(self, val):
+        self._lazy_classic_settings_panel = val
+
+    def __getattr__(self, name):
+        if name in ("_cb_keep_fullscreen", "_cb_invert_pdf", "_classic_volume_slider", "_btn_pen_perf"):
+            _ = self._classic_settings_panel
+            if name in self.__dict__:
+                return self.__dict__[name]
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
@@ -1299,7 +1335,7 @@ class HomeScreen(QWidget):
 
         self._top_bar = self.top_frame
         self._apply_topbar_style()  # Initial style
-        self._classic_settings_panel = self._build_classic_settings_panel()
+        self._lazy_classic_settings_panel = None
         L.addWidget(self.top_frame)
 
         # ── BODY STACK: active theme is built immediately; inactive theme is lazy.
@@ -1336,9 +1372,10 @@ class HomeScreen(QWidget):
         _sw_l.setContentsMargins(0, 0, 0, 0)
         _sw_l.setSpacing(0)
         split = QSplitter(Qt.Horizontal)
+        split.setHandleWidth(5)
         self.deck_tree = DeckTreeCls(self._data, theme=self._current_theme)
-        self.deck_tree.setMinimumWidth(260)
-        self.deck_tree.setMaximumWidth(420)
+        self.deck_tree.setMinimumWidth(200)
+        self.deck_tree.setMaximumWidth(16777215)
         self.deck_tree.deck_selected.connect(self._on_deck_selected)
         split.addWidget(self.deck_tree)
         self.deck_view = DeckViewCls()
@@ -1395,11 +1432,7 @@ class HomeScreen(QWidget):
         else:
             sys.stderr.write("[ANNO-LOG] Resume shortcut ignored: an active review session already exists\n")
 
-    def _on_global_focus_changed(self, old, new):
-        import sys
-        old_name = old.__class__.__name__ if old else "None"
-        new_name = new.__class__.__name__ if new else "None"
-        sys.stderr.write(f"[ANNO-LOG] Focus Changed: {old_name} ({old}) -> {new_name} ({new})\n")
+
 
     def _clear_home_ram_caches(self):
         try:
@@ -1407,9 +1440,19 @@ class HomeScreen(QWidget):
         except RuntimeError:
             return
 
+        active_editor = getattr(self, "_active_editor", None)
+        if active_editor is not None:
+            try:
+                if not active_editor.isVisible():
+                    self._active_editor = None
+                    active_editor = None
+            except Exception:
+                self._active_editor = None
+                active_editor = None
+
         if (
             getattr(self, "_active_review", None) is not None
-            or getattr(self, "_active_editor", None) is not None
+            or active_editor is not None
         ):
             return
 
@@ -1437,6 +1480,14 @@ class HomeScreen(QWidget):
             pass
 
         PAGE_CACHE.clear_ram_only()
+        try:
+            from PyQt5.QtGui import QPixmapCache
+            import pdf_engine
+
+            QPixmapCache.clear()
+            pdf_engine._CURRENT_ACTIVE_PDF = None
+        except Exception:
+            pass
 
         for label, (wref, attr, _path) in pixmap_entries:
             obj = wref()
@@ -1459,15 +1510,6 @@ class HomeScreen(QWidget):
 
         gc.collect()
 
-        # Debug: Check if any ReviewScreen or OcclusionCanvas is leaked
-        try:
-            screens = [o for o in gc.get_objects() if type(o).__name__ == "ReviewScreen"]
-            canvases = [o for o in gc.get_objects() if type(o).__name__ == "OcclusionCanvas"]
-            print(f"[DEBUG][GC] Active ReviewScreen count: {len(screens)}")
-            print(f"[DEBUG][GC] Active OcclusionCanvas count: {len(canvases)}")
-        except Exception:
-            pass
-
         cache_widget = getattr(self, "_cache_widget", None)
         if cache_widget is not None and hasattr(cache_widget, "refresh"):
             cache_widget.refresh()
@@ -1485,11 +1527,11 @@ class HomeScreen(QWidget):
         if win is not None and hasattr(win, "statusBar") and win.statusBar():
             win.statusBar().showMessage(f"🧹 RAM cache cleared — {before} pages freed in {elapsed:.1f}ms", 3000)
 
-    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None):
+    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None, is_practice=False):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
 
-        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore)
+        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore, is_practice=is_practice)
         self._active_review = rev
 
         def _schedule_review_save():
@@ -1667,7 +1709,12 @@ class HomeScreen(QWidget):
                 split.replaceWidget(1, self.deck_view)
                 rev.setParent(None)
                 rev.deleteLater()
-            self.deck_tree.show()
+            if self.deck_view:
+                self.deck_view.show()
+            if self.deck_tree:
+                self.deck_tree.show()
+            if getattr(self, "_cache_widget", None):
+                self._cache_widget.show()
             self._top_bar.show()
             self.window().statusBar().show()
             sizes = getattr(self, "_pre_review_sizes", [340, 760, 220])
@@ -1866,6 +1913,12 @@ class HomeScreen(QWidget):
                 split.replaceWidget(1, self.deck_view)
                 jw.setParent(None)
                 jw.deleteLater()
+                if self.deck_view:
+                    self.deck_view.show()
+                if self.deck_tree:
+                    self.deck_tree.show()
+                if getattr(self, "_cache_widget", None):
+                    self._cache_widget.show()
                 sizes = self.__dict__.get("_pre_journal_sizes", [340, 760, 220])
                 split.setSizes(sizes)
         self.refresh()
@@ -1945,6 +1998,12 @@ class HomeScreen(QWidget):
                 split.replaceWidget(1, self.deck_view)
                 mt.setParent(None)
                 mt.deleteLater()
+                if self.deck_view:
+                    self.deck_view.show()
+                if self.deck_tree:
+                    self.deck_tree.show()
+                if getattr(self, "_cache_widget", None):
+                    self._cache_widget.show()
                 sizes = getattr(self, "_pre_math_sizes", [340, 760, 220])
                 split.setSizes(sizes)
         self.refresh()
@@ -1995,7 +2054,7 @@ class HomeScreen(QWidget):
         try:
             store.mark_dirty()
             store.save_force(async_save=True)
-            flush_runtime_state()
+            flush_runtime_state(save_store=False)
         except Exception as ex:
             QMessageBox.warning(
                 self, "Save Failed", f"Could not save current data:\n{ex}"
@@ -2859,13 +2918,29 @@ class HomeScreen(QWidget):
                         dv._edit_card(item)
                         e.accept()
                         return
-        elif shortcut_manager.event_matches(e, "home.add_card"):
-            if getattr(self, "_active_review", None) is None:
-                dv = getattr(self, "deck_view", None) or getattr(self, "_deck_view", None)
-                if dv and dv.isVisible() and dv.btn_add.isEnabled():
-                    dv._add_card()
-                    e.accept()
-                    return
+        elif shortcut_manager.event_matches(e, "home.add_card") or (key == Qt.Key_A and not (mods & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))):
+            fw = self.focusWidget()
+            from PyQt5.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit
+            if not (fw and isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit))):
+                if getattr(self, "_active_review", None) is None:
+                    from ui.review.annotation_handler import open_annotation_for_deck
+                    dv = getattr(self, "deck_view", None) or getattr(self, "_deck_view", None)
+                    target = None
+                    if dv and dv.isVisible():
+                        item = dv.card_list.currentItem()
+                        if item:
+                            target = item.data(Qt.UserRole)
+                        if not target:
+                            target = getattr(dv, "deck", None)
+                    if not target:
+                        dt = getattr(self, "deck_tree", None) or getattr(self, "_deck_tree", None)
+                        if dt:
+                            target = getattr(dt, "_selected_deck", None)
+                    if target:
+                        ok = open_annotation_for_deck(target, self)
+                        if ok:
+                            e.accept()
+                            return
 
         super().keyPressEvent(e)  # ← yeh already hai, sirf usse pehle add karo
 
@@ -3004,9 +3079,24 @@ class HomeScreen(QWidget):
                     topbar._settings_panel.hide()
                 if hasattr(topbar, "_more_panel") and topbar._more_panel is not None:
                     topbar._more_panel.hide()
-        t0 = time.perf_counter()
-        summary = recovery_manager.scan_recovery(store.get(), startup=startup)
-        print(f"[PROFILE][home_recovery_scan] Scanned recovery directory in {(time.perf_counter() - t0) * 1000:.1f}ms (startup={startup})")
+
+        if startup and not is_running_tests():
+            # Run startup scan asynchronously to prevent UI freeze
+            self._recovery_thread = RecoveryScanThread(store.get(), startup=True, parent=self)
+            self._recovery_thread.finished_scan.connect(self._on_startup_scan_completed)
+            self._recovery_thread.start()
+            return True
+        else:
+            t0 = time.perf_counter()
+            summary = recovery_manager.scan_recovery(store.get(), startup=startup)
+            print(f"[PROFILE][home_recovery_scan] Scanned recovery directory in {(time.perf_counter() - t0) * 1000:.1f}ms (startup={startup})")
+            return self._process_recovery_summary(summary, startup=startup)
+
+    def _on_startup_scan_completed(self, summary):
+        self._recovery_thread = None
+        self._process_recovery_summary(summary, startup=True)
+
+    def _process_recovery_summary(self, summary, startup):
         has_drafts = bool(summary.get("drafts"))
         has_events = bool(summary.get("review_events"))
         if startup and has_events and not has_drafts:
@@ -3019,7 +3109,7 @@ class HomeScreen(QWidget):
                 result = recovery_manager.apply_pending_review_events(store.get())
                 if result.get("applied", 0) > 0:
                     store.mark_dirty()
-                    store.save_force()
+                    store.save_force(async_save=True)
                 print(
                     "[DEBUG][recovery] startup_auto_review_recover "
                     f"applied={result.get('applied', 0)} "
@@ -3047,7 +3137,7 @@ class HomeScreen(QWidget):
                     result = recovery_manager.apply_pending_review_events(store.get())
                     if result.get("applied", 0) > 0:
                         store.mark_dirty()
-                        store.save_force()
+                        store.save_force(async_save=True)
                         self.refresh()
                     QMessageBox.information(
                         self,

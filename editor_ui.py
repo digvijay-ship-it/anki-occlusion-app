@@ -255,9 +255,15 @@ class RichTextEdit(QTextEdit):
     def _try_copy_image(self, cursor):
         char_format = cursor.charFormat()
         # 2. Try character format after cursor (if not at end of document)
-        if not char_format.isImageFormat() and cursor.position() < self.document().characterCount():
+        try:
+            pos = cursor.position()
+            char_count = self.document().characterCount()
+            is_before_end = int(pos) < int(char_count)
+        except (TypeError, ValueError):
+            is_before_end = False
+        if not char_format.isImageFormat() and is_before_end:
             temp = self.textCursor()
-            temp.setPosition(cursor.position() + 1)
+            temp.setPosition(int(pos) + 1)
             char_format = temp.charFormat()
             
         # 3. If there is a selection, check within the selection range
@@ -455,6 +461,78 @@ class RichTextEdit(QTextEdit):
             return
         super().insertFromMimeData(mimeData)
 
+    def crop_image_borders(self, img_path):
+        try:
+            from PIL import Image
+            if not os.path.exists(img_path):
+                return
+            img = Image.open(img_path)
+            w, h = img.size
+            if w <= 10 or h <= 10:
+                return
+            pixels = img.load()
+            
+            # Check background color based on corners
+            def is_bg(pixel):
+                if len(pixel) == 4:
+                    r, g, b, a = pixel
+                    if a < 15: # transparent
+                        return True
+                else:
+                    r, g, b = pixel[:3]
+                return r < 35 and g < 35 and b < 35
+
+            def row_is_bg(y):
+                non_bg = sum(not is_bg(pixels[x, y]) for x in range(w))
+                return non_bg == 0
+
+            def col_is_bg(x, y_start, y_end):
+                non_bg = sum(not is_bg(pixels[x, y]) for y in range(y_start, y_end + 1))
+                return non_bg == 0
+
+            top = 0
+            while top < h:
+                if not row_is_bg(top):
+                    break
+                top += 1
+                
+            bottom = h - 1
+            while bottom >= top:
+                if not row_is_bg(bottom):
+                    break
+                bottom -= 1
+                
+            left = 0
+            while left < w:
+                if not col_is_bg(left, top, bottom):
+                    break
+                left += 1
+                
+            right = w - 1
+            while right >= left:
+                if not col_is_bg(right, top, bottom):
+                    break
+                right -= 1
+                
+            if left > right or top > bottom:
+                return # entirely background
+                
+            # Add 10px padding gap around content
+            pad = 10
+            left_padded = max(0, left - pad)
+            top_padded = max(0, top - pad)
+            right_padded = min(w - 1, right + pad)
+            bottom_padded = min(h - 1, bottom + pad)
+
+            # If nothing is cropped, skip saving to avoid write churn
+            if left_padded == 0 and right_padded == w - 1 and top_padded == 0 and bottom_padded == h - 1:
+                return
+                
+            cropped_img = img.crop((left_padded, top_padded, right_padded + 1, bottom_padded + 1))
+            cropped_img.save(img_path, "PNG")
+        except Exception as e:
+            print(f"Error auto-cropping image {img_path}: {e}")
+
     def insert_qimage(self, qimage):
         import uuid
         from storage_paths import has_mission_archive, build_archive_asset_path
@@ -480,15 +558,19 @@ class RichTextEdit(QTextEdit):
             else:
                 return
                 
+        self.crop_image_borders(abs_path)
         self.insert_image_html(rel_path)
 
     def insert_image_file(self, file_path):
-        from storage_paths import has_mission_archive, import_asset_into_archive
+        from storage_paths import has_mission_archive, import_asset_into_archive, resolve_asset_path
         try:
             if has_mission_archive():
                 rel_path = import_asset_into_archive(file_path, "images")
+                abs_path = resolve_asset_path(rel_path)
             else:
                 rel_path = file_path
+                abs_path = file_path
+            self.crop_image_borders(abs_path)
             self.insert_image_html(rel_path)
         except Exception as e:
             print(f"Error importing image: {e}")

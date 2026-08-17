@@ -332,7 +332,7 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         self.assertTrue(shown)
         apply_events.assert_called_once()
         mark_dirty.assert_called_once_with()
-        save_force.assert_called_once_with()
+        save_force.assert_called_once()
         save_soon.assert_not_called()
         refresh.assert_not_called()
         dialog_cls.assert_not_called()
@@ -587,6 +587,7 @@ class HomeScreenResumeSessionTests(unittest.TestCase):
     def test_global_resume_shortcut_setup(self):
         from ui.home_screen import HomeScreen
         from PyQt5.QtWidgets import QShortcut
+        from PyQt5.QtCore import Qt
         
         data = {
             "decks": [],

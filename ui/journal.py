@@ -2286,8 +2286,8 @@ class JournalDialog(QDialog):
         
         # 3. Update Success Rate (Retention)
         correct = stats["good"] + stats["easy"] + stats["perfect"]
-        total_answers = stats["total"]
-        retention = round(correct / total_answers * 100) if total_answers > 0 else 0
+        total_rated = stats["again"] + stats["hard"] + stats["good"] + stats["easy"] + stats["perfect"]
+        retention = round(correct / total_rated * 100) if total_rated > 0 else 0
         self._lbl_succ_val.setText(f"{retention}%")
         
         # Color accuracy label based on percentage

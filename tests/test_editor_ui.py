@@ -256,7 +256,7 @@ class OcclusionCanvasTests(unittest.TestCase):
         self.assertTrue(self.canvas._ink_active)
         self.assertEqual(len(self.canvas._ink_strokes), 1)
         self.assertEqual(len(self.canvas._ink_current), 2)
-        self.assertEqual(self.canvas.cursor().shape(), Qt.CrossCursor)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.BitmapCursor)
 
         self.canvas.set_boxes_with_state([
             {"rect": [10, 10, 20, 20], "label": "", "shape": "rect", "angle": 0, "group_id": "", "box_id": "b", "revealed": False}
@@ -1000,6 +1000,15 @@ class CardEditorDialogTests(unittest.TestCase):
         px = QPixmap(w, h)
         px.fill()
         return px
+
+    def test_completed_mask_save_is_queued_off_the_ui_thread(self):
+        with patch("data_manager.store") as store:
+            CardEditorDialog._queue_collection_save()
+
+        store.mark_dirty.assert_called_once_with()
+        store.save_soon.assert_called_once_with(
+            min_interval=0.0, delay_from_now=False
+        )
 
     def test_open_in_reader_uses_current_page_fragment(self):
         self.dialog.card["pdf_path"] = self.pdf_path

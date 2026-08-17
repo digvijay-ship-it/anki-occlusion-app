@@ -72,7 +72,7 @@ from data_manager import (
     DATA_FILE,
     store,
 )
-from perf_utils import build_deck_rollups
+from perf_utils import build_deck_rollups, trace_perf
 
 import sys, os, copy, uuid, math, time
 from datetime import datetime, date, timedelta
@@ -172,12 +172,12 @@ C_GROUP = "#BD93F9"
 # ── Depth-based color palettes for deck tree hierarchy ────────────────────────
 DEPTH_COLORS = {
     "classic": [
-        "#1864AB",  # 0: Deep Blue
-        "#087F5B",  # 1: Emerald Green
-        "#D9480F",  # 2: Rust Orange
-        "#6741D9",  # 3: Rich Violet
-        "#C92A2A",  # 4: Bold Red
-        "#0C8599",  # 5: Ocean Teal
+        "#4DABF7",  # 0: Soft Indigo Blue
+        "#38D9A9",  # 1: Emerald Teal
+        "#FF922B",  # 2: Warm Orange
+        "#B197FC",  # 3: Rich Lavender
+        "#FF8787",  # 4: Coral Red
+        "#3BC9DB",  # 5: Cyan Teal
     ],
     "dojo": [
         "#39FF14",  # 0: Electric Green
@@ -730,6 +730,7 @@ class DeckTree(QWidget):
             else ""
         )
         item = QTreeWidgetItem([text])
+        item.setToolTip(0, deck.get("name", ""))
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
@@ -775,6 +776,7 @@ class DeckTree(QWidget):
         if deck:
             self.deck_selected.emit(deck)
 
+    @trace_perf
     def _on_click(self, item, _col):
         deck = self._get_deck_from_item(item)
         if deck:

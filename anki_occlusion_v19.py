@@ -171,7 +171,7 @@ def setup_logging():
                 sys.stderr.write(f"Failed to save data on crash: {se}\n")
             
         sys.excepthook = handle_exception
-        print("Logging initialized. Log file: " + log_file_path)
+        log_file.write("Logging initialized. Log file: " + log_file_path + "\n")
     except Exception as e:
         sys.__stderr__.write("Failed to initialize logging: " + str(e) + "\n")
 
@@ -282,9 +282,14 @@ import tempfile
 NARUTO_FONT_FAMILY = "Segoe UI"
 
 
+_FONTS_LOADED = False
+
+
 def load_custom_fonts():
-    if not QApplication.instance():
+    global _FONTS_LOADED
+    if _FONTS_LOADED or not QApplication.instance():
         return
+    _FONTS_LOADED = True
     global NARUTO_FONT_FAMILY
     print("[DEBUG][theme] ninja_font_skipped")
     font_paths = [
@@ -306,6 +311,7 @@ def load_custom_fonts():
         families = QFontDatabase.applicationFontFamilies(font_id)
         if families and font_path.endswith("PressStart2P-Regular.ttf"):
             pass  # reserved for future custom family override
+
 
 
 # ── Single-instance lock file ─────────────────────────────────────────────────
@@ -400,10 +406,14 @@ def _pdf_backend_status():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+from perf_utils import trace_perf, log_memory
+
+
 class DataLoaderThread(QThread):
     loaded = pyqtSignal(dict)
     error = pyqtSignal(str)
 
+    @trace_perf
     def run(self):
         try:
             data = load_data()
@@ -413,8 +423,10 @@ class DataLoaderThread(QThread):
 
 
 class MainWindow(QMainWindow):
+    @trace_perf
     def __init__(self):
         super().__init__()
+        log_memory("App Cold Start - Init")
         initialize_mission_archive()
         self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
@@ -443,6 +455,7 @@ class MainWindow(QMainWindow):
             self._data_thread.error.connect(self._on_data_load_error)
             self._data_thread.start()
 
+    @trace_perf
     def _on_data_loaded(self, data):
         self._data = data
         store.start_autosave()
@@ -473,7 +486,7 @@ class MainWindow(QMainWindow):
                     app.setFont(QFont(NARUTO_FONT_FAMILY, self._font_size))
                 ss = build_stylesheet(theme, self._font_size)
                 app.setStyleSheet(ss)
-                self.setStyleSheet(ss)
+                self.setStyleSheet("")
 
         home = HomeScreen(self._data, parent=self)
         self.setCentralWidget(home)
@@ -496,6 +509,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(350, self._show_recovery_prompt)
 
         self._data_thread = None
+        log_memory("App Ready - Home Screen Loaded")
 
     def _on_data_load_error(self, err_msg):
         print(f"[main] Failed to load data: {err_msg}")
@@ -683,7 +697,6 @@ class MainWindow(QMainWindow):
                 if hasattr(home._math_trainer, "update_font_size"):
                     home._math_trainer.update_font_size(self._font_size)
 
-        store.save_force()
 
     def _run_onboarding(self):
         dlg = OnboardingDialog(self)
@@ -776,22 +789,30 @@ class MainWindow(QMainWindow):
                     from pdf_engine import _SKELETON_CACHE, _SKELETON_PLACEHOLDER_CACHE
                     _SKELETON_CACHE.clear()
                     _SKELETON_PLACEHOLDER_CACHE.clear()
+                    log_memory("Before RAM Cache Clear")
                     fitz.TOOLS.store_shrink(100)  # Purge PyMuPDF internal caches
                 except Exception as ex:
                     pass
                 before = len(PAGE_CACHE._cache)
                 PAGE_CACHE.clear_ram_only()
+                import gc
+                from PyQt5.QtGui import QPixmapCache
+                QPixmapCache.clear()
+                gc.collect()
                 print(
                     f"[MainWindow][Ctrl+C] 🧹 RAM cache cleared — "
                     f"{before} pages evicted, disk untouched"
                 )
+                log_memory("After RAM Cache Clear")
                 sb = self.statusBar()
                 if sb:
                     sb.showMessage(f"🧹 RAM cache cleared — {before} pages freed", 3000)
         else:
             super().keyPressEvent(e)
 
+    @trace_perf
     def closeEvent(self, e):
+        log_memory("App Exit Initiated")
         if hasattr(self, "_data_thread") and self._data_thread is not None:
             try:
                 if self._data_thread.isRunning():
