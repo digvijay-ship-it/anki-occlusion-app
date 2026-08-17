@@ -85,7 +85,34 @@ def get_pdf_render_zoom_for_path(path: str) -> float:
         return PDF_RENDER_ZOOM_LARGE_DOC
 
 
+_ACTIVE_PDF_LOCK = threading.Lock()
+_CURRENT_ACTIVE_PDF = None
+
+
+def enforce_single_pdf_session(pdf_path: str):
+    global _CURRENT_ACTIVE_PDF
+    if not pdf_path:
+        return
+    norm_path = os.path.normcase(os.path.abspath(pdf_path))
+    with _ACTIVE_PDF_LOCK:
+        if _CURRENT_ACTIVE_PDF and _CURRENT_ACTIVE_PDF != norm_path:
+            old_path = _CURRENT_ACTIVE_PDF
+            try:
+                PAGE_CACHE.invalidate_pdf(old_path)
+                with _SKELETON_CACHE_LOCK:
+                    keys_to_del = [k for k in _SKELETON_CACHE if k[0] == old_path]
+                    for k in keys_to_del:
+                        del _SKELETON_CACHE[k]
+                    _SKELETON_PLACEHOLDER_CACHE.clear()
+                from perf_utils import log_memory
+                log_memory(f"Switched PDF ({os.path.basename(old_path)} -> {os.path.basename(pdf_path)}) — Evicted Old PDF")
+            except Exception:
+                pass
+        _CURRENT_ACTIVE_PDF = norm_path
+
+
 def ensure_pdf_cache_profile(path: str, render_zoom: float, cache_variant: str | None = None) -> bool:
+    enforce_single_pdf_session(path)
     if PAGE_CACHE.matches_render_zoom(path, render_zoom, variant=cache_variant):
         return False
     PAGE_CACHE.invalidate_pdf(path, variant=cache_variant)
@@ -464,7 +491,12 @@ class PdfSkeletonThread(QThread):
 
 def _skeleton_cache_key(path: str, zoom: float):
     st = os.stat(path)
-    return (os.path.abspath(path), int(st.st_mtime_ns), st.st_size, float(zoom))
+    return (
+        os.path.normcase(os.path.abspath(path)),
+        int(st.st_mtime_ns),
+        st.st_size,
+        float(zoom),
+    )
 
 
 def _clone_skeleton_result(result: PdfSkeletonResult) -> PdfSkeletonResult:
@@ -548,7 +580,7 @@ def load_pdf_page_dims(path: str, zoom: float = 1.5) -> PdfSkeletonResult:
 
 
 def invalidate_pdf_skeleton(path: str):
-    abs_path = os.path.abspath(path)
+    abs_path = os.path.normcase(os.path.abspath(path))
     with _SKELETON_CACHE_LOCK:
         keys = [k for k in _SKELETON_CACHE if k[0] == abs_path]
         for key in keys:
@@ -728,6 +760,19 @@ class PdfOnDemandThread(QObject):
         self._is_running = False
         self._runnable = None
 
+    def _safe_emit(self, signal_name, *args):
+        from PyQt5 import sip
+        if sip.isdeleted(self):
+            return False
+        try:
+            signal = getattr(self, signal_name, None)
+            if signal is not None:
+                signal.emit(*args)
+                return True
+        except (RuntimeError, AttributeError):
+            pass
+        return False
+
     def isRunning(self):
         return self._is_running
 
@@ -736,7 +781,7 @@ class PdfOnDemandThread(QObject):
             return
         self._is_running = True
         self._stop_flag = False
-        self.started.emit()
+        self._safe_emit("started")
 
         class RenderRunnable(QRunnable):
             def __init__(self, outer):
@@ -744,11 +789,14 @@ class PdfOnDemandThread(QObject):
                 self.outer = outer
 
             def run(self):
+                from PyQt5 import sip
                 try:
-                    self.outer.run()
+                    if not sip.isdeleted(self.outer):
+                        self.outer.run()
                 finally:
-                    self.outer._is_running = False
-                    self.outer.finished.emit()
+                    if not sip.isdeleted(self.outer):
+                        self.outer._is_running = False
+                        self.outer._safe_emit("finished")
 
         self._runnable = RenderRunnable(self)
         QThreadPool.globalInstance().start(self._runnable)
@@ -769,69 +817,79 @@ class PdfOnDemandThread(QObject):
         return True
 
     def run(self):
+        from PyQt5 import sip
+        if sip.isdeleted(self):
+            return
         t_thread_start = time.perf_counter()
-        fname = os.path.basename(self._path)
+        path = self._path
+        page_nums = self._page_nums
+        zoom = self._zoom
+        use_cache = self._use_cache
+        store_cache = self._store_cache
+        cache_variant = self._cache_variant
+        show_annots = self._show_annots
+        fname = os.path.basename(path)
         perf_log(
             "pdf_on_demand_start",
             file=fname,
-            requested=len(self._page_nums),
-            pages=self._page_nums[:25],
-            zoom=self._zoom,
-            use_cache=self._use_cache,
-            store_cache=self._store_cache,
-            variant=self._cache_variant or "default",
+            requested=len(page_nums),
+            pages=page_nums[:25],
+            zoom=zoom,
+            use_cache=use_cache,
+            store_cache=store_cache,
+            variant=cache_variant or "default",
         )
 
         _render_debug("[DEBUG][on_demand] -> Thread started")
         _render_debug(f"[DEBUG][on_demand]   file      : {fname}")
-        _render_debug(f"[DEBUG][on_demand]   pages     : {self._page_nums}")
-        _render_debug(f"[DEBUG][on_demand]   zoom      : {self._zoom}")
+        _render_debug(f"[DEBUG][on_demand]   pages     : {page_nums}")
+        _render_debug(f"[DEBUG][on_demand]   zoom      : {zoom}")
 
         if not PDF_SUPPORT:
             msg = "PyMuPDF not installed - run: pip install pymupdf"
-            self.error.emit(msg)
-            self.batch_done.emit([])
+            self._safe_emit("error", msg)
+            self._safe_emit("batch_done", [])
             return
 
-        if not os.path.exists(self._path):
-            msg = f"File not found: {self._path}"
-            self.error.emit(msg)
-            self.batch_done.emit([])
+        if not os.path.exists(path):
+            msg = f"File not found: {path}"
+            self._safe_emit("error", msg)
+            self._safe_emit("batch_done", [])
             return
 
-        if not self._page_nums:
+        if not page_nums:
             _render_debug("[DEBUG][on_demand] warning: page_nums is empty - nothing to render")
-            self.batch_done.emit([])
+            self._safe_emit("batch_done", [])
             return
 
         doc = None
         try:
-            doc = fitz.open(self._path)
+            doc = fitz.open(path)
 
             if doc.is_encrypted:
                 msg = "PDF is password-protected"
-                self.error.emit(msg)
-                self.batch_done.emit([])
+                self._safe_emit("error", msg)
+                self._safe_emit("batch_done", [])
                 return
 
             total_in_doc = len(doc)
-            mat          = fitz.Matrix(self._zoom, self._zoom)
+            mat          = fitz.Matrix(zoom, zoom)
             rendered     = []
 
             _render_debug(f"[DEBUG][on_demand]   doc_pages : {total_in_doc}")
             _render_debug("[DEBUG][on_demand] ------------------------------------------------")
 
-            for page_num in self._page_nums:
-                if self._stop_flag:
-                    _render_debug(f"[DEBUG][on_demand] stop requested at page {page_num} ({len(rendered)}/{len(self._page_nums)} rendered)")
+            for page_num in page_nums:
+                if sip.isdeleted(self) or self._stop_flag:
+                    _render_debug(f"[DEBUG][on_demand] stop requested at page {page_num} ({len(rendered)}/{len(page_nums)} rendered)")
                     perf_log(
                         "pdf_on_demand_stop",
                         file=fname,
                         rendered=len(rendered),
-                        requested=len(self._page_nums),
+                        requested=len(page_nums),
                         elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
                     )
-                    self.batch_done.emit(rendered)
+                    self._safe_emit("batch_done", rendered)
                     return
 
                 if page_num < 0 or page_num >= total_in_doc:
@@ -839,7 +897,7 @@ class PdfOnDemandThread(QObject):
                     continue
 
                 t_page_start = time.perf_counter()
-                cached = PAGE_CACHE.get_image(self._path, page_num, variant=self._cache_variant) if self._use_cache else None
+                cached = PAGE_CACHE.get_image(path, page_num, variant=cache_variant) if use_cache else None
                 if cached and not cached.isNull():
                     t_ms = (time.perf_counter() - t_page_start) * 1000
                     _render_debug(f"[DEBUG][on_demand]   p.{page_num+1:>3} cache hit  ({t_ms:.1f}ms)  {cached.width()}x{cached.height()}px")
@@ -852,14 +910,14 @@ class PdfOnDemandThread(QObject):
                         height=cached.height(),
                         elapsed_ms=round(t_ms, 3),
                     )
-                    self.page_ready.emit(page_num, cached)
+                    self._safe_emit("page_ready", page_num, cached)
                     rendered.append(page_num)
                     continue
 
                 try:
                     # Use pdf_page_to_image (returns QImage — thread-safe)
                     # UI thread will convert to QPixmap via QPixmap.fromImage()
-                    img = pdf_page_to_image(doc.load_page(page_num), mat, show_annots=self._show_annots)
+                    img = pdf_page_to_image(doc.load_page(page_num), mat, show_annots=show_annots)
                     t_ms = (time.perf_counter() - t_page_start) * 1000
 
                     if img.isNull():
@@ -876,7 +934,7 @@ class PdfOnDemandThread(QObject):
                         height=img.height(),
                         elapsed_ms=round(t_ms, 3),
                     )
-                    self.page_ready.emit(page_num, img)   # emit QImage — thread-safe
+                    self._safe_emit("page_ready", page_num, img)   # emit QImage — thread-safe
                     rendered.append(page_num)
 
                 except Exception as ex:
@@ -885,21 +943,21 @@ class PdfOnDemandThread(QObject):
 
             t_total_ms = (time.perf_counter() - t_thread_start) * 1000
             _render_debug("[DEBUG][on_demand] ------------------------------------------------")
-            _render_debug(f"[DEBUG][on_demand] batch_done  rendered={len(rendered)}/{len(self._page_nums)}  total_time={t_total_ms:.1f}ms")
+            _render_debug(f"[DEBUG][on_demand] batch_done  rendered={len(rendered)}/{len(page_nums)}  total_time={t_total_ms:.1f}ms")
             perf_log(
                 "pdf_on_demand_done",
                 file=fname,
                 rendered=len(rendered),
-                requested=len(self._page_nums),
+                requested=len(page_nums),
                 elapsed_ms=round(t_total_ms, 3),
             )
 
-            self.batch_done.emit(rendered)
+            self._safe_emit("batch_done", rendered)
 
         except Exception as ex:
             print(f"[pdf_render] fatal render error: {ex}")
-            self.error.emit(str(ex))
-            self.batch_done.emit([])
+            self._safe_emit("error", str(ex))
+            self._safe_emit("batch_done", [])
         finally:
             if doc is not None:
                 try:
@@ -910,6 +968,7 @@ class PdfOnDemandThread(QObject):
                 fitz.TOOLS.store_shrink(100)
             except Exception:
                 pass
+
 
 
 def render_pdf_pages(path: str, page_nums, zoom: float = PDF_RENDER_ZOOM, cache_variant: str | None = None, show_annots: bool = True) -> dict:
@@ -959,12 +1018,18 @@ def render_pdf_pages_from_doc(doc, path: str, page_nums, zoom: float = PDF_RENDE
     return rendered
 
 
-def update_page_hashes(path: str, page_nums=None, zoom: float = PDF_HASH_ZOOM):
+def update_page_hashes(
+    path: str,
+    page_nums=None,
+    zoom: float = PDF_HASH_ZOOM,
+    doc=None,
+):
     if not PDF_SUPPORT or not os.path.exists(path):
         return
-    doc = None
+    owns_doc = doc is None
     try:
-        doc = fitz.open(path)
+        if doc is None:
+            doc = fitz.open(path)
         mat = fitz.Matrix(zoom, zoom)
         if page_nums is None:
             targets = range(len(doc))
@@ -978,7 +1043,7 @@ def update_page_hashes(path: str, page_nums=None, zoom: float = PDF_HASH_ZOOM):
     except Exception as ex:
         print(f"[update_page_hashes] error: {ex}")
     finally:
-        if doc is not None:
+        if owns_doc and doc is not None:
             try:
                 doc.close()
             except Exception:
@@ -1055,6 +1120,19 @@ class PdfLoaderThread(QObject):
         self._is_running = False
         self._runnable = None
 
+    def _safe_emit(self, signal_name, *args):
+        from PyQt5 import sip
+        if sip.isdeleted(self):
+            return False
+        try:
+            signal = getattr(self, signal_name, None)
+            if signal is not None:
+                signal.emit(*args)
+                return True
+        except (RuntimeError, AttributeError):
+            pass
+        return False
+
     def isRunning(self):
         return self._is_running
 
@@ -1063,7 +1141,7 @@ class PdfLoaderThread(QObject):
             return
         self._is_running = True
         self._stop_flag = False
-        self.started.emit()
+        self._safe_emit("started")
 
         class LoaderRunnable(QRunnable):
             def __init__(self, outer):
@@ -1071,11 +1149,14 @@ class PdfLoaderThread(QObject):
                 self.outer = outer
 
             def run(self):
+                from PyQt5 import sip
                 try:
-                    self.outer.run()
+                    if not sip.isdeleted(self.outer):
+                        self.outer.run()
                 finally:
-                    self.outer._is_running = False
-                    self.outer.finished.emit()
+                    if not sip.isdeleted(self.outer):
+                        self.outer._is_running = False
+                        self.outer._safe_emit("finished")
 
         self._runnable = LoaderRunnable(self)
         QThreadPool.globalInstance().start(self._runnable)
@@ -1095,22 +1176,32 @@ class PdfLoaderThread(QObject):
         return True
 
     def run(self):
+        from PyQt5 import sip
+        if sip.isdeleted(self):
+            return
         t_thread_start = time.perf_counter()
-        fname = os.path.basename(self._path)
+        path = self._path
+        zoom = self._zoom
+        chunk_size = self._chunk_size
+        use_cache = self._use_cache
+        store_cache = self._store_cache
+        cache_variant = self._cache_variant
+        show_annots = self._show_annots
+        fname = os.path.basename(path)
         if not PDF_SUPPORT:
-            self.done.emit([], "PyMuPDF not installed — run: pip install pymupdf")
-            self.batch_done.emit([])
+            self._safe_emit("done", [], "PyMuPDF not installed — run: pip install pymupdf")
+            self._safe_emit("batch_done", [])
             return
         doc = None
         try:
-            doc = fitz.open(self._path)
+            doc = fitz.open(path)
             if doc.is_encrypted:
-                self.done.emit([], "PDF is password-protected.")
-                self.batch_done.emit([])
+                self._safe_emit("done", [], "PDF is password-protected.")
+                self._safe_emit("batch_done", [])
                 return
 
             total = len(doc)
-            mat   = fitz.Matrix(self._zoom, self._zoom)
+            mat   = fitz.Matrix(zoom, zoom)
             pages : list[QImage] = []
             last_emitted = 0
             cache_hits = 0
@@ -1118,41 +1209,41 @@ class PdfLoaderThread(QObject):
 
             print(
                 "[DEBUG][pdf_loader] "
-                f"start file={os.path.basename(self._path)} pages={total} "
-                f"zoom={self._zoom} cache={self._use_cache}"
+                f"start file={os.path.basename(path)} pages={total} "
+                f"zoom={zoom} cache={use_cache}"
             )
             perf_log(
                 "pdf_loader_start",
                 file=fname,
                 pages=total,
-                zoom=self._zoom,
-                chunk_size=self._chunk_size,
-                use_cache=self._use_cache,
-                store_cache=self._store_cache,
-                variant=self._cache_variant or "default",
+                zoom=zoom,
+                chunk_size=chunk_size,
+                use_cache=use_cache,
+                store_cache=store_cache,
+                variant=cache_variant or "default",
             )
 
             for page_num in range(total):
-                if self._stop_flag:
-                    self.batch_done.emit([])
+                if sip.isdeleted(self) or self._stop_flag:
+                    self._safe_emit("batch_done", [])
                     return
 
                 # Cache hit?
-                cached = PAGE_CACHE.get_image(self._path, page_num, variant=self._cache_variant) if self._use_cache else None
+                cached = PAGE_CACHE.get_image(path, page_num, variant=cache_variant) if use_cache else None
                 if cached and not cached.isNull():
                     pages.append(cached)
                     cache_hits += 1
                 else:
                     try:
-                        img = pdf_page_to_image(doc.load_page(page_num), mat, show_annots=self._show_annots)
+                        img = pdf_page_to_image(doc.load_page(page_num), mat, show_annots=show_annots)
                         if not img.isNull():
-                            if self._store_cache and hasattr(PAGE_CACHE, "put_image"):
+                            if store_cache and hasattr(PAGE_CACHE, "put_image"):
                                 PAGE_CACHE.put_image(
-                                    self._path,
+                                    path,
                                     page_num,
                                     img,
-                                    variant=self._cache_variant,
-                                    render_zoom=self._zoom,
+                                    variant=cache_variant,
+                                    render_zoom=zoom,
                                 )
                             pages.append(img)
                             rendered_pages += 1
@@ -1160,7 +1251,7 @@ class PdfLoaderThread(QObject):
                         continue  # skip bad page, keep going
 
                 loaded = len(pages)
-                if loaded - last_emitted >= self._chunk_size:
+                if loaded - last_emitted >= chunk_size:
                     print(
                         "[DEBUG][pdf_loader] "
                         f"chunk loaded={loaded}/{total} "
@@ -1173,13 +1264,13 @@ class PdfLoaderThread(QObject):
                         pages=total,
                         cache_hits=cache_hits,
                         rendered=rendered_pages,
-                        elapsed_ms=round((time.perf_counter() - t0 if 't0' in locals() else time.perf_counter() - t_thread_start) * 1000.0, 3),
+                        elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
                     )
-                    self.pages_ready.emit(list(pages), loaded, total)
+                    self._safe_emit("pages_ready", list(pages), loaded, total)
                     last_emitted = loaded
 
-            if self._stop_flag:
-                self.batch_done.emit([])
+            if sip.isdeleted(self) or self._stop_flag:
+                self._safe_emit("batch_done", [])
                 return
 
             # Final emit (catches leftover pages not in last chunk)
@@ -1197,8 +1288,8 @@ class PdfLoaderThread(QObject):
                 rendered=rendered_pages,
                 elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
             )
-            self.done.emit(list(pages), None)
-            self.batch_done.emit(list(range(total)))
+            self._safe_emit("done", list(pages), None)
+            self._safe_emit("batch_done", list(range(total)))
 
         except Exception as ex:
             perf_log(
@@ -1207,8 +1298,8 @@ class PdfLoaderThread(QObject):
                 error=str(ex),
                 elapsed_ms=round((time.perf_counter() - t_thread_start) * 1000.0, 3),
             )
-            self.done.emit([], str(ex))
-            self.batch_done.emit([])
+            self._safe_emit("done", [], str(ex))
+            self._safe_emit("batch_done", [])
         finally:
             if doc is not None:
                 try:

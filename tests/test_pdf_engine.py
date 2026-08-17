@@ -244,6 +244,17 @@ class PdfEngineTests(unittest.TestCase):
         self.assertEqual(state["cache_hit_count"], 2)
         self.assertEqual(state["cache_miss_count"], 2)
 
+    def test_update_page_hashes_reuses_an_open_document(self):
+        doc = pdf_engine.fitz.open(str(self.pdf_path))
+        original_open = pdf_engine.fitz.open
+        try:
+            with patch.object(pdf_engine.fitz, "open", wraps=original_open) as open_mock:
+                pdf_engine.update_page_hashes(str(self.pdf_path), [0], doc=doc)
+        finally:
+            doc.close()
+
+        open_mock.assert_not_called()
+
     def test_on_demand_thread_emits_rendered_pages_and_skips_out_of_range(self):
         emitted_pages = []
         completed = []

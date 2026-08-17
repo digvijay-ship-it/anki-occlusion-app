@@ -17,7 +17,7 @@ from pdf_engine import (
     ensure_pdf_cache_profile,
     load_pdf_skeleton,
     pdf_page_to_pixmap,
-    render_pdf_pages,
+    render_pdf_pages_from_doc,
     update_page_hashes,
 )
 
@@ -163,13 +163,10 @@ class PdfAnnotationSession:
         self.cache_reset = ensure_pdf_cache_profile(self.pdf_path, self.render_zoom)
         self.skeleton = load_pdf_skeleton(self.pdf_path, zoom=self.render_zoom)
         self.page_pixel_dims = list(getattr(self.skeleton, "page_dims", []) or [])
-        self.page_pdf_dims = [
-            (
-                float(self.doc.load_page(i).rect.width),
-                float(self.doc.load_page(i).rect.height),
-            )
-            for i in range(self.page_count)
-        ]
+        # PDF-space dimensions are required only for pages the user edits.
+        # Loading every page here made annotation entry O(page_count), even
+        # though the canvas itself is lazily rendered around the viewport.
+        self.page_pdf_dims = [None] * self.page_count
         self.dirty_pages = set()
         self.pending_deleted_xrefs = set()
         self.pending_image_moves = {}
@@ -205,7 +202,12 @@ class PdfAnnotationSession:
             if page_num < len(self.page_pixel_dims)
             else (0, 0)
         )
-        pdf_w, pdf_h = self.page_pdf_dims[page_num]
+        pdf_dims = self.page_pdf_dims[page_num]
+        if pdf_dims is None:
+            page = self.doc.load_page(page_num)
+            pdf_dims = (float(page.rect.width), float(page.rect.height))
+            self.page_pdf_dims[page_num] = pdf_dims
+        pdf_w, pdf_h = pdf_dims
         sx = float(px_w) / max(float(pdf_w), 1.0)
         sy = float(px_h) / max(float(pdf_h), 1.0)
         return sx or 1.0, sy or 1.0
@@ -923,10 +925,14 @@ class PdfAnnotationSession:
                     raise
 
             PAGE_CACHE.invalidate_pages(self.pdf_path, dirty_pages)
-            rendered = render_pdf_pages(
-                self.pdf_path, dirty_pages, zoom=self.render_zoom, show_annots=True
+            render_pdf_pages_from_doc(
+                self.doc,
+                self.pdf_path,
+                dirty_pages,
+                zoom=self.render_zoom,
+                show_annots=True,
             )
-            update_page_hashes(self.pdf_path, dirty_pages)
+            update_page_hashes(self.pdf_path, dirty_pages, doc=self.doc)
             self._load_existing_annotations(dirty_pages)
             for page_num in dirty_pages:
                 self.new_items[page_num] = []
@@ -954,14 +960,19 @@ class PdfAnnotationSession:
             annot.set_colors(stroke=rgb)
         except Exception:
             pass
+        widths = item.get("widths")
+        if widths and len(widths) > 0:
+            mean_w = sum(widths) / float(len(widths))
+            max_w = max(widths)
+            width_val = 0.6 * max_w + 0.4 * mean_w
+        else:
+            width_val = _safe_float(item.get("width"), 2.8)
+
         try:
-            pdf_width = self._canvas_width_to_pdf(
-                page_num,
-                _safe_float(item.get("width"), 2.0),
-            )
+            pdf_width = self._canvas_width_to_pdf(page_num, width_val)
             annot.set_border(width=pdf_width)
         except Exception:
-            pdf_width = _safe_float(item.get("width"), 2.0)
+            pdf_width = width_val
         try:
             annot.set_info(
                 title="AnkiOcclusion",
