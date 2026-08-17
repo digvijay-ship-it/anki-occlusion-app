@@ -644,6 +644,39 @@ class DraggableFrame(QFrame):
 
 
 class FloatingActionButton(QFrame):
+    @staticmethod
+    def to_rgba(color_str, alpha=1.0):
+        if not color_str:
+            return "transparent"
+        color_str = str(color_str).strip()
+        if color_str.startswith("#"):
+            hex_body = color_str[1:]
+            if len(hex_body) == 3:
+                try:
+                    r = int(hex_body[0] * 2, 16)
+                    g = int(hex_body[1] * 2, 16)
+                    b = int(hex_body[2] * 2, 16)
+                    return f"rgba({r}, {g}, {b}, {alpha})"
+                except ValueError:
+                    return color_str
+            elif len(hex_body) == 6:
+                try:
+                    r = int(hex_body[0:2], 16)
+                    g = int(hex_body[2:4], 16)
+                    b = int(hex_body[4:6], 16)
+                    return f"rgba({r}, {g}, {b}, {alpha})"
+                except ValueError:
+                    return color_str
+            elif len(hex_body) == 8:
+                try:
+                    r = int(hex_body[0:2], 16)
+                    g = int(hex_body[2:4], 16)
+                    b = int(hex_body[4:6], 16)
+                    return f"rgba({r}, {g}, {b}, {alpha})"
+                except ValueError:
+                    return color_str
+        return color_str
+
     def __init__(self, parent=None, text="Button", emoji="", on_click=None, border_color_hex=None):
         super().__init__(parent)
         self._on_click = on_click
@@ -651,26 +684,16 @@ class FloatingActionButton(QFrame):
         self._press_pos = None
         self.text_str = text
         self.emoji_str = emoji
+        self._border_color_hex = border_color_hex
+        self._is_dim = False
         
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         from theme_manager import get_palette
         p = get_palette(theme)
-        bg = p.get("C_SURFACE", "#24283B")
+        self._bg_color = p.get("C_SURFACE", "#24283B")
         self.accent = border_color_hex or p.get("C_ACCENT", "#7C6AF7")
-        text_color = p.get("C_TEXT", "#CDD6F4")
-        
-        self.setStyleSheet(
-            f"QFrame {{ "
-            f"  background: {bg}; "
-            f"  border: 2px solid {self.accent}; "
-            f"  border-radius: 18px; "
-            f"  padding: 4px 10px; "
-            f"}} "
-            f"QFrame:hover {{ "
-            f"  background: {self.accent}; "
-            f"  border-color: white; "
-            f"}}"
-        )
+        self._text_color = p.get("C_TEXT", "#CDD6F4")
+        self._subtext_color = p.get("C_SUBTEXT", "#A6ADC8")
         
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 2, 8, 2)
@@ -678,7 +701,7 @@ class FloatingActionButton(QFrame):
         
         self.label = QLabel(f"{emoji} {text}" if emoji else text)
         self.label.setStyleSheet(
-            f"color: {text_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+            f"color: {self._text_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
         )
         layout.addWidget(self.label)
         
@@ -692,6 +715,60 @@ class FloatingActionButton(QFrame):
         self.setGraphicsEffect(self._opacity_effect)
         self._opacity_effect.setOpacity(1.0)
         self._current_opacity = 1.0
+
+        self._update_style()
+
+    def set_dim(self, dim: bool):
+        self._is_dim = bool(dim)
+        self._update_style()
+
+    def _update_style(self):
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        bg = getattr(self, "_bg_color", p.get("C_SURFACE", "#24283B"))
+        accent = getattr(self, "accent", p.get("C_ACCENT", "#7C6AF7"))
+        text_color = getattr(self, "_text_color", p.get("C_TEXT", "#CDD6F4"))
+        subtext_color = getattr(self, "_subtext_color", p.get("C_SUBTEXT", "#A6ADC8"))
+
+        if self._is_dim:
+            dim_bg = self.to_rgba(bg, 0.4)
+            dim_border = self.to_rgba(accent, 0.35)
+            hover_bg = self.to_rgba(accent, 0.25)
+            self.setStyleSheet(
+                f"QFrame {{ "
+                f"  background: {dim_bg}; "
+                f"  border: 2px solid {dim_border}; "
+                f"  border-radius: 18px; "
+                f"  padding: 4px 10px; "
+                f"}} "
+                f"QFrame:hover {{ "
+                f"  background: {hover_bg}; "
+                f"  border-color: {dim_border}; "
+                f"}}"
+            )
+            if hasattr(self, "label"):
+                self.label.setStyleSheet(
+                    f"color: {subtext_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+                )
+        else:
+            border_w = "4px" if self.text_str == "Ooze Hint" else "2px"
+            self.setStyleSheet(
+                f"QFrame {{ "
+                f"  background: {bg}; "
+                f"  border: {border_w} solid {accent}; "
+                f"  border-radius: 18px; "
+                f"  padding: 4px 10px; "
+                f"}} "
+                f"QFrame:hover {{ "
+                f"  background: {accent}; "
+                f"  border-color: white; "
+                f"}}"
+            )
+            if hasattr(self, "label"):
+                self.label.setStyleSheet(
+                    f"color: {text_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+                )
 
     def fade_to(self, opacity, duration=150):
         if not hasattr(self, "_opacity_anim"):
@@ -715,23 +792,39 @@ class FloatingActionButton(QFrame):
         self._slide_anim.start()
 
     def enterEvent(self, event):
-        theme = getattr(QApplication.instance(), "_active_theme", "classic")
-        from theme_manager import get_palette
-        p = get_palette(theme)
-        bg = p.get("C_BG", "#1E1E2E")
-        self.label.setStyleSheet(
-            f"color: {bg if theme != 'classic' else 'white'}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
-        )
+        if not self._is_dim:
+            theme = getattr(QApplication.instance(), "_active_theme", "classic")
+            from theme_manager import get_palette
+            p = get_palette(theme)
+            bg = p.get("C_BG", "#1E1E2E")
+            if hasattr(self, "label"):
+                self.label.setStyleSheet(
+                    f"color: {bg if theme != 'classic' else 'white'}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+                )
+        else:
+            subtext_color = getattr(self, "_subtext_color", "#A6ADC8")
+            if hasattr(self, "label"):
+                self.label.setStyleSheet(
+                    f"color: {subtext_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+                )
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        theme = getattr(QApplication.instance(), "_active_theme", "classic")
-        from theme_manager import get_palette
-        p = get_palette(theme)
-        text_color = p.get("C_TEXT", "#CDD6F4")
-        self.label.setStyleSheet(
-            f"color: {text_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
-        )
+        if not self._is_dim:
+            theme = getattr(QApplication.instance(), "_active_theme", "classic")
+            from theme_manager import get_palette
+            p = get_palette(theme)
+            text_color = p.get("C_TEXT", "#CDD6F4")
+            if hasattr(self, "label"):
+                self.label.setStyleSheet(
+                    f"color: {text_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+                )
+        else:
+            subtext_color = getattr(self, "_subtext_color", "#A6ADC8")
+            if hasattr(self, "label"):
+                self.label.setStyleSheet(
+                    f"color: {subtext_color}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+                )
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
@@ -910,6 +1003,7 @@ class ReviewScreen(QWidget):
     undo_requested_when_empty = pyqtSignal()
     QUEUE_AUTO_HIDE_MS = 2000
     PRIORITY_PAGE_LIMIT = 16
+    FLOATING_TIMER_MASK_FONT_PX = 36
     FLOATING_TIMER_SESSION_FONT_PX = 36
     FLOATING_TIMER_TODAY_FONT_PX = 30
 
@@ -1034,6 +1128,15 @@ class ReviewScreen(QWidget):
     @_review_redo_stack.setter
     def _review_redo_stack(self, val):
         self.mgr._review_redo_stack = val
+
+    @property
+    def is_practice(self):
+        return getattr(self.mgr, "is_practice", False) if hasattr(self, "mgr") and self.mgr is not None else False
+
+    @is_practice.setter
+    def is_practice(self, val):
+        if hasattr(self, "mgr") and self.mgr is not None:
+            self.mgr.is_practice = bool(val)
 
     def _rate(self, quality):
         # 1. Play low-latency 8-bit sound effects
@@ -1169,12 +1272,13 @@ class ReviewScreen(QWidget):
         from ui.review.profiler import review_profile_count
         return review_profile_count(self, name, amount)
 
-    def __init__(self, cards, data=None, parent=None, state_to_restore=None):
+    def __init__(self, cards, data=None, parent=None, state_to_restore=None, is_practice=False):
         super().__init__(parent)
         self._init_review_profile(cards)
         from services.review_manager import ReviewSessionManager
 
         self.mgr = ReviewSessionManager(self)
+        self.mgr.is_practice = bool(is_practice)
         self._data = data
         
         # Load low-latency retro sounds
@@ -1426,12 +1530,17 @@ class ReviewScreen(QWidget):
 
     def _set_hint_panel_visible(self, visible: bool):
         if visible:
+            self._reposition_hint_panel()
             self._hint_panel.show()
             self._hint_panel.raise_()
             if getattr(self, "_floating_hint_button", None):
                 self._floating_hint_button.raise_()
+            if getattr(self, "_reveal_bar", None) is not None:
+                self._reveal_bar.raise_()
+            if getattr(self, "_rating_frame", None) is not None:
+                self._rating_frame.raise_()
             self._btn_note.setChecked(True)
-            self._reposition_hint_panel()
+            self._update_mask_note_ui(keep_visible=True)
         else:
             self._hint_panel.hide()
             self._btn_note.setChecked(False)
@@ -1477,6 +1586,7 @@ class ReviewScreen(QWidget):
         self._btn_note.setEnabled(True)
         if getattr(self, "_floating_hint_button", None):
             self._floating_hint_button.show()
+            self._floating_hint_button.set_dim(not bool(note_content))
 
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         from theme_manager import get_palette
@@ -1636,7 +1746,20 @@ class ReviewScreen(QWidget):
         self._hint_browser.document().clear()
         
         # Calculate maximum display width inside the text browser container based on the actual physical panel width
-        panel_w = max(200, getattr(self, "_user_hint_width", 360) - 32)
+        user_w = getattr(self, "_user_hint_width", 360)
+        panel_is_visible = hasattr(self, "_hint_panel") and self._hint_panel is not None and self._hint_panel.isVisible()
+        
+        if panel_is_visible and hasattr(self, "_hint_browser") and self._hint_browser is not None and self._hint_browser.isVisible():
+            try:
+                viewport_w = int(self._hint_browser.viewport().width())
+            except (TypeError, ValueError):
+                viewport_w = 0
+            if viewport_w > 200 and viewport_w != 638:
+                panel_w = max(200, viewport_w - 32)
+            else:
+                panel_w = max(200, user_w - 34)
+        else:
+            panel_w = max(200, user_w - 34)
         scaled_widths = {}
         scaled_heights = {}
         
@@ -2780,10 +2903,13 @@ class ReviewScreen(QWidget):
             return
         session_label = self.__dict__.get("_floating_timer_session")
         today_label = self.__dict__.get("_floating_timer_today")
+        mask_label = self.__dict__.get("_floating_timer_mask")
         if session_label is not None:
             session_label.setText(self._stimer.label_session.text())
         if today_label is not None:
             today_label.setText(self._stimer.label_today.text())
+        if mask_label is not None:
+            mask_label.setText(self._stimer.label_mask.text())
         count = self._active_queue_count()
         self._sync_floating_queue_count(total=count)
         self._sync_queue_timer_count(total=count)
@@ -2991,6 +3117,16 @@ class ReviewScreen(QWidget):
         item_title = card.get("title", "Untitled")
         if self._stimer:
             self._stimer.set_current_pdf(card.get("pdf_path", ""))
+            card_id = str(card.get("_id") or card.get("id") or id(card))
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                mask_key = f"{card_id}_grp_{box_idx[1]}"
+            elif isinstance(box_idx, int):
+                box = card.get("boxes", [])[box_idx] if (0 <= box_idx < len(card.get("boxes", []))) else sm2_obj
+                box_id = box.get("box_id") if isinstance(box, dict) else f"box_{box_idx}"
+                mask_key = f"{card_id}_{box_id}"
+            else:
+                mask_key = f"{card_id}_card"
+            self._stimer.set_current_mask(mask_key)
         if hasattr(self.canvas, "clear_review_ink_for_card_switch"):
             self.canvas.clear_review_ink_for_card_switch()
         self._last_saved_ink_strokes_key = None
@@ -3469,6 +3605,7 @@ class ReviewScreen(QWidget):
         text = p.get("C_TEXT", C_TEXT)
         subtext = p.get("C_SUBTEXT", C_SUBTEXT)
         border = p.get("C_BORDER", C_BORDER)
+        orange = p.get("C_ORANGE", "#FFA200" if dojo else "#FAB387")
         font = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
 
         L = QVBoxLayout(self)
@@ -4285,6 +4422,7 @@ class ReviewScreen(QWidget):
         self._proximity_timer.start()
 
         self._floating_timer_frame = None
+        self._floating_timer_mask = None
         self._floating_timer_session = None
         self._floating_timer_today = None
         self._floating_timer_queue = None
@@ -4307,15 +4445,24 @@ class ReviewScreen(QWidget):
             ft_l = QVBoxLayout(floating_timer)
             ft_l.setContentsMargins(8, 5, 8, 5)
             ft_l.setSpacing(0)
+            self._floating_timer_mask = QLabel(self._stimer.label_mask.text())
             self._floating_timer_session = QLabel(self._stimer.label_session.text())
             self._floating_timer_today = QLabel(self._stimer.label_today.text())
             self._floating_timer_queue = QLabel(
                 f"QUEUE ({self._active_queue_count()})"
             )
+            self._floating_timer_mask.setToolTip("Time spent on current question")
+            self._floating_timer_session.setToolTip("Current review session time")
+            self._floating_timer_today.setToolTip("Total focus time today")
             if dojo:
                 is_ps = (font == "Press Start 2P")
                 fw = "normal" if is_ps else "bold"
                 q_sz = "8px" if is_ps else "10px"
+                self._floating_timer_mask.setStyleSheet(
+                    f"color:{orange};background:transparent;border:none;"
+                    f"font-size:{self.FLOATING_TIMER_MASK_FONT_PX}px;"
+                    f"font-weight:{fw};font-family:{font};"
+                )
                 self._floating_timer_session.setStyleSheet(
                     f"color:{accent};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_SESSION_FONT_PX}px;"
@@ -4331,6 +4478,12 @@ class ReviewScreen(QWidget):
                     f"font-size:{q_sz};font-weight:{fw};font-family:{font};"
                 )
             else:
+                self._floating_timer_mask.setStyleSheet(
+                    f"color:{orange};background:transparent;border:none;"
+                    f"font-size:{self.FLOATING_TIMER_MASK_FONT_PX}px;"
+                    "font-weight:bold;"
+                    "font-family:'Segoe UI Mono','Courier New',monospace;"
+                )
                 self._floating_timer_session.setStyleSheet(
                     "color:#CDD6F4;background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_SESSION_FONT_PX}px;"
@@ -4348,6 +4501,7 @@ class ReviewScreen(QWidget):
                     "font-size:11px;font-weight:bold;"
                     "font-family:'Segoe UI Mono','Courier New',monospace;"
                 )
+            ft_l.addWidget(self._floating_timer_mask)
             ft_l.addWidget(self._floating_timer_session)
             ft_l.addWidget(self._floating_timer_today)
             ft_l.addWidget(self._floating_timer_queue)
@@ -4388,29 +4542,40 @@ class ReviewScreen(QWidget):
             tf_l.setContentsMargins(8, 6, 8, 6)
             tf_l.setSpacing(2)
 
+            tf_mask = QLabel("CURRENT QUESTION" if dojo else "Current question")
             tf_top = QLabel("CURRENT SESSION" if dojo else "Current session")
             tf_bot = QLabel("TODAY'S FOCUS" if dojo else "Today's focus")
             self._queue_timer_count = QLabel(
                 f"TO REVIEW: {self._active_queue_count()}"
             )
             if dojo:
-                tf_top.setStyleSheet(
+                tf_mask.setStyleSheet(
                     f"color:{subtext};font-size:7px;font-weight:bold;"
                     f"background:transparent;border:none;"
                     f"font-family:{font};letter-spacing:1.5px;"
                 )
+                tf_top.setStyleSheet(
+                    f"color:{subtext};font-size:7px;font-weight:bold;"
+                    f"background:transparent;border:none;"
+                    f"font-family:{font};letter-spacing:1.5px;margin-top:4px;"
+                )
                 tf_bot.setStyleSheet(
                     f"color:{subtext};font-size:7px;font-weight:bold;"
                     f"background:transparent;border:none;"
-                    f"font-family:{font};letter-spacing:1.5px;margin-top:6px;"
+                    f"font-family:{font};letter-spacing:1.5px;margin-top:4px;"
                 )
                 self._queue_timer_count.setStyleSheet(
                     f"color:{subtext};font-size:8px;font-weight:bold;"
-                    f"background:transparent;border:none;font-family:{font};"
+                    f"background:transparent;border:none;font-family:{font};margin-top:4px;"
+                )
+                self._stimer.label_mask.setStyleSheet(
+                    f"background:transparent;color:{orange};"
+                    f"font-size:16px;font-weight:bold;"
+                    f"font-family:{font};border:none;"
                 )
                 self._stimer.label_session.setStyleSheet(
                     f"background:transparent;color:{accent};"
-                    f"font-size:18px;font-weight:bold;"
+                    f"font-size:16px;font-weight:bold;"
                     f"font-family:{font};border:none;"
                 )
                 self._stimer.label_today.setStyleSheet(
@@ -4419,21 +4584,31 @@ class ReviewScreen(QWidget):
                     f"font-family:{font};border:none;"
                 )
             else:
-                tf_top.setStyleSheet(
+                tf_mask.setStyleSheet(
                     f"color:{subtext};font-size:10px;"
                     f"font-weight:bold;background:transparent;border:none;"
+                )
+                tf_top.setStyleSheet(
+                    f"color:{subtext};font-size:10px;"
+                    f"font-weight:bold;background:transparent;border:none;margin-top:4px;"
                 )
                 tf_bot.setStyleSheet(
                     f"color:{subtext};font-size:10px;"
-                    f"font-weight:bold;background:transparent;border:none;margin-top:6px;"
+                    f"font-weight:bold;background:transparent;border:none;margin-top:4px;"
                 )
                 self._queue_timer_count.setStyleSheet(
                     f"color:{subtext};font-size:10px;"
-                    f"font-weight:bold;background:transparent;border:none;"
+                    f"font-weight:bold;background:transparent;border:none;margin-top:4px;"
+                )
+                self._stimer.label_mask.setStyleSheet(
+                    f"background:transparent;color:{orange};"
+                    f"font-size:16px;font-weight:bold;"
+                    f"font-family:'Segoe UI Mono','Courier New',monospace;"
+                    f"border:none;"
                 )
                 self._stimer.label_session.setStyleSheet(
                     f"background:transparent;color:#CDD6F4;"
-                    f"font-size:18px;font-weight:bold;"
+                    f"font-size:16px;font-weight:bold;"
                     f"font-family:'Segoe UI Mono','Courier New',monospace;"
                     f"border:none;"
                 )
@@ -4444,6 +4619,8 @@ class ReviewScreen(QWidget):
                     f"border:none;"
                 )
 
+            tf_l.addWidget(tf_mask)
+            tf_l.addWidget(self._stimer.label_mask)
             tf_l.addWidget(tf_top)
             tf_l.addWidget(self._stimer.label_session)
             tf_l.addWidget(tf_bot)
@@ -4810,7 +4987,7 @@ class ReviewScreen(QWidget):
             self._apply_hint_font_size()
 
     def _zoom_hint_reset(self):
-        self._hint_font_size = 13
+        self._hint_font_size = 14
         self._apply_hint_font_size()
 
     def _apply_hint_font_size(self):
@@ -4858,6 +5035,8 @@ class ReviewScreen(QWidget):
         settings.setValue("review/hint_panel_width", self._user_hint_width)
         settings.sync()
         self._reposition_hint_panel()
+        if hasattr(self, "_hint_panel") and self._hint_panel is not None and self._hint_panel.isVisible():
+            self._update_mask_note_ui(keep_visible=True)
 
     def _reposition_hint_panel(self):
         if not hasattr(self, "_hint_panel") or self._hint_panel is None:

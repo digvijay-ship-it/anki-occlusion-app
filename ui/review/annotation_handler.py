@@ -45,7 +45,7 @@ def open_annotation_beta(self):
                 
                 card["pdf_path"] = pdf_rel_path
                 data_manager.store.mark_dirty()
-                data_manager.store.save_force()
+                data_manager.store.save_force(async_save=True)
                 path = pdf_abs_path
             except Exception as e:
                 print(f"[ERROR][annotation_handler] Failed to convert image to PDF: {e}")
@@ -312,3 +312,84 @@ def apply_annotation_beta_refresh(
     self._canvas_scroll._emit_visible_pages()
     
     self._update_review_page_nav_ui()
+
+
+def open_annotation_for_deck(deck_or_card, parent_window=None):
+    from storage_paths import resolve_asset_path
+    from ui.pdf_annotation_dialog import PdfAnnotationDialog
+    import os
+
+    if not deck_or_card:
+        if parent_window:
+            canvas = getattr(parent_window, "canvas", None)
+            if hasattr(canvas, "_show_toast"):
+                canvas._show_toast("⚠ Select a deck first")
+        return False
+
+    card = None
+    if isinstance(deck_or_card, dict):
+        if deck_or_card.get("pdf_path") or deck_or_card.get("image_path"):
+            card = deck_or_card
+        else:
+            def _find_card(d):
+                for c in (d.get("cards", []) or []):
+                    if isinstance(c, dict) and (c.get("pdf_path") or c.get("image_path")):
+                        return c
+                for child in (d.get("children", []) or d.get("subdecks", []) or []):
+                    if isinstance(child, dict):
+                        res = _find_card(child)
+                        if res:
+                            return res
+                return None
+            card = _find_card(deck_or_card)
+
+    if not card:
+        if parent_window:
+            canvas = getattr(parent_window, "canvas", None)
+            if hasattr(canvas, "_show_toast"):
+                canvas._show_toast("⚠ Selected deck has no PDF/Image card")
+        return False
+
+    pdf_rel = card.get("pdf_path", "")
+    path = resolve_asset_path(pdf_rel) if pdf_rel else ""
+
+    if not path or not os.path.exists(path):
+        img_rel = card.get("image_path", "")
+        img_abs = resolve_asset_path(img_rel) if img_rel else ""
+        if img_abs and os.path.exists(img_abs):
+            try:
+                import fitz
+                from storage_paths import build_archive_asset_path
+                import data_manager
+
+                stem = os.path.splitext(os.path.basename(img_abs))[0]
+                pdf_abs_path, pdf_rel_path = build_archive_asset_path("pdfs", f"{stem}.pdf")
+
+                doc = fitz.open()
+                img_doc = fitz.open(img_abs)
+                pdf_bytes = img_doc.convert_to_pdf()
+                img_doc.close()
+
+                pdf_mem = fitz.open("pdf", pdf_bytes)
+                doc.insert_pdf(pdf_mem)
+                doc.save(pdf_abs_path)
+                doc.close()
+
+                card["pdf_path"] = pdf_rel_path
+                data_manager.store.mark_dirty()
+                data_manager.store.save_force(async_save=True)
+                path = pdf_abs_path
+            except Exception as e:
+                print(f"[open_annotation_for_deck] Failed to convert image to PDF: {e}")
+                return False
+
+    if not path or not os.path.exists(path):
+        if parent_window:
+            canvas = getattr(parent_window, "canvas", None)
+            if hasattr(canvas, "_show_toast"):
+                canvas._show_toast("⚠ No PDF file found for card")
+        return False
+
+    dialog = PdfAnnotationDialog(path, parent=parent_window, initial_page=0)
+    dialog.exec_()
+    return True

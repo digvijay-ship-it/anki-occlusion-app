@@ -53,6 +53,7 @@ def _sibling_snapshots_for_item(card, box_idx, sm2_obj):
 class ReviewSessionManager:
     def __init__(self, rs):
         self.rs = rs
+        self.is_practice = False
         self._items = []
         self._idx = 0
         self._done = 0
@@ -89,6 +90,12 @@ class ReviewSessionManager:
         self._review_undo_stack.append(snapshot)
         # New rating clears redo stack
         self._review_redo_stack.clear()
+
+        if self.is_practice:
+            self._done += 1
+            self._idx += 1
+            self.rs._load_item()
+            return
 
         sched_update(sm2_obj, quality)
         from perf_utils import invalidate_deck_stats
@@ -231,7 +238,7 @@ class ReviewSessionManager:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
         if self.rs and getattr(self.rs, "_stimer", None):
             snap_card = snap.get("card")
-            if snap_card:
+            if snap_card and (snap.get("quality") is not None or snap.get("recorded_review")):
                 pdf_path = snap_card.get("pdf_path", "")
                 if pdf_path:
                     self.rs._stimer.undo_card_review(pdf_path)
@@ -275,6 +282,7 @@ class ReviewSessionManager:
             ),
             "card_reviewed_at": card.get("last_reviewed_at") if card else None,
             "recovery_event": None,
+            "recorded_review": snap.get("recorded_review", False),
         }
         self._review_undo_stack.append(undo_snap)
 
@@ -295,7 +303,7 @@ class ReviewSessionManager:
                 card["last_reviewed_at"] = snap["card_reviewed_at"]
         if self.rs and getattr(self.rs, "_stimer", None):
             snap_card = snap.get("card")
-            if snap_card:
+            if snap_card and (snap.get("quality") is not None or snap.get("recorded_review")):
                 pdf_path = snap_card.get("pdf_path", "")
                 if pdf_path:
                     self.rs._stimer.record_card_review(pdf_path)
@@ -339,6 +347,7 @@ class ReviewSessionManager:
             "sibling_snapshots": sibling_snapshots,
             "card_reviewed_at": card.get("last_reviewed_at"),
             "recovery_event": None,
+            "recorded_review": False,
         }
         self._review_undo_stack.append(snapshot)
         self._review_redo_stack.clear()
@@ -358,6 +367,23 @@ class ReviewSessionManager:
         card, box_idx, sm2_obj = self._items[self._idx]
         sibling_snapshots = _sibling_snapshots_for_item(card, box_idx, sm2_obj)
 
+        mask_secs = 0
+        if self.rs and getattr(self.rs, "_stimer", None):
+            st = self.rs._stimer
+            try:
+                if hasattr(st, "get_current_mask_seconds") and callable(st.get_current_mask_seconds):
+                    val = st.get_current_mask_seconds()
+                    if isinstance(val, (int, float)):
+                        mask_secs = int(val)
+                elif hasattr(st, "_mask_seconds") and isinstance(st._mask_seconds, dict) and hasattr(st, "_current_mask"):
+                    val = st._mask_seconds.get(st._current_mask, 0)
+                    if isinstance(val, (int, float)):
+                        mask_secs = int(val)
+            except Exception:
+                mask_secs = 0
+
+        recorded_review = (mask_secs >= 60)
+
         snapshot = {
             "idx": self._idx,
             "done": self._done,
@@ -370,6 +396,7 @@ class ReviewSessionManager:
             "sibling_snapshots": sibling_snapshots,
             "card_reviewed_at": card.get("last_reviewed_at"),
             "recovery_event": None,
+            "recorded_review": recorded_review,
         }
         self._review_undo_stack.append(snapshot)
         self._review_redo_stack.clear()
@@ -386,6 +413,23 @@ class ReviewSessionManager:
             for box in card.get("boxes", []):
                 if box.get("group_id") == gid and box is not sm2_obj:
                     box["sm2_due"] = due_str
+
+        if recorded_review:
+            _now = datetime.now().isoformat(timespec="seconds")
+            sm2_obj["reviewed_at"] = _now
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                for box in card.get("boxes", []):
+                    if box.get("group_id") == gid and box is not sm2_obj:
+                        box["reviewed_at"] = _now
+            if box_idx is None:
+                card["reviewed_at"] = _now
+            card["last_reviewed_at"] = _now
+            self._done += 1
+            if self.rs and getattr(self.rs, "_stimer", None):
+                pdf_path = card.get("pdf_path", "")
+                if pdf_path:
+                    self.rs._stimer.record_card_review(pdf_path)
 
         # Mark database as dirty so the new due date is saved
         store.mark_dirty()

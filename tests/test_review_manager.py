@@ -358,6 +358,76 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
         self.assertEqual(card["boxes"][0]["sm2_due"], "2026-05-23T00:00:00")
         self.assertEqual(card["boxes"][1]["sm2_due"], "2026-05-23T00:00:00")
 
+    def test_super_skip_records_review_when_time_spent_ge_60_seconds(self):
+        rs = MagicMock()
+        stimer = MagicMock()
+        stimer.get_current_mask_seconds.return_value = 65
+        rs._stimer = stimer
+
+        card = {
+            "title": "Hard Question",
+            "pdf_path": "dummy.pdf",
+            "boxes": [
+                {"box_id": "b1", "sched_state": "review", "sm2_due": "2026-05-23T00:00:00"}
+            ]
+        }
+        manager = ReviewSessionManager(rs)
+        manager._items = [(card, 0, card["boxes"][0])]
+        manager._idx = 0
+        manager._done = 0
+
+        with patch("services.review_manager.store.mark_dirty"):
+            manager.super_skip()
+
+        # Should be popped
+        self.assertEqual(len(manager._items), 0)
+        # Should count as done review
+        self.assertEqual(manager._done, 1)
+        # Should have stamped reviewed_at
+        self.assertTrue(bool(card["boxes"][0].get("reviewed_at")))
+        self.assertTrue(bool(card.get("last_reviewed_at")))
+        # Should record timer review
+        stimer.record_card_review.assert_called_once_with("dummy.pdf")
+
+        # Test Undo
+        manager._review_undo()
+        self.assertEqual(len(manager._items), 1)
+        self.assertEqual(manager._done, 0)
+        self.assertIsNone(card["boxes"][0].get("reviewed_at"))
+        self.assertIsNone(card.get("last_reviewed_at"))
+        stimer.undo_card_review.assert_called_once_with("dummy.pdf")
+
+    def test_super_skip_does_not_record_review_when_time_spent_lt_60_seconds(self):
+        rs = MagicMock()
+        stimer = MagicMock()
+        stimer.get_current_mask_seconds.return_value = 15
+        rs._stimer = stimer
+
+        card = {
+            "title": "Quick Skip Card",
+            "pdf_path": "dummy.pdf",
+            "boxes": [
+                {"box_id": "b1", "sched_state": "review", "sm2_due": "2026-05-23T00:00:00"}
+            ]
+        }
+        manager = ReviewSessionManager(rs)
+        manager._items = [(card, 0, card["boxes"][0])]
+        manager._idx = 0
+        manager._done = 0
+
+        with patch("services.review_manager.store.mark_dirty"):
+            manager.super_skip()
+
+        # Should be popped
+        self.assertEqual(len(manager._items), 0)
+        # Should NOT count as done review
+        self.assertEqual(manager._done, 0)
+        # Should NOT have stamped reviewed_at
+        self.assertIsNone(card["boxes"][0].get("reviewed_at"))
+        self.assertIsNone(card.get("last_reviewed_at"))
+        # Should NOT record timer review
+        stimer.record_card_review.assert_not_called()
+
     def test_ungrouping_retains_scheduling_and_splits_queue(self):
         rs = MagicMock()
         card = {

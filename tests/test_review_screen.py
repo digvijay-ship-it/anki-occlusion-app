@@ -678,6 +678,29 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
         self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (3)")
         self.assertEqual(screen._queue_timer_count.text(), "TO REVIEW: 3")
 
+    def test_sync_floating_timer_updates_mask_label(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._floating_timer_session = QLabel()
+        screen._floating_timer_today = QLabel()
+        screen._floating_timer_mask = QLabel()
+        screen._floating_timer_queue = QLabel()
+        screen._queue_timer_count = QLabel()
+        
+        screen._stimer = MagicMock()
+        screen._stimer.label_session.text.return_value = "0:01:02"
+        screen._stimer.label_today.text.return_value = "0:03:04"
+        screen._stimer.label_mask.text.return_value = "0:00:15"
+        
+        screen._active_queue_count = MagicMock(return_value=5)
+        screen._reposition_floating_timer = MagicMock()
+        
+        screen._sync_floating_timer()
+        
+        self.assertEqual(screen._floating_timer_session.text(), "0:01:02")
+        self.assertEqual(screen._floating_timer_today.text(), "0:03:04")
+        self.assertEqual(screen._floating_timer_mask.text(), "0:00:15")
+        self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (5)")
+
     def test_floating_timer_uses_large_readable_font(self):
         self.assertEqual(ReviewScreen.FLOATING_TIMER_SESSION_FONT_PX, 36)
         self.assertEqual(ReviewScreen.FLOATING_TIMER_TODAY_FONT_PX, 30)
@@ -1334,6 +1357,34 @@ class QuickNoteTests(unittest.TestCase):
         canvas.set_eraser_mode(False)
         self.assertFalse(canvas._eraser_mode)
 
+    def test_drawing_canvas_stroke_eraser(self):
+        from ui.quick_note_dialog import DrawingCanvas
+        from PyQt5.QtGui import QPixmap, QColor, QMouseEvent
+        from PyQt5.QtCore import QPoint, Qt, QEvent
+        
+        canvas = DrawingCanvas()
+        px = QPixmap(100, 100)
+        px.fill(QColor("#FF0000"))
+        canvas.load_image(px)
+        
+        canvas.set_pen_color("#FFFFFF")
+        press = QMouseEvent(QEvent.MouseButtonPress, QPoint(20, 20), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        move = QMouseEvent(QEvent.MouseMove, QPoint(40, 40), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        release = QMouseEvent(QEvent.MouseButtonRelease, QPoint(40, 40), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        
+        canvas.mousePressEvent(press)
+        canvas.mouseMoveEvent(move)
+        canvas.mouseReleaseEvent(release)
+        
+        self.assertEqual(len(canvas._strokes), 1)
+        
+        canvas.set_eraser_mode(True, eraser_type="stroke")
+        erase_press = QMouseEvent(QEvent.MouseButtonPress, QPoint(30, 30), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mousePressEvent(erase_press)
+        
+        self.assertEqual(len(canvas._strokes), 0)
+        self.assertEqual(canvas._pixmap.toImage().pixelColor(30, 30).name().upper(), "#FF0000")
+
     def test_edit_sketch_dialog_basic(self):
         from ui.quick_note_dialog import EditSketchDialog
         from PyQt5.QtGui import QPixmap, QColor
@@ -1386,31 +1437,19 @@ class QuickNoteTests(unittest.TestCase):
         self.assertIsNotNone(cropped_px)
         self.assertFalse(cropped_px.isNull())
         
-        # 2. Test auto-focus on scratchpad drawings (lying outside card_img_size)
+        # 2. Test auto-crop covering all strokes across canvas
         card_img_size = QSize(100, 100)
-        strokes_with_scratchpad = [
-            ["#FF0000", QPointF(10, 10), QPointF(20, 20)],       # on card annotation
-            ["#00FF00", QPointF(150, 150), QPointF(180, 180)],   # scratchpad calculation (outside card bounds)
+        strokes_multiple = [
+            ["#FF0000", QPointF(10, 10), QPointF(20, 20)],
+            ["#00FF00", QPointF(150, 150), QPointF(180, 180)],
         ]
         
-        # Initialize dialog with card_img_size
-        dialog_sp = CropInkDialog(strokes_with_scratchpad, QSize(300, 300), 1.2, card_img_size=card_img_size)
+        dialog_sp = CropInkDialog(strokes_multiple, QSize(300, 300), 1.2, card_img_size=card_img_size)
         canvas_sp = dialog_sp.crop_canvas
-        
-        # Check scratchpad strokes are detected
-        self.assertEqual(len(canvas_sp._scratchpad_strokes), 1)
-        self.assertEqual(canvas_sp._scratchpad_strokes[0][0], "#00FF00")
-        
-        # Verify default crop rect was auto-focused around scratchpad only (not covering full preview)
-        self.assertNotEqual(canvas_sp._crop_rect, QRectF(canvas_sp._display_rect))
         
         # Verify select_all resets crop rect to cover the full canvas preview
         canvas_sp.select_all()
         self.assertEqual(canvas_sp._crop_rect, QRectF(canvas_sp._display_rect))
-        
-        # Verify select_scratchpad_only focuses back on the scratchpad strokes
-        canvas_sp.select_scratchpad_only()
-        self.assertNotEqual(canvas_sp._crop_rect, QRectF(canvas_sp._display_rect))
 
         # 3. Test Enter/Return keyPressEvent triggers accept
         from PyQt5.QtGui import QKeyEvent
@@ -2055,8 +2094,68 @@ class QuickNoteTests(unittest.TestCase):
             # Test reset
             screen._zoom_hint_in()
             screen._zoom_hint_reset()
-            self.assertEqual(screen._hint_font_size, 13)
-            self.assertEqual(fake_settings.get("review/hint_font_size"), 13)
+            self.assertEqual(screen._hint_font_size, 14)
+            self.assertEqual(fake_settings.get("review/hint_font_size"), 14)
+
+    def test_selectable_text_browser_zoom_signals(self):
+        from PyQt5.QtCore import Qt, QPoint
+        from ui.review_screen import SelectableTextBrowser
+        
+        browser = SelectableTextBrowser()
+        
+        # Track signal emissions
+        zoom_in_called = False
+        zoom_out_called = False
+        zoom_reset_called = False
+        
+        def on_zoom_in():
+            nonlocal zoom_in_called
+            zoom_in_called = True
+            
+        def on_zoom_out():
+            nonlocal zoom_out_called
+            zoom_out_called = True
+            
+        def on_zoom_reset():
+            nonlocal zoom_reset_called
+            zoom_reset_called = True
+            
+        browser.zoom_in_requested.connect(on_zoom_in)
+        browser.zoom_out_requested.connect(on_zoom_out)
+        browser.zoom_reset_requested.connect(on_zoom_reset)
+        
+        # Test key press zoom in: Ctrl + Plus
+        mock_key_in = MagicMock()
+        mock_key_in.modifiers.return_value = Qt.ControlModifier
+        mock_key_in.key.return_value = Qt.Key_Plus
+        mock_key_in.matches.return_value = False
+        browser.keyPressEvent(mock_key_in)
+        self.assertTrue(zoom_in_called)
+        
+        # Test key press zoom out: Ctrl + Minus
+        mock_key_out = MagicMock()
+        mock_key_out.modifiers.return_value = Qt.ControlModifier
+        mock_key_out.key.return_value = Qt.Key_Minus
+        mock_key_out.matches.return_value = False
+        browser.keyPressEvent(mock_key_out)
+        self.assertTrue(zoom_out_called)
+        
+        # Test key press zoom reset: Ctrl + 0
+        mock_key_reset = MagicMock()
+        mock_key_reset.modifiers.return_value = Qt.ControlModifier
+        mock_key_reset.key.return_value = Qt.Key_0
+        mock_key_reset.matches.return_value = False
+        browser.keyPressEvent(mock_key_reset)
+        self.assertTrue(zoom_reset_called)
+        
+        # Test wheel zoom in: Ctrl + wheel up
+        mock_wheel_event = MagicMock()
+        mock_wheel_event.modifiers.return_value = Qt.ControlModifier
+        mock_wheel_event.angleDelta.return_value = QPoint(0, 120)
+        
+        zoom_in_called = False
+        browser.wheelEvent(mock_wheel_event)
+        self.assertTrue(zoom_in_called)
 
     def test_hint_panel_markdown_and_latex_rendering(self):
         from ui.review_screen import parse_markdown_tables, parse_latex_math
@@ -2105,9 +2204,105 @@ class QuickNoteTests(unittest.TestCase):
             screen._reposition_hint_panel = MagicMock()
             
             # Simulate panel resize
+            screen._hint_panel = MagicMock()
+            screen._hint_panel.isVisible.return_value = True
+            screen._update_mask_note_ui = MagicMock()
             screen._on_hint_panel_resize(500)
             self.assertEqual(screen._user_hint_width, 500)
             self.assertEqual(fake_settings.get("review/hint_panel_width"), 500)
+            screen._update_mask_note_ui.assert_called_with(keep_visible=True)
+
+    def test_hint_panel_initial_size_hidden_calculation(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QTextBrowser, QWidget
+        
+        screen = ReviewScreen.__new__(ReviewScreen)
+        QWidget.__init__(screen)
+        screen.mgr = MagicMock()
+        screen.mgr._items = [({"notes": "Test note", "card_type": "text"}, 0, None)]
+        screen.mgr._idx = 0
+        screen._user_hint_width = 1558
+        screen._hint_font_size = 14
+        screen._hint_view_mode = "mask"
+        screen._btn_note = MagicMock()
+        screen._btn_save_ink = MagicMock()
+        screen._hint_panel = MagicMock()
+        screen._hint_panel.isVisible.return_value = False
+        screen._hint_browser = MagicMock(spec=QTextBrowser)
+        screen._hint_browser.viewport().width.return_value = 638  # Qt hidden default
+        screen._hint_browser.document().clear = MagicMock()
+        screen._hint_browser.setHtml = MagicMock()
+        screen._update_hint_scroll_indicators = MagicMock()
+        screen._reposition_floating_buttons = MagicMock()
+        
+        # When hint panel is hidden, note UI calculation should use _user_hint_width
+        screen._update_mask_note_ui(keep_visible=True)
+        screen._hint_browser.setHtml.assert_called_once()
+        html_arg = screen._hint_browser.setHtml.call_args[0][0]
+        self.assertIn("Test note", html_arg)
+
+    def test_hint_panel_first_open_image_scaling(self):
+        import storage_paths
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QTextBrowser, QWidget
+        
+        screen = ReviewScreen.__new__(ReviewScreen)
+        QWidget.__init__(screen)
+        screen.mgr = MagicMock()
+        
+        card = {
+            "_id": "card1",
+            "card_type": "pdf",
+            "pdf_path": "dummy.pdf",
+            "notes": '<p>Best Method</p><img src="images/test_solution.png">'
+        }
+        screen.mgr._items = [(card, 0, None)]
+        screen.mgr._idx = 0
+        screen._user_hint_width = 1558
+        screen._hint_font_size = 14
+        screen._hint_view_mode = "mask"
+        
+        screen._btn_note = MagicMock()
+        screen._btn_save_ink = MagicMock()
+        screen._hint_panel = MagicMock()
+        screen._hint_panel.isVisible.return_value = False
+        screen._hint_browser = MagicMock(spec=QTextBrowser)
+        screen._hint_browser.viewport().width.return_value = 638  # Qt hidden default
+        screen._hint_browser.document().clear = MagicMock()
+        screen._hint_browser.document().addResource = MagicMock()
+        screen._hint_browser.setHtml = MagicMock()
+        screen._update_hint_scroll_indicators = MagicMock()
+        screen._reposition_floating_buttons = MagicMock()
+        screen._canvas_stage = MagicMock()
+        screen._canvas_stage.width.return_value = 1920
+        screen._canvas_stage.height.return_value = 1080
+        screen._reposition_hint_panel = MagicMock()
+        
+        with patch.object(storage_paths, "resolve_asset_path", return_value="c:/dummy.png"), \
+             patch("os.path.exists", return_value=True), \
+             patch("ui.review_screen.QPixmap") as MockPixmap:
+            
+            mock_px = MagicMock()
+            mock_px.isNull.return_value = False
+            mock_px.width.return_value = 1280
+            mock_px.height.return_value = 800
+            
+            scaled_mock = MagicMock()
+            scaled_mock.height.return_value = 800
+            mock_px.scaledToWidth.return_value = scaled_mock
+            MockPixmap.return_value = mock_px
+            
+            # Card load
+            screen._update_mask_note_ui(keep_visible=False)
+            mock_px.scaledToWidth.assert_called_with(1280, unittest.mock.ANY)
+            
+            # First open
+            screen._set_hint_panel_visible(True)
+            screen._reposition_hint_panel.assert_called()
+            screen._hint_panel.show.assert_called()
+            
+            html_generated = screen._hint_browser.setHtml.call_args[0][0]
+            self.assertIn('width="1280"', html_generated)
 
     def test_on_canvas_right_clicked_box_shows_menu_and_edits_note(self):
         from ui.review_screen import ReviewScreen
@@ -2217,6 +2412,10 @@ class QuickNoteTests(unittest.TestCase):
     def test_pdf_metadata_default_shortcut(self):
         from services import shortcut_manager
         self.assertEqual(shortcut_manager.default_shortcut("review.pdf_metadata"), "Ctrl+M")
+
+    def test_toggle_pdf_notes_default_shortcut(self):
+        from services import shortcut_manager
+        self.assertEqual(shortcut_manager.default_shortcut("review.toggle_pdf_notes"), "M")
 
     def test_quick_note_dialog_custom_color_picker(self):
         from ui.quick_note_dialog import QuickNoteDialog
@@ -2448,6 +2647,133 @@ class SelectableTextBrowserTests(unittest.TestCase):
                     # Verify QApplication.clipboard().setMimeData is called
                     clipboard_inst = mock_clipboard.return_value
                     clipboard_inst.setMimeData.assert_called_once()
+
+
+class FloatingActionButtonTests(unittest.TestCase):
+    def test_floating_action_button_dim_and_grey(self):
+        from ui.review_screen import FloatingActionButton
+        
+        btn = FloatingActionButton(text="Test Hint", emoji="🧪")
+        self.assertFalse(btn._is_dim)
+        
+        btn.set_dim(True)
+        self.assertTrue(btn._is_dim)
+        
+        btn.set_dim(False)
+        self.assertFalse(btn._is_dim)
+
+    def test_floating_action_button_ooze_hint_styling(self):
+        from ui.review_screen import FloatingActionButton
+        btn = FloatingActionButton(text="Ooze Hint", emoji="🧪")
+        
+        # Test to_rgba helper
+        self.assertEqual(btn.to_rgba("#ff0055", 0.5), "rgba(255, 0, 85, 0.5)")
+        self.assertEqual(btn.to_rgba("#123", 0.1), "rgba(17, 34, 51, 0.1)")
+        self.assertEqual(btn.to_rgba("invalid", 0.5), "invalid")
+        self.assertEqual(btn.to_rgba("", 0.5), "transparent")
+        
+        # When Ooze Hint has data (not dim) -> border width is 4px
+        btn.set_dim(False)
+        self.assertIn("border: 4px solid", btn.styleSheet())
+        
+        # When Ooze Hint has no data (dim) -> border is 2px and rgba colors are used
+        btn.set_dim(True)
+        self.assertIn("border: 2px solid rgba(", btn.styleSheet())
+        self.assertIn("background: rgba(", btn.styleSheet())
+
+    def test_review_screen_floating_hint_button_dim_updates(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QWidget
+        
+        with patch.object(ReviewScreen, "_setup_ui"), \
+             patch.object(ReviewScreen, "_init_review_profile"), \
+             patch("ui.review_screen.QSettings"):
+             
+            screen = ReviewScreen.__new__(ReviewScreen)
+            QWidget.__init__(screen)
+            screen.mgr = MagicMock()
+            screen._data = {}
+            screen.prog = MagicMock()
+            screen._stimer = MagicMock()
+            screen.parent = MagicMock()
+            screen.finished = MagicMock()
+            
+            # Mock the widgets and attributes needed for _update_mask_note_ui
+            screen._btn_note = MagicMock()
+            screen._btn_save_ink = MagicMock()
+            screen._hint_browser = MagicMock()
+            screen._hint_panel = MagicMock()
+            screen._floating_hint_button = MagicMock()
+            screen._idx = 0
+            screen._hint_font_size = 14
+            screen._reposition_floating_buttons = MagicMock()
+            
+            # Case 1: card has empty notes/hint
+            card1 = {"card_type": "text", "notes": ""}
+            screen._items = [(card1, None, None)]
+            screen._update_mask_note_ui(keep_visible=True)
+            screen._floating_hint_button.set_dim.assert_called_with(True)
+            
+            screen._floating_hint_button.reset_mock()
+            
+            # Case 2: card has notes/hint
+            card2 = {"card_type": "text", "notes": "Some hint content"}
+            screen._items = [(card2, None, None)]
+            screen._update_mask_note_ui(keep_visible=True)
+            screen._floating_hint_button.set_dim.assert_called_with(False)
+
+
+class QuestionTimerIntegrationTests(unittest.TestCase):
+    def test_sync_floating_timer_updates_all_three_labels(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QLabel
+        
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._floating_timer_mask = QLabel()
+        screen._floating_timer_session = QLabel()
+        screen._floating_timer_today = QLabel()
+        screen._floating_timer_queue = QLabel()
+        screen._queue_timer_count = QLabel()
+        
+        screen._stimer = MagicMock()
+        screen._stimer.label_mask.text.return_value = "0:00:25"
+        screen._stimer.label_session.text.return_value = "0:05:10"
+        screen._stimer.label_today.text.return_value = "1:20:45"
+        
+        screen._active_queue_count = MagicMock(return_value=7)
+        screen._reposition_floating_timer = MagicMock()
+        
+        screen._sync_floating_timer()
+        
+        self.assertEqual(screen._floating_timer_mask.text(), "0:00:25")
+        self.assertEqual(screen._floating_timer_session.text(), "0:05:10")
+        self.assertEqual(screen._floating_timer_today.text(), "1:20:45")
+        self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (7)")
+
+    def test_load_item_notifies_stimer_with_mask_key(self):
+        from ui.review_screen import ReviewScreen
+        screen = MagicMock()
+        
+        card = {
+            "_id": "card_test_123",
+            "card_type": "text",
+            "pdf_path": "sample.pdf",
+            "boxes": [{"box_id": "box_abc", "note": "Note text"}]
+        }
+        screen._items = [(card, 0, card["boxes"][0])]
+        screen._idx = 0
+        screen._deleted_ids = set()
+        screen._pdf_cache = {}
+        screen._prev_lbls = []
+        screen.RATINGS = []
+        screen.RATING_LABELS = []
+        
+        with patch("ui.review_screen.sm2_badge", return_value="NEW"), \
+             patch("ui.review_screen._fmt_due_interval", return_value={}):
+            ReviewScreen._load_item(screen)
+        
+        screen._stimer.set_current_pdf.assert_called_with("sample.pdf")
+        screen._stimer.set_current_mask.assert_called_with("card_test_123_box_abc")
 
 
 if __name__ == "__main__":
