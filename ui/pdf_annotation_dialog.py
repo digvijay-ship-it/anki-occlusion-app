@@ -172,14 +172,67 @@ class PdfAnnotationCanvas(QWidget):
             else:
                 self.load_pages(self._pages)
 
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if getattr(self, "_tool", "pen") != "image":
+            self._update_ink_cursor()
+
+    def _update_ink_cursor(self):
+        if getattr(self, "_tool", "pen") == "image":
+            self.setCursor(Qt.ArrowCursor)
+            return
+
+        if self._tool == "erase":
+            w = 24
+        else:
+            base_w = self._get_pen_base_width() if self._tool == "pen" else 12.0
+            w = max(4, min(8, int(base_w)))
+
+        margin = 10
+        pix_size = w + 2 * margin
+        pix = QPixmap(pix_size, pix_size)
+        pix.fill(Qt.transparent)
+
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        cx = margin + w // 2
+        cy = margin + w // 2
+        r = w // 2
+        gap = 2
+        length = 6
+
+        # Draw white outline
+        painter.setPen(QPen(Qt.white, 3))
+        if self._tool == "erase":
+            painter.drawRect(margin, margin, w, w)
+        else:
+            painter.drawEllipse(margin, margin, w, w)
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+
+        # Draw black inner line
+        painter.setPen(QPen(Qt.black, 1))
+        if self._tool == "erase":
+            painter.drawRect(margin, margin, w, w)
+        else:
+            painter.drawEllipse(margin, margin, w, w)
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+
+        painter.end()
+        self.setCursor(QCursor(pix, cx, cy))
+
     def set_tool(self, tool: str):
         self._tool = tool
         if tool == "image":
             self.setCursor(Qt.ArrowCursor)
-        elif tool == "erase":
-            self.setCursor(Qt.ForbiddenCursor)
         else:
-            self.setCursor(Qt.CrossCursor)
+            self._update_ink_cursor()
 
     def set_view_scale(self, scale: float):
         self._scale = max(0.2, min(4.0, float(scale)))
@@ -210,6 +263,15 @@ class PdfAnnotationCanvas(QWidget):
         self.load_pages(self._pages)
         self.repaint()
         event.accept()
+
+    def _get_pen_base_width(self) -> float:
+        parent_dlg = self.window()
+        if hasattr(parent_dlg, "_annotation_pen_width"):
+            try:
+                return float(parent_dlg._annotation_pen_width)
+            except (TypeError, ValueError):
+                pass
+        return 2.8
 
     def page_count(self):
         return len(self._pages)
@@ -312,11 +374,23 @@ class PdfAnnotationCanvas(QWidget):
             self._draw_page_decorations(p, idx, rect.top())
 
         if self._live_points and self._drawing_page is not None:
+            live_color = None
+            live_width = None
+            parent_dlg = self.window()
+            if hasattr(parent_dlg, "_annotation_pen_color") and self._live_tool == "pen":
+                live_color = parent_dlg._annotation_pen_color
+                live_width = parent_dlg._annotation_pen_width
+            elif self._live_tool == "highlight":
+                live_color = "#FFD54A"
+                live_width = 12.0
+            
             self._draw_points(
                 p,
                 self._live_points,
                 self._drawing_page,
                 self._live_tool,
+                color=live_color,
+                width=live_width,
                 widths=self._live_widths,
             )
             
@@ -561,6 +635,14 @@ class PdfAnnotationCanvas(QWidget):
         top = self._page_tops[page_num] * self._scale
         
         pen_color = QColor(color or ("#FFD54A" if tool == "highlight" else "#FF4444"))
+        from cache_manager import get_pdf_invert_setting
+        if get_pdf_invert_setting():
+            pen_color = QColor(
+                255 - pen_color.red(),
+                255 - pen_color.green(),
+                255 - pen_color.blue(),
+                pen_color.alpha()
+            )
         painter.save()
         painter.setOpacity(float(opacity))
         
@@ -612,8 +694,6 @@ class PdfAnnotationCanvas(QWidget):
         if event.button() != Qt.LeftButton:
             return super().mousePressEvent(event)
         page_num, point = self._page_info_for_pos(event.pos())
-        pt_str = f"({point.x():.1f}, {point.y():.1f})" if point else "None"
-        print(f"[ANNO-LOG] Mouse pressed: page={page_num}, point={pt_str}, tool={self._tool}")
         if page_num is None:
             return
 
@@ -634,10 +714,6 @@ class PdfAnnotationCanvas(QWidget):
                     if session._existing_item_hit(item, point):
                         hit_annot = item
                         break
-        if hit_annot:
-            print(f"[ANNO-LOG] Clicked Annotation: id={hit_annot.get('id')}, kind={hit_annot.get('kind')}, source={hit_annot.get('source')}, rect={hit_annot.get('rect')}")
-        else:
-            print("[ANNO-LOG] No annotation clicked (clicked page background)")
         if self._tool == "image":
             handle = self._handle_at(page_num, point)
             if handle is not None:
@@ -676,7 +752,6 @@ class PdfAnnotationCanvas(QWidget):
             self._image_drag_start_global = QPointF(event.pos())
             self._image_drag_start_rect = self._item_rect(item)
             self._resize_handle = None
-            print(f"[ANNO-LOG] Image clicked: page={page_num}, id={self._selected_image_id}, rect={self._image_drag_start_rect}")
             self.update()
             return
         if self._tool == "erase":
@@ -690,7 +765,7 @@ class PdfAnnotationCanvas(QWidget):
         import time
         self._last_time = time.time()
         self._last_point = point
-        self._current_width = 2.8  # Start width for pen
+        self._current_width = 12.0 if self._live_tool == "highlight" else self._get_pen_base_width()
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -808,9 +883,9 @@ class PdfAnnotationCanvas(QWidget):
             dist = ((p1.x() - p0.x()) ** 2 + (p1.y() - p0.y()) ** 2) ** 0.5
             velocity = dist / dt
             
-            # Map velocity to width (faster -> thinner, slower -> thicker)
-            min_w = 1.2
-            max_w = 4.8
+            base_w = self._get_pen_base_width()
+            min_w = base_w * 0.4
+            max_w = base_w * 1.6
             target_w = max_w - (max_w - min_w) * min(1.0, velocity / 1200.0)
             
             # Exponential smoothing (alpha = 0.20)
@@ -821,7 +896,7 @@ class PdfAnnotationCanvas(QWidget):
             self._last_time = now
             self._last_point = point
         else:
-            w = 12.0 if self._live_tool == "highlight" else 2.8
+            w = 12.0 if self._live_tool == "highlight" else self._get_pen_base_width()
             self._live_widths.append(w)
 
         self._live_points.append(point)
@@ -974,11 +1049,9 @@ class PdfAnnotationCanvas(QWidget):
     def select_image(self, page_num: int, item_id: str):
         self._selected_image_page = int(page_num)
         self._selected_image_id = item_id
-        print(f"[ANNO-LOG] Image selected: page={page_num}, id={item_id}")
         self.update()
 
     def clear_selected_image(self):
-        print(f"[ANNO-LOG] Selection cleared (was: page={self._selected_image_page}, id={self._selected_image_id})")
         self._selected_image_page = None
         self._selected_image_id = None
         self.update()
@@ -1000,7 +1073,7 @@ class PdfAnnotationCanvas(QWidget):
             e.ignore()
             return
 
-        from PyQt5.QtCore import QEvent
+        from PyQt5.QtCore import QEvent, QRect
         et = e.type()
         
         if et == QEvent.TabletPress:
@@ -1016,6 +1089,21 @@ class PdfAnnotationCanvas(QWidget):
             self._drawing_page = page_num
             self._live_tool = self._tool
             self._live_points = [point]
+            self._live_widths = []
+            
+            base_w = self._get_pen_base_width()
+            if self._live_tool == "pen":
+                pressure = e.pressure()
+                if pressure <= 0.0:
+                    pressure = 0.5
+                min_w = base_w * 0.4
+                max_w = base_w * 1.6
+                self._current_width = min_w + (max_w - min_w) * pressure
+            elif self._live_tool == "highlight":
+                self._current_width = 12.0
+            else:
+                self._current_width = base_w
+            self._live_widths.append(self._current_width)
             self.update()
             e.accept()
             
@@ -1028,8 +1116,47 @@ class PdfAnnotationCanvas(QWidget):
             if self._drawing_page is None or page_num != self._drawing_page:
                 e.ignore()
                 return
+            
+            # Distance filter to avoid duplicate/ultra-dense points
+            if self._live_points:
+                last_pt = self._live_points[-1]
+                dx = point.x() - last_pt.x()
+                dy = point.y() - last_pt.y()
+                if dx * dx + dy * dy < 1.0:  # 1 pixel threshold in image-space
+                    e.accept()
+                    return
+
+            if self._live_tool == "pen":
+                base_w = self._get_pen_base_width()
+                pressure = e.pressure()
+                if pressure <= 0.0:
+                    pressure = 0.5
+                min_w = base_w * 0.4
+                max_w = base_w * 1.6
+                w = min_w + (max_w - min_w) * pressure
+                # Smooth the width transition
+                w = 0.20 * w + 0.80 * self._current_width
+                self._current_width = w
+                self._live_widths.append(w)
+            else:
+                w = 12.0 if self._live_tool == "highlight" else self._get_pen_base_width()
+                self._live_widths.append(w)
+
             self._live_points.append(point)
-            self.update()
+            
+            # Dirty-rect update to only repaint the modified region
+            if len(self._live_points) >= 2:
+                p0, p1 = self._live_points[-2], self._live_points[-1]
+                top0 = self._page_tops[self._drawing_page] * self._scale
+                w_seg = self._live_widths[-1] if self._live_widths else 2.8
+                pen_w = max(4.0, float(w_seg) * self._scale) + 15
+                x0 = int(min(p0.x(), p1.x()) * self._scale - pen_w)
+                y0 = int(min(p0.y(), p1.y()) * self._scale + top0 - pen_w)
+                x1 = int(max(p0.x(), p1.x()) * self._scale + pen_w)
+                y1 = int(max(p0.y(), p1.y()) * self._scale + top0 + pen_w)
+                self.update(QRect(x0, y0, x1 - x0, y1 - y0))
+            else:
+                self.update()
             e.accept()
             
         elif et == QEvent.TabletRelease:
@@ -1038,11 +1165,17 @@ class PdfAnnotationCanvas(QWidget):
                 e.accept()
                 return
             if self._drawing_page is not None and len(self._live_points) >= 2:
+                # Ensure width list matches points length
+                while len(self._live_widths) < len(self._live_points) - 1:
+                    self._live_widths.append(self._current_width)
                 self.stroke_finished.emit(
-                    self._drawing_page, self._live_tool, list(self._live_points)
+                    self._drawing_page,
+                    self._live_tool,
+                    (list(self._live_points), list(self._live_widths)),
                 )
             self._drawing_page = None
             self._live_points = []
+            self._live_widths = []
             self.update()
             e.accept()
         else:
@@ -1090,6 +1223,19 @@ class PdfAnnotationDialog(QDialog):
             self.crt.trigger_boot_flicker()
 
         self._load_pages()
+
+    def showEvent(self, event):
+        # Annotation should never compete with theme effects for paint time.
+        from ui.canvas.retro_effects import suspend_animations
+
+        suspend_animations(self)
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        from ui.canvas.retro_effects import resume_animations
+
+        resume_animations(self)
 
     def _debug(self, action: str, **data):
         return
@@ -1388,6 +1534,8 @@ class PdfAnnotationDialog(QDialog):
         self.canvas.set_tool(tool)
         if tool == "image":
             self.lbl_status.setText("image move mode: drag pasted screenshot")
+        elif tool == "highlight":
+            self.lbl_status.setText("highlight tool")
         elif tool == "pen":
             self.lbl_status.setText(
                 f"pen {self._annotation_pen_width:.1f}px {self._annotation_pen_color}"
@@ -1434,13 +1582,30 @@ class PdfAnnotationDialog(QDialog):
         )
 
     def _update_pen_controls(self):
-        color = QColor(self._annotation_pen_color)
-        color_name = color.name() if color.isValid() else self.PEN_DEFAULT_COLOR
+        from cache_manager import get_pdf_invert_setting
+        doc_color = QColor(self._annotation_pen_color)
+        if get_pdf_invert_setting() and doc_color.isValid():
+            screen_color = QColor(
+                255 - doc_color.red(),
+                255 - doc_color.green(),
+                255 - doc_color.blue(),
+                doc_color.alpha(),
+            )
+        else:
+            screen_color = doc_color
+
+        color_name = screen_color.name() if screen_color.isValid() else self.PEN_DEFAULT_COLOR
+        # Calculate luminance for high contrast text color (white on dark, dark on light)
+        r, g, b = (screen_color.red(), screen_color.green(), screen_color.blue()) if screen_color.isValid() else (255, 68, 68)
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        text_color = "#FFFFFF" if luminance < 128 else "#111111"
+        border_color = "#FFFFFF" if luminance < 60 else "#45475A"
+        
         self.btn_color.setStyleSheet(
             "QPushButton{"
             f"background:{color_name};"
-            "color:#111111;border:1px solid #45475A;border-radius:6px;padding:6px 10px;font-weight:bold;}"
-            "QPushButton:hover{background:#FFFFFF;}"
+            f"color:{text_color};border:1px solid {border_color};border-radius:6px;padding:6px 10px;font-weight:bold;}}"
+            "QPushButton:hover{opacity:0.9;}"
         )
         self.btn_color.setText(f"🎨 {self._annotation_pen_width:.1f}px")
         self.btn_color.setEnabled(getattr(self.canvas, "_tool", "pen") == "pen")
@@ -1476,13 +1641,34 @@ class PdfAnnotationDialog(QDialog):
         )
 
     def _choose_pen_color(self):
+        from cache_manager import get_pdf_invert_setting
+        current_doc = QColor(self._annotation_pen_color)
+        if get_pdf_invert_setting() and current_doc.isValid():
+            initial_color = QColor(
+                255 - current_doc.red(),
+                255 - current_doc.green(),
+                255 - current_doc.blue(),
+            )
+        else:
+            initial_color = current_doc
+
         chosen = QColorDialog.getColor(
-            QColor(self._annotation_pen_color), self, "Choose Pen Color"
+            initial_color, self, "Choose Pen Color"
         )
         if not chosen.isValid():
             self._debug("pen_color_cancel")
             return
-        self._annotation_pen_color = chosen.name()
+
+        if get_pdf_invert_setting():
+            doc_color = QColor(
+                255 - chosen.red(),
+                255 - chosen.green(),
+                255 - chosen.blue(),
+            )
+            self._annotation_pen_color = doc_color.name()
+        else:
+            self._annotation_pen_color = chosen.name()
+
         self._save_annotation_pen_settings()
         self._update_pen_controls()
         self.lbl_status.setText(
@@ -1901,17 +2087,13 @@ class PdfAnnotationDialog(QDialog):
         self.canvas.update()
 
     def _save_pdf(self):
-        print("[ANNO-LOG] Save clicked!")
         if self.__dict__.get("_save_in_progress", False):
-            print("[ANNO-LOG] Save already in progress. Ignoring.")
             return
         self._save_in_progress = True
         try:
             try:
                 changed_pages = self.session.save()
-                print(f"[ANNO-LOG] Save successful. Changed pages: {changed_pages}")
             except Exception as ex:
-                print(f"[ANNO-LOG] Save failed: {ex}")
                 QMessageBox.warning(
                     self, "Annotation Save Failed", f"Could not update PDF:\n{ex}"
                 )
@@ -1953,6 +2135,9 @@ class PdfAnnotationDialog(QDialog):
             self.crt.raise_()
 
     def closeEvent(self, event):
+        from ui.canvas.retro_effects import resume_animations
+
+        resume_animations(self)
         self._stop_loader_thread()
         self.return_page = self._current_page_zero
         self.return_anchor_y = self.scroll.verticalScrollBar().value()

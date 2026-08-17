@@ -29,41 +29,23 @@ class CropCanvas(QWidget):
             
         self._src_rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
 
-        # Find scratchpad strokes (strokes that lie outside card image bounds)
-        self._scratchpad_strokes = []
-        self._scratchpad_bounds = None
-        if card_img_size is not None:
-            img_w = card_img_size.width()
-            img_h = card_img_size.height()
-            for stroke in strokes:
-                if len(stroke) >= 2:
-                    is_scratchpad = False
-                    for pt in stroke[1:]:
-                        if pt.x() > img_w + 10 or pt.y() > img_h + 10:
-                            is_scratchpad = True
-                            break
-                    if is_scratchpad:
-                        self._scratchpad_strokes.append(stroke)
-            if self._scratchpad_strokes:
-                s_xs = []
-                s_ys = []
-                for stroke in self._scratchpad_strokes:
-                    for pt in stroke[1:]:
-                        s_xs.append(pt.x())
-                        s_ys.append(pt.y())
-                # Save scratchpad bounds with padding
-                pad = 15
-                s_min_x = max(min_x, min(s_xs) - pad)
-                s_min_y = max(min_y, min(s_ys) - pad)
-                s_max_x = min(max_x, max(s_xs) + pad)
-                s_max_y = min(max_y, max(s_ys) + pad)
-                self._scratchpad_bounds = (s_min_x, s_min_y, s_max_x, s_max_y)
-        
         # Paint the full drawing onto a temporary pixmap at original scale
-        original_pixmap = QPixmap(int(self._src_rect.width()), int(self._src_rect.height()))
-        original_pixmap.fill(Qt.white)
+        w = int(self._src_rect.width())
+        h = int(self._src_rect.height())
+        original_pixmap = QPixmap(w, h)
+        
         p = QPainter(original_pixmap)
         p.setRenderHint(QPainter.Antialiasing)
+        
+        # Render dark slate checkerboard background so white, black, and colored ink are all visible
+        tile_size = 24
+        bg_c1 = QColor("#2A2C3C")
+        bg_c2 = QColor("#1C1D2A")
+        for ty in range(0, h + tile_size, tile_size):
+            for tx in range(0, w + tile_size, tile_size):
+                c = bg_c1 if ((tx // tile_size) + (ty // tile_size)) % 2 == 0 else bg_c2
+                p.fillRect(tx, ty, tile_size, tile_size, c)
+                
         p.translate(-min_x, -min_y)
         
         pen_w = max(2.0, ink_width * 2.0)
@@ -72,7 +54,12 @@ class CropCanvas(QWidget):
                 continue
             color = stroke[0]
             pts = stroke[1:]
-            p.setPen(QPen(QColor(color), pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            
+            qc = QColor(color)
+            if qc.lightness() < 80:
+                qc = QColor(Qt.white)
+                
+            p.setPen(QPen(qc, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             path = QPainterPath()
             path.moveTo(pts[0])
             for pt in pts[1:]:
@@ -95,15 +82,8 @@ class CropCanvas(QWidget):
         # Set fixed size of the widget to match the scaled preview
         self.setFixedSize(self._preview_pixmap.size())
         
-        # Initialize crop rect (focus on scratchpad if it exists, otherwise cover full preview)
+        # Initialize crop rect to cover full preview by default
         self._crop_rect = QRectF(self._display_rect)
-        if card_img_size is not None and self._scratchpad_bounds:
-            s_min_x, s_min_y, s_max_x, s_max_y = self._scratchpad_bounds
-            crop_x = (s_min_x - min_x) * self._scale
-            crop_y = (s_min_y - min_y) * self._scale
-            crop_w = (s_max_x - s_min_x) * self._scale
-            crop_h = (s_max_y - s_min_y) * self._scale
-            self._crop_rect = QRectF(crop_x, crop_y, crop_w, crop_h)
         
         # Mouse interaction states
         self._active_handle = None
@@ -273,16 +253,6 @@ class CropCanvas(QWidget):
         p.end()
         return px
 
-    def select_scratchpad_only(self):
-        if self._scratchpad_bounds:
-            s_min_x, s_min_y, s_max_x, s_max_y = self._scratchpad_bounds
-            crop_x = (s_min_x - self._src_rect.left()) * self._scale
-            crop_y = (s_min_y - self._src_rect.top()) * self._scale
-            crop_w = (s_max_x - s_min_x) * self._scale
-            crop_h = (s_max_y - s_min_y) * self._scale
-            self._crop_rect = QRectF(crop_x, crop_y, crop_w, crop_h)
-            self.update()
-
     def select_all(self):
         self._crop_rect = QRectF(self._display_rect)
         self.update()
@@ -330,26 +300,6 @@ class CropInkDialog(QDialog):
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
-        
-        # Add scratchpad filter buttons if we have scratchpad strokes
-        if card_img_size is not None and self.crop_canvas._scratchpad_bounds:
-            self.btn_scratchpad = QPushButton("🎯 Select Scratchpad Only")
-            self.btn_scratchpad.setFixedHeight(34)
-            self.btn_scratchpad.setStyleSheet(
-                f"QPushButton {{ background: transparent; color: {text}; border: 1px solid {border}; border-radius: 6px; padding: 0 15px; }}"
-                f"QPushButton:hover {{ background: {surface}; }}"
-            )
-            self.btn_scratchpad.clicked.connect(self._select_scratchpad_only)
-            btn_layout.addWidget(self.btn_scratchpad)
-
-            self.btn_select_all = QPushButton("🔲 Select All")
-            self.btn_select_all.setFixedHeight(34)
-            self.btn_select_all.setStyleSheet(
-                f"QPushButton {{ background: transparent; color: {text}; border: 1px solid {border}; border-radius: 6px; padding: 0 15px; }}"
-                f"QPushButton:hover {{ background: {surface}; }}"
-            )
-            self.btn_select_all.clicked.connect(self._select_all)
-            btn_layout.addWidget(self.btn_select_all)
             
         self.btn_save = QPushButton("📥 Crop & Insert")
         self.btn_save.setFixedHeight(34)
@@ -387,9 +337,6 @@ class CropInkDialog(QDialog):
         self.enter_shortcut.activated.connect(self.accept)
         self.enter_shortcut_2 = QShortcut(QKeySequence("Enter"), self)
         self.enter_shortcut_2.activated.connect(self.accept)
-
-    def _select_scratchpad_only(self):
-        self.crop_canvas.select_scratchpad_only()
 
     def _select_all(self):
         self.crop_canvas.select_all()
@@ -678,34 +625,11 @@ def get_auto_crop_rect(strokes, canvas_size, card_img_size=None):
     if not xs:
         return QRectF(0, 0, canvas_size.width(), canvas_size.height())
         
-    # Check for scratchpad strokes first
-    scratchpad_strokes = []
-    if card_img_size is not None:
-        img_w = card_img_size.width()
-        img_h = card_img_size.height()
-        for stroke in strokes:
-            if len(stroke) >= 2:
-                is_scratchpad = False
-                for pt in stroke[1:]:
-                    if pt.x() > img_w + 10 or pt.y() > img_h + 10:
-                        is_scratchpad = True
-                        break
-                if is_scratchpad:
-                    scratchpad_strokes.append(stroke)
-                    
-    target_strokes = scratchpad_strokes if scratchpad_strokes else strokes
-    t_xs = []
-    t_ys = []
-    for stroke in target_strokes:
-        for pt in stroke[1:]:
-            t_xs.append(pt.x())
-            t_ys.append(pt.y())
-            
     pad = 15
-    min_x = max(0, min(t_xs) - pad)
-    min_y = max(0, min(t_ys) - pad)
-    max_x = min(canvas_size.width(), max(t_xs) + pad)
-    max_y = min(canvas_size.height(), max(t_ys) + pad)
+    min_x = max(0, min(xs) - pad)
+    min_y = max(0, min(ys) - pad)
+    max_x = min(canvas_size.width(), max(xs) + pad)
+    max_y = min(canvas_size.height(), max(ys) + pad)
     
     return QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
 

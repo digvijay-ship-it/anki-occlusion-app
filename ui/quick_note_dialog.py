@@ -18,34 +18,70 @@ class DrawingCanvas(QWidget):
         self.setAttribute(Qt.WA_StaticContents)
         self._pixmap = QPixmap(360, 260)
         self._pixmap.fill(Qt.black)
+        self._base_pixmap = QPixmap(self._pixmap)
         self._last_point = QPoint()
         self._drawing = False
         self._pen_color = QColor("#FFFFFF")
         self._pen_width = 3
         self._has_drawn = False
         self._eraser_mode = False
+        self._eraser_type = "stroke"  # "stroke" (erases ink) or "bg" (paints bg color)
         self._bg_color = QColor(Qt.black)
+        self._strokes = []
+        self._current_stroke = None
         self._update_cursor()
 
     def _update_cursor(self):
-        w = max(4, self._pen_width)
-        pix_size = w + 4
+        w = max(4, min(8, int(self._pen_width)))
+        # Add a margin of 10 pixels around the shape to fit the crosshair lines cleanly
+        margin = 10
+        pix_size = w + 2 * margin
         pix = QPixmap(pix_size, pix_size)
         pix.fill(Qt.transparent)
         
         painter = QPainter(pix)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        bg_is_dark = (getattr(self, "_bg_color", Qt.black) == Qt.black)
-        color = Qt.white if bg_is_dark else Qt.black
+        cx = margin + w // 2
+        cy = margin + w // 2
+        r = w // 2
+        gap = 2
+        length = 6
         
-        painter.setPen(QPen(color, 1))
+        # Draw a white outline (width 3) for the entire cursor (circle/rect and crosshairs)
+        painter.setPen(QPen(Qt.white, 3))
         if getattr(self, "_eraser_mode", False):
-            painter.drawRect(1, 1, w, w)
+            if getattr(self, "_eraser_type", "stroke") == "bg":
+                painter.drawRect(margin, margin, w, w)
+            else:
+                painter.drawEllipse(margin, margin, w, w)
         else:
-            painter.drawEllipse(1, 1, w, w)
+            painter.drawEllipse(margin, margin, w, w)
+        # White crosshair lines
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+            
+        # Draw a black inner line (width 1) for contrast on light backgrounds
+        painter.setPen(QPen(Qt.black, 1))
+        if getattr(self, "_eraser_mode", False):
+            if getattr(self, "_eraser_type", "stroke") == "bg":
+                painter.drawRect(margin, margin, w, w)
+            else:
+                painter.drawEllipse(margin, margin, w, w)
+        else:
+            painter.drawEllipse(margin, margin, w, w)
+        # Black crosshair lines
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+            
         painter.end()
-        self.setCursor(QCursor(pix, pix_size // 2, pix_size // 2))
+        
+        # Center the cursor hot spot exactly
+        self.setCursor(QCursor(pix, cx, cy))
 
     def set_pen_color(self, color):
         self._pen_color = QColor(color)
@@ -55,42 +91,129 @@ class DrawingCanvas(QWidget):
         self._pen_width = width
         self._update_cursor()
 
-    def set_eraser_mode(self, enabled):
-        self._eraser_mode = enabled
+    def set_eraser_mode(self, enabled, eraser_type="stroke"):
+        self._eraser_mode = bool(enabled)
+        if enabled:
+            self._eraser_type = eraser_type
         self._update_cursor()
+
+    def _redraw_canvas(self):
+        if not hasattr(self, "_base_pixmap"):
+            self._base_pixmap = QPixmap(self._pixmap)
+        self._pixmap = QPixmap(self._base_pixmap)
+        painter = QPainter(self._pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        for stroke in getattr(self, "_strokes", []):
+            color = stroke.get("color", self._pen_color)
+            width = stroke.get("width", self._pen_width)
+            pen = QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen)
+            pts = stroke.get("points", [])
+            if len(pts) == 1:
+                painter.drawPoint(pts[0])
+            else:
+                for i in range(1, len(pts)):
+                    painter.drawLine(pts[i-1], pts[i])
+        painter.end()
+        self.update()
+
+    def _draw_bg_erase(self, p1, p2):
+        if not hasattr(self, "_base_pixmap"):
+            self._base_pixmap = QPixmap(self._pixmap)
+        painter = QPainter(self._base_pixmap)
+        color = getattr(self, "_bg_color", QColor(Qt.black))
+        pen = QPen(color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.drawLine(p1, p2)
+        painter.end()
+        self._has_drawn = True
+        self._redraw_canvas()
+
+    def _erase_strokes_at(self, pos) -> bool:
+        if not getattr(self, "_strokes", None):
+            return False
+        erased_any = False
+        radius = max(10, self._pen_width * 2)
+        radius_sq = float(radius * radius)
+        
+        px, py = pos.x(), pos.y()
+        i = len(self._strokes) - 1
+        while i >= 0:
+            stroke = self._strokes[i]
+            pts = stroke.get("points", [])
+            hit = False
+            if len(pts) == 1:
+                dx = px - pts[0].x()
+                dy = py - pts[0].y()
+                if dx * dx + dy * dy <= radius_sq:
+                    hit = True
+            else:
+                for j in range(1, len(pts)):
+                    p1, p2 = pts[j-1], pts[j]
+                    x1, y1 = p1.x(), p1.y()
+                    x2, y2 = p2.x(), p2.y()
+                    dx = x2 - x1
+                    dy = y2 - y1
+                    if dx == 0 and dy == 0:
+                        dist_sq = (px - x1)**2 + (py - y1)**2
+                    else:
+                        t = ((px - x1) * dx + (py - y1) * dy) / float(dx * dx + dy * dy)
+                        t = max(0.0, min(1.0, t))
+                        nx = x1 + t * dx
+                        ny = y1 + t * dy
+                        dist_sq = (px - nx)**2 + (py - ny)**2
+                    if dist_sq <= radius_sq:
+                        hit = True
+                        break
+            if hit:
+                self._strokes.pop(i)
+                erased_any = True
+            i -= 1
+        return erased_any
 
     def load_image(self, pixmap):
         if not pixmap.isNull():
-            self._pixmap = QPixmap(pixmap.size())
+            self._base_pixmap = QPixmap(pixmap.size())
             # Detect background color of the loaded image
             img = pixmap.toImage()
             bg_pixel = img.pixel(0, 0)
             self._bg_color = QColor(bg_pixel)
             
-            self._pixmap.fill(self._bg_color)
-            painter = QPainter(self._pixmap)
+            self._base_pixmap.fill(self._bg_color)
+            painter = QPainter(self._base_pixmap)
             painter.drawPixmap(0, 0, pixmap)
             painter.end()
+            self._strokes = []
+            self._current_stroke = None
             self.setMinimumSize(pixmap.size())
             self._has_drawn = True
+            self._redraw_canvas()
             self._update_cursor()
-            self.update()
 
     def clear(self):
-        self._pixmap.fill(self._bg_color)
+        if hasattr(self, "_base_pixmap"):
+            self._base_pixmap.fill(self._bg_color)
+        else:
+            self._pixmap.fill(self._bg_color)
+        self._strokes = []
+        self._current_stroke = None
         self._has_drawn = False
-        self.update()
+        self._redraw_canvas()
 
     def resizeEvent(self, event):
+        if not hasattr(self, "_base_pixmap"):
+            self._base_pixmap = QPixmap(self._pixmap)
         if event.size().width() > self._pixmap.width() or event.size().height() > self._pixmap.height():
             new_width = max(self._pixmap.width(), event.size().width())
             new_height = max(self._pixmap.height(), event.size().height())
-            new_pix = QPixmap(new_width, new_height)
-            new_pix.fill(self._bg_color)
-            painter = QPainter(new_pix)
-            painter.drawPixmap(0, 0, self._pixmap)
+            new_base = QPixmap(new_width, new_height)
+            new_base.fill(self._bg_color)
+            painter = QPainter(new_base)
+            painter.drawPixmap(0, 0, self._base_pixmap)
             painter.end()
-            self._pixmap = new_pix
+            self._base_pixmap = new_base
+            self._redraw_canvas()
         super().resizeEvent(event)
 
     def paintEvent(self, event):
@@ -99,25 +222,58 @@ class DrawingCanvas(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self._last_point = event.pos()
+            self._last_point = QPoint(event.pos())
             self._drawing = True
+            if getattr(self, "_eraser_mode", False):
+                if getattr(self, "_eraser_type", "stroke") == "stroke":
+                    if self._erase_strokes_at(event.pos()):
+                        self._redraw_canvas()
+                else:
+                    self._draw_bg_erase(self._last_point, QPoint(event.pos()))
+            else:
+                self._current_stroke = {
+                    "points": [QPoint(event.pos())],
+                    "color": QColor(self._pen_color),
+                    "width": self._pen_width
+                }
+                if not hasattr(self, "_strokes"):
+                    self._strokes = []
+                self._strokes.append(self._current_stroke)
+                self._has_drawn = True
+                painter = QPainter(self._pixmap)
+                pen = QPen(self._pen_color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.drawPoint(event.pos())
+                painter.end()
+                self.update()
 
     def mouseMoveEvent(self, event):
         if (event.buttons() & Qt.LeftButton) and self._drawing:
-            painter = QPainter(self._pixmap)
-            color = self._bg_color if getattr(self, "_eraser_mode", False) else self._pen_color
-            pen = QPen(color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            painter.setPen(pen)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.drawLine(self._last_point, event.pos())
-            painter.end()
-            self._last_point = event.pos()
-            self._has_drawn = True
-            self.update()
+            current_pos = QPoint(event.pos())
+            if getattr(self, "_eraser_mode", False):
+                if getattr(self, "_eraser_type", "stroke") == "stroke":
+                    if self._erase_strokes_at(current_pos):
+                        self._redraw_canvas()
+                else:
+                    self._draw_bg_erase(self._last_point, current_pos)
+            else:
+                if getattr(self, "_current_stroke", None) is not None:
+                    self._current_stroke["points"].append(current_pos)
+                    painter = QPainter(self._pixmap)
+                    pen = QPen(self._pen_color, self._pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                    painter.setPen(pen)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    painter.drawLine(self._last_point, current_pos)
+                    painter.end()
+                    self._has_drawn = True
+                    self.update()
+            self._last_point = current_pos
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._drawing = False
+            self._current_stroke = None
 
     def get_image(self):
         img = self._pixmap.toImage()
@@ -308,6 +464,28 @@ class QuickNoteDialog(QDialog):
         # Controls
         controls_h = QHBoxLayout()
         controls_h.setSpacing(10)
+
+        # Tool selection: Pen / Ink Eraser / BG Eraser
+        self.btn_draw_pen = QPushButton("✏️ Pen")
+        self.btn_draw_pen.setFixedHeight(28)
+        self.btn_draw_pen.setCheckable(True)
+        self.btn_draw_pen.setChecked(True)
+
+        self.btn_draw_eraser = QPushButton("🧽 Ink Eraser")
+        self.btn_draw_eraser.setFixedHeight(28)
+        self.btn_draw_eraser.setCheckable(True)
+
+        self.btn_draw_bg_eraser = QPushButton("⬜ BG Eraser")
+        self.btn_draw_bg_eraser.setFixedHeight(28)
+        self.btn_draw_bg_eraser.setCheckable(True)
+
+        self.btn_draw_pen.clicked.connect(self._select_draw_pen)
+        self.btn_draw_eraser.clicked.connect(self._select_draw_eraser)
+        self.btn_draw_bg_eraser.clicked.connect(self._select_draw_bg_eraser)
+
+        controls_h.addWidget(self.btn_draw_pen)
+        controls_h.addWidget(self.btn_draw_eraser)
+        controls_h.addWidget(self.btn_draw_bg_eraser)
 
         # Color palette
         colors_layout = QHBoxLayout()
@@ -514,6 +692,43 @@ class QuickNoteDialog(QDialog):
                 f"QPushButton {{ background-color: {cust_color}; border: 1px solid #45475A; border-radius: 10px; color: white; font-size: 9px; }}"
             )
 
+    def _select_draw_pen(self):
+        self.btn_draw_pen.setChecked(True)
+        self.btn_draw_eraser.setChecked(False)
+        self.btn_draw_bg_eraser.setChecked(False)
+        self.draw_canvas.set_eraser_mode(False)
+        self._update_draw_tool_styles()
+
+    def _select_draw_eraser(self):
+        self.btn_draw_pen.setChecked(False)
+        self.btn_draw_eraser.setChecked(True)
+        self.btn_draw_bg_eraser.setChecked(False)
+        self.draw_canvas.set_eraser_mode(True, eraser_type="stroke")
+        self._update_draw_tool_styles()
+
+    def _select_draw_bg_eraser(self):
+        self.btn_draw_pen.setChecked(False)
+        self.btn_draw_eraser.setChecked(False)
+        self.btn_draw_bg_eraser.setChecked(True)
+        self.draw_canvas.set_eraser_mode(True, eraser_type="bg")
+        self._update_draw_tool_styles()
+
+    def _update_draw_tool_styles(self):
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        surface = p.get("C_SURFACE", "#24283B")
+        text = p.get("C_TEXT", "#CDD6F4")
+        border = p.get("C_BORDER", "#45475A")
+        
+        for btn in (self.btn_draw_pen, self.btn_draw_eraser, self.btn_draw_bg_eraser):
+            if hasattr(self, btn.objectName()) or True:
+                if btn.isChecked():
+                    btn.setStyleSheet(f"QPushButton{{background:{accent};color:white;border:none;border-radius:4px;padding:0 10px;font-weight:bold;font-size:11px;}}")
+                else:
+                    btn.setStyleSheet(f"QPushButton{{background:transparent;color:{text};border:1px solid {border};border-radius:4px;padding:0 10px;font-size:11px;}} QPushButton:hover{{background:{surface};}}")
+
     def _change_pen_width(self, val):
         self.draw_canvas.set_pen_width(val)
 
@@ -539,7 +754,7 @@ class QuickNoteDialog(QDialog):
         
         relative_path = f"images/{filename}"
         cursor = self.note_edit.textCursor()
-        cursor.insertHtml(f'<img src="{relative_path}" width="{img.width()}" height="{img.height()}">&nbsp;')
+        cursor.insertHtml(f'<img src="{relative_path}" width="{img.width()}">&nbsp;')
         from PyQt5.QtGui import QTextCharFormat
         cursor.setCharFormat(QTextCharFormat())
         self.note_edit.setTextCursor(cursor)
@@ -641,22 +856,30 @@ class EditSketchDialog(QDialog):
         controls_h = QHBoxLayout()
         controls_h.setSpacing(10)
 
-        # Tool selection: Pen / Eraser
+        # Tool selection: Pen / Ink Eraser / BG Eraser
         self.btn_pen = QPushButton("✏️ Pen")
         self.btn_pen.setFixedHeight(28)
         self.btn_pen.setCheckable(True)
         self.btn_pen.setChecked(True)
         
-        self.btn_eraser = QPushButton("🧽 Eraser")
+        self.btn_eraser = QPushButton("🧽 Ink Eraser")
         self.btn_eraser.setFixedHeight(28)
         self.btn_eraser.setCheckable(True)
+        self.btn_eraser.setToolTip("Erases drawn ink lines only")
+
+        self.btn_bg_eraser = QPushButton("⬜ BG Eraser")
+        self.btn_bg_eraser.setFixedHeight(28)
+        self.btn_bg_eraser.setCheckable(True)
+        self.btn_bg_eraser.setToolTip("Paints background color over image pixels")
 
         # Connect tool switches
         self.btn_pen.clicked.connect(self._select_pen)
         self.btn_eraser.clicked.connect(self._select_eraser)
+        self.btn_bg_eraser.clicked.connect(self._select_bg_eraser)
 
         controls_h.addWidget(self.btn_pen)
         controls_h.addWidget(self.btn_eraser)
+        controls_h.addWidget(self.btn_bg_eraser)
 
         # Color palette (disable/hide if eraser is active)
         self.colors_container = QWidget()
@@ -755,6 +978,8 @@ class EditSketchDialog(QDialog):
     def _select_pen(self):
         self.btn_pen.setChecked(True)
         self.btn_eraser.setChecked(False)
+        if hasattr(self, "btn_bg_eraser"):
+            self.btn_bg_eraser.setChecked(False)
         self.draw_canvas.set_eraser_mode(False)
         self.colors_container.setEnabled(True)
         self._update_tool_styles()
@@ -762,7 +987,18 @@ class EditSketchDialog(QDialog):
     def _select_eraser(self):
         self.btn_pen.setChecked(False)
         self.btn_eraser.setChecked(True)
-        self.draw_canvas.set_eraser_mode(True)
+        if hasattr(self, "btn_bg_eraser"):
+            self.btn_bg_eraser.setChecked(False)
+        self.draw_canvas.set_eraser_mode(True, eraser_type="stroke")
+        self.colors_container.setEnabled(False)
+        self._update_tool_styles()
+
+    def _select_bg_eraser(self):
+        self.btn_pen.setChecked(False)
+        self.btn_eraser.setChecked(False)
+        if hasattr(self, "btn_bg_eraser"):
+            self.btn_bg_eraser.setChecked(True)
+        self.draw_canvas.set_eraser_mode(True, eraser_type="bg")
         self.colors_container.setEnabled(False)
         self._update_tool_styles()
 
@@ -781,11 +1017,18 @@ class EditSketchDialog(QDialog):
         else:
             self.btn_pen.setStyleSheet(f"QPushButton{{background:transparent;color:{text};border:1px solid {border};border-radius:4px;padding:0 12px;}} QPushButton:hover{{background:{surface};}}")
             
-        # Eraser Style
+        # Ink Eraser Style
         if self.btn_eraser.isChecked():
             self.btn_eraser.setStyleSheet(f"QPushButton{{background:{accent};color:white;border:none;border-radius:4px;padding:0 12px;font-weight:bold;}}")
         else:
             self.btn_eraser.setStyleSheet(f"QPushButton{{background:transparent;color:{text};border:1px solid {border};border-radius:4px;padding:0 12px;}} QPushButton:hover{{background:{surface};}}")
+
+        # BG Eraser Style
+        if hasattr(self, "btn_bg_eraser"):
+            if self.btn_bg_eraser.isChecked():
+                self.btn_bg_eraser.setStyleSheet(f"QPushButton{{background:{accent};color:white;border:none;border-radius:4px;padding:0 12px;font-weight:bold;}}")
+            else:
+                self.btn_bg_eraser.setStyleSheet(f"QPushButton{{background:transparent;color:{text};border:1px solid {border};border-radius:4px;padding:0 12px;}} QPushButton:hover{{background:{surface};}}")
 
     def _change_pen_color(self):
         btn = self.sender()
