@@ -367,7 +367,11 @@ class GDriveService:
             "grant_type": "refresh_token"
         }
 
-        r = requests.post(token_url, data=payload, timeout=15)
+        try:
+            r = requests.post(token_url, data=payload, timeout=(3.0, 10.0))
+        except Exception as e:
+            print(f"[GDriveService] Token refresh network error: {e}")
+            return None
         if r.status_code != 200:
             print(f"[GDriveService] Token refresh failed: {r.text}")
             # If the refresh token was revoked, unlink
@@ -573,7 +577,7 @@ class GDriveService:
                 url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media"
                 with open(local_file_path, "rb") as f:
                     file_data = f.read()
-                r = requests.patch(url, headers=headers, data=file_data, timeout=30)
+                r = requests.patch(url, headers=headers, data=file_data, timeout=(3.0, 15.0))
                 if r.status_code == 200:
                     try:
                         mtime = os.path.getmtime(local_file_path)
@@ -608,7 +612,7 @@ class GDriveService:
                     "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
                     "file": (drive_filename, file_data, "application/octet-stream")
                 }
-                r = requests.post(multipart_url, headers=headers, files=files, timeout=30)
+                r = requests.post(multipart_url, headers=headers, files=files, timeout=(3.0, 15.0))
                 if r.status_code == 200:
                     res_json = r.json()
                     uploaded_file_id = res_json.get("id")

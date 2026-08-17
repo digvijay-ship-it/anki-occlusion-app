@@ -15,7 +15,7 @@ from storage_paths import (
     ensure_recovery_dirs,
 )
 
-RETENTION_DAYS = 30
+RETENTION_DAYS = 3
 SCHEMA_VERSION = 1
 
 _PENDING_EVENTS = []
@@ -139,6 +139,7 @@ def prune_old_records(days=None):
         days = RETENTION_DAYS
     ensure_recovery_dirs()
     deleted = 0
+    cutoff = datetime.now() - timedelta(days=days)
     for folder in (
         current_recovery_drafts_dir(),
         current_recovery_pending_events_dir(),
@@ -146,12 +147,24 @@ def prune_old_records(days=None):
     ):
         for path in _json_files(folder):
             try:
+                # Fast check using filesystem modification time first
+                mtime = datetime.fromtimestamp(os.path.getmtime(path))
+                if mtime < cutoff:
+                    os.unlink(path)
+                    deleted += 1
+                    continue
+                
+                # Fallback to reading JSON if needed
                 record = _read_json(path)
                 if _is_old(path, record, days):
                     os.unlink(path)
                     deleted += 1
             except Exception:
-                continue
+                try:
+                    os.unlink(path)
+                    deleted += 1
+                except Exception:
+                    pass
     return deleted
 
 
@@ -248,7 +261,7 @@ def _card_recovery_fingerprint(card):
     return _stable_json(_card_recovery_snapshot(card))
 
 
-def editor_draft_status(data, draft):
+def editor_draft_status(data, draft, db_fingerprints=None):
     """
     Return whether an editor recovery draft still contains unsaved work.
 
@@ -268,6 +281,11 @@ def editor_draft_status(data, draft):
         if status != "ok":
             return status
         if _card_recovery_fingerprint(current_card) == draft_fp:
+            return "already_saved"
+        return "recoverable"
+
+    if db_fingerprints is not None:
+        if draft_fp in db_fingerprints:
             return "already_saved"
         return "recoverable"
 
@@ -768,8 +786,13 @@ def _mark_event_applied(event):
 
 
 def scan_recovery(data, startup=False):
-    if not startup:
-        prune_old_records()
+    prune_old_records()
+
+    # Pre-build database card fingerprints for fast lookup in editor_draft_status
+    db_fingerprints = set()
+    for _deck, _deck_path, _idx, card in _iter_cards(data):
+        db_fingerprints.add(_card_recovery_fingerprint(card))
+
     drafts = []
     moved_saved_drafts = 0
     skipped_stale_drafts = 0
@@ -777,7 +800,7 @@ def scan_recovery(data, startup=False):
         if startup and editor_draft_older_than_loaded_data(draft):
             skipped_stale_drafts += 1
             continue
-        status = editor_draft_status(data, draft)
+        status = editor_draft_status(data, draft, db_fingerprints)
         if status == "already_saved":
             if delete_editor_draft(draft.get("draft_id")):
                 moved_saved_drafts += 1
