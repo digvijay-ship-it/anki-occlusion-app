@@ -11,6 +11,19 @@
 #    "focus_seconds" key in ~/anki_journal.json for today's entry, AND adds
 #    a visible text block near the top of today's journal page:
 #
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SESSION TIMER  —  Anki Occlusion  v2
+#
+#  BEHAVIOUR
+#  ─────────
+#  • Counts time only while ReviewScreen is open.
+#  • State persists in  ~/anki_timer_state.json  { "date": "…", "seconds": N }
+#    → same-day restarts resume where they left off.
+#    → new calendar day → resets to 0 automatically.
+#  • On app close calls flush_to_journal() which writes / updates a dedicated
+#    "focus_seconds" key in ~/anki_journal.json for today's entry, AND adds
+#    a visible text block near the top of today's journal page:
+#
 #        ⏱ Focus today: 1h 24m
 #
 #    If the line already exists it is updated in place (no duplicates).
@@ -20,6 +33,7 @@
 import os
 import json
 import tempfile
+import weakref
 from datetime import date
 
 from PyQt5.QtCore import QObject, QEvent, QTimer, Qt
@@ -69,7 +83,7 @@ def _load_state() -> int:
     return max(0, int(state_dict.get("seconds", 0)))
 
 
-def _save_state(seconds: int, pdf_seconds: dict = None, pdf_cards_today: dict = None):
+def _save_state(seconds: int, pdf_seconds: dict = None, pdf_cards_today: dict = None, mask_seconds: dict = None):
     data = {
         "date": date.today().isoformat(),
         "seconds": seconds
@@ -78,6 +92,8 @@ def _save_state(seconds: int, pdf_seconds: dict = None, pdf_cards_today: dict = 
         data["pdf_seconds"] = pdf_seconds
     if pdf_cards_today is not None:
         data["pdf_cards_today"] = pdf_cards_today
+    if mask_seconds is not None:
+        data["mask_seconds"] = mask_seconds
     _atomic_write(_STATE_FILE, data)
 
 
@@ -197,12 +213,7 @@ class _ActivityEventFilter(QObject):
         self._timer = timer
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.ChildAdded:
-            try:
-                self._timer._enable_mouse_tracking(event.child())
-            except Exception:
-                pass
-        elif event.type() in _ACTIVITY_EVENTS and self._timer._is_activity_scope(obj):
+        if event.type() in _ACTIVITY_EVENTS and self._timer._is_activity_scope(obj):
             self._timer.note_activity()
         return False
 
@@ -224,16 +235,20 @@ class SessionTimer:
         self._pdf_seconds = pdf_secs if isinstance(pdf_secs, dict) else {}
         pdf_cards = state_dict.get("pdf_cards_today", {})
         self._pdf_cards_today = pdf_cards if isinstance(pdf_cards, dict) else {}
+        mask_secs = state_dict.get("mask_seconds", {})
+        self._mask_seconds = mask_secs if isinstance(mask_secs, dict) else {}
         
         self._current_pdf = ""
         self._session_pdf_seconds = {}
         self._session_pdf_cards = {}
+        self._current_mask = ""
         
         self._session_elapsed = 0
         self._idle_seconds = 0
         self._idle_limit_seconds = 180
         self._running = False
         self._activity_parent = parent
+        self._scope_cache = weakref.WeakKeyDictionary()
         self._activity_filter = _ActivityEventFilter(self)
         self._activity_filter_installed = False
 
@@ -244,6 +259,7 @@ class SessionTimer:
 
         self.label_session = QLabel(self._fmt(self._session_elapsed))
         self.label_today = QLabel(self._fmt(self._elapsed))
+        self.label_mask = QLabel(self._fmt(0))
 
         self._tick_timer = QTimer(parent)
         self._tick_timer.setInterval(1000)
@@ -251,7 +267,7 @@ class SessionTimer:
 
         self._save_timer = QTimer(parent)
         self._save_timer.setInterval(300_000)
-        self._save_timer.timeout.connect(lambda: _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today))
+        self._save_timer.timeout.connect(lambda: _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds))
 
     def note_activity(self):
         self._idle_seconds = 0
@@ -260,15 +276,29 @@ class SessionTimer:
         root = self._activity_parent
         if root is None:
             return True
+        try:
+            return self._scope_cache[obj]
+        except KeyError:
+            pass
+        except Exception:
+            pass
+
         cur = obj
+        in_scope = False
         while cur is not None:
             if cur is root:
-                return True
+                in_scope = True
+                break
             try:
                 cur = cur.parent()
             except Exception:
-                return False
-        return False
+                break
+
+        try:
+            self._scope_cache[obj] = in_scope
+        except Exception:
+            pass
+        return in_scope
 
     def _enable_mouse_tracking(self, root=None):
         root = root or self._activity_parent
@@ -285,7 +315,6 @@ class SessionTimer:
         app = QApplication.instance()
         if app is None:
             return
-        self._enable_mouse_tracking()
         app.installEventFilter(self._activity_filter)
         self._activity_filter_installed = True
         self.note_activity()
@@ -309,9 +338,11 @@ class SessionTimer:
         self._pdf_cards_today = {}
         self._session_pdf_seconds = {}
         self._session_pdf_cards = {}
+        self._mask_seconds = {}
         self.label.setText(self._make_text())
         self.label_today.setText(self._fmt(self._elapsed))
-        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
+        self.label_mask.setText(self._fmt(0))
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds)
 
     def start(self):
         if not self._running:
@@ -328,11 +359,11 @@ class SessionTimer:
             self._tick_timer.stop()
             self._save_timer.stop()
             self._remove_activity_filter()
-            _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
+            _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds)
 
     def flush_to_journal(self):
         self._rollover_if_needed()
-        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds)
         _write_focus_to_journal(self._elapsed)
 
     def elapsed_str(self) -> str:
@@ -345,6 +376,18 @@ class SessionTimer:
     def set_current_pdf(self, pdf_path: str):
         self._current_pdf = normalize_pdf_path(pdf_path)
 
+    def set_current_mask(self, mask_key: str):
+        self._rollover_if_needed()
+        self._current_mask = mask_key or ""
+        secs = self._mask_seconds.get(self._current_mask, 0) if self._current_mask else 0
+        self.label_mask.setText(self._fmt(secs))
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds)
+
+    def get_current_mask_seconds(self) -> int:
+        if not self._current_mask:
+            return 0
+        return self._mask_seconds.get(self._current_mask, 0)
+
     def record_card_review(self, pdf_path: str):
         if not pdf_path:
             return
@@ -352,7 +395,7 @@ class SessionTimer:
         norm_path = normalize_pdf_path(pdf_path)
         self._pdf_cards_today[norm_path] = self._pdf_cards_today.get(norm_path, 0) + 1
         self._session_pdf_cards[norm_path] = self._session_pdf_cards.get(norm_path, 0) + 1
-        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds)
 
     def undo_card_review(self, pdf_path: str):
         if not pdf_path:
@@ -363,7 +406,7 @@ class SessionTimer:
             self._pdf_cards_today[norm_path] = max(0, self._pdf_cards_today[norm_path] - 1)
         if norm_path in self._session_pdf_cards:
             self._session_pdf_cards[norm_path] = max(0, self._session_pdf_cards[norm_path] - 1)
-        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today)
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds)
 
     def _tick(self):
         self._rollover_if_needed()
@@ -389,6 +432,12 @@ class SessionTimer:
             norm_path = normalize_pdf_path(self._current_pdf)
             self._pdf_seconds[norm_path] = self._pdf_seconds.get(norm_path, 0) + 1
             self._session_pdf_seconds[norm_path] = self._session_pdf_seconds.get(norm_path, 0) + 1
+
+        if self._current_mask:
+            self._mask_seconds[self._current_mask] = self._mask_seconds.get(self._current_mask, 0) + 1
+            self.label_mask.setText(self._fmt(self._mask_seconds[self._current_mask]))
+        else:
+            self.label_mask.setText(self._fmt(0))
 
         self.label.setText(self._make_text())
         self.label_session.setText(self._fmt(self._session_elapsed))

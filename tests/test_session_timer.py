@@ -231,5 +231,46 @@ class SessionTimerTests(unittest.TestCase):
         self.assertEqual(timer._pdf_cards_today["c:/path/to/file.pdf"], 0)
         self.assertEqual(timer._session_pdf_cards["c:/path/to/file.pdf"], 0)
 
+    @patch('session_timer._STATE_FILE', new_callable=lambda: None)
+    @patch('session_timer.QApplication.activeWindow', return_value=True)
+    def test_SessionTimer_mask_tracking(self, mock_active_window, mock_state_file):
+        session_timer._STATE_FILE = self.test_state_file
+        
+        with patch('session_timer.date') as mock_date:
+            mock_date.today.return_value.isoformat.return_value = "2026-05-04"
+            timer = SessionTimer()
+            
+            timer.set_current_mask("card1_box_123")
+            self.assertEqual(timer._current_mask, "card1_box_123")
+            self.assertEqual(timer.label_mask.text(), "0:00:00")
+            
+            timer._tick()
+            self.assertEqual(timer._mask_seconds["card1_box_123"], 1)
+            self.assertEqual(timer.label_mask.text(), "0:00:01")
+            
+            # Switch mask and verify timer values update
+            timer.set_current_mask("card1_box_456")
+            self.assertEqual(timer._current_mask, "card1_box_456")
+            self.assertEqual(timer.label_mask.text(), "0:00:00")
+            
+            # Verify state was saved to state file
+            with open(self.test_state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            self.assertEqual(state["mask_seconds"]["card1_box_123"], 1)
+            self.assertEqual(state["mask_seconds"].get("card1_box_456", 0), 0)
+            
+            # Tick new mask
+            timer._tick()
+            self.assertEqual(timer._mask_seconds["card1_box_456"], 1)
+            self.assertEqual(timer.label_mask.text(), "0:00:01")
+            
+            # Roll over to next day and check if mask times are reset
+            timer.set_current_mask("")
+            mock_date.today.return_value.isoformat.return_value = "2026-05-05"
+            timer._tick()
+            
+            self.assertEqual(timer._mask_seconds, {})
+            self.assertEqual(timer.label_mask.text(), "0:00:00")
+
 if __name__ == "__main__":
     unittest.main()

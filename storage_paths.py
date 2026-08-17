@@ -469,11 +469,11 @@ def relocate_pdf_for_deck(card: dict, deck_segments, root: str | None = None) ->
     return new_value
 
 
-def flush_runtime_state():
+def flush_runtime_state(save_store=True):
     try:
-        import data_manager
-
-        data_manager.store.save_force()
+        if save_store:
+            import data_manager
+            data_manager.store.save_force(force_gdrive=False)
     except Exception as ex:
         pass
     try:
