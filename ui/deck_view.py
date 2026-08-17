@@ -75,7 +75,7 @@ from data_manager import (
     DATA_FILE,
     store,
 )
-from perf_utils import card_has_due_today, get_pdf_page_count
+from perf_utils import card_has_due_today, get_pdf_page_count, trace_perf
 from storage_paths import (
     find_deck_segments,
     has_mission_archive,
@@ -521,10 +521,16 @@ class DeckView(QWidget):
         self.btn_all = QPushButton("▶ Review")
         self.btn_all.setObjectName("success")
         self.btn_all.clicked.connect(self._review_all)
+        self.btn_formulas = QPushButton("📐 Formulas")
+        self.btn_formulas.setObjectName("formulas_btn")
+        self.btn_formulas.setCursor(Qt.PointingHandCursor)
+        self.btn_formulas.clicked.connect(self._open_formulas)
+        self.btn_formulas.hide()
         hdr.addWidget(self.btn_add)
         hdr.addWidget(self.btn_add_text)
         hdr.addWidget(self.btn_due)
         hdr.addWidget(self.btn_all)
+        hdr.addWidget(self.btn_formulas)
         L.addWidget(self.hdr_w)
 
         self.lbl_stats = QLabel("")
@@ -780,7 +786,16 @@ class DeckView(QWidget):
         if shortcut_manager.event_matches(e, "home.undo"):
             self.undo()
             return
+        if shortcut_manager.event_matches(e, "home.add_card") or (e.key() == Qt.Key_A and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))):
+            from ui.review.annotation_handler import open_annotation_for_deck
+            item = self.card_list.currentItem()
+            target = item.data(Qt.UserRole) if item else getattr(self, "deck", None)
+            if target:
+                ok = open_annotation_for_deck(target, self)
+                if ok:
+                    return
         QListWidget.keyPressEvent(self.card_list, e)
+
     def keyPressEvent(self, e):
         if shortcut_manager.event_matches(e, "home.undo"):
             self.undo()
@@ -792,11 +807,15 @@ class DeckView(QWidget):
                 self._edit_card(item)
                 e.accept()
                 return
-        if shortcut_manager.event_matches(e, "home.add_card"):
-            if self.btn_add.isEnabled():
-                self._add_card()
-                e.accept()
-                return
+        if shortcut_manager.event_matches(e, "home.add_card") or (e.key() == Qt.Key_A and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))):
+            from ui.review.annotation_handler import open_annotation_for_deck
+            item = self.card_list.currentItem()
+            target = item.data(Qt.UserRole) if item else getattr(self, "deck", None)
+            if target:
+                ok = open_annotation_for_deck(target, self)
+                if ok:
+                    e.accept()
+                    return
         super().keyPressEvent(e)
 
     def _push_undo(self):
@@ -839,6 +858,7 @@ class DeckView(QWidget):
         drag.setMimeData(mime)
         drag.exec_(Qt.MoveAction)
 
+    @trace_perf
     def load_deck(self, deck, data):
         self._data = data
         new_id = deck.get("_id")
@@ -855,6 +875,7 @@ class DeckView(QWidget):
         if same_deck and 0 <= selected_row < self.card_list.count():
             self.card_list.setCurrentRow(selected_row)
 
+    @trace_perf
     def _refresh(self):
         if self._deck_id is not None:
             fresh = find_deck_by_id(self._deck_id, self._data.get("decks", []))
@@ -863,8 +884,50 @@ class DeckView(QWidget):
         if not self.deck:
             if hasattr(self, "btn_bookmark"):
                 self.btn_bookmark.hide()
+            if hasattr(self, "btn_formulas"):
+                self.btn_formulas.hide()
             return
         self._update_bookmark_button()
+        if hasattr(self, "btn_formulas"):
+            self.btn_formulas.show()
+            theme = getattr(self, "_theme", "classic")
+            scale = getattr(self, "_font_size_val", 11) / 11.0
+            from theme_manager import get_palette, is_retro_theme
+            p = get_palette(theme)
+            color = p.get("C_ACCENT", "#7C6AF7")
+            if is_retro_theme(theme) or theme == "dojo":
+                self.btn_formulas.setStyleSheet(f"""
+                    QPushButton#formulas_btn {{
+                        background: transparent;
+                        border: 2px solid {color};
+                        color: {color};
+                        border-radius: 4px;
+                        padding: 8px 16px;
+                        font-family: 'Segoe UI';
+                        font-weight: bold;
+                        font-size: {max(10, int(11 * scale))}px;
+                        letter-spacing: 1px;
+                    }}
+                    QPushButton#formulas_btn:hover {{
+                        background: rgba(124, 106, 247, 0.1);
+                    }}
+                """)
+            else:
+                self.btn_formulas.setStyleSheet(f"""
+                    QPushButton#formulas_btn {{
+                        background: {color};
+                        color: white;
+                        border: 1px solid {color};
+                        border-radius: 8px;
+                        padding: 6px 12px;
+                        font-weight: bold;
+                        font-size: {max(9, int(11 * scale))}px;
+                    }}
+                    QPushButton#formulas_btn:hover {{
+                        background: {p.get("C_SURFACE", "#FFF")};
+                        color: {color};
+                    }}
+                """)
         self.card_list.clear()
 
         scale = getattr(self, "_font_size_val", 11) / 11.0
@@ -1003,7 +1066,7 @@ class DeckView(QWidget):
             item.setText("\n\n★\n- SELECT A SCROLL TO BEGIN -\n")
             self.card_list.addItem(item)
 
-    def _add_card(self):
+    def _add_card(self, *args):
         if not self.deck:
             return
         self._push_undo()
@@ -1089,7 +1152,7 @@ class DeckView(QWidget):
         print("[DEBUG][data_save] card_add_checkpoint_saved")
         dlg.deleteLater()
 
-    def _add_text_card(self):
+    def _add_text_card(self, *args):
         if not self.deck:
             return
         self._push_undo()
@@ -1117,11 +1180,9 @@ class DeckView(QWidget):
         dlg.deleteLater()
 
     def _find_home(self):
-        from ui.home_screen import HomeScreen
-
         w = self.parent()
         while w is not None:
-            if isinstance(w, HomeScreen):
+            if type(w).__name__ == "HomeScreen" or hasattr(w, "show_review"):
                 return w
             w = w.parent()
         return None
@@ -1276,7 +1337,8 @@ class DeckView(QWidget):
         _walk(deck)
         return list(groups.values())
 
-    def _review_due(self):
+    @trace_perf
+    def _review_due(self, *args):
         if not self.deck:
             return
         if self.deck.get("children"):
@@ -1299,19 +1361,33 @@ class DeckView(QWidget):
                 return
             self._start_review(due)
 
-    def _review_all(self):
+    @trace_perf
+    def _review_all(self, *args):
         if not self.deck:
             return
-        cards = self.deck.get("cards", [])
+        cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False)]
         if not cards:
             QMessageBox.information(self, "Empty", "Add some cards first!")
             return
         self._start_review(cards)
 
-    def _start_review(self, cards):
+    @trace_perf
+    def _start_review(self, cards, is_practice=False):
         home = self._find_home()
         if home:
-            home.show_review(cards, self._data)
+            home.show_review(cards, self._data, is_practice=is_practice)
+
+    def _open_formulas(self, *args):
+        if not self.deck:
+            return
+        from ui.formula_sheet_dialog import FormulaSheetDialog
+        dlg = FormulaSheetDialog(self.deck, self._data, self)
+        
+        # Connect signals
+        dlg.practice_requested.connect(lambda cards: self._start_review(cards, is_practice=True))
+        dlg.edit_requested.connect(lambda card: self._edit_card_by_dict(card, self.deck))
+        
+        dlg.exec_()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

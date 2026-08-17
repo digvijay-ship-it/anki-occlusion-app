@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
-    QTextEdit, QFormLayout, QFrame, QApplication, QMessageBox, QWidget, QFileDialog, QMenu
+    QTextEdit, QFormLayout, QFrame, QApplication, QMessageBox, QWidget, QFileDialog, QMenu, QCheckBox
 )
 from PyQt5.QtCore import Qt, QSize, QUrl
 from PyQt5.QtGui import QFont, QIcon
@@ -318,6 +318,10 @@ class TextCardEditorDialog(QDialog):
         self.inp_tags.setPlaceholderText("e.g. history, science, exam1...")
         form_layout.addRow("Tags:", self.inp_tags)
         
+        self.chk_formula = QCheckBox("Mark as Formula")
+        self.chk_formula.setToolTip("Formula cards are excluded from normal reviews and can be viewed/practiced anytime.")
+        form_layout.addRow("", self.chk_formula)
+        
         main_layout.addWidget(form_frame, stretch=1)
         
         # Buttons Row
@@ -363,6 +367,7 @@ class TextCardEditorDialog(QDialog):
             self._set_editor_content(self.inp_answer, self.card.get("answer", ""))
             self.inp_notes.setText(self.card.get("notes", ""))
             self.inp_tags.setText(", ".join(self.card.get("tags", [])))
+            self.chk_formula.setChecked(self.card.get("is_formula", False))
             
     def _save(self):
         question_plain = self.inp_question.toPlainText().strip()
@@ -402,7 +407,8 @@ class TextCardEditorDialog(QDialog):
             "reviews": self.card.get("reviews", 0),
             "pdf_path": None,
             "image_path": None,
-            "boxes": [] # Text cards have no occlusion boxes
+            "boxes": [], # Text cards have no occlusion boxes
+            "is_formula": self.chk_formula.isChecked()
         })
         
         sm2_init(self.card)
