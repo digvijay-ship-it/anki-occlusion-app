@@ -10,11 +10,12 @@ import math
 import weakref
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, QTime
-from PyQt5.QtGui import QPainter, QColor, QPen, QBrush
+from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QPixmap
 from theme_manager import is_retro_theme
 
 # Weak registry to dynamically control running widgets when animations are toggled
 _active_retro_widgets = weakref.WeakSet()
+_animation_pause_owners = set()
 
 def register_retro_widget(widget):
     _active_retro_widgets.add(widget)
@@ -26,7 +27,28 @@ def sync_all_retro_widgets():
         except Exception:
             pass
 
+
+def suspend_animations(owner):
+    """Pause visual effects while an interaction-heavy workspace is active."""
+    _animation_pause_owners.add(id(owner))
+    sync_all_retro_widgets()
+
+
+def resume_animations(owner):
+    """Resume theme effects once the last interaction workspace closes."""
+    _animation_pause_owners.discard(id(owner))
+    sync_all_retro_widgets()
+
+
+def animations_suspended() -> bool:
+    return bool(_animation_pause_owners)
+
+
 def _home_animations_enabled():
+    # Review, PDF annotation, and mask editing prioritize input/rendering over
+    # decorative effects for every theme.
+    if animations_suspended():
+        return False
     try:
         import os
         raw = os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower()
@@ -116,8 +138,8 @@ class CRTOverlay(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        # Only draw scanlines if retro mode is active
-        if not self._is_theme_active():
+        # Only draw scanlines if retro mode is active and animations are enabled
+        if not self._is_theme_active() or not _home_animations_enabled():
             return
 
         painter = QPainter(self)
@@ -127,12 +149,15 @@ class CRTOverlay(QWidget):
         h = self.height()
         w = self.width()
 
-        # 1. Repeating 4px horizontal scanlines
-        pen = QPen(QColor(0, 0, 0, int(255 * self._flicker_opacity)))
-        pen.setWidth(1)
-        painter.setPen(pen)
-        for y in range(0, h, 4):
-            painter.drawLine(0, y, w, y)
+        # 1. Repeating 4px horizontal scanlines using a tiled texture brush
+        alpha = int(255 * self._flicker_opacity)
+        texture = QPixmap(1, 4)
+        texture.fill(Qt.transparent)
+        tex_painter = QPainter(texture)
+        tex_painter.setPen(QColor(0, 0, 0, alpha))
+        tex_painter.drawPoint(0, 0)
+        tex_painter.end()
+        painter.fillRect(0, 0, w, h, QBrush(texture))
 
         # 2. Scrolling neon cyber sweep line - only when animations are active
         if _home_animations_enabled():
@@ -519,7 +544,7 @@ class OozeDripWidget(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        if not self._is_theme_active():
+        if not self._is_theme_active() or not _home_animations_enabled():
             return
 
         if not self.drips:

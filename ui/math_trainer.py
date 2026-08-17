@@ -289,6 +289,8 @@ class ParticleCanvas(QWidget):
         self._init_pts()
 
     def start_anim(self):
+        if not _home_animations_enabled():
+            return
         if not self._timer.isActive():
             self._timer.start(30)
 
@@ -325,6 +327,10 @@ class ParticleCanvas(QWidget):
         super().resizeEvent(e)
 
     def _tick(self):
+        if not _home_animations_enabled():
+            self.stop_anim()
+            self.update()
+            return
         w, h = self.width(), self.height()
         for p in self._pts:
             p["x"] += p["vx"]
@@ -336,6 +342,8 @@ class ParticleCanvas(QWidget):
         self.update()
 
     def paintEvent(self, e):
+        if not _home_animations_enabled():
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         pts = self._pts
@@ -415,11 +423,22 @@ class ScanCard(QWidget):
         self.setMinimumHeight(110)
         self._scan = 0.1
         self._dir = 1
-        t = QTimer(self)
-        t.timeout.connect(self._tick)
-        t.start(20)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self.sync_timer()
+
+    def sync_timer(self):
+        if _home_animations_enabled():
+            if not self._timer.isActive():
+                self._timer.start(20)
+        else:
+            if self._timer.isActive():
+                self._timer.stop()
 
     def _tick(self):
+        if not _home_animations_enabled():
+            self.sync_timer()
+            return
         self._scan += self._dir * 0.012
         if self._scan > 0.9:
             self._dir = -1
@@ -434,14 +453,15 @@ class ScanCard(QWidget):
         p.setBrush(QBrush(CARD))
         p.setPen(QPen(BORDER, 1))
         p.drawRoundedRect(r, 6, 6)
-        x = self.width() * self._scan
-        span = self.width() * 0.35
-        grad = QLinearGradient(max(0, x - span), 0, min(self.width(), x + span), 0)
-        grad.setColorAt(0, QColor(0, 0, 0, 0))
-        grad.setColorAt(0.5, GREEN)
-        grad.setColorAt(1, QColor(0, 0, 0, 0))
-        p.setPen(QPen(QBrush(grad), 2))
-        p.drawLine(int(max(0, x - span)), 0, int(min(self.width(), x + span)), 0)
+        if _home_animations_enabled():
+            x = self.width() * self._scan
+            span = self.width() * 0.35
+            grad = QLinearGradient(max(0, x - span), 0, min(self.width(), x + span), 0)
+            grad.setColorAt(0, QColor(0, 0, 0, 0))
+            grad.setColorAt(0.5, GREEN)
+            grad.setColorAt(1, QColor(0, 0, 0, 0))
+            p.setPen(QPen(QBrush(grad), 2))
+            p.drawLine(int(max(0, x - span)), 0, int(min(self.width(), x + span)), 0)
         p.end()
 
 
@@ -2035,22 +2055,25 @@ class MathTrainerPage(QWidget):
                 QFrame:hover{{background:{bg_hex};border-color:{c_hex};
                     border-left:{int(3*scale)}px solid {c_hex};}}
             """)
-        for ic in getattr(self, "_mode_icons", []):
+        for i, ic in enumerate(getattr(self, "_mode_icons", [])):
             ic_font_size = int(24 * scale)
             ic.setFont(QFont(self._hf, ic_font_size, QFont.Black))
-            ic.setStyleSheet(f"color:inherit;background:transparent;min-width:{int(48*scale)}px;font-size:{ic_font_size}pt;")
-        for nl in getattr(self, "_mode_names", []):
+            c_hex = _h([BLUE, PURPLE, RED][i])
+            ic.setStyleSheet(f"color:{c_hex};background:transparent;min-width:{int(48*scale)}px;font-size:{ic_font_size}pt;")
+        for i, nl in enumerate(getattr(self, "_mode_names", [])):
             nl_font_size = int(14 * scale)
             nl.setFont(QFont(self._hf, nl_font_size, QFont.Bold))
-            nl.setStyleSheet(f"color:inherit;background:transparent;letter-spacing:{int(1*scale)}px;font-size:{nl_font_size}pt;")
+            c_hex = _h([BLUE, PURPLE, RED][i])
+            nl.setStyleSheet(f"color:{c_hex};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{nl_font_size}pt;")
         for dl in getattr(self, "_mode_descs", []):
             dl_font_size = int(10 * scale)
             dl.setFont(QFont(self._hf, dl_font_size))
             dl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;font-size:{dl_font_size}pt;")
-        for arr in getattr(self, "_mode_arrows", []):
+        for i, arr in enumerate(getattr(self, "_mode_arrows", [])):
             arr_font_size = int(14 * scale)
             arr.setFont(QFont(self._hf, arr_font_size))
-            arr.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;font-size:{arr_font_size}pt;")
+            c_hex = _h([BLUE, PURPLE, RED][i])
+            arr.setStyleSheet(f"color:{c_hex};background:transparent;font-size:{arr_font_size}pt;")
 
         # 2. Page 1
         if hasattr(self, "_back_btn_p1"):

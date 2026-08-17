@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QSplitter,
     QShortcut,
+    QCheckBox,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -52,7 +53,7 @@ from pdf_engine import (
     PDF_LEGACY_BOX_ZOOM,
     get_cached_pdf_page_set,
 )
-from perf_utils import get_pdf_page_count, perf_log
+from perf_utils import get_pdf_page_count, perf_log, trace_perf, log_memory
 from storage_paths import (
     build_archive_asset_path,
     find_deck_segments,
@@ -185,6 +186,20 @@ class CardEditorDialog(QDialog):
         print("[DEBUG][editor_mode] enter_fullscreen_default")
         self.showFullScreen()
         return super().exec_()
+
+    def showEvent(self, event):
+        # Mask editing is render/input intensive.  Pause decorative effects
+        # before child widgets receive their show events.
+        from ui.canvas.retro_effects import suspend_animations
+
+        suspend_animations(self)
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        from ui.canvas.retro_effects import resume_animations
+
+        resume_animations(self)
 
     def _apply_recovery_restore_notice(self, draft):
         source = ""
@@ -539,9 +554,12 @@ class CardEditorDialog(QDialog):
         self.inp_notes = RichTextEdit()
         self.inp_notes.setPlaceholderText("Hints / notes…")
         self.inp_notes.setMaximumHeight(64)
+        self.chk_formula = QCheckBox("Mark as Formula")
+        self.chk_formula.setToolTip("Formula cards are excluded from normal reviews and can be viewed/practiced anytime.")
         cib.addRow("Title:", self.inp_title)
         cib.addRow("Tags:", self.inp_tags)
         cib.addRow("Notes:", self.inp_notes)
+        cib.addRow("", self.chk_formula)
         rp.addWidget(ci_body)
         main_row.addWidget(right_panel)
 
@@ -1978,6 +1996,7 @@ class CardEditorDialog(QDialog):
         load_t0 = time.perf_counter()
         self.inp_title.setText(card.get("title", ""))
         self.inp_tags.setText(", ".join(card.get("tags", [])))
+        self.chk_formula.setChecked(card.get("is_formula", False))
         notes = card.get("notes", "")
         if "<img" in notes or "<html>" in notes or "<p>" in notes:
             self.inp_notes.setHtml(notes)
@@ -2200,7 +2219,7 @@ class CardEditorDialog(QDialog):
                     
                     self.card["pdf_path"] = pdf_rel_path
                     data_manager.store.mark_dirty()
-                    data_manager.store.save_force()
+                    data_manager.store.save_force(async_save=True)
                     path = pdf_abs_path
                 except Exception as e:
                     print(f"[ERROR][editor_dialog] Failed to convert image to PDF: {e}")
@@ -2343,6 +2362,15 @@ class CardEditorDialog(QDialog):
 
     # ── save / close ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _queue_collection_save():
+        """Persist completed mask edits without blocking the editor window."""
+        from data_manager import store
+
+        store.mark_dirty()
+        store.save_soon(min_interval=0.0, delay_from_now=False)
+
+    @trace_perf
     def _save(self, keep_open=False):
         save_t0 = time.perf_counter()
         if not self.card.get("image_path") and not self.card.get("pdf_path"):
@@ -2382,6 +2410,7 @@ class CardEditorDialog(QDialog):
                 "boxes": merged,
                 "created": self.card.get("created", datetime.now().isoformat()),
                 "reviews": self.card.get("reviews", 0),
+                "is_formula": self.chk_formula.isChecked(),
             }
         )
         if self.card.get("pdf_path"):
@@ -2402,24 +2431,6 @@ class CardEditorDialog(QDialog):
             f"pdf_zoom={self.card.get('_pdf_box_render_zoom', 'none')} "
             f"t={(time.perf_counter() - save_t0) * 1000:.1f}ms"
         )
-        # Precompute hashes if they are missing
-        path = self.card.get("image_path") or self.card.get("pdf_path")
-        if path:
-            import os
-            from storage_paths import resolve_asset_path
-            abs_path = resolve_asset_path(path)
-            if os.path.exists(abs_path):
-                if not self.card.get("file_hash"):
-                    from data_manager import compute_file_sha256
-                    h = compute_file_sha256(abs_path)
-                    if h:
-                        self.card["file_hash"] = h
-                if self.card.get("image_path") and not self.card.get("visual_hash"):
-                    from data_manager import compute_image_dhash
-                    vh = compute_image_dhash(abs_path)
-                    if vh:
-                        self.card["visual_hash"] = vh
-
         self._write_recovery_checkpoint("save_card")
 
         # Save to database/deck
@@ -2477,10 +2488,10 @@ class CardEditorDialog(QDialog):
                 orig_card.clear()
                 orig_card.update(self.card)
 
-        # Synchronously write data to disk
-        from data_manager import store
-        store.mark_dirty()
-        store.save_force(async_save=False, force_gdrive=False)
+        # A full collection snapshot can be expensive on a large deck.  The
+        # recovery checkpoint above is already durable, so coalesce the normal
+        # collection write off the UI thread and return to review immediately.
+        self._queue_collection_save()
         self._card_saved_once = True
 
         if hasattr(self, "btn_cancel"):
@@ -2556,6 +2567,47 @@ class CardEditorDialog(QDialog):
     def get_card(self):
         return self.card
 
+    def _cleanup_editor_resources(self):
+        from ui.canvas.retro_effects import resume_animations
+
+        resume_animations(self)
+        try:
+            self._recovery_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._stop_watch()
+        except Exception:
+            pass
+        try:
+            self._stop_pdf_threads(shutdown=True)
+        except Exception:
+            pass
+        try:
+            self._stop_ocr_thread()
+        except Exception:
+            pass
+        self._pdf_pages = []
+        if hasattr(self, "canvas") and self.canvas is not None:
+            try:
+                self.canvas._pages = []
+                self.canvas._px = None
+                if hasattr(self.canvas, "_spx_cache"):
+                    self.canvas._spx_cache.clear()
+            except Exception:
+                pass
+        try:
+            from PyQt5.QtGui import QPixmapCache
+            QPixmapCache.clear()
+            import fitz
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
+        import gc
+        gc.collect()
+        log_memory("Card Editor Exit (Memory Reclaimed)")
+
+    @trace_perf
     def closeEvent(self, e):
         if getattr(self, "_card_saved_once", False):
             self.accept()
@@ -2565,10 +2617,7 @@ class CardEditorDialog(QDialog):
         if not self._confirm_recovery_close():
             e.ignore()
             return
-        self._recovery_timer.stop()
-        self._stop_watch()
-        self._stop_pdf_threads(shutdown=True)
-        self._stop_ocr_thread()
+        self._cleanup_editor_resources()
         super().closeEvent(e)
 
     def reject(self):
@@ -2578,10 +2627,7 @@ class CardEditorDialog(QDialog):
 
         if not self._confirm_recovery_close():
             return
-        self._recovery_timer.stop()
-        self._stop_watch()
-        self._stop_pdf_threads(shutdown=True)
-        self._stop_ocr_thread()
+        self._cleanup_editor_resources()
         super().reject()
 
     def accept(self):
@@ -2589,9 +2635,7 @@ class CardEditorDialog(QDialog):
 
         invalidate_deck_stats()
         self._recovery_accepted = True
-        self._recovery_timer.stop()
-        self._stop_watch()
-        self._stop_ocr_thread()
+        self._cleanup_editor_resources()
         super().accept()
 
 
