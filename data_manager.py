@@ -8,6 +8,8 @@ import time
 import shutil
 import sqlite3
 from datetime import datetime
+from perf_utils import trace_perf
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG
@@ -404,6 +406,7 @@ class DirtyStore:
         finally:
             conn.close()
 
+    @trace_perf
     def _load_from_sqlite(self, db_path):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -551,6 +554,7 @@ class DirtyStore:
         except Exception:
             pass
 
+    @trace_perf
     def load(self):
         """Load from disk. Clears dirty flag."""
         db_path = self._get_db_path()
@@ -585,6 +589,8 @@ class DirtyStore:
             self._data = {"decks": []}
             
         self._initialize_sm2_states(self._data)
+        from ui.settings_proxy import SettingsProxyDict
+        self._data = SettingsProxyDict(self._data)
         with self._lock:
             self._dirty = False
             self.revision += 1
@@ -598,8 +604,9 @@ class DirtyStore:
     def set(self, data):
         """Replace entire data dict and mark dirty."""
         self._initialize_sm2_states(data)
+        from ui.settings_proxy import SettingsProxyDict
         with self._lock:
-            self._data = data
+            self._data = SettingsProxyDict(data) if not isinstance(data, SettingsProxyDict) else data
             self._dirty = True
             self.revision += 1
             self._rebuild_card_index()
@@ -685,7 +692,8 @@ class DirtyStore:
             
             # JSON Compatibility Mode
             if DATA_FILE.endswith(".json"):
-                snapshot_text = json.dumps(data_snapshot, ensure_ascii=False, indent=2)
+                indent_val = 2 if os.environ.get("ANKI_PRETTY_JSON") == "1" else None
+                snapshot_text = json.dumps(data_snapshot, ensure_ascii=False, indent=indent_val)
                 snapshot_summary = DirtyStore._data_summary(data_snapshot)
                 self._write_serialized_to_disk(snapshot_text, snapshot_summary)
                 
@@ -849,7 +857,8 @@ class DirtyStore:
         store._sqlite_initialized_paths.add(db_path)
         store._save_to_sqlite(db_path, data)
         if DATA_FILE.endswith(".json"):
-            serialized_text = json.dumps(data, ensure_ascii=False, indent=2)
+            indent_val = 2 if os.environ.get("ANKI_PRETTY_JSON") == "1" else None
+            serialized_text = json.dumps(data, ensure_ascii=False, indent=indent_val)
             new_summary = DirtyStore._data_summary(data)
             DirtyStore._write_serialized_to_disk(serialized_text, new_summary)
 

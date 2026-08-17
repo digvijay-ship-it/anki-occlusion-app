@@ -328,6 +328,8 @@ class WrapperAndHelperTests(unittest.TestCase):
         self.data_file = Path(self.tmpdir.name) / "anki_occlusion_data.json"
         data_manager._LAST_SAVE_BACKUP_TS_BY_FILE.clear()
         data_manager._SAVE_BACKUP_THROTTLE_LOGGED.clear()
+        from PyQt5.QtCore import QSettings
+        QSettings("AnkiOcclusionTest", "AppTest").clear()
 
     def test_load_data_and_save_data_wrappers_use_singleton_store(self):
         replacement_store = data_manager.DirtyStore()

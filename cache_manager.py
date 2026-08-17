@@ -103,7 +103,10 @@ QScrollBar::handle:vertical {{ background:{C_BORDER}; border-radius:3px; }}
 # ═══════════════════════════════════════════════════════════════════════════════
 
 DEFAULT_PDF_IDLE_MINUTES = 5
-DEFAULT_RAM_PAGE_LIMIT = 48
+# Keep only the pages around the active viewport in RAM.  Rendered copies are
+# still retained on disk, so this bounds working-set growth without turning a
+# PDF revisit into a full rerender.
+DEFAULT_RAM_PAGE_LIMIT = 16
 
 
 def get_pdf_invert_setting() -> bool:
@@ -174,6 +177,7 @@ class LRUPageCache:
                     self._save_to_disk(path, page_num, image, variant)
                     if self._write_tokens.get(key) == token:
                         self._pending_images.pop(key, None)
+                        self._write_tokens.pop(key, None)
 
     # ── Disk helpers ──────────────────────────────────────────────────────────
 
@@ -547,30 +551,27 @@ class LRUPageCache:
         path = _canonical_pdf_path(path)
         key = self._page_key(path, page_num, variant)
         image = self._pixmap_to_image(pixmap)
-        with self._state_lock:
+        token = object()
+        with self._disk_write_lock, self._state_lock:
             self._cache[key] = pixmap
             self._cache.move_to_end(key)
             self._enforce_ram_limit()
-        if render_zoom is not None and not self.matches_render_zoom(
-            path, render_zoom, variant=variant
-        ):
-            self.set_render_zoom(path, render_zoom, variant=variant)
-        if image is None or image.isNull():
-            return
-        token = object()
-        if self._async_disk_writes:
-            # Enqueue disk write — handled by background daemon thread. Tokens
-            # prevent stale queued writes from resurrecting invalidated pages.
-            with self._disk_write_lock:
-                self._write_tokens[key] = token
-                self._pending_images[key] = image
-                self._disk_write_queue.append((path, page_num, image, variant, token))
-            self._disk_write_event.set()
-        else:
-            with self._disk_write_lock:
-                self._write_tokens[key] = token
-                self._save_to_disk(path, page_num, image, variant)
-                self._write_tokens.pop(key, None)
+            if render_zoom is not None and not self.matches_render_zoom(
+                path, render_zoom, variant=variant
+            ):
+                self.set_render_zoom(path, render_zoom, variant=variant)
+            if image is not None and not image.isNull():
+                if self._async_disk_writes:
+                    # Enqueue disk write — handled by background daemon thread. Tokens
+                    # prevent stale queued writes from resurrecting invalidated pages.
+                    self._write_tokens[key] = token
+                    self._pending_images[key] = image
+                    self._disk_write_queue.append((path, page_num, image, variant, token))
+                    self._disk_write_event.set()
+                else:
+                    self._write_tokens[key] = token
+                    self._save_to_disk(path, page_num, image, variant)
+                    self._write_tokens.pop(key, None)
 
     def invalidate_pdf(self, path: str, variant: str | None = None):
         path = _canonical_pdf_path(path)
@@ -601,6 +602,8 @@ class LRUPageCache:
                     and (variant_name is None or self._variant_name(item[3]) == variant_name)
                 )
             ]
+            for hash_key in [key for key in self._hashes if key[0] == path]:
+                del self._hashes[hash_key]
         # Disk
         try:
             v_dir = self._disk_cache_dir(path)
@@ -666,6 +669,12 @@ class LRUPageCache:
                     and (variant_name is None or self._variant_name(item[3]) == variant_name)
                 )
             ]
+            for hash_key in [
+                key
+                for key in self._hashes
+                if key[0] == path and key[1] in target_pages
+            ]:
+                del self._hashes[hash_key]
         # Disk eviction — one listdir per pdf (not per page)
         try:
             v_dir = self._disk_cache_dir(path)
@@ -700,6 +709,7 @@ class LRUPageCache:
             self._write_tokens.clear()
             self._disk_write_queue.clear()
             self._pdf_last_access.clear()
+            self._hashes.clear()
         # Wipe all vcache_ folders from disk
         disk_deleted = 0
         try:
@@ -720,13 +730,24 @@ class LRUPageCache:
         )
 
     def clear_ram_only(self):
-        """Sirf RAM clear karo — disk PNG files safe rehte hain."""
-        ram_count = len(self._cache)
-        with self._state_lock:
+        """Release every in-memory page and queued render image, keeping disk cache."""
+        # ``_pending_images`` holds QImages for asynchronous disk writes.  It
+        # can be substantially larger than ``_cache`` and used to survive a
+        # Home-screen cache clear, which made RAM appear to leak after review.
+        with self._disk_write_lock, self._state_lock:
+            ram_count = len(self._cache)
+            pending_count = len(self._pending_images)
             self._cache.clear()
+            self._pending_images.clear()
+            self._write_tokens.clear()
+            self._disk_write_queue.clear()
+            self._pdf_last_access.clear()
+            self._hashes.clear()
         print(
-            f"[cache][clear_ram_only] ✅ RAM cleared — {ram_count} pages removed, disk untouched"
+            "[cache][clear_ram_only] ✅ RAM cleared — "
+            f"{ram_count} pages and {pending_count} queued images removed, disk untouched"
         )
+        return ram_count, pending_count
 
     # ── Inspector helpers ─────────────────────────────────────────────────────
 

@@ -41,6 +41,16 @@ class LRUPageCacheTests(unittest.TestCase):
         self.addCleanup(self._cleanup_tmpdir)
 
     def _cleanup_tmpdir(self):
+        cache = getattr(self, "cache", None)
+        if cache is not None:
+            start_t = time.time()
+            while time.time() - start_t < 1.0:
+                with cache._disk_write_lock:
+                    if not cache._disk_write_queue:
+                        break
+                time.sleep(0.01)
+            time.sleep(0.05) # short additional sleep to ensure file handles are closed
+
         for path in sorted(self.tmpdir.rglob("*"), reverse=True):
             if path.is_file():
                 self._unlink_with_retry(path)
@@ -145,6 +155,42 @@ class LRUPageCacheTests(unittest.TestCase):
             self.assertIn((canonical, 2, "default"), cache._cache)
             self.assertIsNotNone(cache.get("doc.pdf", 0))
 
+    def test_default_cache_has_a_bounded_ram_working_set(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache(async_disk_writes=False)
+            limit = cache_manager.DEFAULT_RAM_PAGE_LIMIT
+
+            for page_num in range(limit + 1):
+                pixmap = QPixmap(6, 6)
+                pixmap.fill()
+                cache.put("doc.pdf", page_num, pixmap)
+
+            self.assertEqual(len(cache._cache), limit)
+
+    def test_clear_ram_only_releases_queued_render_images(self):
+        cache = cache_manager.LRUPageCache(async_disk_writes=True)
+        path = cache_manager._canonical_pdf_path("doc.pdf")
+        key = (path, 0, "default")
+        pixmap = QPixmap(10, 10)
+        pixmap.fill()
+        image = QImage(10, 10, QImage.Format_RGB32)
+        image.fill(0x112233)
+        token = object()
+        with cache._disk_write_lock, cache._state_lock:
+            cache._cache[key] = pixmap
+            cache._pending_images[key] = image
+            cache._write_tokens[key] = token
+            cache._disk_write_queue.append((path, 0, image, None, token))
+            cache._hashes[(path, 0)] = "page-hash"
+
+        released_pages, released_images = cache.clear_ram_only()
+
+        self.assertEqual((released_pages, released_images), (1, 1))
+        self.assertFalse(cache._cache)
+        self.assertFalse(cache._pending_images)
+        self.assertFalse(cache._disk_write_queue)
+        self.assertFalse(cache._hashes)
+
     def test_get_image_loads_worker_safe_image_from_disk(self):
         with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
             cache = cache_manager.LRUPageCache()
@@ -199,6 +245,23 @@ class LRUPageCacheTests(unittest.TestCase):
             time.sleep(0.2)
 
             self.assertIsNone(cache.get("doc.pdf", 0))
+
+    def test_completed_async_write_releases_its_in_memory_token(self):
+        with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
+            cache = cache_manager.LRUPageCache(async_disk_writes=True)
+            px = QPixmap(10, 10)
+            px.fill()
+            cache.put("doc.pdf", 0, px)
+
+            deadline = time.time() + 1.0
+            while time.time() < deadline:
+                with cache._disk_write_lock:
+                    if not cache._disk_write_queue and not cache._pending_images:
+                        break
+                time.sleep(0.01)
+
+            self.assertFalse(cache._pending_images)
+            self.assertFalse(cache._write_tokens)
 
 class DiskCombinedCacheTests(unittest.TestCase):
     def setUp(self):

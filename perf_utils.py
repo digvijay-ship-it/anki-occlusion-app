@@ -169,6 +169,8 @@ def _deck_stats_fingerprint(decks):
 
 
 def card_has_due_today(card):
+    if card.get("is_formula", False):
+        return False
     boxes = card.get("boxes", [])
     if not boxes:
         return is_due_today(card)
@@ -308,3 +310,36 @@ def get_pdf_page_count(path):
         _pdf_page_count_cache[abs_path] = (cache_key[0], cache_key[1], page_count)
 
     return page_count
+
+
+def trace_perf(func):
+    from functools import wraps
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        name = func.__qualname__ if hasattr(func, "__qualname__") else func.__name__
+        print(f"[PERF_TRACE][ENTER] {name}", flush=True)
+        t0 = time.perf_counter()
+        try:
+            res = func(*args, **kwargs)
+            return res
+        finally:
+            elapsed = (time.perf_counter() - t0) * 1000.0
+            print(f"[PERF_TRACE][EXIT] {name} - elapsed: {elapsed:.2f}ms", flush=True)
+    return wrapper
+
+
+def get_process_memory_mb():
+    try:
+        import psutil
+        import os
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / (1024.0 * 1024.0)
+    except Exception:
+        return 0.0
+
+
+def log_memory(label=""):
+    mem = get_process_memory_mb()
+    print(f"[MEMORY_TRACE] {label} - Process RAM: {mem:.2f} MB", flush=True)
+
+
