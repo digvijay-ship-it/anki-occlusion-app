@@ -1126,16 +1126,16 @@ class ToastNotification(QLabel):
         self.move_to_position()
         
         self.show()
+        from PyQt5.QtCore import QTimer, QPropertyAnimation, QEasingCurve
+        from PyQt5.QtWidgets import QGraphicsOpacityEffect
         from ui.canvas.retro_effects import _home_animations_enabled
 
         if _home_animations_enabled():
             # Opacity effect for fade animation
-            from PyQt5.QtWidgets import QGraphicsOpacityEffect
             self._effect = QGraphicsOpacityEffect(self)
             self.setGraphicsEffect(self._effect)
 
             # Animation: Fade In
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve, QTimer
             self._anim_in = QPropertyAnimation(self._effect, b"opacity")
             self._anim_in.setDuration(300)
             self._anim_in.setStartValue(0.0)
@@ -1739,6 +1739,9 @@ class HomeScreen(QWidget):
             session_data = {
                 "card_identifiers": [
                     {
+                        "card_id": card.get("_id") or card.get("id"),
+                        "card_type": card.get("card_type", "image"),
+                        "question": card.get("question"),
                         "pdf_path": card.get("pdf_path"),
                         "image_path": card.get("image_path"),
                         "title": card.get("title"),
@@ -1805,6 +1808,9 @@ class HomeScreen(QWidget):
             _walk(deck)
             
         for idf in identifiers:
+            card_id = idf.get("card_id")
+            card_type = idf.get("card_type")
+            question = idf.get("question")
             pdf_path = idf.get("pdf_path")
             image_path = idf.get("image_path")
             title = idf.get("title")
@@ -1812,6 +1818,17 @@ class HomeScreen(QWidget):
             
             matched_card = None
             for card in all_db_cards:
+                c_id = card.get("_id") or card.get("id")
+                if card_id and c_id and c_id == card_id:
+                    matched_card = card
+                    break
+                if (card_type == "text" or card.get("card_type") == "text"):
+                    if question and card.get("question") == question:
+                        matched_card = card
+                        break
+                    if title and card.get("title") == title:
+                        matched_card = card
+                        break
                 if visual_hash and card.get("visual_hash") == visual_hash:
                     matched_card = card
                     break
@@ -2841,6 +2858,17 @@ class HomeScreen(QWidget):
         mods = e.modifiers()
         ctrl = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
+        if shortcut_manager.event_matches(e, "home.search_decks") or (ctrl and not shift and key in (Qt.Key_F, Qt.Key_K)):
+            if getattr(self, "_active_review", None) is None:
+                if getattr(self, "_tmnt_layout", None) and hasattr(self._tmnt_layout, "sidebar") and hasattr(self._tmnt_layout.sidebar, "_focus_search"):
+                    self._tmnt_layout.sidebar._focus_search()
+                    e.accept()
+                    return
+                dt = getattr(self, "deck_tree", None) or getattr(self, "_deck_tree", None)
+                if dt and hasattr(dt, "_focus_search"):
+                    dt._focus_search()
+                    e.accept()
+                    return
 
         if shortcut_manager.event_matches(e, "home.resume_review"):
             if getattr(self, "_active_review", None) is None:

@@ -107,6 +107,7 @@ from PyQt5.QtWidgets import (
     QStyledItemDelegate,
     QStyle,
     QHeaderView,
+    QShortcut,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -140,6 +141,7 @@ from PyQt5.QtGui import (
     QPainterPath,
     QDrag,
     QDesktopServices,
+    QKeySequence,
 )
 
 import tempfile
@@ -528,24 +530,63 @@ class DeckTree(QWidget):
     def _on_search(self, text):
         query = text.strip().lower()
 
-        def _filter_item(item):
-            match = False
-            name = item.data(0, Qt.UserRole + 2) or ""
-            if query in name.lower():
-                match = True
-            for i in range(item.childCount()):
-                child_match = _filter_item(item.child(i))
-                if child_match:
-                    match = True
-            item.setHidden(not match and bool(query))
-            if query and match:
-                item.setExpanded(True)
-            elif not query:
-                item.setExpanded(False)
-            return match
+        if query:
+            # Snapshot tree expansion state when search begins
+            if not hasattr(self, "_pre_search_expansion_state") or self._pre_search_expansion_state is None:
+                self._pre_search_expansion_state = {}
+                def _save_state(item):
+                    did = item.data(0, Qt.UserRole)
+                    if did is not None:
+                        self._pre_search_expansion_state[did] = item.isExpanded()
+                    for i in range(item.childCount()):
+                        _save_state(item.child(i))
+                for i in range(self.tree.topLevelItemCount()):
+                    _save_state(self.tree.topLevelItem(i))
 
-        for i in range(self.tree.topLevelItemCount()):
-            _filter_item(self.tree.topLevelItem(i))
+            def _filter_item(item, parent_matched=False):
+                name = item.data(0, Qt.UserRole + 2) or ""
+                self_matched = bool(query in name.lower())
+                is_matched_context = self_matched or parent_matched
+
+                any_child_matched = False
+                for i in range(item.childCount()):
+                    child_matched = _filter_item(item.child(i), parent_matched=is_matched_context)
+                    if child_matched:
+                        any_child_matched = True
+
+                visible = bool(self_matched or parent_matched or any_child_matched)
+                item.setHidden(not visible)
+
+                # Expansion rules:
+                # 1. If a descendant matched, expand so the user can see the matched item.
+                # 2. If this item or its parent matched, do NOT force expand; keep collapsed (or pre-search state).
+                if any_child_matched:
+                    item.setExpanded(True)
+                else:
+                    was_expanded = self._pre_search_expansion_state.get(item.data(0, Qt.UserRole), False)
+                    item.setExpanded(was_expanded)
+
+                return self_matched or any_child_matched
+
+            for i in range(self.tree.topLevelItemCount()):
+                _filter_item(self.tree.topLevelItem(i), parent_matched=False)
+
+        else:
+            # Search cleared: unhide all and restore exact pre-search expansion states
+            saved_state = getattr(self, "_pre_search_expansion_state", None)
+
+            def _restore_all(item):
+                item.setHidden(False)
+                did = item.data(0, Qt.UserRole)
+                if saved_state is not None and did in saved_state:
+                    item.setExpanded(saved_state[did])
+                for i in range(item.childCount()):
+                    _restore_all(item.child(i))
+
+            for i in range(self.tree.topLevelItemCount()):
+                _restore_all(self.tree.topLevelItem(i))
+
+            self._pre_search_expansion_state = None
 
     def set_theme(self, theme):
         theme = normalize_theme(theme)
@@ -564,6 +605,11 @@ class DeckTree(QWidget):
             self._classic_btns_w.show()
             self.layout().setContentsMargins(0, 0, 0, 0)
         self.refresh()
+
+    def _focus_search(self):
+        if hasattr(self, "search_in") and self.search_in:
+            self.search_in.setFocus(Qt.ShortcutFocusReason)
+            self.search_in.selectAll()
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
@@ -611,14 +657,37 @@ class DeckTree(QWidget):
             f"background:transparent;border:none;color:{C_TEXT};"
         )
         self.search_in.textChanged.connect(self._on_search)
+        
+        def _search_key_press(e):
+            if e.key() == Qt.Key_Escape:
+                if self.search_in.text():
+                    self.search_in.clear()
+                else:
+                    self.search_in.clearFocus()
+                    if hasattr(self, "tree") and self.tree:
+                        self.tree.setFocus()
+                e.accept()
+                return
+            QLineEdit.keyPressEvent(self.search_in, e)
+        self.search_in.keyPressEvent = _search_key_press
+        
         sh_l.addWidget(self.search_in)
-        shortcut_badge = QLabel("CTRL+K")
+        shortcut_badge = QLabel("CTRL+F")
         shortcut_badge.setStyleSheet(
             f"color:{C_SUBTEXT};background:rgba(255,255,255,0.05);border-radius:3px;padding:2px 4px;font-size:9px;border:none;"
         )
         sh_l.addWidget(shortcut_badge)
         dhl.addWidget(search_box)
         dhl.addSpacing(6)
+        
+        # Shortcut to focus search
+        self._shortcut_focus_f = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._shortcut_focus_f.setContext(Qt.WindowShortcut)
+        self._shortcut_focus_f.activated.connect(self._focus_search)
+        
+        self._shortcut_focus_k = QShortcut(QKeySequence("Ctrl+K"), self)
+        self._shortcut_focus_k.setContext(Qt.WindowShortcut)
+        self._shortcut_focus_k.activated.connect(self._focus_search)
 
         hdr_dojo = QLabel("— YOUR DOJOS —")
         hdr_dojo.setFont(QFont("Orbitron", 9, QFont.Bold))
@@ -660,12 +729,16 @@ class DeckTree(QWidget):
         cb_new.clicked.connect(lambda: self._new_deck(None))
         cb_sub = QPushButton("＋ Sub")
         cb_sub.clicked.connect(self._new_subdeck)
+        cb_import = QPushButton("📥 Import")
+        cb_import.setToolTip("Import cards from comma-separated text or CSV file")
+        cb_import.clicked.connect(lambda: self._import_cards(self._get_selected_id()))
         cb_del = QPushButton("🗑")
         cb_del.setObjectName("danger")
         cb_del.setFixedWidth(36)
         cb_del.clicked.connect(self._delete_selected)
         cbl.addWidget(cb_new)
         cbl.addWidget(cb_sub)
+        cbl.addWidget(cb_import)
         cbl.addStretch()
         cbl.addWidget(cb_del)
         L.addWidget(self._classic_btns_w)
@@ -789,6 +862,7 @@ class DeckTree(QWidget):
             did = self._get_id_from_item(item)
             menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
             menu.addAction("＋ Sub-deck", lambda: self._new_deck(did))
+            menu.addAction("📥 Import Cards...", lambda: self._import_cards(did))
             menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             deck = self._get_deck_from_item(item)
             if deck:
@@ -799,7 +873,27 @@ class DeckTree(QWidget):
             menu.addAction("🗑 Delete", lambda: self._delete_by_id(did))
         else:
             menu.addAction("＋ New Top-level Deck", lambda: self._new_deck(None))
+            menu.addAction("📥 Import Text / CSV Deck...", lambda: self._import_cards(None))
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _import_cards(self, deck_id=None):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", [])) if deck_id is not None else None
+        from ui.import_cards_dialog import ImportCardsDialog
+        dlg = ImportCardsDialog(self, data=self._data, current_deck=deck)
+        res = dlg.exec_()
+        if res == QDialog.Accepted:
+            result = dlg.get_result()
+            home = self._find_home()
+            if home and hasattr(home, "_clear_home_ram_caches"):
+                home._clear_home_ram_caches()
+            if home:
+                home.refresh()
+                target_id = result.get("target_deck_id")
+                if target_id is not None:
+                    self._select_by_id(target_id)
+            else:
+                self.refresh()
+        dlg.deleteLater()
 
     def _find_home(self):
         w = self.parent()

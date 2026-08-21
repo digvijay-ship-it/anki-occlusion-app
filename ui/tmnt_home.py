@@ -44,6 +44,7 @@ from PyQt5.QtWidgets import (
     QStyle,
     QFileDialog,
     QSlider,
+    QShortcut,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -68,6 +69,7 @@ from PyQt5.QtGui import (
     QPainterPath,
     QLinearGradient,
     QCursor,
+    QKeySequence,
 )
 
 from sm2_engine import sm2_init, is_due_today, sm2_days_left
@@ -1880,7 +1882,21 @@ class TMNTSidebar(QFrame):
             )
         )
         self.search_in.textChanged.connect(self._on_search)
-        kb_badge = QLabel("CTRL+K")
+        
+        def _search_key_press(e):
+            if e.key() == Qt.Key_Escape:
+                if self.search_in.text():
+                    self.search_in.clear()
+                else:
+                    self.search_in.clearFocus()
+                    if hasattr(self, "_engine") and hasattr(self._engine, "tree"):
+                        self._engine.tree.setFocus()
+                e.accept()
+                return
+            QLineEdit.keyPressEvent(self.search_in, e)
+        self.search_in.keyPressEvent = _search_key_press
+        
+        kb_badge = QLabel("CTRL+F")
         kb_badge.setStyleSheet(
             _scale_ss(
                 f"color: {T_SUBTEXT}; font-size: 9px; background: rgba(255,255,255,0.04); "
@@ -1893,6 +1909,15 @@ class TMNTSidebar(QFrame):
         sl.addWidget(kb_badge)
         hl.addWidget(search_frame)
         L.addWidget(hdr)
+
+        # Global shortcuts for search focus
+        self._shortcut_focus_f = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._shortcut_focus_f.setContext(Qt.WindowShortcut)
+        self._shortcut_focus_f.activated.connect(self._focus_search)
+
+        self._shortcut_focus_k = QShortcut(QKeySequence("Ctrl+K"), self)
+        self._shortcut_focus_k.setContext(Qt.WindowShortcut)
+        self._shortcut_focus_k.activated.connect(self._focus_search)
 
         # ── YOUR DOJOS label ──
         dojos_lbl = QLabel("— YOUR DOJOS —")
@@ -2003,7 +2028,7 @@ class TMNTSidebar(QFrame):
         L.addWidget(foot)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_K and event.modifiers() & Qt.ControlModifier:
+        if event.key() in (Qt.Key_F, Qt.Key_K) and event.modifiers() & Qt.ControlModifier:
             self._focus_search()
             event.accept()
             return
@@ -2510,12 +2535,37 @@ class TMNTMainContent(DeckView):
         _apply_glow(self.btn_add_text, T_PURPLE, blur=_px(22, self._scale), alpha=95)
         buttons_row.addWidget(self.btn_add_text)
 
+        self.btn_import = QPushButton("📥  IMPORT")
+        self.btn_import.setStyleSheet(
+            _scale_ss(
+                f"""
+            QPushButton {{
+                background: rgba(114,255,79,0.04);
+                color: {T_GREEN};
+                border: 1px solid {T_GREEN};
+                border-radius: 2px;
+                font-size: {btn_font_size}px;
+                font-weight: 900;
+                font-family: {T_PIXEL};
+                padding: 8px 16px;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: {hover_green_bg}; color: {T_GREEN}; border-color: {T_GREEN}; }}
+        """,
+                self._scale,
+            )
+        )
+        self.btn_import.clicked.connect(self._import_cards)
+        _apply_glow(self.btn_import, T_GREEN, blur=_px(22, self._scale), alpha=95)
+        buttons_row.addWidget(self.btn_import)
+
         # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping
         btn_font = QFont("Orbitron")
         btn_font.setPixelSize(_px(btn_font_size, self._scale))
         btn_font.setBold(True)
         self.btn_add.setFont(btn_font)
         self.btn_add_text.setFont(btn_font)
+        self.btn_import.setFont(btn_font)
 
         L.addLayout(title_row)
         L.addLayout(buttons_row)
@@ -4876,10 +4926,11 @@ class TMNTHomeLayout(QWidget):
             if panels_closed:
                 event.accept()
                 return
-        if event.key() == Qt.Key_K and event.modifiers() & Qt.ControlModifier:
-            self.sidebar._focus_search()
-            event.accept()
-            return
+        if (event.key() in (Qt.Key_F, Qt.Key_K)) and event.modifiers() & Qt.ControlModifier:
+            if hasattr(self, "sidebar") and hasattr(self.sidebar, "_focus_search"):
+                self.sidebar._focus_search()
+                event.accept()
+                return
         if shortcut_manager.event_matches(event, "home.save"):
             store.mark_dirty()
             store.save_force(async_save=True)

@@ -515,6 +515,9 @@ class DeckView(QWidget):
         self.btn_add.clicked.connect(self._add_card)
         self.btn_add_text = QPushButton("＋ Basic Card")
         self.btn_add_text.clicked.connect(self._add_text_card)
+        self.btn_import = QPushButton("📥 Import")
+        self.btn_import.setToolTip("Bulk import cards from comma-separated text or files")
+        self.btn_import.clicked.connect(self._import_cards)
         self.btn_due = QPushButton("🔴 Review Due")
         self.btn_due.setObjectName("danger")
         self.btn_due.clicked.connect(self._review_due)
@@ -528,6 +531,7 @@ class DeckView(QWidget):
         self.btn_formulas.hide()
         hdr.addWidget(self.btn_add)
         hdr.addWidget(self.btn_add_text)
+        hdr.addWidget(self.btn_import)
         hdr.addWidget(self.btn_due)
         hdr.addWidget(self.btn_all)
         hdr.addWidget(self.btn_formulas)
@@ -591,8 +595,13 @@ class DeckView(QWidget):
         bd = QPushButton("🗑 Delete")
         bd.setObjectName("danger")
         bd.clicked.connect(self._delete_card)
+        bm = QPushButton("📋 Manage Cards")
+        bm.setObjectName("flat")
+        bm.setToolTip("Open Card Manager to view, search, and bulk delete cards (Ctrl+B)")
+        bm.clicked.connect(self._open_card_browser)
         bot.addWidget(be)
         bot.addWidget(bd)
+        bot.addWidget(bm)
         bot.addStretch()
         L.addLayout(bot)
 
@@ -780,6 +789,9 @@ class DeckView(QWidget):
         self._refresh()
 
     def _card_list_key_press(self, e):
+        if shortcut_manager.event_matches(e, "home.browse_cards"):
+            self._open_card_browser()
+            return
         if shortcut_manager.event_matches(e, "home.edit_card"):
             self._edit_card(self.card_list.currentItem())
             return
@@ -797,6 +809,10 @@ class DeckView(QWidget):
         QListWidget.keyPressEvent(self.card_list, e)
 
     def keyPressEvent(self, e):
+        if shortcut_manager.event_matches(e, "home.browse_cards"):
+            self._open_card_browser()
+            e.accept()
+            return
         if shortcut_manager.event_matches(e, "home.undo"):
             self.undo()
             e.accept()
@@ -1179,6 +1195,25 @@ class DeckView(QWidget):
         print("[DEBUG][data_save] text_card_add_checkpoint_saved")
         dlg.deleteLater()
 
+    def _import_cards(self, *args):
+        from ui.import_cards_dialog import ImportCardsDialog
+        dlg = ImportCardsDialog(self, data=self._data, current_deck=self.deck)
+        res = dlg.exec_()
+        if res == QDialog.Accepted:
+            result = dlg.get_result()
+            home = self._find_home()
+            if home and hasattr(home, "_clear_home_ram_caches"):
+                home._clear_home_ram_caches()
+            if home:
+                home.refresh()
+                target_id = result.get("target_deck_id")
+                if target_id is not None:
+                    if hasattr(home, "deck_tree") and hasattr(home.deck_tree, "_select_by_id"):
+                        home.deck_tree._select_by_id(target_id)
+            else:
+                self._refresh()
+        dlg.deleteLater()
+
     def _find_home(self):
         w = self.parent()
         while w is not None:
@@ -1313,6 +1348,12 @@ class DeckView(QWidget):
             cards.pop(idx)
             self._refresh()
             store.mark_dirty()  # 🔒 DirtyStore
+
+    def _open_card_browser(self):
+        from ui.card_browser_dialog import CardBrowserDialog
+        dlg = CardBrowserDialog(self, deck=self.deck, data=self._data)
+        dlg.exec_()
+        self._refresh()
 
     def _card_has_due_today(self, card):
         return card_has_due_today(card)
