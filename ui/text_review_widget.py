@@ -1,10 +1,10 @@
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QTextBrowser, QFrame, QApplication
+    QTextBrowser, QFrame, QApplication, QScrollArea
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QUrl, QEvent
-from PyQt5.QtGui import QFont, QColor, QPen, QPainter
+from PyQt5.QtGui import QFont, QColor, QPen, QPainter, QKeySequence
 from theme_manager import get_palette
 
 def get_base_url():
@@ -19,7 +19,12 @@ def get_base_url():
 class ZoomableTextBrowser(QTextBrowser):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFocusPolicy(Qt.NoFocus)
+        self.setFocusPolicy(Qt.ClickFocus)
+        self.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse
+        )
+        self.viewport().setCursor(Qt.IBeamCursor)
+        self.setCursor(Qt.IBeamCursor)
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -42,8 +47,23 @@ class ZoomableTextBrowser(QTextBrowser):
             return True
         return super().event(e)
 
+    def keyPressEvent(self, e):
+        # Allow Ctrl+C for copying selected text
+        if e.matches(QKeySequence.Copy):
+            super().keyPressEvent(e)
+            return
+        
+        # Forward review navigation/rating keys (Space, 1-5, S, etc.) to review_screen
+        p = self.parent()
+        while p and not hasattr(p, "_reveal_current") and not hasattr(p, "_rate"):
+            p = p.parent()
+        if p and hasattr(p, "keyPressEvent"):
+            p.keyPressEvent(e)
+        else:
+            super().keyPressEvent(e)
+
 class TextReviewWidget(QWidget):
-    answer_submitted = pyqtSignal() # Emitted if needed for compatibility/actions
+    answer_submitted = pyqtSignal()  # Emitted if needed for compatibility/actions
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,40 +82,106 @@ class TextReviewWidget(QWidget):
         self._font_family = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
         self._header_font_family = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
         
-        # Set transparent background to blend directly with the main screen background
+        if theme in ("tmnt", "manhattan"):
+            card_bg = "#121622"
+            card_border = "#00F0FF"
+            self.badge_color = "#00F0FF"
+            self.ans_color = "#39FF14"
+            self.notes_color = "#8FA4BF"
+        elif theme == "dojo":
+            card_bg = "#0F0F17"
+            card_border = "#A86CFF"
+            self.badge_color = "#A86CFF"
+            self.ans_color = "#72FF4F"
+            self.notes_color = "#8C9BB4"
+        elif theme == "arcanum":
+            card_bg = "#16131D"
+            card_border = "#C89B3C"
+            self.badge_color = "#C89B3C"
+            self.ans_color = "#FFD700"
+            self.notes_color = "#B09F8C"
+        else:
+            card_bg = "#1E202C"
+            card_border = "#5C7CFA"
+            self.badge_color = "#5C7CFA"
+            self.ans_color = "#50FA7B"
+            self.notes_color = "#A6ADC8"
+
         self.setStyleSheet(f"""
-            QWidget {{ background: transparent; color: {p['C_TEXT']}; }}
+            QWidget {{ background: transparent; color: #FFFFFF; }}
+        """)
+        
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(40, 24, 40, 24)
+        outer_layout.setAlignment(Qt.AlignCenter)
+        
+        # Centered Card Frame
+        self.card_frame = QFrame()
+        self.card_frame.setStyleSheet(f"""
+            QFrame#card_frame {{
+                background-color: {card_bg};
+                border: 1.5px solid {card_border};
+                border-radius: 12px;
+            }}
             QTextBrowser {{
                 background: transparent;
                 border: none;
-                color: {p['C_TEXT']};
+                color: #FFFFFF;
                 font-family: {self._font_family};
+                selection-background-color: #5C7CFA;
+                selection-color: #FFFFFF;
             }}
         """)
+        self.card_frame.setObjectName("card_frame")
+        self.card_frame.setMaximumWidth(960)
+        self.card_frame.setMinimumWidth(340)
         
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(40, 20, 40, 20)
-        main_layout.setSpacing(20)
+        card_layout = QVBoxLayout(self.card_frame)
+        card_layout.setContentsMargins(40, 32, 40, 32)
+        card_layout.setSpacing(16)
+        
+        # Header Badge
+        self.lbl_card_type = QLabel("🗂️ FRONT (WORD / PROMPT)")
+        self.lbl_card_type.setStyleSheet(f"""
+            color: {self.badge_color};
+            font-size: 12px;
+            font-weight: bold;
+            letter-spacing: 1.2px;
+            border: none;
+            background: transparent;
+        """)
+        card_layout.addWidget(self.lbl_card_type)
         
         # Scrollable Question text
         self.q_browser = ZoomableTextBrowser()
         self.q_browser.setOpenExternalLinks(True)
-        self.q_browser.setFont(QFont(self._font_family, 16))
+        self.q_browser.setFont(QFont(self._font_family, 18))
         self.q_browser.document().setDocumentMargin(0)
         self.q_browser.document().setDefaultStyleSheet("img { width: 100%; }")
-        main_layout.addWidget(self.q_browser, stretch=1)
+        card_layout.addWidget(self.q_browser, stretch=1)
         
         # Reveal Section (initially hidden)
         self.answer_container = QWidget()
         ans_layout = QVBoxLayout(self.answer_container)
         ans_layout.setContentsMargins(0, 0, 0, 0)
-        ans_layout.setSpacing(20)
+        ans_layout.setSpacing(14)
         
         # Separator line
         self.sep = QFrame()
         self.sep.setFrameShape(QFrame.HLine)
-        self.sep.setStyleSheet(f"background: {p['C_BORDER']}; height: 1px;")
+        self.sep.setStyleSheet(f"background: {p.get('C_BORDER', '#374158')}; height: 1px; border: none;")
         ans_layout.addWidget(self.sep)
+        
+        self.lbl_ans_title = QLabel("💡 BACK (MEANING / ANSWER)")
+        self.lbl_ans_title.setStyleSheet(f"""
+            color: {self.badge_color};
+            font-size: 12px;
+            font-weight: bold;
+            letter-spacing: 1.2px;
+            border: none;
+            background: transparent;
+        """)
+        ans_layout.addWidget(self.lbl_ans_title)
         
         # Answer QTextBrowser
         self.a_browser = ZoomableTextBrowser()
@@ -109,31 +195,38 @@ class TextReviewWidget(QWidget):
         self.notes_container = QWidget()
         notes_layout = QVBoxLayout(self.notes_container)
         notes_layout.setContentsMargins(0, 0, 0, 0)
-        notes_layout.setSpacing(8)
+        notes_layout.setSpacing(6)
         
-        self.lbl_notes_title = QLabel("Notes / Hints:")
+        self.lbl_notes_title = QLabel("📝 NOTES / HINTS:")
         self.lbl_notes_title.setStyleSheet(f"""
-            color: {p['C_SUBTEXT']};
-            font-size: 13px;
-            font-family: {self._header_font_family};
+            color: {self.notes_color};
+            font-size: 12px;
             font-weight: bold;
+            letter-spacing: 0.8px;
+            border: none;
+            background: transparent;
         """)
         notes_layout.addWidget(self.lbl_notes_title)
         
         self.notes_browser = ZoomableTextBrowser()
-        self.notes_browser.setFont(QFont(self._font_family, 12))
+        self.notes_browser.setFont(QFont(self._font_family, 13))
         self.notes_browser.document().setDocumentMargin(0)
-        self.notes_browser.setFixedHeight(80)
+        self.notes_browser.setMaximumHeight(90)
         notes_layout.addWidget(self.notes_browser)
         ans_layout.addWidget(self.notes_container)
         
-        main_layout.addWidget(self.answer_container)
+        card_layout.addWidget(self.answer_container)
         self.answer_container.hide()
+        
+        outer_layout.addWidget(self.card_frame)
 
     def keyPressEvent(self, e):
         # Forward keyboard events to the parent (review_screen) so that shortcuts work correctly
-        if self.parent():
-            self.parent().keyPressEvent(e)
+        p = self.parent()
+        while p and not hasattr(p, "_reveal_current") and not hasattr(p, "_rate"):
+            p = p.parent()
+        if p and hasattr(p, "keyPressEvent"):
+            p.keyPressEvent(e)
         else:
             super().keyPressEvent(e)
         
@@ -172,26 +265,43 @@ class TextReviewWidget(QWidget):
         if not self.card:
             return
             
-        # Dynamically calculate the actual available width in pixels
-        # Margins are 40px left and 40px right, so available width is self.width() - 80.
-        target_width = int(max(200, (self.width() - 80) * self._zoom_factor))
+        target_width = int(max(200, (self.card_frame.width() - 80) * self._zoom_factor)) if hasattr(self, "card_frame") else 600
         
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         p = get_palette(theme)
-        text_color = "#CDD6F4" if theme != "classic" else p['C_TEXT']
+        
+        if theme in ("tmnt", "manhattan"):
+            front_color = "#FFFFFF"
+            answer_color = "#39FF14"
+            notes_color = "#8FA4BF"
+        elif theme == "dojo":
+            front_color = "#FFFFFF"
+            answer_color = "#72FF4F"
+            notes_color = "#8C9BB4"
+        elif theme == "arcanum":
+            front_color = "#F5E6C8"
+            answer_color = "#FFD700"
+            notes_color = "#B09F8C"
+        else:
+            front_color = "#FFFFFF"
+            answer_color = "#50FA7B"
+            notes_color = "#A6ADC8"
+            
+        q_font_size = int(28 * self._zoom_factor)
+        a_font_size = int(22 * self._zoom_factor)
+        n_font_size = int(14 * self._zoom_factor)
         
         # Update fonts on browsers based on zoom factor
-        font_size = int(16 * self._zoom_factor)
-        self.q_browser.setFont(QFont(self._font_family, font_size))
-        self.a_browser.setFont(QFont(self._font_family, font_size))
-        self.notes_browser.setFont(QFont(self._font_family, int(12 * self._zoom_factor)))
+        self.q_browser.setFont(QFont(self._font_family, q_font_size))
+        self.a_browser.setFont(QFont(self._font_family, a_font_size))
+        self.notes_browser.setFont(QFont(self._font_family, n_font_size))
         
         # Load Question
         question = self.card.get('question', '')
         if "<img" in question or "<html>" in question:
             self._scale_and_load_html(self.q_browser, question, target_width)
         else:
-            question_html = f"<div style='font-size: {font_size}px; color: {text_color};'>{self._escape_and_format(question)}</div>"
+            question_html = f"<div style='font-family: {self._font_family}; font-size: {q_font_size}px; font-weight: bold; color: {front_color}; line-height: 1.4;'>{self._escape_and_format(question)}</div>"
             self.q_browser.setHtml(question_html)
             
         # Load Answer if revealed
@@ -200,14 +310,13 @@ class TextReviewWidget(QWidget):
             if "<img" in answer or "<html>" in answer:
                 self._scale_and_load_html(self.a_browser, answer, target_width)
             else:
-                answer_html = f"<div style='font-size: {font_size}px; color: {text_color};'>{self._escape_and_format(answer)}</div>"
+                answer_html = f"<div style='font-family: {self._font_family}; font-size: {a_font_size}px; font-weight: 500; color: {answer_color}; line-height: 1.5;'>{self._escape_and_format(answer)}</div>"
                 self.a_browser.setHtml(answer_html)
                 
             # Load Notes
             notes = self.card.get("notes", "").strip()
             if notes:
-                notes_color = "#A6ADC8" if theme != "classic" else p['C_TEXT']
-                notes_html = f"<div style='color: {notes_color}; font-size: {int(13 * self._zoom_factor)}px;'>{self._escape_and_format(notes)}</div>"
+                notes_html = f"<div style='font-family: {self._font_family}; color: {notes_color}; font-size: {n_font_size}px; line-height: 1.4;'>{self._escape_and_format(notes)}</div>"
                 self.notes_browser.setHtml(notes_html)
                 self.notes_container.show()
             else:
