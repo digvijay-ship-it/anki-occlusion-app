@@ -235,81 +235,7 @@ class ResizeHandle(QWidget):
             event.accept()
 
 
-class ScrollFadeOverlay(QWidget):
-    def __init__(self, parent, direction="bottom"):
-        super().__init__(parent)
-        self.direction = direction
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)  # Click-through
-        self.setFixedHeight(45)
-        
-        self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(40)  # ~25 fps
-        self._anim_timer.timeout.connect(self.update)
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._anim_timer.start()
-
-    def hideEvent(self, event):
-        super().hideEvent(event)
-        self._anim_timer.stop()
-
-    def paintEvent(self, event):
-        from PyQt5.QtGui import QPainter, QLinearGradient, QColor, QPen, QPolygonF
-        from PyQt5.QtCore import QPointF
-        import time
-        import math
-        
-        painter = QPainter(self)
-        rect = self.rect()
-        
-        theme = getattr(QApplication.instance(), "_active_theme", "classic")
-        from theme_manager import get_palette
-        p = get_palette(theme)
-        bg_hex = p.get("C_SURFACE", "#1E1E2E")
-        bg_color = QColor(bg_hex)
-        
-        gradient = QLinearGradient(0, 0, 0, rect.height())
-        if self.direction == "bottom":
-            gradient.setColorAt(0.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 0))
-            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 255))
-        else:
-            gradient.setColorAt(0.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 255))
-            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 0))
-            
-        painter.fillRect(rect, gradient)
-        
-        painter.setRenderHint(QPainter.Antialiasing)
-        accent_hex = p.get("C_GREEN", "#39FF14")
-        accent_color = QColor(accent_hex)
-        
-        t = time.time() * 5.0
-        alpha = int(160 + 95 * math.sin(t))
-        accent_color.setAlpha(alpha)
-        
-        pen = QPen(accent_color, 4.5)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen)
-        
-        cx = rect.width() / 2.0
-        bounce = 2.0 * math.sin(t)
-        cy = (rect.height() / 2.0) + (bounce if self.direction == "bottom" else -bounce)
-        
-        if self.direction == "bottom":
-            points = [
-                QPointF(cx - 12, cy - 5),
-                QPointF(cx, cy + 5),
-                QPointF(cx + 12, cy - 5)
-            ]
-        else:
-            points = [
-                QPointF(cx - 12, cy + 5),
-                QPointF(cx, cy - 5),
-                QPointF(cx + 12, cy + 5)
-            ]
-            
-        painter.drawPolyline(QPolygonF(points))
 
 
 MATH_UNICODE_MAP = {
@@ -1285,11 +1211,15 @@ class ReviewScreen(QWidget):
         import os
         try:
             self._snd_coin = QSoundEffect(self)
-            self._snd_coin.setSource(QUrl.fromLocalFile(os.path.join("assets", "music", "pickupCoin.wav")))
             self._snd_hit = QSoundEffect(self)
-            self._snd_hit.setSource(QUrl.fromLocalFile(os.path.join("assets", "music", "hitHurt.wav")))
             self._snd_power = QSoundEffect(self)
-            self._snd_power.setSource(QUrl.fromLocalFile(os.path.join("assets", "music", "powerUp.wav")))
+            
+            for fname, snd_obj in [("pickupCoin.wav", self._snd_coin), ("hitHurt.wav", self._snd_hit), ("powerUp.wav", self._snd_power)]:
+                for root in [os.getcwd(), os.path.dirname(os.path.dirname(__file__))]:
+                    path = os.path.abspath(os.path.join(root, "assets", "music", fname))
+                    if os.path.exists(path):
+                        snd_obj.setSource(QUrl.fromLocalFile(path))
+                        break
             
             # Play a short powerUp entry sound if in retro theme
             theme = getattr(QApplication.instance(), "_active_theme", "classic")
@@ -1364,6 +1294,7 @@ class ReviewScreen(QWidget):
         except (TypeError, ValueError):
             self._user_hint_width = 360
         self._user_hint_width = max(200, min(1600, self._user_hint_width))
+        self._hint_scroll_positions = {}
         try:
             self._timer_x_pct = float(settings.value("review/timer_x_pct", 1.0))
         except (TypeError, ValueError):
@@ -1528,6 +1459,22 @@ class ReviewScreen(QWidget):
             self._cache_panel.show()
             self._cache_panel.refresh()
 
+    def _get_current_hint_key(self):
+        if not hasattr(self, "_items") or not (0 <= self._idx < len(self._items)):
+            return None
+        card, box_idx, active_box = self._items[self._idx]
+        cid = str(card.get("_id") or card.get("id") or id(card))
+        b_key = str(box_idx)
+        return (cid, b_key, getattr(self, "_hint_view_mode", "mask"))
+
+    def _on_hint_scrolled(self, value):
+        if getattr(self, "_restoring_hint_scroll", False):
+            return
+        if hasattr(self, "_hint_panel") and not self._hint_panel.isVisible():
+            return
+        if hasattr(self, "_items") and 0 <= self._idx < len(self._items):
+            self._hint_scroll_positions[self._idx] = value
+
     def _set_hint_panel_visible(self, visible: bool):
         if visible:
             self._reposition_hint_panel()
@@ -1540,13 +1487,58 @@ class ReviewScreen(QWidget):
             if getattr(self, "_rating_frame", None) is not None:
                 self._rating_frame.raise_()
             self._btn_note.setChecked(True)
-            self._update_mask_note_ui(keep_visible=True)
+            curr_key = self._get_current_hint_key()
+            if getattr(self, "_last_rendered_hint_key", None) != curr_key or self._hint_browser.document().isEmpty():
+                self._update_mask_note_ui(keep_visible=True)
+            else:
+                self._update_hint_scroll_indicators()
         else:
+            if hasattr(self, "_hint_browser") and self._hint_browser is not None:
+                if hasattr(self, "_items") and 0 <= self._idx < len(self._items):
+                    self._hint_scroll_positions[self._idx] = self._hint_browser.verticalScrollBar().value()
             self._hint_panel.hide()
             self._btn_note.setChecked(False)
 
+    def _log_shortcut_trigger(self, action_id: str, handler_name: str, key_event=None):
+        key_name = ""
+        if key_event is not None:
+            try:
+                key_name = QKeySequence(int(key_event.modifiers()) | int(key_event.key())).toString()
+            except Exception:
+                pass
+        if not key_name:
+            key_name = shortcut_manager.shortcut_text(action_id)
+        msg = f"[SHORTCUT] Key '{key_name}' -> Triggered '{action_id}' -> Calling {handler_name}()"
+        print(msg, flush=True)
+        try:
+            import os
+            app_data_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "AnkiOcclusion")
+            log_file_path = os.path.join(app_data_dir, "anki_occlusion.log")
+            with open(log_file_path, "a", encoding="utf-8") as f:
+                f.write(f"{msg}\n")
+        except Exception:
+            pass
+
     def _toggle_hint_panel(self):
-        self._set_hint_panel_visible(not self._hint_panel.isVisible())
+        self._log_shortcut_trigger("review.toggle_note", "_toggle_hint_panel")
+        if self._hint_panel.isVisible() and getattr(self, "_hint_view_mode", "mask") == "mask":
+            self._set_hint_panel_visible(False)
+        else:
+            self._hint_view_mode = "mask"
+            self._update_hint_tab_styles()
+            self._set_hint_panel_visible(True)
+            self._update_mask_note_ui(keep_visible=True)
+        self.setFocus()
+
+    def _toggle_pdf_notes(self):
+        self._log_shortcut_trigger("review.toggle_pdf_notes", "_toggle_pdf_notes")
+        if self._hint_panel.isVisible() and getattr(self, "_hint_view_mode", "mask") == "pdf":
+            self._set_hint_panel_visible(False)
+        else:
+            self._hint_view_mode = "pdf"
+            self._update_hint_tab_styles()
+            self._set_hint_panel_visible(True)
+            self._update_mask_note_ui(keep_visible=True)
         self.setFocus()
 
     def _update_mask_note_ui(self, keep_visible=False):
@@ -1570,15 +1562,15 @@ class ReviewScreen(QWidget):
 
         note_content = ""
         if card.get("card_type") == "text":
-            note_content = card.get("notes", "")
-        elif active_box is not None:
+            note_content = card.get("notes", "") or card.get("note", "")
+        elif active_box is not None and active_box is not card:
             if hasattr(active_box, "get"):
-                note_content = active_box.get("note", "")
+                note_content = active_box.get("note", "") or active_box.get("notes", "")
             else:
-                note_content = getattr(active_box, "note", "")
+                note_content = getattr(active_box, "note", "") or getattr(active_box, "notes", "")
 
         if not note_content:
-            note_content = card.get("notes", "")
+            note_content = card.get("notes", "") or card.get("note", "")
 
         note_content = (note_content or "").strip()
         self._current_note_content = note_content
@@ -1602,7 +1594,13 @@ class ReviewScreen(QWidget):
             color: {text_color};
             font-family: '{font_family}', 'Segoe UI', sans-serif;
             font-size: {self._hint_font_size}px;
-            line-height: 1.4;
+            line-height: 1.25;
+            margin: 2px;
+            padding: 0;
+        }}
+        p {{
+            margin: 1px 0;
+            padding: 0;
         }}
         a {{
             color: {accent_color};
@@ -1611,16 +1609,17 @@ class ReviewScreen(QWidget):
         img {{
             max-width: 100%;
             border-radius: 4px;
-            margin: 6px 0;
+            margin: 2px 0;
+            vertical-align: top;
         }}
         table {{
             border-collapse: collapse;
             width: 100%;
-            margin: 12px 0;
+            margin: 4px 0;
             border: 1px solid {border_color};
         }}
         th, td {{
-            padding: 8px 10px;
+            padding: 3px 6px;
             border: 1px solid {border_color};
         }}
         th {{
@@ -1707,74 +1706,19 @@ class ReviewScreen(QWidget):
         log_debug(f"=== _update_mask_note_ui (idx={self._idx}) ===")
         log_debug(f"note_content len: {len(note_content) if note_content else 0}")
 
-        # Calculate target panel width based on image size in hint content
-        max_img_width = 0
-        img_info = []
-        if all_notes_for_img_scan:
-            from storage_paths import resolve_asset_path
-            # Use robust regex that matches src attributes with optional spaces around '='
-            _RE_IMG_SRC_ROBUST = re.compile(r'<img\s+[^>]*src\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
-            sources = _RE_IMG_SRC_ROBUST.findall(all_notes_for_img_scan)
-            log_debug(f"Found image sources: {sources}")
-            for src in sources:
-                abs_path = resolve_asset_path(src)
-                abs_path = os.path.normpath(abs_path)
-                exists = os.path.exists(abs_path)
-                log_debug(f"Image: {src} -> Resolved: {abs_path} (exists={exists})")
-                if exists:
-                    pixmap = QPixmap(abs_path)
-                    log_debug(f"Pixmap isNull={pixmap.isNull()}, width={pixmap.width() if not pixmap.isNull() else 0}")
-                    if not pixmap.isNull():
-                        w = pixmap.width()
-                        max_img_width = max(max_img_width, w)
-                        img_info.append((src, abs_path, w, pixmap))
-
-        target_panel_width = getattr(self, "_user_hint_width", 360)
-        if max_img_width > 0:
-            target_panel_width = max(target_panel_width, max_img_width + 40)
-            total_width = self._canvas_stage.width()
-            if total_width > 0:
-                max_limit = int(total_width * 0.80)
-                target_panel_width = max(360, min(target_panel_width, max_limit))
-            else:
-                target_panel_width = max(360, target_panel_width)
-
-        self._last_calculated_hint_width = target_panel_width
-        log_debug(f"Calculated last width: {self._last_calculated_hint_width} (max_img_width={max_img_width})")
-
-        # Clear document to remove old registered resources
-        self._hint_browser.document().clear()
-        
-        # Calculate maximum display width inside the text browser container based on the actual physical panel width
         user_w = getattr(self, "_user_hint_width", 360)
         panel_is_visible = hasattr(self, "_hint_panel") and self._hint_panel is not None and self._hint_panel.isVisible()
-        
         if panel_is_visible and hasattr(self, "_hint_browser") and self._hint_browser is not None and self._hint_browser.isVisible():
             try:
-                viewport_w = int(self._hint_browser.viewport().width())
-            except (TypeError, ValueError):
-                viewport_w = 0
-            if viewport_w > 200 and viewport_w != 638:
-                panel_w = max(200, viewport_w - 32)
-            else:
-                panel_w = max(200, user_w - 34)
+                vw = int(self._hint_browser.viewport().width())
+                panel_w = max(200, vw - 24) if vw > 100 else max(200, user_w - 30)
+            except Exception:
+                panel_w = max(200, user_w - 30)
         else:
-            panel_w = max(200, user_w - 34)
-        scaled_widths = {}
-        scaled_heights = {}
-        
-        # Scale and register each image as a local document resource
-        for src, abs_path, w, pixmap in img_info:
-            display_w = min(w, panel_w)
-            scaled_pixmap = pixmap.scaledToWidth(display_w, Qt.SmoothTransformation)
-            
-            scaled_widths[src] = display_w
-            scaled_heights[src] = scaled_pixmap.height()
-            
-            doc = self._hint_browser.document()
-            doc.addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
-            doc.addResource(QTextDocument.ImageResource, QUrl.fromLocalFile(abs_path), scaled_pixmap)
-            doc.addResource(QTextDocument.ImageResource, QUrl(QUrl.fromLocalFile(abs_path).toString()), scaled_pixmap)
+            panel_w = max(200, user_w - 30)
+
+        from editor_ui import get_base_url
+        self._hint_browser.document().setBaseUrl(get_base_url())
 
         def process_html_images(html_content):
             if not html_content:
@@ -1783,50 +1727,58 @@ class ReviewScreen(QWidget):
             import os
             from storage_paths import resolve_asset_path
             
+            # Clean up empty paragraphs and consecutive breaks to remove dead vertical space
+            content = re.sub(r'<p[^>]*>(\s*|<br\s*/?>|&nbsp;)*</p>', '', html_content, flags=re.IGNORECASE)
+            content = re.sub(r'(<br\s*/?>\s*){2,}', '<br>', content, flags=re.IGNORECASE)
+            
             def replace_src(match):
                 tag = match.group(0)
+                # Strip hardcoded height so aspect ratio is 100% natural and never distorted
+                tag = re.sub(r'\bheight\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
+                
                 src_match = re.search(r'src\s*=\s*["\']([^"\']+)["\']', tag, flags=re.IGNORECASE)
                 if src_match:
                     src = src_match.group(1)
-                    # If it's a remote URL, data URL, or existing file URL, keep it as is
-                    if src.lower().startswith(('http://', 'https://', 'data:', 'file:')):
-                        return tag
-                    
-                    # Clean width/height/style on local images to allow scaling
-                    tag = re.sub(r'\bwidth\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
-                    tag = re.sub(r'\bheight\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
-                    tag = re.sub(r'\bstyle\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
-                    
-                    abs_path = resolve_asset_path(src)
-                    abs_path = os.path.normpath(abs_path)
-                    abs_path_url = QUrl.fromLocalFile(abs_path).toString()
-                    tag = re.sub(
-                        r'src\s*=\s*["\'][^"\']+["\']',
-                        f'src="{abs_path_url}"',
-                        tag,
-                        flags=re.IGNORECASE
-                    )
-                    display_w = scaled_widths.get(src, panel_w)
-                    display_h = scaled_heights.get(src)
-                    tag_clean = tag.strip().rstrip('>').rstrip('/')
-                    if display_h is not None:
-                        tag = tag_clean.strip() + f' width="{display_w}" height="{display_h}">'
-                    else:
-                        tag = tag_clean.strip() + f' width="{display_w}">'
+                    if not src.lower().startswith(('http://', 'https://', 'data:', 'file:')):
+                        abs_path = resolve_asset_path(src)
+                        abs_path = os.path.normpath(abs_path)
+                        abs_path_url = QUrl.fromLocalFile(abs_path).toString()
+                        tag = re.sub(
+                            r'src\s*=\s*["\'][^"\']+["\']',
+                            f'src="{abs_path_url}"',
+                            tag,
+                            flags=re.IGNORECASE
+                        )
+                        # Check natural image width to fit within panel without horizontal scrolling
+                        if os.path.exists(abs_path):
+                            pix = QPixmap(abs_path)
+                            if not pix.isNull():
+                                natural_w = pix.width()
+                                target_w = min(natural_w, panel_w)
+                                tag = re.sub(r'\bwidth\s*=\s*["\']([^"\']*)["\']', '', tag, flags=re.IGNORECASE)
+                                tag_clean = tag.strip().rstrip('>').rstrip('/')
+                                tag = tag_clean + f' width="{target_w}">'
                 return tag
                 
-            return re.sub(r'<img[^>]+>', replace_src, html_content, flags=re.IGNORECASE)
+            return re.sub(r'<img[^>]+>', replace_src, content, flags=re.IGNORECASE)
 
         html_body = f"<html><head><style>{css}</style></head><body>{process_html_images(n_html)}</body></html>"
-        try:
-            with open("C:/Users/Digvijay/.gemini/antigravity/brain/f1ad6817-33d3-4eb7-b150-94ad205f7304/scratch/rendered.html", "w", encoding="utf-8") as f:
-                f.write(html_body)
-        except Exception:
-            pass
         self._hint_browser.setHtml(html_body)
+        self._last_rendered_hint_key = self._get_current_hint_key()
         
         # Trigger scroll indicator update after layout recalculates
         QTimer.singleShot(100, self._update_hint_scroll_indicators)
+        
+        # Restore saved scroll position for current question safely
+        saved_pos = self._hint_scroll_positions.get(self._idx, 0)
+        self._restoring_hint_scroll = True
+        def _restore_scroll():
+            if hasattr(self, "_hint_browser") and self._hint_browser is not None:
+                self._hint_browser.verticalScrollBar().setValue(saved_pos)
+                self._update_hint_scroll_indicators()
+                self._restoring_hint_scroll = False
+        QTimer.singleShot(0, _restore_scroll)
+        QTimer.singleShot(50, _restore_scroll)
         
         self._reposition_floating_buttons()
 
@@ -2046,14 +1998,14 @@ class ReviewScreen(QWidget):
                     
                     current_note = ""
                     if card.get("card_type") == "text":
-                        current_note = card.get("notes", "")
-                    elif active_box is not None:
+                        current_note = card.get("notes", "") or card.get("note", "")
+                    elif active_box is not None and active_box is not card:
                         if hasattr(active_box, "get"):
-                            current_note = active_box.get("note", "")
+                            current_note = active_box.get("note", "") or active_box.get("notes", "")
                         else:
-                            current_note = getattr(active_box, "note", "")
+                            current_note = getattr(active_box, "note", "") or getattr(active_box, "notes", "")
                     if not current_note:
-                        current_note = card.get("notes", "")
+                        current_note = card.get("notes", "") or card.get("note", "")
                         
                     current_note = (current_note or "").strip()
                     
@@ -2094,13 +2046,17 @@ class ReviewScreen(QWidget):
                             
                     self._restored_image_info = None
                         
-                    if active_box is not None:
+                    if card.get("card_type") == "text":
+                        card["notes"] = new_note
+                        card["note"] = new_note
+                    elif active_box is not None and active_box is not card:
                         if hasattr(active_box, "__setitem__"):
                             active_box["note"] = new_note
                         elif hasattr(active_box, "note"):
                             active_box.note = new_note
                     else:
                         card["notes"] = new_note
+                        card["note"] = new_note
                         
                     if getattr(self, "canvas", None) is not None:
                         if isinstance(box_idx, int) and 0 <= box_idx < len(self.canvas._boxes):
@@ -2114,9 +2070,8 @@ class ReviewScreen(QWidget):
                     from data_manager import store
                     store.save_force(async_save=True, force_gdrive=False)
                     
-                    self._update_mask_note_ui()
-                    if not self._reveal_bar.isVisible():
-                        self._set_hint_panel_visible(True)
+                    self._update_mask_note_ui(keep_visible=True)
+                    self._set_hint_panel_visible(True)
                     saved_to_note = True
             except Exception:
                 pass
@@ -2355,14 +2310,14 @@ class ReviewScreen(QWidget):
         
         current_note = ""
         if card.get("card_type") == "text":
-            current_note = card.get("notes", "")
-        elif active_box is not None:
+            current_note = card.get("notes", "") or card.get("note", "")
+        elif active_box is not None and active_box is not card:
             if hasattr(active_box, "get"):
-                current_note = active_box.get("note", "")
+                current_note = active_box.get("note", "") or active_box.get("notes", "")
             else:
-                current_note = getattr(active_box, "note", "")
+                current_note = getattr(active_box, "note", "") or getattr(active_box, "notes", "")
         if not current_note:
-            current_note = card.get("notes", "")
+            current_note = card.get("notes", "") or card.get("note", "")
             
         current_note = current_note or ""
         
@@ -2383,13 +2338,17 @@ class ReviewScreen(QWidget):
             else:
                 new_note = dialog.note_edit.toPlainText().strip()
                 
-            if active_box is not None:
+            if card.get("card_type") == "text":
+                card["notes"] = new_note
+                card["note"] = new_note
+            elif active_box is not None and active_box is not card:
                 if hasattr(active_box, "__setitem__"):
                     active_box["note"] = new_note
                 elif hasattr(active_box, "note"):
                     active_box.note = new_note
             else:
                 card["notes"] = new_note
+                card["note"] = new_note
                 
             if getattr(self, "canvas", None) is not None:
                 if isinstance(box_idx, int) and 0 <= box_idx < len(self.canvas._boxes):
@@ -2403,9 +2362,8 @@ class ReviewScreen(QWidget):
             from data_manager import store
             store.save_force(async_save=True, force_gdrive=False)
             
-            self._update_mask_note_ui()
-            if not self._reveal_bar.isVisible():
-                self._set_hint_panel_visible(True)
+            self._update_mask_note_ui(keep_visible=True)
+            self._set_hint_panel_visible(True)
         dialog.deleteLater()
 
     def _show_hint_context_menu(self, pos):
@@ -3109,6 +3067,8 @@ class ReviewScreen(QWidget):
         card, box_idx, sm2_obj = self._items[self._idx]
         if hasattr(self.parent(), "save_last_review_session") and self._items:
             self.parent().save_last_review_session([item[0] for item in self._items], self._idx)
+        self._hint_scroll_positions.clear()
+        self._last_rendered_hint_key = None
         self._hint_view_mode = "mask"
         self._update_hint_tab_styles()
         has_pdf = bool(card.get("pdf_path"))
@@ -3177,8 +3137,12 @@ class ReviewScreen(QWidget):
             QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
             self._maybe_auto_reveal()
             
-            # Fit the rendered card width to the viewport
-            QTimer.singleShot(0, self._zoom_fit)
+            # Apply user-customized zoom if previously adjusted, otherwise fit
+            if self._user_zoom_scale is not None:
+                self.canvas._scale = self._user_zoom_scale
+                self.canvas._on_zoom()
+            else:
+                QTimer.singleShot(0, self._zoom_fit)
             self.canvas.setFocus()
             
             self._update_mask_note_ui()
@@ -3330,12 +3294,16 @@ class ReviewScreen(QWidget):
                 # Already revealed — hide karo (toggle back)
                 self._rating_frame.hide()
                 self._show_overlay(self._reveal_bar)
-                # Reset text card or masks wapas hide karo
                 card = self._items[self._idx][0] if 0 <= self._idx < len(self._items) else None
                 if card and card.get("card_type") == "text":
                     px = self._render_text_card_to_pixmap(card, is_revealed=False)
                     self.canvas._px = px
                     self.canvas._spx_cache.clear()
+                    if self._user_zoom_scale is not None:
+                        self.canvas._scale = self._user_zoom_scale
+                        self.canvas._on_zoom()
+                    else:
+                        self._zoom_fit()
                     self.canvas.update()
                 else:
                     for b in self.canvas._boxes:
@@ -3387,6 +3355,14 @@ class ReviewScreen(QWidget):
             self._open_annotation_beta()
         elif shortcut_manager.event_matches(e, "review.edit_card"):
             self._edit_current_card()
+        elif shortcut_manager.event_matches(e, "review.delete_card") and not e.isAutoRepeat():
+            self._delete_current_card()
+            e.accept()
+            return
+        elif shortcut_manager.event_matches(e, "review.browse_cards") and not e.isAutoRepeat():
+            self._open_card_browser()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.prev_page") and not e.isAutoRepeat():
             self._go_prev_review_page()
         elif shortcut_manager.event_matches(e, "review.next_page") and not e.isAutoRepeat():
@@ -3399,6 +3375,10 @@ class ReviewScreen(QWidget):
             self._toggle_floating_timer_visibility()
         elif shortcut_manager.event_matches(e, "review.toggle_note") and not e.isAutoRepeat():
             self._toggle_hint_panel()
+            e.accept()
+            return
+        elif shortcut_manager.event_matches(e, "review.toggle_pdf_notes") and not e.isAutoRepeat():
+            self._toggle_pdf_notes()
             e.accept()
             return
         elif shortcut_manager.event_matches(e, "review.quick_note") and not e.isAutoRepeat():
@@ -3484,6 +3464,10 @@ class ReviewScreen(QWidget):
                     self._update_pen_button_states()
         elif shortcut_manager.event_matches(e, "review.pen_clear") and not e.isAutoRepeat():
             self.canvas.ink_clear()
+        elif (mods & Qt.ControlModifier and key == Qt.Key_C):
+            self._copy_current_card_text()
+            e.accept()
+            return
         elif key == Qt.Key_Control and not e.isAutoRepeat():
             if getattr(self, "canvas", None) and getattr(self.canvas, "_ink_active", False):
                 self._was_ink_active_before_ctrl = True
@@ -3493,6 +3477,33 @@ class ReviewScreen(QWidget):
             self._debug_report("D key (manual)")
         else:
             super().keyPressEvent(e)
+
+    def _copy_current_card_text(self):
+        if not (0 <= self._idx < len(self._items)):
+            return
+        card, box_idx, _ = self._items[self._idx]
+        if not card:
+            return
+        
+        q = card.get("question", "").strip()
+        a = card.get("answer", "").strip()
+        
+        # If card is revealed, copy "Front — Back", else copy "Front"
+        is_revealed = self._rating_frame.isVisible()
+        if card.get("card_type") == "text":
+            if is_revealed and a:
+                text_to_copy = f"{q} — {a}" if q else a
+            else:
+                text_to_copy = q if q else a
+        else:
+            text_to_copy = card.get("title", "") or card.get("name", "")
+            
+        if text_to_copy:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(text_to_copy)
+            snippet = (text_to_copy[:50] + "...") if len(text_to_copy) > 50 else text_to_copy
+            if hasattr(self.canvas, "_show_toast"):
+                self.canvas._show_toast(f"📋 Copied: {snippet}")
 
     def keyReleaseEvent(self, e):
         if e.key() == Qt.Key_Control and not e.isAutoRepeat():
@@ -3517,6 +3528,11 @@ class ReviewScreen(QWidget):
             px = self._render_text_card_to_pixmap(card, is_revealed=True)
             self.canvas._px = px
             self.canvas._spx_cache.clear()
+            if self._user_zoom_scale is not None:
+                self.canvas._scale = self._user_zoom_scale
+                self.canvas._on_zoom()
+            else:
+                self._zoom_fit()
             self.canvas.update()
             self.setFocus()
         elif box_idx is None:
@@ -4022,9 +4038,13 @@ class ReviewScreen(QWidget):
                 self.canvas.zoom_out()
             self._user_zoom_scale = self.canvas._scale
 
+        def _on_zoom_fit_btn():
+            self._user_zoom_scale = None
+            self._zoom_fit()
+
         b_zin.clicked.connect(lambda: _manual_zoom(+1))
         b_zout.clicked.connect(lambda: _manual_zoom(-1))
-        b_zfit.clicked.connect(self._zoom_fit)
+        b_zfit.clicked.connect(_on_zoom_fit_btn)
         b_center.clicked.connect(self._center_on_target)
         row2.addWidget(b_zin)
         row2.addWidget(b_zout)
@@ -4169,7 +4189,7 @@ class ReviewScreen(QWidget):
         # ── Canvas scroll area ────────────────────────────────────────────────
         self._canvas_scroll = _ZoomableScrollArea()
         self._canvas_scroll.setWidgetResizable(False)
-        self._canvas_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self._canvas_scroll.setAlignment(Qt.AlignCenter)
         self._canvas_scroll.setStyleSheet(
             f"QScrollArea{{border:none;background:{bg};}}"
             f"QScrollBar:vertical{{background:{surface};width:8px;border-radius:4px;}}"
@@ -4224,6 +4244,20 @@ class ReviewScreen(QWidget):
         self._sc_pdf_metadata.setContext(Qt.WidgetWithChildrenShortcut)
         self._sc_pdf_metadata.setAutoRepeat(False)
         self._sc_pdf_metadata.activated.connect(self._open_pdf_notes_editor)
+
+        self._sc_toggle_note = QShortcut(
+            QKeySequence(shortcut_manager.shortcut_text("review.toggle_note")), self
+        )
+        self._sc_toggle_note.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_toggle_note.setAutoRepeat(False)
+        self._sc_toggle_note.activated.connect(self._toggle_hint_panel)
+
+        self._sc_toggle_pdf_notes = QShortcut(
+            QKeySequence(shortcut_manager.shortcut_text("review.toggle_pdf_notes")), self
+        )
+        self._sc_toggle_pdf_notes.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_toggle_pdf_notes.setAutoRepeat(False)
+        self._sc_toggle_pdf_notes.activated.connect(self._toggle_pdf_notes)
 
         self._pdf_viewer = PdfViewerController(
             canvas=self.canvas,
@@ -4326,6 +4360,7 @@ class ReviewScreen(QWidget):
         self._hint_browser.setOpenExternalLinks(True)
         self._hint_browser.setContextMenuPolicy(Qt.CustomContextMenu)
         self._hint_browser.customContextMenuRequested.connect(self._show_hint_context_menu)
+        self._hint_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         scrollbar_style = (
             f"QTextBrowser {{ background: transparent; color: {text}; border: none; font-size: {self._hint_font_size}px; line-height: 1.4; }}"
@@ -4350,17 +4385,10 @@ class ReviewScreen(QWidget):
         )
         self._hint_browser.setStyleSheet(scrollbar_style)
         hp_layout.addWidget(self._hint_browser)
-        
-        # Create top and bottom scroll fade overlays
-        self._hint_top_fade = ScrollFadeOverlay(self._hint_panel, "top")
-        self._hint_bottom_fade = ScrollFadeOverlay(self._hint_panel, "bottom")
-        self._hint_top_fade.hide()
-        self._hint_bottom_fade.hide()
-        
-        # Connect to scrollbar signals to update visibility
+
+        # Connect to scrollbar signals to save position
         vbar = self._hint_browser.verticalScrollBar()
-        vbar.valueChanged.connect(self._update_hint_scroll_indicators)
-        vbar.rangeChanged.connect(self._update_hint_scroll_indicators)
+        vbar.valueChanged.connect(self._on_hint_scrolled)
         
         self._resize_handle = ResizeHandle(self._hint_panel, self._on_hint_panel_resize)
 
@@ -5047,38 +5075,9 @@ class ReviewScreen(QWidget):
         self._hint_panel.setGeometry(w - panel_w, 0, panel_w, h)
         if hasattr(self, "_resize_handle"):
             self._resize_handle.setGeometry(0, 0, 6, h)
-            
-        # Reposition top and bottom fade overlays
-        if hasattr(self, "_hint_browser") and self._hint_browser is not None:
-            geom = self._hint_browser.geometry()
-            fade_h = 45
-            if hasattr(self, "_hint_top_fade") and self._hint_top_fade is not None:
-                self._hint_top_fade.setGeometry(geom.x(), geom.y(), geom.width(), fade_h)
-            if hasattr(self, "_hint_bottom_fade") and self._hint_bottom_fade is not None:
-                self._hint_bottom_fade.setGeometry(geom.x(), geom.y() + geom.height() - fade_h, geom.width(), fade_h)
-            
-            # Recalculate indicators visibility
-            self._update_hint_scroll_indicators()
 
     def _update_hint_scroll_indicators(self):
-        if not hasattr(self, "_hint_browser") or self._hint_browser is None:
-            return
-        if not hasattr(self, "_hint_top_fade") or self._hint_top_fade is None:
-            return
-        if not hasattr(self, "_hint_bottom_fade") or self._hint_bottom_fade is None:
-            return
-            
-        vbar = self._hint_browser.verticalScrollBar()
-        if not vbar.isVisible() or vbar.maximum() <= 0:
-            self._hint_top_fade.hide()
-            self._hint_bottom_fade.hide()
-            return
-            
-        val = vbar.value()
-        max_val = vbar.maximum()
-        
-        self._hint_top_fade.setVisible(val > 0)
-        self._hint_bottom_fade.setVisible(val < max_val)
+        pass
 
     def _activate_default_review_pen(self):
         canvas = self.__dict__.get("canvas", None)
@@ -5197,6 +5196,14 @@ class ReviewScreen(QWidget):
             return
         w, h = self.canvas._canvas_wh()
         if w < 1 or h < 1:
+            return
+        card = self._items[self._idx][0] if (0 <= self._idx < len(self._items)) else None
+        if card and card.get("card_type") == "text":
+            avail_w = max(vp.width() - 40, 1)
+            avail_h = max(vp.height() - 20, 1)
+            scale = min(avail_w / w, avail_h / h)
+            self.canvas._scale = max(0.5, min(scale, 1.25))
+            self.canvas._on_zoom()
             return
         available_w = max(vp.width(), 1)
         self.canvas._scale = available_w / w
@@ -5346,11 +5353,15 @@ class ReviewScreen(QWidget):
             self._review_ink_colors = list(self.canvas._ink_colors)
             self._review_ink_color_idx = int(self.canvas._ink_color_idx)
             self._save_review_ink_color()
+            if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
+                self._text_review_widget.scratchpad.active_color = chosen
             self.canvas._show_toast(f"✏ Ink Color: {chosen_hex}")
             self._update_pen_button_states()
 
     def _clear_pen_strokes(self):
         self.canvas.ink_clear()
+        if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
+            self._text_review_widget.scratchpad.clear()
 
     def _on_review_pen_perf_changed(self, idx):
         _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
@@ -5740,7 +5751,7 @@ class ReviewScreen(QWidget):
             self._review_data_dirty = True
             
         self._items = [
-            (c, None, c) if id(c) == id(card) else item 
+            (item[0], None, item[0]) if (id(item[0]) == id(card) or (card.get("_id") and item[0].get("_id") == card.get("_id"))) else item 
             for item in self._items
         ]
         self.mgr._queue_needs_full_rebuild = True
@@ -5847,6 +5858,125 @@ class ReviewScreen(QWidget):
         self._reload_current_canvas()
         dlg.deleteLater()
 
+    def _delete_current_card(self):
+        if not self._items or not (0 <= self._idx < len(self._items)):
+            return
+        card, box_idx, sm2_obj = self._items[self._idx]
+        
+        # Get clean descriptive title for confirmation
+        card_type = card.get("card_type", "pdf")
+        if card_type == "text":
+            title = card.get("title") or card.get("question", "")
+            title_clean = " ".join(re.sub(r'<[^>]+>', ' ', title).split())[:60]
+        else:
+            title_clean = card.get("title") or os.path.basename(card.get("pdf_path", "") or card.get("image_path", ""))
+            
+        confirm = QMessageBox.question(
+            self,
+            "Delete Card Confirmation",
+            f"Are you sure you want to permanently delete this card from the deck?\n\n\"{title_clean}\"",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        # Find parent deck and delete card
+        deleted = False
+        def _walk_and_remove(d):
+            nonlocal deleted
+            if not d:
+                return
+            cards = d.get("cards", [])
+            for i, c in enumerate(cards):
+                if c is card or (card.get("_id") and c.get("_id") == card.get("_id")):
+                    cards.pop(i)
+                    deleted = True
+                    return
+            for sub in d.get("children", []):
+                _walk_and_remove(sub)
+                if deleted:
+                    return
+            for sub in d.get("subdecks", []):
+                _walk_and_remove(sub)
+                if deleted:
+                    return
+
+        decks = self._data.get("decks", [])
+        if isinstance(decks, dict):
+            decks = list(decks.values())
+        for d in decks:
+            _walk_and_remove(d)
+            if deleted:
+                break
+
+        # Remove from active queue
+        self._items = [
+            item for item in self._items 
+            if not (item[0] is card or (card.get("_id") and item[0].get("_id") == card.get("_id")))
+        ]
+        
+        card_id = card.get("_id")
+        if card_id is not None and hasattr(self, "_text_card_cache"):
+            self._text_card_cache.pop((card_id, True), None)
+            self._text_card_cache.pop((card_id, False), None)
+
+        store.mark_dirty()
+        try:
+            store.save_force(async_save=True)
+        except Exception:
+            pass
+
+        self.canvas._show_toast("🗑️ Card deleted successfully")
+        
+        if hasattr(self, "prog") and hasattr(self, "lbl_prog"):
+            self.prog.setMaximum(max(1, len(self._items)))
+            
+        if not self._items:
+            self._finish_session()
+        else:
+            if self._idx >= len(self._items):
+                self._idx = len(self._items) - 1
+            if hasattr(self, "lbl_prog"):
+                self.lbl_prog.setText(f"Card {self._idx + 1}/{len(self._items)}")
+            self.mgr._queue_needs_full_rebuild = True
+            self._rebuild_queue()
+            self._load_item()
+
+    def _find_card_deck(self, target_card):
+        if not target_card or not self._data:
+            return None
+        def _walk(d):
+            if not d:
+                return None
+            for c in d.get("cards", []):
+                if c is target_card or (target_card.get("_id") and c.get("_id") == target_card.get("_id")):
+                    return d
+            for sub in d.get("children", []):
+                res = _walk(sub)
+                if res:
+                    return res
+            for sub in d.get("subdecks", []):
+                res = _walk(sub)
+                if res:
+                    return res
+            return None
+        decks = self._data.get("decks", [])
+        if isinstance(decks, dict):
+            decks = list(decks.values())
+        for d in decks:
+            res = _walk(d)
+            if res:
+                return res
+        return None
+
+    def _open_card_browser(self):
+        from ui.card_browser_dialog import CardBrowserDialog
+        current_card = self._items[self._idx][0] if (self._items and 0 <= self._idx < len(self._items)) else None
+        current_deck = self._find_card_deck(current_card)
+        dlg = CardBrowserDialog(self, deck=current_deck, data=self._data, review_screen=self)
+        dlg.exec_()
+
     def _open_current_pdf_in_reader(self):
         from ui.review.external_reader import open_current_pdf_in_reader
         open_current_pdf_in_reader(self)
@@ -5941,13 +6071,37 @@ class ReviewScreen(QWidget):
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         p = get_palette(theme)
         
-        # Determine background & text colors
-        bg_hex = p.get("C_CARD", "#1E1E2E")
-        bg_color = QColor(bg_hex)
-        text_color_hex = "#CDD6F4" if theme != "classic" else p.get("C_TEXT", "#212529")
-        subtext_color_hex = "#A6ADC8" if theme != "classic" else p.get("C_SUBTEXT", "#868E96")
+        # Determine theme-tailored high-contrast colors
+        if theme in ("tmnt", "manhattan"):
+            card_bg_hex = "#121622"
+            card_border_hex = "#00f0ff"
+            text_color_hex = "#FFFFFF"
+            answer_color_hex = "#39ff14"
+            subtext_color_hex = "#8FA4BF"
+            header_color_hex = "#00F0FF"
+        elif theme == "dojo":
+            card_bg_hex = "#0F0F17"
+            card_border_hex = "#A86CFF"
+            text_color_hex = "#FFFFFF"
+            answer_color_hex = "#72FF4F"
+            subtext_color_hex = "#8C9BB4"
+            header_color_hex = "#A86CFF"
+        elif theme == "arcanum":
+            card_bg_hex = "#16131D"
+            card_border_hex = "#C89B3C"
+            text_color_hex = "#F5E6C8"
+            answer_color_hex = "#FFD700"
+            subtext_color_hex = "#B09F8C"
+            header_color_hex = "#C89B3C"
+        else:  # classic / dark
+            card_bg_hex = "#1E202C"
+            card_border_hex = "#5C7CFA"
+            text_color_hex = "#FFFFFF"
+            answer_color_hex = "#50FA7B"
+            subtext_color_hex = "#A6ADC8"
+            header_color_hex = "#5C7CFA"
+
         border_color_hex = p.get("C_BORDER", "#45475A")
-        accent_color_hex = p.get("C_ACCENT", "#7C6AF7")
         body_font = p.get("body_font", "'Segoe UI'").split(",")[0].strip("'")
         header_font = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
 
@@ -5955,39 +6109,45 @@ class ReviewScreen(QWidget):
         doc = QTextDocument()
         doc.setBaseUrl(get_base_url())
 
-        # Setup base styling
+        # Setup base styling with universal high-contrast color selectors
         css = f"""
+        * {{
+            color: {text_color_hex};
+        }}
         body {{
             background-color: transparent;
             color: {text_color_hex};
             font-family: {body_font};
-            font-size: 16px;
+            font-size: 18px;
             margin: 0;
             padding: 0;
         }}
         .question {{
-            margin-bottom: 20px;
+            color: {text_color_hex};
+            font-size: 24px;
+            font-weight: bold;
+            line-height: 1.35;
+            margin: 0 0 10px 0;
+        }}
+        .answer-hdr {{
+            color: {header_color_hex};
+            font-family: {header_font};
+            font-size: 11px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            margin: 8px 0 6px 0;
         }}
         .answer {{
-            margin-top: 20px;
-            margin-bottom: 20px;
-        }}
-        .notes-title {{
-            color: {subtext_color_hex};
-            font-family: {header_font};
-            font-weight: bold;
-            font-size: 13px;
-            margin-top: 20px;
-            margin-bottom: 5px;
-        }}
-        .notes-content {{
-            color: {subtext_color_hex};
-            font-size: 12px;
+            color: {answer_color_hex};
+            font-size: 21px;
+            font-weight: 500;
+            line-height: 1.4;
+            margin: 0 0 8px 0;
         }}
         hr {{
             border: none;
             border-top: 1px solid {border_color_hex};
-            margin: 20px 0;
+            margin: 12px 0;
         }}
         """
         doc.setDefaultStyleSheet(css)
@@ -5995,12 +6155,16 @@ class ReviewScreen(QWidget):
         # Build HTML content
         question = card.get("question", "")
         answer = card.get("answer", "")
-        notes = card.get("notes", "")
 
         def format_field(text):
             if not text:
                 return ""
-            if "<img" in text or "<html>" in text or "<p>" in text or "<div" in text or "<span>" in text or "<br" in text:
+            import re
+            if "<!doctype" in text.lower() or "<html" in text.lower():
+                body_match = re.search(r'<body[^>]*>(.*?)</body>', text, re.DOTALL | re.IGNORECASE)
+                if body_match:
+                    text = body_match.group(1).strip()
+            if "<img" in text or "<p" in text or "<div" in text or "<span" in text or "<br" in text or "<table" in text:
                 return text
             import html
             return html.escape(text).replace("\n", "<br>")
@@ -6008,7 +6172,7 @@ class ReviewScreen(QWidget):
         q_html = format_field(question)
         
         # Parse img tags and resolve local paths into resources for document rendering
-        # Also clean img tags to remove original sizes and use width=720px
+        # Also clean img tags to remove original sizes and use width=860px
         def process_html_images(html_content):
             if not html_content:
                 return ""
@@ -6037,8 +6201,8 @@ class ReviewScreen(QWidget):
                     if not pixmap.isNull():
                         w = pixmap.width()
                         if w > 0:
-                            # Scale pixmap smoothly to width 720
-                            scaled_pixmap = pixmap.scaledToWidth(720, Qt.SmoothTransformation)
+                            # Scale pixmap smoothly to width 860
+                            scaled_pixmap = pixmap.scaledToWidth(860, Qt.SmoothTransformation)
                             doc.addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
                             doc.addResource(QTextDocument.ImageResource, QUrl.fromLocalFile(abs_path), scaled_pixmap)
             
@@ -6048,8 +6212,7 @@ class ReviewScreen(QWidget):
                 tag = re.sub(r'width\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
                 tag = re.sub(r'height\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
                 tag = re.sub(r'style\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
-                # Inject width="720"
-                tag = tag[:-1] + ' width="720">'
+                tag = tag[:-1] + ' width="860">'
                 return tag
                 
             cleaned = _RE_IMG.sub(clean_and_resize_img_tags, html_content)
@@ -6059,32 +6222,61 @@ class ReviewScreen(QWidget):
 
         q_html = process_html_images(q_html)
 
-        html_body = f'<div class="question">{q_html}</div>'
+        html_body = f'''
+        <div style="color: {text_color_hex}; font-family: {body_font};">
+            <div class="question" style="color: {text_color_hex}; font-size: 24px; font-weight: bold; line-height: 1.35; margin: 0 0 10px 0;">
+                {q_html}
+            </div>
+        '''
 
         if is_revealed:
             a_html = format_field(answer)
             a_html = process_html_images(a_html)
-            html_body += f'<hr><div class="answer">{a_html}</div>'
-            
-            if notes:
-                n_html = format_field(notes)
-                n_html = process_html_images(n_html)
-                html_body += f'<div class="notes-title">Notes / Hints:</div><div class="notes-content">{n_html}</div>'
+            html_body += f'''
+            <hr style="border: none; border-top: 1px solid {border_color_hex}; margin: 12px 0;">
+            <div class="answer-hdr" style="color: {header_color_hex}; font-size: 11px; font-weight: bold; letter-spacing: 1px; margin: 8px 0 6px 0;">
+                ANSWER / MEANING:
+            </div>
+            <div class="answer" style="color: {answer_color_hex}; font-size: 21px; font-weight: 500; line-height: 1.4; margin: 0 0 8px 0;">
+                {a_html}
+            </div>
+            '''
+
+        html_body += '</div>'
 
         doc.setHtml(html_body)
-        doc.setTextWidth(720.0)
+        
+        card_width = 1000
+        text_content_w = 880.0
+        doc.setTextWidth(text_content_w)
 
         h = int(doc.size().height())
-        total_height = max(500, h + 80)
+        content_pad_top = 28
+        content_pad_bottom = 28
+        rating_bar_clearance = 120  # Always reserve clearance at the bottom for the floating review rating bar
         
-        px = QPixmap(800, total_height)
-        px.fill(bg_color)
+        card_frame_h = h + content_pad_top + content_pad_bottom
+        total_height = max(320, card_frame_h + rating_bar_clearance)
+        
+        # Pixmap background matches canvas background
+        canvas_bg = p.get("C_BG", "#07070B")
+        px = QPixmap(card_width, total_height)
+        px.fill(QColor(canvas_bg))
         
         painter = QPainter(px)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.TextAntialiasing)
-        painter.translate(40, 40)
-        doc.drawContents(painter, QRectF(0, 0, 720, h))
+        
+        # Draw sleek rounded card frame
+        card_rect = QRectF(25, 20, card_width - 50, card_frame_h)
+        painter.setBrush(QBrush(QColor(card_bg_hex)))
+        painter.setPen(QPen(QColor(card_border_hex), 1.5))
+        painter.drawRoundedRect(card_rect, 10, 10)
+        
+        # Draw document inside card with compact padding
+        painter.setPen(QColor(text_color_hex))
+        painter.translate(60, 20 + content_pad_top)
+        doc.drawContents(painter, QRectF(0, 0, text_content_w, h))
         painter.end()
 
         if card_id is not None and hasattr(self, "_text_card_cache"):
