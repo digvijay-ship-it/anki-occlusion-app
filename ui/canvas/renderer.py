@@ -166,77 +166,183 @@ class CanvasRendererMixin:
 
         p.fillRect(clip, _C_BG_CANVAS)
 
-        p.save()
-        if getattr(self, "_focus_mode", False) and getattr(self, "_mode", "review") == "review":
-            p.setOpacity(getattr(self, "_bg_opacity", 0.2))
+        is_review = (getattr(self, "_mode", "review") == "review")
+        is_ultra = is_review and (
+            getattr(self, "_ultra_focus_mode", False)
+            or (getattr(self, "_focus_mode", False) and getattr(self, "_bg_opacity", 0.2) <= 0.0)
+        )
 
-        if self._px and not self._px.isNull():
-            transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
-            cached_scale, cached_tt, cached_spx = self._spx_cache.get("_px", (None, None, None))
-            if cached_spx is not None:
-                self._spx_cache.move_to_end("_px", last=True)
-            if cached_scale != self._scale or cached_tt != transform_type or cached_spx is None:
-                if profile:
-                    phases["scale_miss"] += 1
-                    scale_t0 = time.perf_counter()
-                cached_spx = self._px.scaled(
-                    max(int(self._px.width() * self._scale), 1),
-                    max(int(self._px.height() * self._scale), 1),
-                    Qt.KeepAspectRatio,
-                    transform_type,
-                )
-                self._spx_cache["_px"] = (self._scale, transform_type, cached_spx)
-                self._spx_cache.move_to_end("_px", last=True)
-                while len(self._spx_cache) > self.SPX_CACHE_MAX:
-                    self._spx_cache.popitem(last=False)
-                if profile:
-                    phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
-            if profile:
-                draw_t0 = time.perf_counter()
-            p.drawPixmap(0, 0, cached_spx)
-            if profile:
-                phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
+        if is_ultra:
+            # Ultra Focus Mode: render underlying page exclusively inside revealed target/peek boxes
+            revealed_targets = []
+            for i, b in enumerate(self._boxes):
+                if (self._is_current_target(i, b) or self._is_peek_target(i, b)) and b.get("revealed", False):
+                    sr = self._sr(b["rect"])
+                    if clip.intersects(sr.toRect()):
+                        revealed_targets.append((i, b, sr))
 
-        elif self._pages:
-            for i, page_px in enumerate(self._pages):
-                scr_top = int(self._page_tops[i] * self._scale)
-                scr_h = int(page_px.height() * self._scale)
-                scr_bot = scr_top + scr_h
-
-                if scr_bot < clip.top():
-                    continue
-                if scr_top > clip.bottom():
-                    break
-
+            if revealed_targets:
                 transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
-                cached_scale, cached_tt, cached_spx = self._spx_cache.get(i, (None, None, None))
+                combined_path = QPainterPath()
+                for i, b, sr in revealed_targets:
+                    ang = b.get("angle", 0.0)
+                    shape = b.get("shape", "rect")
+                    if ang != 0.0:
+                        cx, cy = sr.center().x(), sr.center().y()
+                        t = QTransform()
+                        t.translate(cx, cy)
+                        t.rotate(ang)
+                        local_r = QRectF(-sr.width() / 2.0, -sr.height() / 2.0, sr.width(), sr.height())
+                        if shape == "ellipse":
+                            local_path = QPainterPath()
+                            local_path.addEllipse(local_r)
+                            combined_path.addPath(t.map(local_path))
+                        else:
+                            poly = t.map(QPolygonF(local_r))
+                            combined_path.addPolygon(poly)
+                    else:
+                        if shape == "ellipse":
+                            combined_path.addEllipse(sr)
+                        else:
+                            combined_path.addRect(sr)
+
+                p.save()
+                p.setClipPath(combined_path)
+                p.setOpacity(1.0)
+
+                if self._px and not self._px.isNull():
+                    cached_scale, cached_tt, cached_spx = self._spx_cache.get("_px", (None, None, None))
+                    if cached_spx is not None:
+                        self._spx_cache.move_to_end("_px", last=True)
+                    if cached_scale != self._scale or cached_tt != transform_type or cached_spx is None:
+                        if profile:
+                            phases["scale_miss"] += 1
+                            scale_t0 = time.perf_counter()
+                        cached_spx = self._px.scaled(
+                            max(int(self._px.width() * self._scale), 1),
+                            max(int(self._px.height() * self._scale), 1),
+                            Qt.KeepAspectRatio,
+                            transform_type,
+                        )
+                        self._spx_cache["_px"] = (self._scale, transform_type, cached_spx)
+                        self._spx_cache.move_to_end("_px", last=True)
+                        while len(self._spx_cache) > self.SPX_CACHE_MAX:
+                            self._spx_cache.popitem(last=False)
+                        if profile:
+                            phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+                    if profile:
+                        draw_t0 = time.perf_counter()
+                    p.drawPixmap(0, 0, cached_spx)
+                    if profile:
+                        phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
+
+                elif self._pages:
+                    for i, page_px in enumerate(self._pages):
+                        scr_top = int(self._page_tops[i] * self._scale)
+                        scr_h = int(page_px.height() * self._scale)
+                        scr_bot = scr_top + scr_h
+
+                        if scr_bot < clip.top():
+                            continue
+                        if scr_top > clip.bottom():
+                            break
+
+                        cached_scale, cached_tt, cached_spx = self._spx_cache.get(i, (None, None, None))
+                        if cached_spx is not None:
+                            self._spx_cache.move_to_end(i, last=True)
+                        cache_hit = (
+                            cached_scale == self._scale
+                            and cached_tt == transform_type
+                            and cached_spx is not None
+                            and not cached_spx.isNull()
+                        )
+                        if profile:
+                            scale_t0 = time.perf_counter()
+                        scaled_page = self._get_scaled_page(i)
+                        if profile:
+                            phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+                            if not cache_hit:
+                                phases["scale_miss"] += 1
+                            draw_t0 = time.perf_counter()
+                        p.drawPixmap(0, scr_top, scaled_page)
+                        if profile:
+                            phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
+                        pages_drawn += 1
+
+                p.restore()
+        else:
+            p.save()
+            if getattr(self, "_focus_mode", False) and is_review:
+                p.setOpacity(getattr(self, "_bg_opacity", 0.2))
+
+            if self._px and not self._px.isNull():
+                transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
+                cached_scale, cached_tt, cached_spx = self._spx_cache.get("_px", (None, None, None))
                 if cached_spx is not None:
-                    self._spx_cache.move_to_end(i, last=True)
-                cache_hit = (
-                    cached_scale == self._scale
-                    and cached_tt == transform_type
-                    and cached_spx is not None
-                    and not cached_spx.isNull()
-                )
-                if profile:
-                    scale_t0 = time.perf_counter()
-                scaled_page = self._get_scaled_page(i)
-                if profile:
-                    phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
-                    if not cache_hit:
+                    self._spx_cache.move_to_end("_px", last=True)
+                if cached_scale != self._scale or cached_tt != transform_type or cached_spx is None:
+                    if profile:
                         phases["scale_miss"] += 1
+                        scale_t0 = time.perf_counter()
+                    cached_spx = self._px.scaled(
+                        max(int(self._px.width() * self._scale), 1),
+                        max(int(self._px.height() * self._scale), 1),
+                        Qt.KeepAspectRatio,
+                        transform_type,
+                    )
+                    self._spx_cache["_px"] = (self._scale, transform_type, cached_spx)
+                    self._spx_cache.move_to_end("_px", last=True)
+                    while len(self._spx_cache) > self.SPX_CACHE_MAX:
+                        self._spx_cache.popitem(last=False)
+                    if profile:
+                        phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+                if profile:
                     draw_t0 = time.perf_counter()
-                p.drawPixmap(0, scr_top, scaled_page)
+                p.drawPixmap(0, 0, cached_spx)
                 if profile:
                     phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
-                pages_drawn += 1
 
-                if i < len(self._pages) - 1:
-                    sep_y = scr_bot + int(PAGE_GAP * self._scale) // 2
-                    p.setPen(_SEP_PEN)
-                    p.drawLine(0, sep_y, self.width(), sep_y)
+            elif self._pages:
+                for i, page_px in enumerate(self._pages):
+                    scr_top = int(self._page_tops[i] * self._scale)
+                    scr_h = int(page_px.height() * self._scale)
+                    scr_bot = scr_top + scr_h
 
-        p.restore()
+                    if scr_bot < clip.top():
+                        continue
+                    if scr_top > clip.bottom():
+                        break
+
+                    transform_type = Qt.FastTransformation if getattr(self, "_fast_zoom", False) else Qt.SmoothTransformation
+                    cached_scale, cached_tt, cached_spx = self._spx_cache.get(i, (None, None, None))
+                    if cached_spx is not None:
+                        self._spx_cache.move_to_end(i, last=True)
+                    cache_hit = (
+                        cached_scale == self._scale
+                        and cached_tt == transform_type
+                        and cached_spx is not None
+                        and not cached_spx.isNull()
+                    )
+                    if profile:
+                        scale_t0 = time.perf_counter()
+                    scaled_page = self._get_scaled_page(i)
+                    if profile:
+                        phases["page_scale_ms"] += (time.perf_counter() - scale_t0) * 1000.0
+                        if not cache_hit:
+                            phases["scale_miss"] += 1
+                        draw_t0 = time.perf_counter()
+                    p.drawPixmap(0, scr_top, scaled_page)
+                    if profile:
+                        phases["page_draw_ms"] += (time.perf_counter() - draw_t0) * 1000.0
+                    pages_drawn += 1
+
+                    if i < len(self._pages) - 1:
+                        sep_y = scr_bot + int(PAGE_GAP * self._scale) // 2
+                        p.setPen(_SEP_PEN)
+                        p.drawLine(0, sep_y, self.width(), sep_y)
+
+            p.restore()
+
 
         p.setRenderHint(QPainter.Antialiasing)
         if profile:
@@ -323,9 +429,13 @@ class CanvasRendererMixin:
             is_target = self._is_current_target(i, b)
             is_peek_target = self._is_peek_target(i, b)
             hide_one = self._review_mode_style == "hide_one"
+            is_ultra = (
+                getattr(self, "_ultra_focus_mode", False)
+                or (getattr(self, "_focus_mode", False) and getattr(self, "_bg_opacity", 0.2) <= 0.0)
+            )
 
             if hide_one and not is_target and not is_peek_target:
-                if not revealed:
+                if not revealed and not is_ultra:
                     p.setPen(cc["C_GREEN_PEN_1_DOT"])
                     p.setBrush(cc["NO_BRUSH"])
                     (p.drawEllipse if shape == "ellipse" else p.drawRect)(local)
@@ -342,7 +452,10 @@ class CanvasRendererMixin:
                 else:
                     brush = cc["C_MASK_BRUSH"]
                     pen = cc["C_BORDER_PEN_2"]
-                    if getattr(self, "_focus_mode", False) and getattr(self, "_mode", "review") == "review":
+                    if is_ultra:
+                        brush = QBrush(_C_BG_CANVAS)
+                        pen = cc["C_BORDER_PEN_2"]
+                    elif getattr(self, "_focus_mode", False) and getattr(self, "_mode", "review") == "review":
                         factor = self._bg_opacity
                         bg = _C_BG_CANVAS
                         def blend(c1, c2, f):

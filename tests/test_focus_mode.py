@@ -115,3 +115,58 @@ class FocusModeTests(unittest.TestCase):
         # Should now be ON and opacity adjusted
         self.assertTrue(screen.canvas.is_focus_mode())
         self.assertAlmostEqual(screen.canvas.get_bg_opacity(), 0.3)
+
+    def test_canvas_ultra_focus_mode_defaults(self):
+        canvas = OcclusionCanvas()
+        self.assertFalse(canvas.is_ultra_focus_mode())
+
+    def test_canvas_ultra_focus_mode_toggling(self):
+        canvas = OcclusionCanvas()
+        canvas.set_ultra_focus_mode(True)
+        self.assertTrue(canvas.is_ultra_focus_mode())
+        canvas.set_ultra_focus_mode(False)
+        self.assertFalse(canvas.is_ultra_focus_mode())
+
+    def test_review_screen_ultra_focus_toggle_shortcut(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = OcclusionCanvas()
+        screen._rating_frame = MagicMock()
+        screen._rating_frame.isVisible.return_value = False
+        screen._btn_focus_canvas = MagicMock()
+        screen._btn_ultra_focus = MagicMock()
+        screen._act_ultra_focus = MagicMock()
+        screen._update_focus_mode_button_style = MagicMock()
+        screen._btn_focus_opacity_minus = MagicMock()
+        screen._btn_focus_opacity_plus = MagicMock()
+        
+        # Initial state
+        self.assertFalse(screen.canvas.is_ultra_focus_mode())
+        
+        # Press Ctrl+Shift+F
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.ControlModifier | Qt.ShiftModifier)
+        screen.keyPressEvent(event)
+        
+        self.assertTrue(screen.canvas.is_ultra_focus_mode())
+        screen._update_focus_mode_button_style.assert_called_once()
+        
+        # Press Ctrl+Shift+F again
+        screen.keyPressEvent(event)
+        self.assertFalse(screen.canvas.is_ultra_focus_mode())
+
+    def test_review_screen_ultra_focus_button_sync(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen.canvas = OcclusionCanvas()
+        screen._btn_focus_canvas = MagicMock()
+        screen._btn_ultra_focus = MagicMock()
+        screen._act_ultra_focus = MagicMock()
+
+        screen.canvas.set_ultra_focus_mode(True)
+        screen._update_focus_mode_button_style()
+        screen._btn_ultra_focus.setChecked.assert_called_with(True)
+        screen._act_ultra_focus.setChecked.assert_called_with(True)
+
+        screen.canvas.set_ultra_focus_mode(False)
+        screen._update_focus_mode_button_style()
+        screen._btn_ultra_focus.setChecked.assert_called_with(False)
+        screen._act_ultra_focus.setChecked.assert_called_with(False)
+

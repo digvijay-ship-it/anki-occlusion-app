@@ -119,6 +119,8 @@ class OcclusionCanvas(
         focus_settings = QSettings("AnkiOcclusion", "FocusModeSettings")
         val = focus_settings.value("focus_mode_enabled", "false")
         self._focus_mode = (val == "true" or val is True)
+        val_ultra = focus_settings.value("ultra_focus_enabled", "false")
+        self._ultra_focus_mode = (val_ultra == "true" or val_ultra is True)
         try:
             self._bg_opacity = float(focus_settings.value("bg_opacity", 0.2))
         except (ValueError, TypeError):
@@ -159,6 +161,16 @@ class OcclusionCanvas(
     def is_focus_mode(self) -> bool:
         return self._focus_mode
 
+    def set_ultra_focus_mode(self, enabled: bool):
+        self._ultra_focus_mode = bool(enabled)
+        from PyQt5.QtCore import QSettings
+        settings = QSettings("AnkiOcclusion", "FocusModeSettings")
+        settings.setValue("ultra_focus_enabled", "true" if enabled else "false")
+        self.update()
+
+    def is_ultra_focus_mode(self) -> bool:
+        return getattr(self, "_ultra_focus_mode", False)
+
     def set_bg_opacity(self, opacity: float):
         self._bg_opacity = max(0.0, min(1.0, round(opacity, 2)))
         from PyQt5.QtCore import QSettings
@@ -168,4 +180,5 @@ class OcclusionCanvas(
 
     def get_bg_opacity(self) -> float:
         return self._bg_opacity
+
 

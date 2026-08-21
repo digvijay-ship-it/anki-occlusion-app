@@ -68,6 +68,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.eraser_toggle", "Review", "Toggle eraser drawing", "E"),
     ShortcutAction("review.pen_eraser_toggle", "Review", "Toggle pen/eraser", "Q"),
     ShortcutAction("review.toggle_focus", "Review", "Toggle Focus Canvas Mode", "Ctrl+F"),
+    ShortcutAction("review.toggle_ultra_focus", "Review", "Toggle Ultra Focus Mode", "Ctrl+Shift+F"),
     ShortcutAction("review.pdf_metadata", "Review", "Edit PDF reference notes", "Ctrl+M"),
 )
 

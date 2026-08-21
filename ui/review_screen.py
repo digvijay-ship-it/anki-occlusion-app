@@ -3371,6 +3371,8 @@ class ReviewScreen(QWidget):
             self._toggle_pdf_contrast()
         elif shortcut_manager.event_matches(e, "review.toggle_focus") and not e.isAutoRepeat():
             self._toggle_focus_mode()
+        elif shortcut_manager.event_matches(e, "review.toggle_ultra_focus") and not e.isAutoRepeat():
+            self._toggle_ultra_focus_mode()
         elif shortcut_manager.event_matches(e, "review.toggle_timer") and not e.isAutoRepeat():
             self._toggle_floating_timer_visibility()
         elif shortcut_manager.event_matches(e, "review.toggle_note") and not e.isAutoRepeat():
@@ -3781,6 +3783,27 @@ class ReviewScreen(QWidget):
             self._btn_focus_opacity_plus.styleSheet() + " QPushButton { padding: 0px; font-size: 16px; font-weight: bold; }"
         )
         self._btn_focus_opacity_plus.clicked.connect(lambda: self._adjust_focus_opacity(-0.05))
+
+        self._btn_ultra_focus = _hdr_btn("⚡ Ultra Focus")
+        self._btn_ultra_focus.setCheckable(True)
+        self._btn_ultra_focus.setChecked(False)
+        self._btn_ultra_focus.setToolTip("Ultra Focus Mode: Only active question is visible, rest is solid color (Ctrl+Shift+F)")
+        if dojo:
+            self._btn_ultra_focus.setStyleSheet(
+                self._btn_ultra_focus.styleSheet()
+                + f"QPushButton:checked{{background:{accent2};color:white;"
+                f"border:1px solid {accent2};}}"
+            )
+        else:
+            self._btn_ultra_focus.setStyleSheet(
+                f"QPushButton{{background:{card};color:{text};"
+                f"border:1px solid {border};border-radius:6px;"
+                f"padding:4px 14px;font-size:12px;}}"
+                f"QPushButton:checked{{background:#8E24AA;color:white;"
+                f"border:1px solid {accent};}}"
+                f"QPushButton:hover{{background:{surface};}}"
+            )
+        self._btn_ultra_focus.clicked.connect(self._toggle_ultra_focus_mode)
         
         row1.addWidget(b_edit)
         row1.addWidget(self._btn_annot)
@@ -3790,6 +3813,7 @@ class ReviewScreen(QWidget):
         row1.addWidget(self._btn_focus_canvas)
         row1.addWidget(self._btn_focus_opacity_minus)
         row1.addWidget(self._btn_focus_opacity_plus)
+        row1.addWidget(self._btn_ultra_focus)
 
         self._btn_options = _hdr_btn("⚙️ Options")
         from PyQt5.QtWidgets import QMenu, QAction
@@ -3805,6 +3829,11 @@ class ReviewScreen(QWidget):
         self._act_hide_all.setChecked(True)
         self._act_hide_all.triggered.connect(self._on_hide_all_toggled)
         self._menu_options.addAction(self._act_hide_all)
+
+        self._act_ultra_focus = QAction("⚡ Ultra Focus Mode", self, checkable=True)
+        self._act_ultra_focus.setChecked(False)
+        self._act_ultra_focus.triggered.connect(self._toggle_ultra_focus_mode)
+        self._menu_options.addAction(self._act_ultra_focus)
         
         self._act_summary = QAction("📊 Show Summary Popup", self, checkable=True)
         self._act_summary.setChecked(self._show_summary_popup)
@@ -5168,6 +5197,9 @@ class ReviewScreen(QWidget):
     def _update_options_menu_states(self):
         is_hide_all = self.canvas._review_mode_style == "hide_all" if getattr(self, "canvas", None) is not None else True
         self._act_hide_all.setChecked(is_hide_all)
+        if hasattr(self, "_act_ultra_focus"):
+            is_ultra = (getattr(self.canvas, "_ultra_focus_mode", False) is True) if getattr(self, "canvas", None) is not None else False
+            self._act_ultra_focus.setChecked(is_ultra)
         self._act_summary.setChecked(self._show_summary_popup)
         is_cache_visible = self._cache_panel.isVisible() if getattr(self, "_cache_panel", None) is not None else False
         self._act_cache.setChecked(is_cache_visible)
@@ -5288,6 +5320,14 @@ class ReviewScreen(QWidget):
             f"🌫️ Focus Mode {'ON' if enabled else 'OFF'} (Opacity: {int(self.canvas.get_bg_opacity() * 100)}%)"
         )
 
+    def _toggle_ultra_focus_mode(self):
+        enabled = not (getattr(self.canvas, "_ultra_focus_mode", False) is True)
+        self.canvas.set_ultra_focus_mode(enabled)
+        self._update_focus_mode_button_style()
+        self.canvas._show_toast(
+            f"⚡ Ultra Focus Mode {'ON' if enabled else 'OFF'}"
+        )
+
     def _adjust_focus_opacity(self, delta: float):
         if not (getattr(self.canvas, "_focus_mode", False) is True):
             self.canvas.set_focus_mode(True)
@@ -5297,10 +5337,15 @@ class ReviewScreen(QWidget):
         self.canvas._show_toast(f"🌫️ Focus Opacity: {int(self.canvas.get_bg_opacity() * 100)}%")
 
     def _update_focus_mode_button_style(self):
-        if not hasattr(self, "_btn_focus_canvas"):
-            return
-        enabled = (getattr(self.canvas, "_focus_mode", False) is True) if getattr(self, "canvas", None) is not None else False
-        self._btn_focus_canvas.setChecked(enabled)
+        if hasattr(self, "_btn_focus_canvas"):
+            enabled = (getattr(self.canvas, "_focus_mode", False) is True) if getattr(self, "canvas", None) is not None else False
+            self._btn_focus_canvas.setChecked(enabled)
+        if hasattr(self, "_btn_ultra_focus"):
+            ultra_enabled = (getattr(self.canvas, "_ultra_focus_mode", False) is True) if getattr(self, "canvas", None) is not None else False
+            self._btn_ultra_focus.setChecked(ultra_enabled)
+        if hasattr(self, "_act_ultra_focus"):
+            ultra_enabled = (getattr(self.canvas, "_ultra_focus_mode", False) is True) if getattr(self, "canvas", None) is not None else False
+            self._act_ultra_focus.setChecked(ultra_enabled)
 
     def _toggle_pen_drawing(self):
         active = getattr(self.canvas, "_ink_active", False)
