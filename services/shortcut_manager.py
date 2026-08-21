@@ -25,6 +25,8 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("home.music_next", "Home", "Next music track", "N"),
     ShortcutAction("home.edit_card", "Home", "Edit selected card", "E"),
     ShortcutAction("home.add_card", "Home", "Add card to selected deck", "A"),
+    ShortcutAction("home.browse_cards", "Home", "Browse/manage cards", "Ctrl+B"),
+    ShortcutAction("home.search_decks", "Home", "Focus deck search", "Ctrl+F"),
     ShortcutAction("home.resume_review", "Home", "Resume last review session", "R"),
     ShortcutAction("review.fullscreen", "Review", "Toggle fullscreen", "F11"),
     ShortcutAction("review.cancel", "Review", "Leave review", "Esc"),
@@ -48,6 +50,8 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("review.copy_pdf", "Review", "Copy PDF path", "L"),
     ShortcutAction("review.annotate", "Review", "Anotate Scroll", "T"),
     ShortcutAction("review.edit_card", "Review", "Edit card", "Ctrl+Shift+E"),
+    ShortcutAction("review.delete_card", "Review", "Delete current card", "Ctrl+Del"),
+    ShortcutAction("review.browse_cards", "Review", "Browse cards in deck", "Ctrl+B"),
     ShortcutAction("review.prev_page", "Review", "Previous page", "Left"),
     ShortcutAction("review.next_page", "Review", "Next page", "Right"),
     ShortcutAction("review.pen_toggle", "Review", "Toggle pen", "`"),
@@ -133,6 +137,12 @@ def _event_sequence_texts(event) -> set[str]:
         texts.add("Ctrl+?")
     if key == Qt.Key_Slash and (mods & Qt.ControlModifier) and (mods & Qt.ShiftModifier):
         texts.add("Ctrl+?")
+    if key == Qt.Key_Delete and (mods & Qt.ControlModifier):
+        texts.add("Ctrl+Del")
+        texts.add("Ctrl+Delete")
+    if key == Qt.Key_Backspace and (mods & Qt.ControlModifier):
+        texts.add("Ctrl+Backspace")
+        texts.add("Ctrl+Del")
     return {_normalise_sequence(text) for text in texts if text}
 
 

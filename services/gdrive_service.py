@@ -96,12 +96,30 @@ class GDriveService:
         self._load_sync_cache()
         self._load_folder_cache()
 
+        self._session = None
         import queue
         self._upload_queue = queue.Queue()
         self._uploader_thread = threading.Thread(
             target=self._uploader_worker_loop, daemon=True, name="GDrive-QueueUploader"
         )
         self._uploader_thread.start()
+
+    def _get_session(self):
+        if not hasattr(self, "_session") or self._session is None:
+            s = requests.Session()
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+            retries = Retry(
+                total=3,
+                backoff_factor=1.0,
+                status_forcelist=[429, 500, 502, 503, 504],
+                raise_on_status=False,
+            )
+            adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
+            s.mount("https://", adapter)
+            s.mount("http://", adapter)
+            self._session = s
+        return self._session
 
     def _load_tokens(self):
         path = storage_paths._home_file(TOKEN_FILE_NAME)
@@ -410,14 +428,22 @@ class GDriveService:
 
         file_size = os.path.getsize(local_file_path)
 
+        session = self._get_session()
         # 3. Perform upload
         try:
+            if file_size >= 1024 * 1024:
+                uploaded_id = self._upload_resumable_stream(headers, local_file_path, folder_id, drive_filename, file_id=file_id)
+                if uploaded_id:
+                    print(f"[GDriveService] Successfully {'updated' if file_id else 'uploaded'}: {drive_filename} to Drive (resumable)")
+                    return True
+                return False
+
             if file_id:
-                # Update existing file (using simple upload protocol for typical small DB files)
+                # Update existing file (using simple upload protocol for typical small files)
                 url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media"
                 with open(local_file_path, "rb") as f:
                     file_data = f.read()
-                r = requests.patch(url, headers=headers, data=file_data, timeout=15)
+                r = session.patch(url, headers=headers, data=file_data, timeout=(10.0, 60.0))
                 if r.status_code == 200:
                     print(f"[GDriveService] Successfully updated: {drive_filename} on Drive")
                     return True
@@ -429,8 +455,7 @@ class GDriveService:
                     "parents": [folder_id]
                 }
                 
-                # Upload using multipart upload protocol
-                # For simplicity and robustness on typical file sizes (<5MB):
+                # Upload using multipart upload protocol for small files
                 multipart_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
                 with open(local_file_path, "rb") as f:
                     file_data = f.read()
@@ -438,7 +463,7 @@ class GDriveService:
                     "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
                     "file": (drive_filename, file_data, "application/octet-stream")
                 }
-                r = requests.post(multipart_url, headers=headers, files=files, timeout=15)
+                r = session.post(multipart_url, headers=headers, files=files, timeout=(10.0, 60.0))
                 if r.status_code == 200:
                     print(f"[GDriveService] Successfully uploaded: {drive_filename} to Drive")
                     return True
@@ -457,12 +482,18 @@ class GDriveService:
         query = f"name = '{escaped_folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         url = f"https://www.googleapis.com/drive/v3/files?q={urllib.parse.quote(query)}&fields=files(id)"
         
+        session = self._get_session()
         try:
-            r = requests.get(url, headers=headers, timeout=15)
+            r = session.get(url, headers=headers, timeout=(10.0, 30.0))
             if r.status_code == 200:
                 files = r.json().get("files", [])
                 if files:
                     return files[0]["id"]
+            elif r.status_code == 403:
+                print(f"[GDriveService] ⚠️ Permission Denied (403): Google Drive scope missing. Please UNLINK and RE-LINK Google Drive in Settings and grant Drive permissions.")
+                return None
+            else:
+                print(f"[GDriveService] Folder query returned status {r.status_code}: {r.text}")
             
             # Create folder if not found
             create_url = "https://www.googleapis.com/drive/v3/files"
@@ -470,11 +501,15 @@ class GDriveService:
                 "name": folder_name,
                 "mimeType": "application/vnd.google-apps.folder"
             }
-            r = requests.post(create_url, headers=headers, json=metadata, timeout=15)
+            r = session.post(create_url, headers=headers, json=metadata, timeout=(10.0, 30.0))
             if r.status_code == 200:
                 return r.json().get("id")
+            elif r.status_code == 403:
+                print(f"[GDriveService] ⚠️ Permission Denied (403) on folder creation. Please UNLINK and RE-LINK Google Drive in Settings and grant Drive permissions.")
+            else:
+                print(f"[GDriveService] Folder creation failed with status {r.status_code}: {r.text}")
         except Exception as e:
-            print(f"[GDriveService] Folder check failed: {e}")
+            print(f"[GDriveService] Folder check exception: {e}")
         return None
 
     def _find_file_in_folder(self, headers, filename, folder_id):
@@ -538,6 +573,93 @@ class GDriveService:
                 return None
         return current_parent
 
+    def _upload_resumable_stream(self, headers, local_file_path, folder_id, drive_filename, file_id=None):
+        """
+        Uploads a file using Google Drive API Resumable Upload protocol in 2MB chunks.
+        Eliminates socket SSL write timeouts, memory spikes, and SSLWantWriteError on large files.
+        """
+        import mimetypes
+        session = self._get_session()
+        file_size = os.path.getsize(local_file_path)
+        mime_type, _ = mimetypes.guess_type(local_file_path)
+        if not mime_type:
+            mime_type = "application/pdf" if local_file_path.lower().endswith(".pdf") else "application/octet-stream"
+
+        auth_header = headers.get("Authorization", "")
+        init_headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": mime_type,
+            "X-Upload-Content-Length": str(file_size),
+        }
+
+        try:
+            if file_id:
+                # Update existing file
+                init_url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=resumable"
+                r_init = session.patch(init_url, headers=init_headers, json={}, timeout=(10.0, 30.0))
+            else:
+                # Create new file
+                init_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable"
+                metadata = {
+                    "name": drive_filename,
+                    "parents": [folder_id]
+                }
+                r_init = session.post(init_url, headers=init_headers, json=metadata, timeout=(10.0, 30.0))
+
+            if r_init.status_code != 200:
+                print(f"[GDriveService] Resumable init failed ({r_init.status_code}): {r_init.text}")
+                return None
+
+            upload_url = r_init.headers.get("Location")
+            if not upload_url:
+                print("[GDriveService] No upload location header returned by Drive API")
+                return None
+
+            # Upload in 2MB chunks (must be multiple of 256 KB)
+            CHUNK_SIZE = 2 * 1024 * 1024
+            with open(local_file_path, "rb") as f:
+                uploaded = 0
+                while uploaded < file_size:
+                    chunk = f.read(CHUNK_SIZE)
+                    chunk_len = len(chunk)
+                    if chunk_len == 0:
+                        break
+                    
+                    start = uploaded
+                    end = uploaded + chunk_len
+                    chunk_headers = {
+                        "Content-Length": str(chunk_len),
+                        "Content-Range": f"bytes {start}-{end - 1}/{file_size}",
+                    }
+                    
+                    chunk_ok = False
+                    for attempt in range(3):
+                        try:
+                            r_chunk = session.put(upload_url, headers=chunk_headers, data=chunk, timeout=(15.0, 120.0))
+                            if r_chunk.status_code in (200, 201):
+                                res_json = r_chunk.json()
+                                return res_json.get("id", file_id or "ok")
+                            elif r_chunk.status_code == 308:
+                                chunk_ok = True
+                                uploaded += chunk_len
+                                break
+                            else:
+                                print(f"[GDriveService] Chunk upload returned status {r_chunk.status_code}: {r_chunk.text}")
+                                time.sleep(1)
+                        except Exception as ex:
+                            print(f"[GDriveService] Chunk upload retry {attempt + 1}/3 due to: {ex}")
+                            time.sleep(1.5)
+                    
+                    if not chunk_ok and uploaded < file_size:
+                        print(f"[GDriveService] Failed to upload chunk {start}-{end} for {drive_filename}")
+                        return None
+                        
+        except Exception as e:
+            print(f"[GDriveService] Resumable upload exception for {drive_filename}: {e}")
+            return None
+        return None
+
     def _upload_file_to_folder_id(self, headers, local_file_path, folder_id, drive_filename=None):
         if not os.path.exists(local_file_path):
             return "failed"
@@ -548,6 +670,7 @@ class GDriveService:
         file_size = os.path.getsize(local_file_path)
         local_file_path_norm = os.path.abspath(local_file_path).replace("\\", "/")
         
+        session = self._get_session()
         try:
             if file_id:
                 # Get drive size from folder contents cache if present
@@ -557,7 +680,7 @@ class GDriveService:
                 else:
                     # Fallback to API if cache missing (e.g. background uploads)
                     url_get = f"https://www.googleapis.com/drive/v3/files/{file_id}?fields=size"
-                    r_get = requests.get(url_get, headers=headers, timeout=15)
+                    r_get = session.get(url_get, headers=headers, timeout=(10.0, 30.0))
                     if r_get.status_code == 200:
                         drive_size_str = r_get.json().get("size", "0")
                     elif r_get.status_code == 404:
@@ -572,12 +695,30 @@ class GDriveService:
                         pass
                     return "skipped"
             
+            # For files >= 1MB (or any PDF/asset), use resumable chunked upload to eliminate socket timeouts & SSLWantWriteError
+            if file_size >= 1024 * 1024 or local_file_path.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
+                uploaded_id = self._upload_resumable_stream(headers, local_file_path, folder_id, drive_filename, file_id=file_id)
+                if uploaded_id:
+                    try:
+                        mtime = os.path.getmtime(local_file_path)
+                        self._sync_cache[local_file_path_norm] = {"mtime": mtime, "size": file_size, "drive_file_id": uploaded_id}
+                        self._save_sync_cache()
+                        if folder_id in self._folder_contents_cache:
+                            self._folder_contents_cache[folder_id][drive_filename] = {
+                                "id": uploaded_id,
+                                "size": str(file_size)
+                            }
+                    except Exception:
+                        pass
+                    return "updated" if file_id else "uploaded"
+                return "failed"
+            
             if file_id:
-                # Update existing file
+                # Update existing small file
                 url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media"
                 with open(local_file_path, "rb") as f:
                     file_data = f.read()
-                r = requests.patch(url, headers=headers, data=file_data, timeout=(3.0, 15.0))
+                r = session.patch(url, headers=headers, data=file_data, timeout=(10.0, 60.0))
                 if r.status_code == 200:
                     try:
                         mtime = os.path.getmtime(local_file_path)
@@ -599,7 +740,7 @@ class GDriveService:
                         self._folder_cache.pop(k, None)
                     self._save_folder_cache()
             else:
-                # Create new file
+                # Create new small file
                 metadata_url = "https://www.googleapis.com/drive/v3/files"
                 metadata = {
                     "name": drive_filename,
@@ -612,7 +753,7 @@ class GDriveService:
                     "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
                     "file": (drive_filename, file_data, "application/octet-stream")
                 }
-                r = requests.post(multipart_url, headers=headers, files=files, timeout=(3.0, 15.0))
+                r = session.post(multipart_url, headers=headers, files=files, timeout=(10.0, 60.0))
                 if r.status_code == 200:
                     res_json = r.json()
                     uploaded_file_id = res_json.get("id")
