@@ -911,17 +911,34 @@ class TextReviewWidget(QWidget):
         self.lbl_trap_title.setStyleSheet(f"color: #FFB86C; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 0.8px; border: none; background: transparent;")
         self.lbl_notes_title.setStyleSheet(f"color: {self.notes_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 0.8px; border: none; background: transparent;")
 
-        # Update fonts on browsers based on zoom factor
-        self.q_browser.setFont(QFont(self._font_family, q_font_size))
-        self.a_browser.setFont(QFont(self._font_family, a_font_size))
-        self.notes_browser.setFont(QFont(self._font_family, n_font_size))
-        if hasattr(self, "trap_browser"):
-            self.trap_browser.setFont(QFont(self._font_family, t_font_size))
+        # Update fonts & default document stylesheets on browsers based on zoom factor
+        for browser, f_size, color in (
+            (self.q_browser, q_font_size, front_color),
+            (self.a_browser, a_font_size, answer_color),
+            (getattr(self, "trap_browser", None), t_font_size, trap_color),
+            (getattr(self, "notes_browser", None), n_font_size, notes_color)
+        ):
+            if browser is not None:
+                browser.setFont(QFont(self._font_family, f_size))
+                browser.document().setDefaultFont(QFont(self._font_family, f_size))
+                browser.document().setDefaultStyleSheet(f"""
+                    body, div, p, span, li, td, th, code, pre {{
+                        font-family: '{self._font_family}', 'Segoe UI', sans-serif;
+                        font-size: {f_size}px;
+                        color: {color};
+                        line-height: 1.6;
+                    }}
+                    img {{
+                        width: 100%;
+                        margin-top: 10px;
+                        border-radius: 8px;
+                    }}
+                """)
         
         # Load Question
         question = self.card.get('question', '')
         if "<img" in question or "<html>" in question:
-            self._scale_and_load_html(self.q_browser, question, target_width)
+            self._scale_and_load_html(self.q_browser, question, target_width, font_size=q_font_size, default_color=front_color, is_answer=False)
         else:
             question_html = self._format_content(question, is_answer=False, default_color=front_color, font_size=q_font_size)
             self.q_browser.setHtml(question_html)
@@ -930,7 +947,7 @@ class TextReviewWidget(QWidget):
         if self.is_revealed:
             answer = self.card.get("answer", "")
             if "<img" in answer or "<html>" in answer:
-                self._scale_and_load_html(self.a_browser, answer, target_width)
+                self._scale_and_load_html(self.a_browser, answer, target_width, font_size=a_font_size, default_color=answer_color, is_answer=True)
             else:
                 answer_html = self._format_content(answer, is_answer=True, default_color=answer_color, font_size=a_font_size)
                 self.a_browser.setHtml(answer_html)
@@ -938,8 +955,11 @@ class TextReviewWidget(QWidget):
             # Load Trap Note (if any)
             trap_note = str(self.card.get("trap_note", "") or "").strip()
             if trap_note and hasattr(self, "trap_browser"):
-                trap_html = self._format_content(trap_note, is_answer=False, default_color=trap_color, font_size=t_font_size)
-                self.trap_browser.setHtml(trap_html)
+                if "<img" in trap_note or "<html>" in trap_note:
+                    self._scale_and_load_html(self.trap_browser, trap_note, target_width, font_size=t_font_size, default_color=trap_color, is_answer=False)
+                else:
+                    trap_html = self._format_content(trap_note, is_answer=False, default_color=trap_color, font_size=t_font_size)
+                    self.trap_browser.setHtml(trap_html)
                 self.trap_container.show()
             elif hasattr(self, "trap_container"):
                 self.trap_container.hide()
@@ -948,18 +968,21 @@ class TextReviewWidget(QWidget):
             notes = str(self.card.get("notes", "") or "").strip()
             # Only show separate notes if it differs from trap_note
             if notes and (not trap_note or notes != trap_note):
-                notes_html = self._format_content(notes, is_answer=False, default_color=notes_color, font_size=n_font_size)
-                self.notes_browser.setHtml(notes_html)
+                if "<img" in notes or "<html>" in notes:
+                    self._scale_and_load_html(self.notes_browser, notes, target_width, font_size=n_font_size, default_color=notes_color, is_answer=False)
+                else:
+                    notes_html = self._format_content(notes, is_answer=False, default_color=notes_color, font_size=n_font_size)
+                    self.notes_browser.setHtml(notes_html)
                 self.notes_container.show()
             else:
                 self.notes_container.hide()
 
         self._adjust_browser_heights()
         
-    def _scale_and_load_html(self, browser, html_content, target_width):
+    def _scale_and_load_html(self, browser, html_content, target_width, font_size=19, default_color="#FFFFFF", is_answer=False):
         import re
-        from PyQt5.QtGui import QPixmap, QTextDocument
-        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QPixmap, QTextDocument, QFont
+        from PyQt5.QtCore import QUrl, Qt
         
         # 1. Parse img tags and their src attributes
         img_pattern = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
@@ -1004,10 +1027,26 @@ class TextReviewWidget(QWidget):
             
         cleaned = re.compile(r'<img\s+[^>]+>', re.IGNORECASE).sub(clean_img_tags, html_content)
         
-        # 3. Clean inline font-size styles to let the QTextBrowser font scale handle text size
-        cleaned = re.sub(r'font-size\s*:\s*[^;\'"]+;?', '', cleaned, flags=re.IGNORECASE)
+        # 3. Format markdown and syntax if mixed with HTML
+        formatted = self._format_content(cleaned, is_answer=is_answer, default_color=default_color, font_size=font_size)
         
-        browser.setHtml(cleaned)
+        # 4. Set document default font and style sheet so ALL tags (p, div, li, span, code, pre) inherit
+        browser.document().setDefaultFont(QFont(self._font_family, font_size))
+        browser.document().setDefaultStyleSheet(f"""
+            body, div, p, span, li, td, th, code, pre {{
+                font-family: '{self._font_family}', 'Segoe UI', sans-serif;
+                font-size: {font_size}px;
+                color: {default_color};
+                line-height: 1.6;
+            }}
+            img {{
+                width: 100%;
+                margin-top: 10px;
+                border-radius: 8px;
+            }}
+        """)
+        
+        browser.setHtml(formatted)
         
     @staticmethod
     def _has_html_markup(text: str) -> bool:
