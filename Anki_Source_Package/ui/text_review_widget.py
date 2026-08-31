@@ -899,11 +899,11 @@ class TextReviewWidget(QWidget):
             notes_color = "#A6ADC8"
             trap_color = "#FFB86C"
             
-        q_font_size = max(16, int(22 * self._zoom_factor))
-        a_font_size = max(15, int(20 * self._zoom_factor))
-        t_font_size = max(14, int(19 * self._zoom_factor))
-        n_font_size = max(14, int(19 * self._zoom_factor))
-        title_font_size = max(11, int(13 * self._zoom_factor))
+        q_font_size = max(18, int(22 * self._zoom_factor))
+        a_font_size = max(18, int(21 * self._zoom_factor))
+        t_font_size = max(18, int(20 * self._zoom_factor))
+        n_font_size = max(18, int(20 * self._zoom_factor))
+        title_font_size = max(12, int(14 * self._zoom_factor))
         
         # Update section title headers proportionally
         self.lbl_card_type.setStyleSheet(f"color: {self.badge_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 1.2px; border: none; background: transparent;")

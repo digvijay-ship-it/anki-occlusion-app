@@ -1291,10 +1291,11 @@ class ReviewScreen(QWidget):
         self._floating_timer_reposition_pending = False
         settings = QSettings("AnkiOcclusion", "App")
         try:
-            self._hint_font_size = int(settings.value("review/hint_font_size", 16))
+            saved_hfs = int(settings.value("review/hint_font_size", 19))
+            self._hint_font_size = 19 if saved_hfs < 16 else saved_hfs
         except (TypeError, ValueError):
-            self._hint_font_size = 16
-        self._hint_font_size = max(8, min(40, self._hint_font_size))
+            self._hint_font_size = 19
+        self._hint_font_size = max(12, min(40, self._hint_font_size))
         try:
             self._user_hint_width = int(settings.value("review/hint_panel_width", 360))
         except (TypeError, ValueError):
@@ -1660,11 +1661,11 @@ class ReviewScreen(QWidget):
         border_color = p.get("C_BORDER", "#313244")
 
         css = f"""
-        body {{
+        body, p, div, span, li, td, th, code, pre {{
             color: {text_color};
             font-family: '{font_family}', 'Segoe UI', sans-serif;
             font-size: {self._hint_font_size}px;
-            line-height: 1.25;
+            line-height: 1.5;
             margin: 2px;
             padding: 0;
         }}
@@ -5346,7 +5347,7 @@ class ReviewScreen(QWidget):
             self._apply_hint_font_size()
 
     def _zoom_hint_reset(self):
-        self._hint_font_size = 14
+        self._hint_font_size = 19
         self._apply_hint_font_size()
 
     def _apply_hint_font_size(self):
