@@ -30,7 +30,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("home.resume_review", "Home", "Resume last review session", "R"),
     ShortcutAction("home.mission_report", "Home", "Open Mission Report", "Ctrl+R"),
     ShortcutAction("review.fullscreen", "Review", "Toggle fullscreen", "F11"),
-    ShortcutAction("review.mission_report", "Review", "Open Mission Report", "Ctrl+R"),
+    ShortcutAction("review.reset_card_timer", "Review", "Reset current card timer & focus time", "Ctrl+R"),
     ShortcutAction("review.cancel", "Review", "Leave review", "Esc"),
     ShortcutAction("review.reveal", "Review", "Reveal answer", "Space"),
     ShortcutAction("review.rate_again", "Review", "Rate Again", "1"),

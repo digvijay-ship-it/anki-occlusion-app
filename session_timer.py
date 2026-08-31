@@ -129,7 +129,7 @@ def _fmt_human(secs: int) -> str:
 
 
 def _write_focus_to_journal_for_date(day: str, seconds: int, deck_seconds: dict = None):
-    if seconds <= 0 or not day:
+    if seconds < 0 or not day:
         return
 
     try:
@@ -252,6 +252,7 @@ class SessionTimer:
         self._session_deck_seconds = {}
         
         self._session_elapsed = 0
+        self._card_visit_elapsed = 0
         self._idle_seconds = 0
         self._idle_limit_seconds = 180
         self._running = False
@@ -349,6 +350,7 @@ class SessionTimer:
         self._mask_seconds = {}
         self._deck_seconds = {}
         self._session_deck_seconds = {}
+        self._card_visit_elapsed = 0
         self.label.setText(self._make_text())
         self.label_today.setText(self._fmt(self._elapsed))
         self.label_mask.setText(self._fmt(0))
@@ -398,6 +400,7 @@ class SessionTimer:
     def set_current_mask(self, mask_key: str):
         self._rollover_if_needed()
         self._current_mask = mask_key or ""
+        self._card_visit_elapsed = 0
         secs = self._mask_seconds.get(self._current_mask, 0) if self._current_mask else 0
         self.label_mask.setText(self._fmt(secs))
         _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds, self._deck_seconds)
@@ -406,6 +409,61 @@ class SessionTimer:
         if not self._current_mask:
             return 0
         return self._mask_seconds.get(self._current_mask, 0)
+
+    def reset_current_card_time(self) -> int:
+        """
+        Rewinds the time spent on the current card/mask back to 0,
+        and deducts that elapsed time from today's focus time, session time,
+        deck time, and PDF time.
+        Returns the number of seconds rewound.
+        """
+        self._rollover_if_needed()
+        deduct = 0
+        if self._card_visit_elapsed > 0:
+            deduct = self._card_visit_elapsed
+        elif self._current_mask and self._mask_seconds.get(self._current_mask, 0) > 0:
+            deduct = self._mask_seconds[self._current_mask]
+
+        if deduct <= 0:
+            if self._current_mask and self._current_mask in self._mask_seconds:
+                self._mask_seconds[self._current_mask] = 0
+            self.label_mask.setText(self._fmt(0))
+            self._card_visit_elapsed = 0
+            self._idle_seconds = 0
+            return 0
+
+        if self._current_mask:
+            self._mask_seconds[self._current_mask] = max(0, self._mask_seconds.get(self._current_mask, 0) - deduct)
+
+        self._elapsed = max(0, self._elapsed - deduct)
+        self._session_elapsed = max(0, self._session_elapsed - deduct)
+
+        if self._current_pdf:
+            norm_path = normalize_pdf_path(self._current_pdf)
+            if norm_path in self._pdf_seconds:
+                self._pdf_seconds[norm_path] = max(0, self._pdf_seconds[norm_path] - deduct)
+            if norm_path in self._session_pdf_seconds:
+                self._session_pdf_seconds[norm_path] = max(0, self._session_pdf_seconds[norm_path] - deduct)
+
+        if self._current_deck:
+            if self._current_deck in self._deck_seconds:
+                self._deck_seconds[self._current_deck] = max(0, self._deck_seconds[self._current_deck] - deduct)
+            if self._current_deck in self._session_deck_seconds:
+                self._session_deck_seconds[self._current_deck] = max(0, self._session_deck_seconds[self._current_deck] - deduct)
+
+        self._card_visit_elapsed = 0
+        self._idle_seconds = 0
+
+        cur_mask_secs = self._mask_seconds.get(self._current_mask, 0) if self._current_mask else 0
+        self.label_mask.setText(self._fmt(cur_mask_secs))
+        self.label.setText(self._make_text())
+        self.label_session.setText(self._fmt(self._session_elapsed))
+        self.label_today.setText(self._fmt(self._elapsed))
+
+        _save_state(self._elapsed, self._pdf_seconds, self._pdf_cards_today, self._mask_seconds, self._deck_seconds)
+        _write_focus_to_journal(self._elapsed, self._deck_seconds)
+
+        return deduct
 
     def record_card_review(self, pdf_path: str):
         if not pdf_path:
@@ -457,6 +515,7 @@ class SessionTimer:
             self._session_deck_seconds[self._current_deck] = self._session_deck_seconds.get(self._current_deck, 0) + 1
 
         if self._current_mask:
+            self._card_visit_elapsed += 1
             self._mask_seconds[self._current_mask] = self._mask_seconds.get(self._current_mask, 0) + 1
             self.label_mask.setText(self._fmt(self._mask_seconds[self._current_mask]))
         else:

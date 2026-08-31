@@ -308,6 +308,99 @@ class SessionTimerTests(unittest.TestCase):
             self.assertEqual(journal["2026-05-04"]["deck_seconds"]["Math"], 1)
             self.assertEqual(journal["2026-05-04"]["deck_seconds"]["static"], 1)
 
+    @patch('session_timer._STATE_FILE', new_callable=lambda: None)
+    @patch('session_timer._JOURNAL_FILE', new_callable=lambda: None)
+    @patch('session_timer.QApplication.activeWindow', return_value=True)
+    def test_reset_current_card_time_deducts_all_accumulated_seconds(self, mock_active_window, mock_journal_file, mock_state_file):
+        session_timer._STATE_FILE = self.test_state_file
+        session_timer._JOURNAL_FILE = self.test_journal_file
+
+        with patch('session_timer.date') as mock_date:
+            mock_date.today.return_value.isoformat.return_value = "2026-05-04"
+            timer = SessionTimer()
+
+            timer.set_current_pdf("C:\\Path\\To\\File.pdf")
+            timer.set_current_deck("History")
+            timer.set_current_mask("card1_box_1")
+
+            for _ in range(10):
+                timer._tick()
+
+            self.assertEqual(timer._card_visit_elapsed, 10)
+            self.assertEqual(timer._mask_seconds["card1_box_1"], 10)
+            self.assertEqual(timer._elapsed, 10)
+            self.assertEqual(timer._session_elapsed, 10)
+            self.assertEqual(timer._pdf_seconds["c:/path/to/file.pdf"], 10)
+            self.assertEqual(timer._deck_seconds["History"], 10)
+            self.assertEqual(timer.label_mask.text(), "0:00:10")
+
+            rewound = timer.reset_current_card_time()
+
+            self.assertEqual(rewound, 10)
+            self.assertEqual(timer._card_visit_elapsed, 0)
+            self.assertEqual(timer._mask_seconds["card1_box_1"], 0)
+            self.assertEqual(timer._elapsed, 0)
+            self.assertEqual(timer._session_elapsed, 0)
+            self.assertEqual(timer._pdf_seconds["c:/path/to/file.pdf"], 0)
+            self.assertEqual(timer._deck_seconds["History"], 0)
+            self.assertEqual(timer.label_mask.text(), "0:00:00")
+            self.assertEqual(timer.label_today.text(), "0:00:00")
+            self.assertEqual(timer.label_session.text(), "0:00:00")
+
+            with open(self.test_state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            self.assertEqual(state["seconds"], 0)
+            self.assertEqual(state["mask_seconds"]["card1_box_1"], 0)
+            self.assertEqual(state["deck_seconds"]["History"], 0)
+
+            with open(self.test_journal_file, "r", encoding="utf-8") as f:
+                journal = json.load(f)
+            self.assertEqual(journal["2026-05-04"]["focus_seconds"], 0)
+
+    @patch('session_timer._STATE_FILE', new_callable=lambda: None)
+    @patch('session_timer._JOURNAL_FILE', new_callable=lambda: None)
+    @patch('session_timer.QApplication.activeWindow', return_value=True)
+    def test_reset_current_card_time_multiple_cards(self, mock_active_window, mock_journal_file, mock_state_file):
+        session_timer._STATE_FILE = self.test_state_file
+        session_timer._JOURNAL_FILE = self.test_journal_file
+
+        with patch('session_timer.date') as mock_date:
+            mock_date.today.return_value.isoformat.return_value = "2026-05-04"
+            timer = SessionTimer()
+
+            timer.set_current_deck("Polity")
+            timer.set_current_mask("card1_box_1")
+            for _ in range(15):
+                timer._tick()
+
+            # Move to card 2
+            timer.set_current_mask("card2_box_1")
+            for _ in range(20):
+                timer._tick()
+
+            self.assertEqual(timer._elapsed, 35)
+            self.assertEqual(timer._session_elapsed, 35)
+            self.assertEqual(timer._deck_seconds["Polity"], 35)
+            self.assertEqual(timer._mask_seconds["card1_box_1"], 15)
+            self.assertEqual(timer._mask_seconds["card2_box_1"], 20)
+
+            rewound = timer.reset_current_card_time()
+
+            self.assertEqual(rewound, 20)
+            self.assertEqual(timer._elapsed, 15)
+            self.assertEqual(timer._session_elapsed, 15)
+            self.assertEqual(timer._deck_seconds["Polity"], 15)
+            self.assertEqual(timer._mask_seconds["card1_box_1"], 15)
+            self.assertEqual(timer._mask_seconds["card2_box_1"], 0)
+            self.assertEqual(timer.label_mask.text(), "0:00:00")
+            self.assertEqual(timer.label_today.text(), "0:00:15")
+            self.assertEqual(timer.label_session.text(), "0:00:15")
+
+            # Second reset should do nothing
+            rewound2 = timer.reset_current_card_time()
+            self.assertEqual(rewound2, 0)
+            self.assertEqual(timer._elapsed, 15)
+
 
 if __name__ == "__main__":
     unittest.main()

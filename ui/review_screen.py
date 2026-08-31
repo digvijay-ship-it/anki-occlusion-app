@@ -3102,6 +3102,16 @@ class ReviewScreen(QWidget):
             if self.__dict__.get("_floating_timer_visible", False):
                 self.canvas._show_toast("⏱ Timer Visible")
 
+    def _reset_current_card_timer(self):
+        if not getattr(self, "_stimer", None):
+            return
+        rewound = self._stimer.reset_current_card_time()
+        self._sync_floating_timer()
+        if rewound > 0:
+            self._show_review_toast(f"⏱ Card timer reset (-{rewound}s)")
+        else:
+            self._show_review_toast("⏱ Card timer already at 0s")
+
     def _reposition_queue_edge_handle(self):
         from ui.review.queue_panel import reposition_queue_edge_handle
         reposition_queue_edge_handle(self)
@@ -3569,6 +3579,13 @@ class ReviewScreen(QWidget):
             self._toggle_ultra_focus_mode()
         elif shortcut_manager.event_matches(e, "review.toggle_timer") and not e.isAutoRepeat():
             self._toggle_floating_timer_visibility()
+        elif (
+            shortcut_manager.event_matches(e, "review.reset_card_timer")
+            or (key == Qt.Key_R and (mods & Qt.ControlModifier) and not (mods & (Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier)))
+        ) and not e.isAutoRepeat():
+            self._reset_current_card_timer()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.toggle_note") and not e.isAutoRepeat():
             self._toggle_hint_panel()
             e.accept()

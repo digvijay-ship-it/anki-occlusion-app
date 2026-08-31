@@ -2767,6 +2767,8 @@ class QuestionTimerIntegrationTests(unittest.TestCase):
         screen._prev_lbls = []
         screen.RATINGS = []
         screen.RATING_LABELS = []
+        screen.canvas._ink_colors = ["#FF0000"]
+        screen.canvas._ink_color_idx = 0
         
         with patch("ui.review_screen.sm2_badge", return_value="NEW"), \
              patch("ui.review_screen._fmt_due_interval", return_value={}):
@@ -2774,6 +2776,42 @@ class QuestionTimerIntegrationTests(unittest.TestCase):
         
         screen._stimer.set_current_pdf.assert_called_with("sample.pdf")
         screen._stimer.set_current_mask.assert_called_with("card_test_123_box_abc")
+
+    def test_reset_current_card_timer_calls_stimer_and_syncs_ui(self):
+        from ui.review_screen import ReviewScreen
+        screen = MagicMock()
+        screen._stimer.reset_current_card_time.return_value = 45
+        screen._show_review_toast = MagicMock()
+        screen._sync_floating_timer = MagicMock()
+
+        ReviewScreen._reset_current_card_timer(screen)
+
+        screen._stimer.reset_current_card_time.assert_called_once()
+        screen._sync_floating_timer.assert_called_once()
+        screen._show_review_toast.assert_called_with("⏱ Card timer reset (-45s)")
+
+    def test_reset_current_card_timer_handles_zero_rewind(self):
+        from ui.review_screen import ReviewScreen
+        screen = MagicMock()
+        screen._stimer.reset_current_card_time.return_value = 0
+        screen._show_review_toast = MagicMock()
+        screen._sync_floating_timer = MagicMock()
+
+    def test_ctrl_r_key_press_triggers_reset_current_card_timer(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtCore import Qt, QEvent
+        from PyQt5.QtGui import QKeyEvent
+
+        screen = MagicMock()
+        screen._rating_frame.isVisible.return_value = False
+        screen._concept_hub_drawer = None
+        screen._stacked_widget = None
+        screen._reset_current_card_timer = MagicMock()
+
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_R, Qt.ControlModifier)
+        ReviewScreen.keyPressEvent(screen, event)
+
+        screen._reset_current_card_timer.assert_called_once()
 
 
 if __name__ == "__main__":
