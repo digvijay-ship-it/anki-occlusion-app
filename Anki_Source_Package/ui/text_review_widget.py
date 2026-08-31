@@ -1,7 +1,8 @@
 import os
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QTextBrowser, QFrame, QApplication, QScrollArea
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTextBrowser, QFrame, QApplication, QScrollArea, QSizePolicy,
+    QMenu, QAction
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QUrl, QEvent
 from PyQt5.QtGui import QFont, QColor, QPen, QPainter, QKeySequence
@@ -35,6 +36,15 @@ class ZoomableTextBrowser(QTextBrowser):
                 p.wheelEvent(e)
             e.accept()
         else:
+            p = self.parentWidget()
+            while p and not isinstance(p, QScrollArea) and not hasattr(p, "scroll_area"):
+                p = p.parentWidget()
+            if p:
+                sa = p if isinstance(p, QScrollArea) else getattr(p, "scroll_area", None)
+                if sa and sa.verticalScrollBar():
+                    sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.angleDelta().y())
+                    e.accept()
+                    return
             super().wheelEvent(e)
 
     def event(self, e):
@@ -47,11 +57,148 @@ class ZoomableTextBrowser(QTextBrowser):
             return True
         return super().event(e)
 
+    def contextMenuEvent(self, e):
+        tc = self.textCursor()
+        selected_text = tc.selectedText().strip() if tc.hasSelection() else ""
+        
+        # Build quick action review context menu
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1E2333;
+                color: #FFFFFF;
+                border: 1.5px solid #5C7CFA;
+                border-radius: 8px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 24px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #5C7CFA;
+                color: #FFFFFF;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: rgba(255, 255, 255, 0.12);
+                margin: 4px 8px;
+            }
+        """)
+
+        # 1. Text selection items
+        if selected_text:
+            act_copy = QAction("📋 Copy Selected Text  (Ctrl+C)", menu)
+            act_copy.triggered.connect(self.copy)
+            menu.addAction(act_copy)
+
+            clean_term = " ".join(selected_text.split()[:5])
+            act_explore = QAction(f"🧠 Explore '{clean_term}' in Mind-Map", menu)
+            def _open_term():
+                p = self.parent()
+                while p and not hasattr(p, "_open_concept_hub"):
+                    p = p.parent()
+                if p and hasattr(p, "_open_concept_hub"):
+                    p._open_concept_hub(clean_term)
+            act_explore.triggered.connect(_open_term)
+            menu.addAction(act_explore)
+            menu.addSeparator()
+
+        # 2. Main review actions
+        p = self.parent()
+        while p and not hasattr(p, "_toggle_chrome") and not hasattr(p, "_reveal_current"):
+            p = p.parent()
+
+        if p:
+            # Toggle Top Toolbar
+            act_toolbar = QAction("🎛️ Toggle Top Toolbar", menu)
+            act_toolbar.triggered.connect(lambda: p._toggle_chrome() if hasattr(p, "_toggle_chrome") else None)
+            menu.addAction(act_toolbar)
+
+            # Toggle Pen Drawing
+            act_pen = QAction("✏️ Toggle Pen Drawing  (P / Alt)", menu)
+            act_pen.triggered.connect(lambda: p._toggle_pen_drawing() if hasattr(p, "_toggle_pen_drawing") else None)
+            menu.addAction(act_pen)
+
+            # Clear Pen Strokes
+            act_clear_pen = QAction("🧹 Clear Pen Strokes", menu)
+            act_clear_pen.triggered.connect(lambda: p._clear_pen_strokes() if hasattr(p, "_clear_pen_strokes") else None)
+            menu.addAction(act_clear_pen)
+
+            menu.addSeparator()
+
+            # Mind Map Hub
+            act_mindmap = QAction("🧠 Open Mind-Map Concept Hub  (Alt+M)", menu)
+            act_mindmap.triggered.connect(lambda: p._toggle_concept_hub() if hasattr(p, "_toggle_concept_hub") else None)
+            menu.addAction(act_mindmap)
+
+            # Toggle Card Width
+            pw = self.parentWidget()
+            while pw and not hasattr(pw, "_cycle_width_mode"):
+                pw = pw.parentWidget()
+            if pw and hasattr(pw, "_cycle_width_mode"):
+                act_width = QAction("↔️ Cycle Card Width  (Alt+W)", menu)
+                act_width.triggered.connect(pw._cycle_width_mode)
+                menu.addAction(act_width)
+
+            menu.addSeparator()
+
+            # Zoom In / Out / Reset
+            act_zin = QAction("🔍 Zoom In  (Ctrl + +)", menu)
+            act_zin.triggered.connect(lambda: p._zoom_in() if hasattr(p, "_zoom_in") else None)
+            menu.addAction(act_zin)
+
+            act_zout = QAction("🔍 Zoom Out  (Ctrl + -)", menu)
+            act_zout.triggered.connect(lambda: p._zoom_out() if hasattr(p, "_zoom_out") else None)
+            menu.addAction(act_zout)
+
+            act_zreset = QAction("↺ Reset Zoom  (Ctrl + 0)", menu)
+            act_zreset.triggered.connect(lambda: p._zoom_fit() if hasattr(p, "_zoom_fit") else None)
+            menu.addAction(act_zreset)
+
+        menu.exec_(e.globalPos())
+
     def keyPressEvent(self, e):
         # Allow Ctrl+C for copying selected text
         if e.matches(QKeySequence.Copy):
             super().keyPressEvent(e)
             return
+
+        # Alt+W toggle card width mode
+        if e.modifiers() & Qt.AltModifier and e.key() == Qt.Key_W:
+            p = self.parentWidget()
+            while p and not hasattr(p, "_cycle_width_mode"):
+                p = p.parentWidget()
+            if p and hasattr(p, "_cycle_width_mode"):
+                p._cycle_width_mode()
+                e.accept()
+                return
+
+        # Handle scroll navigation keys (Up, Down, PageUp, PageDown, Home, End)
+        k = e.key()
+        if k in (Qt.Key_Down, Qt.Key_Up, Qt.Key_PageDown, Qt.Key_PageUp, Qt.Key_Home, Qt.Key_End) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            p = self.parentWidget()
+            while p and not isinstance(p, QScrollArea) and not hasattr(p, "scroll_area"):
+                p = p.parentWidget()
+            if p:
+                sa = p if isinstance(p, QScrollArea) else getattr(p, "scroll_area", None)
+                if sa and sa.verticalScrollBar():
+                    vb = sa.verticalScrollBar()
+                    if k == Qt.Key_Down:
+                        vb.setValue(vb.value() + 60)
+                    elif k == Qt.Key_Up:
+                        vb.setValue(vb.value() - 60)
+                    elif k == Qt.Key_PageDown:
+                        vb.setValue(vb.value() + 300)
+                    elif k == Qt.Key_PageUp:
+                        vb.setValue(vb.value() - 300)
+                    elif k == Qt.Key_Home:
+                        vb.setValue(vb.minimum())
+                    elif k == Qt.Key_End:
+                        vb.setValue(vb.maximum())
+                    e.accept()
+                    return
         
         # Forward review navigation/rating keys (Space, 1-5, S, etc.) to review_screen
         p = self.parent()
@@ -64,15 +211,103 @@ class ZoomableTextBrowser(QTextBrowser):
 
 class TextReviewWidget(QWidget):
     answer_submitted = pyqtSignal()  # Emitted if needed for compatibility/actions
+    _universal_zoom_factor = None
+    _universal_width_mode = None
+
+    @classmethod
+    def get_saved_zoom_factor(cls) -> float:
+        """Retrieves universally persisted zoom factor across all text decks and app restarts."""
+        if cls._universal_zoom_factor is not None:
+            return cls._universal_zoom_factor
+        try:
+            from storage_paths import _settings
+            val = _settings().value("text_card_zoom_factor", None)
+            if val is not None:
+                f_val = float(val)
+                if 0.4 <= f_val <= 4.0:
+                    cls._universal_zoom_factor = f_val
+                    return f_val
+        except Exception:
+            pass
+        cls._universal_zoom_factor = 1.0
+        return 1.0
+
+    @classmethod
+    def save_zoom_factor(cls, factor: float):
+        """Universally persists zoom factor so all text cards and future app sessions retain it."""
+        try:
+            cls._universal_zoom_factor = float(round(factor, 2))
+            from storage_paths import _settings
+            _settings().setValue("text_card_zoom_factor", cls._universal_zoom_factor)
+        except Exception:
+            pass
+
+    @classmethod
+    def get_saved_width_mode(cls) -> str:
+        """Retrieves universally persisted width mode ('standard', 'wide', 'max')."""
+        if cls._universal_width_mode is not None:
+            return cls._universal_width_mode
+        try:
+            from storage_paths import _settings
+            val = _settings().value("text_card_width_mode", None)
+            if val in ("standard", "wide", "max"):
+                cls._universal_width_mode = str(val)
+                return str(val)
+        except Exception:
+            pass
+        cls._universal_width_mode = "wide"
+        return "wide"
+
+    @classmethod
+    def save_width_mode(cls, mode: str):
+        """Universally persists width mode ('standard', 'wide', 'max')."""
+        try:
+            if mode in ("standard", "wide", "max"):
+                cls._universal_width_mode = mode
+                from storage_paths import _settings
+                _settings().setValue("text_card_width_mode", mode)
+        except Exception:
+            pass
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.card = None
         self.is_revealed = False
-        self._zoom_factor = 1.0
+        self._zoom_factor = TextReviewWidget.get_saved_zoom_factor()
         self._setup_ui()
+        self._apply_width_mode()
         self.scratchpad = ScratchpadOverlay(self)
         self.scratchpad.setGeometry(self.rect())
+
+    def _get_width_button_text(self) -> str:
+        mode = self.get_saved_width_mode()
+        if mode == "standard":
+            return "↔️ Standard"
+        elif mode == "max":
+            return "↔️ Max Width"
+        else:
+            return "↔️ Wide"
+
+    def _apply_width_mode(self):
+        mode = self.get_saved_width_mode()
+        if mode == "standard":
+            self.card_frame.setMaximumWidth(960)
+        elif mode == "max":
+            w = max(1100, int(self.width() * 0.94)) if self.width() > 500 else 1650
+            self.card_frame.setMaximumWidth(w)
+        else:  # "wide" (default)
+            self.card_frame.setMaximumWidth(1380)
+
+    def _cycle_width_mode(self):
+        modes = ["wide", "max", "standard"]
+        curr = self.get_saved_width_mode()
+        idx = modes.index(curr) if curr in modes else 0
+        next_mode = modes[(idx + 1) % len(modes)]
+        self.save_width_mode(next_mode)
+        self._apply_width_mode()
+        if hasattr(self, "btn_width_mode"):
+            self.btn_width_mode.setText(self._get_width_button_text())
+        self._update_scaled_html()
         
     def _setup_ui(self):
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
@@ -111,12 +346,55 @@ class TextReviewWidget(QWidget):
             QWidget {{ background: transparent; color: #FFFFFF; }}
         """)
         
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(40, 24, 40, 24)
-        outer_layout.setAlignment(Qt.AlignCenter)
+        # Main Layout with Single Outer Scroll Area
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: rgba(255, 255, 255, 0.04);
+                width: 10px;
+                margin: 4px 2px 4px 2px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(92, 124, 250, 0.45);
+                min-height: 36px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {self.badge_color};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+        """)
+        
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background: transparent;")
+        content_layout = QVBoxLayout(self.scroll_content)
+        # Extra 180px bottom padding so card content never gets covered by floating rating bar!
+        content_layout.setContentsMargins(20, 16, 20, 180)
+        content_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+
         # Centered Card Frame
         self.card_frame = QFrame()
+        self.card_frame.setObjectName("card_frame")
+        self.card_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.card_frame.setMaximumWidth(960)
+        self.card_frame.setMinimumWidth(340)
         self.card_frame.setStyleSheet(f"""
             QFrame#card_frame {{
                 background-color: {card_bg};
@@ -132,18 +410,15 @@ class TextReviewWidget(QWidget):
                 selection-color: #FFFFFF;
             }}
         """)
-        self.card_frame.setObjectName("card_frame")
-        self.card_frame.setMaximumWidth(960)
-        self.card_frame.setMinimumWidth(340)
         
         card_layout = QVBoxLayout(self.card_frame)
-        card_layout.setContentsMargins(40, 32, 40, 32)
-        card_layout.setSpacing(16)
+        card_layout.setContentsMargins(36, 28, 36, 28)
+        card_layout.setSpacing(14)
         
         # Header Row with Badges
         self.hdr_layout = QHBoxLayout()
         self.hdr_layout.setContentsMargins(0, 0, 0, 0)
-        self.hdr_layout.setSpacing(10)
+        self.hdr_layout.setSpacing(8)
 
         self.lbl_card_type = QLabel("🗂️ FRONT (WORD / PROMPT)")
         self.lbl_card_type.setStyleSheet(f"""
@@ -196,21 +471,76 @@ class TextReviewWidget(QWidget):
         self.hdr_layout.addWidget(self.lbl_chain_badge)
 
         self.hdr_layout.addStretch()
+
+        self.btn_width_mode = QPushButton(self._get_width_button_text())
+        self.btn_width_mode.setCursor(Qt.PointingHandCursor)
+        self.btn_width_mode.setToolTip("Toggle Card Width: Standard (960px) → Wide (1380px) → Max Width (Alt+W)")
+        self.btn_width_mode.setStyleSheet("""
+            QPushButton {
+                color: #A6ADC8;
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 6px;
+                padding: 3px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.18);
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_width_mode.clicked.connect(self._cycle_width_mode)
+        self.hdr_layout.addWidget(self.btn_width_mode)
+
+        self.btn_mindmap = QPushButton("🧠 Mind-Map (Alt+M)")
+        self.btn_mindmap.setCursor(Qt.PointingHandCursor)
+        self.btn_mindmap.setToolTip("Open Mind-Map Concept Hub & Story Chain (Alt+M)")
+        self.btn_mindmap.setStyleSheet("""
+            QPushButton {
+                color: #70A5FD;
+                background: rgba(92, 124, 250, 0.15);
+                border: 1px solid #5C7CFA;
+                border-radius: 6px;
+                padding: 3px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(92, 124, 250, 0.35);
+                border: 1px solid #91A7FF;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_mindmap.clicked.connect(lambda: self._on_open_mindmap())
+        self.hdr_layout.addWidget(self.btn_mindmap)
+
         card_layout.addLayout(self.hdr_layout)
+
+        # Interactive Tag & Connected Concepts Pill Row
+        self.tags_container = QWidget()
+        self.tags_layout = QHBoxLayout(self.tags_container)
+        self.tags_layout.setContentsMargins(0, 0, 0, 0)
+        self.tags_layout.setSpacing(6)
+        self.tags_container.hide()
+        card_layout.addWidget(self.tags_container)
         
-        # Scrollable Question text
+        # Question text (no internal scrollbar, expands vertically)
         self.q_browser = ZoomableTextBrowser()
         self.q_browser.setOpenExternalLinks(True)
+        self.q_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.q_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.q_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.q_browser.setFont(QFont(self._font_family, 18))
         self.q_browser.document().setDocumentMargin(0)
         self.q_browser.document().setDefaultStyleSheet("img { width: 100%; }")
-        card_layout.addWidget(self.q_browser, stretch=1)
+        card_layout.addWidget(self.q_browser)
         
         # Reveal Section (initially hidden)
         self.answer_container = QWidget()
         ans_layout = QVBoxLayout(self.answer_container)
         ans_layout.setContentsMargins(0, 0, 0, 0)
-        ans_layout.setSpacing(14)
+        ans_layout.setSpacing(12)
         
         # Separator line
         self.sep = QFrame()
@@ -229,13 +559,16 @@ class TextReviewWidget(QWidget):
         """)
         ans_layout.addWidget(self.lbl_ans_title)
         
-        # Answer QTextBrowser
+        # Answer QTextBrowser (no internal scrollbar, expands vertically)
         self.a_browser = ZoomableTextBrowser()
         self.a_browser.setOpenExternalLinks(True)
+        self.a_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.a_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.a_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.a_browser.setFont(QFont(self._font_family, 16))
         self.a_browser.document().setDocumentMargin(0)
         self.a_browser.document().setDefaultStyleSheet("img { width: 100%; }")
-        ans_layout.addWidget(self.a_browser, stretch=1)
+        ans_layout.addWidget(self.a_browser)
         
         # Trap / Pitfall Note Section
         self.trap_container = QWidget()
@@ -255,9 +588,11 @@ class TextReviewWidget(QWidget):
         trap_layout.addWidget(self.lbl_trap_title)
 
         self.trap_browser = ZoomableTextBrowser()
+        self.trap_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.trap_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.trap_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.trap_browser.setFont(QFont(self._font_family, 13))
         self.trap_browser.document().setDocumentMargin(0)
-        self.trap_browser.setMaximumHeight(80)
         trap_layout.addWidget(self.trap_browser)
         ans_layout.addWidget(self.trap_container)
 
@@ -279,18 +614,42 @@ class TextReviewWidget(QWidget):
         notes_layout.addWidget(self.lbl_notes_title)
         
         self.notes_browser = ZoomableTextBrowser()
+        self.notes_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.notes_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.notes_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.notes_browser.setFont(QFont(self._font_family, 13))
         self.notes_browser.document().setDocumentMargin(0)
-        self.notes_browser.setMaximumHeight(90)
         notes_layout.addWidget(self.notes_browser)
         ans_layout.addWidget(self.notes_container)
         
         card_layout.addWidget(self.answer_container)
         self.answer_container.hide()
         
-        outer_layout.addWidget(self.card_frame)
+        content_layout.addWidget(self.card_frame)
+        self.scroll_area.setWidget(self.scroll_content)
+        main_layout.addWidget(self.scroll_area)
 
     def keyPressEvent(self, e):
+        # Handle scroll navigation keys (Up, Down, PageUp, PageDown, Home, End)
+        k = e.key()
+        if k in (Qt.Key_Down, Qt.Key_Up, Qt.Key_PageDown, Qt.Key_PageUp, Qt.Key_Home, Qt.Key_End) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.verticalScrollBar():
+                vb = self.scroll_area.verticalScrollBar()
+                if k == Qt.Key_Down:
+                    vb.setValue(vb.value() + 60)
+                elif k == Qt.Key_Up:
+                    vb.setValue(vb.value() - 60)
+                elif k == Qt.Key_PageDown:
+                    vb.setValue(vb.value() + 300)
+                elif k == Qt.Key_PageUp:
+                    vb.setValue(vb.value() - 300)
+                elif k == Qt.Key_Home:
+                    vb.setValue(vb.minimum())
+                elif k == Qt.Key_End:
+                    vb.setValue(vb.maximum())
+                e.accept()
+                return
+
         # Forward keyboard events to the parent (review_screen) so that shortcuts work correctly
         p = self.parent()
         while p and not hasattr(p, "_reveal_current") and not hasattr(p, "_rate"):
@@ -300,9 +659,17 @@ class TextReviewWidget(QWidget):
         else:
             super().keyPressEvent(e)
         
+    def _on_open_mindmap(self, tag=None):
+        p = self.parent()
+        while p and not hasattr(p, "_toggle_concept_hub") and not hasattr(p, "_open_concept_hub"):
+            p = p.parent()
+        if p and hasattr(p, "_open_concept_hub"):
+            p._open_concept_hub(tag=tag if isinstance(tag, str) else None)
+
     def load_card(self, card):
         self.card = card
         self.is_revealed = False
+        self._zoom_factor = TextReviewWidget.get_saved_zoom_factor()
         if hasattr(self, "scratchpad"):
             self.scratchpad.clear()
         
@@ -318,7 +685,9 @@ class TextReviewWidget(QWidget):
         anchor = str(card.get("context_anchor", "") or "").strip()
         if anchor:
             self.lbl_context_badge.setText(f"📌 {anchor}")
-            self.lbl_context_badge.setToolTip(f"Topic Context: {anchor}")
+            self.lbl_context_badge.setToolTip(f"Topic Context: {anchor} (Click to open Mind-Map)")
+            self.lbl_context_badge.setCursor(Qt.PointingHandCursor)
+            self.lbl_context_badge.mousePressEvent = lambda e: self._on_open_mindmap(anchor)
             self.lbl_context_badge.show()
         else:
             self.lbl_context_badge.hide()
@@ -328,7 +697,9 @@ class TextReviewWidget(QWidget):
         if parent_chain or chain_order:
             order_str = f"Step {chain_order}" if chain_order else "Linked Chain"
             self.lbl_chain_badge.setText(f"🔗 {order_str}")
-            self.lbl_chain_badge.setToolTip(f"Sequential Linked Card ({order_str} in topic sequence)")
+            self.lbl_chain_badge.setToolTip(f"Sequential Linked Card ({order_str} in topic sequence - Click to view chain)")
+            self.lbl_chain_badge.setCursor(Qt.PointingHandCursor)
+            self.lbl_chain_badge.mousePressEvent = lambda e: self._on_open_mindmap()
             self.lbl_chain_badge.show()
         else:
             self.lbl_chain_badge.hide()
@@ -370,13 +741,87 @@ class TextReviewWidget(QWidget):
                 self.lbl_tier_badge.hide()
         else:
             self.lbl_tier_badge.hide()
+
+        # Populate Connected Concept & Tag Pills
+        while self.tags_layout.count():
+            it = self.tags_layout.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+
+        tags = card.get("tags", []) or []
+        related = card.get("related_concepts", []) or []
+        has_pills = False
+
+        for t in tags[:5]:
+            t_str = str(t).strip()
+            if not t_str:
+                continue
+            btn_t = QPushButton(f"🏷️ {t_str}")
+            btn_t.setCursor(Qt.PointingHandCursor)
+            btn_t.setToolTip(f"Explore concept web for '{t_str}' (Click to open Mind-Map)")
+            btn_t.setStyleSheet("""
+                QPushButton {
+                    color: #A0AEC0;
+                    background: rgba(160, 174, 192, 0.12);
+                    border: 1px solid rgba(160, 174, 192, 0.25);
+                    border-radius: 4px;
+                    padding: 2px 7px;
+                    font-size: 10px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background: rgba(160, 174, 192, 0.28);
+                    color: #FFFFFF;
+                }
+            """)
+            btn_t.clicked.connect(lambda _, tag=t_str: self._on_open_mindmap(tag))
+            self.tags_layout.addWidget(btn_t)
+            has_pills = True
+
+        for r in related[:4]:
+            r_str = str(r).strip()
+            if not r_str:
+                continue
+            btn_r = QPushButton(f"🌐 {r_str}")
+            btn_r.setCursor(Qt.PointingHandCursor)
+            btn_r.setToolTip(f"Explore connected concept '{r_str}'")
+            btn_r.setStyleSheet("""
+                QPushButton {
+                    color: #70A5FD;
+                    background: rgba(112, 165, 253, 0.12);
+                    border: 1px solid rgba(112, 165, 253, 0.3);
+                    border-radius: 4px;
+                    padding: 2px 7px;
+                    font-size: 10px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background: rgba(112, 165, 253, 0.30);
+                    color: #FFFFFF;
+                }
+            """)
+            btn_r.clicked.connect(lambda _, rel=r_str: self._on_open_mindmap(rel))
+            self.tags_layout.addWidget(btn_r)
+            has_pills = True
+
+        if has_pills:
+            self.tags_layout.addStretch()
+            self.tags_container.show()
+        else:
+            self.tags_container.hide()
         
+        # Reset scroll position to top
+        if hasattr(self, "scroll_area") and self.scroll_area.verticalScrollBar() is not None:
+            self.scroll_area.verticalScrollBar().setValue(0)
+
         self._update_scaled_html()
         
         # Clear/Hide answer container
         self.answer_container.hide()
         self.a_browser.clear()
         self.notes_browser.clear()
+        self._adjust_browser_heights()
         
     def reveal_answer(self):
         if self.is_revealed:
@@ -385,13 +830,45 @@ class TextReviewWidget(QWidget):
         
         self._update_scaled_html()
         self.answer_container.show()
+        self._adjust_browser_heights()
+        
+    def hide_answer(self):
+        if not self.is_revealed:
+            return
+        self.is_revealed = False
+        self.answer_container.hide()
+        self.a_browser.clear()
+        if hasattr(self, "trap_browser"):
+            self.trap_browser.clear()
+        if hasattr(self, "trap_container"):
+            self.trap_container.hide()
+        if hasattr(self, "notes_browser"):
+            self.notes_browser.clear()
+        if hasattr(self, "notes_container"):
+            self.notes_container.hide()
+        self._adjust_browser_heights()
         
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self._apply_width_mode()
         self._update_scaled_html()
+        self._adjust_browser_heights()
         if hasattr(self, "scratchpad"):
             self.scratchpad.setGeometry(self.rect())
         
+    def _adjust_browser_heights(self):
+        import math
+        target_w = max(200, (self.card_frame.width() - 72)) if hasattr(self, "card_frame") and self.card_frame.width() > 100 else 600
+        for browser in (self.q_browser, self.a_browser, getattr(self, "trap_browser", None), getattr(self, "notes_browser", None)):
+            if browser is not None:
+                browser.document().setTextWidth(target_w)
+                doc_layout = browser.document().documentLayout()
+                if doc_layout is not None:
+                    doc_h = int(math.ceil(doc_layout.documentSize().height()))
+                else:
+                    doc_h = int(math.ceil(browser.document().size().height()))
+                browser.setFixedHeight(max(32, doc_h + 16))
+
     def _update_scaled_html(self):
         if not self.card:
             return
@@ -422,23 +899,31 @@ class TextReviewWidget(QWidget):
             notes_color = "#A6ADC8"
             trap_color = "#FFB86C"
             
-        q_font_size = int(28 * self._zoom_factor)
-        a_font_size = int(22 * self._zoom_factor)
-        n_font_size = int(14 * self._zoom_factor)
+        q_font_size = max(16, int(22 * self._zoom_factor))
+        a_font_size = max(15, int(20 * self._zoom_factor))
+        t_font_size = max(14, int(19 * self._zoom_factor))
+        n_font_size = max(14, int(19 * self._zoom_factor))
+        title_font_size = max(11, int(13 * self._zoom_factor))
         
+        # Update section title headers proportionally
+        self.lbl_card_type.setStyleSheet(f"color: {self.badge_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 1.2px; border: none; background: transparent;")
+        self.lbl_ans_title.setStyleSheet(f"color: {self.badge_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 1.2px; border: none; background: transparent;")
+        self.lbl_trap_title.setStyleSheet(f"color: #FFB86C; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 0.8px; border: none; background: transparent;")
+        self.lbl_notes_title.setStyleSheet(f"color: {self.notes_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 0.8px; border: none; background: transparent;")
+
         # Update fonts on browsers based on zoom factor
         self.q_browser.setFont(QFont(self._font_family, q_font_size))
         self.a_browser.setFont(QFont(self._font_family, a_font_size))
         self.notes_browser.setFont(QFont(self._font_family, n_font_size))
         if hasattr(self, "trap_browser"):
-            self.trap_browser.setFont(QFont(self._font_family, n_font_size))
+            self.trap_browser.setFont(QFont(self._font_family, t_font_size))
         
         # Load Question
         question = self.card.get('question', '')
         if "<img" in question or "<html>" in question:
             self._scale_and_load_html(self.q_browser, question, target_width)
         else:
-            question_html = f"<div style='font-family: {self._font_family}; font-size: {q_font_size}px; font-weight: bold; color: {front_color}; line-height: 1.4;'>{self._escape_and_format(question)}</div>"
+            question_html = self._format_content(question, is_answer=False, default_color=front_color, font_size=q_font_size)
             self.q_browser.setHtml(question_html)
             
         # Load Answer if revealed
@@ -447,13 +932,13 @@ class TextReviewWidget(QWidget):
             if "<img" in answer or "<html>" in answer:
                 self._scale_and_load_html(self.a_browser, answer, target_width)
             else:
-                answer_html = f"<div style='font-family: {self._font_family}; font-size: {a_font_size}px; font-weight: 500; color: {answer_color}; line-height: 1.5;'>{self._escape_and_format(answer)}</div>"
+                answer_html = self._format_content(answer, is_answer=True, default_color=answer_color, font_size=a_font_size)
                 self.a_browser.setHtml(answer_html)
 
             # Load Trap Note (if any)
             trap_note = str(self.card.get("trap_note", "") or "").strip()
             if trap_note and hasattr(self, "trap_browser"):
-                trap_html = f"<div style='font-family: {self._font_family}; color: {trap_color}; font-size: {n_font_size}px; font-weight: bold; line-height: 1.4;'>{self._escape_and_format(trap_note)}</div>"
+                trap_html = self._format_content(trap_note, is_answer=False, default_color=trap_color, font_size=t_font_size)
                 self.trap_browser.setHtml(trap_html)
                 self.trap_container.show()
             elif hasattr(self, "trap_container"):
@@ -463,11 +948,13 @@ class TextReviewWidget(QWidget):
             notes = str(self.card.get("notes", "") or "").strip()
             # Only show separate notes if it differs from trap_note
             if notes and (not trap_note or notes != trap_note):
-                notes_html = f"<div style='font-family: {self._font_family}; color: {notes_color}; font-size: {n_font_size}px; line-height: 1.4;'>{self._escape_and_format(notes)}</div>"
+                notes_html = self._format_content(notes, is_answer=False, default_color=notes_color, font_size=n_font_size)
                 self.notes_browser.setHtml(notes_html)
                 self.notes_container.show()
             else:
                 self.notes_container.hide()
+
+        self._adjust_browser_heights()
         
     def _scale_and_load_html(self, browser, html_content, target_width):
         import re
@@ -522,10 +1009,105 @@ class TextReviewWidget(QWidget):
         
         browser.setHtml(cleaned)
         
-    def _escape_and_format(self, text):
+    @staticmethod
+    def _has_html_markup(text: str) -> bool:
+        if not text:
+            return False
+        import re
+        return bool(re.search(r'<(br|b|i|u|p|div|span|strong|em|ul|ol|li|h[1-6]|table|img|font)\b[^>]*>', text, re.IGNORECASE))
+
+    def _format_content(self, text: str, is_answer: bool = False, default_color: str = "#FFFFFF", font_size: int = 19) -> str:
+        if not text:
+            return ""
+        import re
         import html
-        escaped = html.escape(text)
-        return escaped.replace("\n", "<br>")
+
+        formatted = text.strip()
+
+        # 1. Convert ==highlight== syntax to <mark> tags
+        formatted = re.sub(r'==([^=\n]+)==', r'<mark>\1</mark>', formatted)
+
+        # 2. Convert Markdown bold **text** to <b> tags
+        formatted = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', formatted)
+
+        # 3. Convert Markdown italic *text* or _text_ to <i> tags
+        formatted = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<i>\1</i>', formatted)
+
+        # 4. Highlight styling for <mark>...</mark> (Glowing Golden Amber Highlighter)
+        mark_style = (
+            "background-color: rgba(255, 214, 10, 0.28); "
+            "color: #FFE600; "
+            "font-weight: 700; "
+            "padding: 2px 7px; "
+            "border-radius: 4px; "
+            "border: 1px solid rgba(255, 214, 10, 0.60);"
+        )
+        formatted = re.sub(r'<mark>(.*?)</mark>', f'<span style="{mark_style}">\\1</span>', formatted, flags=re.IGNORECASE | re.DOTALL)
+
+        # 5. Crisp Bold Styling
+        bold_color = "#50FA7B" if is_answer else "#FFFFFF"
+        bold_style = f"color: {bold_color}; font-weight: 700;"
+        formatted = re.sub(r'<b>(.*?)</b>', f'<b style="{bold_style}">\\1</b>', formatted, flags=re.IGNORECASE | re.DOTALL)
+
+        # 6. PDF Reference Tag Styling (Cyan/Teal Badge)
+        pdf_style = (
+            "display: inline-block; "
+            "margin-top: 6px; "
+            "padding: 3px 10px; "
+            "background: rgba(99, 230, 190, 0.16); "
+            "color: #63E6BE; "
+            "border: 1px solid rgba(99, 230, 190, 0.45); "
+            "border-radius: 5px; "
+            "font-weight: 600; "
+            f"font-size: {font_size}px;"
+        )
+        formatted = re.sub(
+            r'(📖\s*(?:PDF\s*Ref(?:erence)?|Ref(?:erence)?)\s*:[^\n<]+)',
+            f'<span style="{pdf_style}">\\1</span>',
+            formatted,
+            flags=re.IGNORECASE
+        )
+
+        # 7. TRAP / Pitfall Note Styling (Alert Red/Coral Badge)
+        trap_style = (
+            "display: inline-block; "
+            "margin-top: 4px; "
+            "padding: 3px 10px; "
+            "background: rgba(255, 107, 107, 0.16); "
+            "color: #FF6B6B; "
+            "border: 1px solid rgba(255, 107, 107, 0.45); "
+            "border-radius: 5px; "
+            "font-weight: 700; "
+            f"font-size: {font_size}px;"
+        )
+        formatted = re.sub(
+            r'(\bTRAP\b\s*:[^\n<]+)',
+            f'<span style="{trap_style}">⚠️ \\1</span>',
+            formatted,
+            flags=re.IGNORECASE
+        )
+
+        # 8. Mnemonic / Example enhancement
+        formatted = re.sub(
+            r'<b>\s*(?:💡\s*)?(?:Mnemonics?|Mnemonic Trick|Trick):\s*</b>|(?:\b💡\s*Mnemonics?:)',
+            f"<div style='margin-top:14px; margin-bottom:6px; padding:4px 10px; background:rgba(255, 184, 108, 0.16); border-left:3.5px solid #FFB86C; border-radius:5px; font-weight:bold; font-size:{font_size}px; color:#FFB86C;'>💡 Mnemonics:</div>",
+            formatted,
+            flags=re.IGNORECASE
+        )
+        formatted = re.sub(
+            r'<b>\s*(?:📝\s*)?(?:Examples?|Sample Sentences?):\s*</b>|(?:\b📝\s*Examples?:)',
+            f"<div style='margin-top:14px; margin-bottom:6px; padding:4px 10px; background:rgba(80, 250, 123, 0.14); border-left:3.5px solid #50FA7B; border-radius:5px; font-weight:bold; font-size:{font_size}px; color:#50FA7B;'>📝 Example:</div>",
+            formatted,
+            flags=re.IGNORECASE
+        )
+
+        # 9. Handle newlines
+        formatted = formatted.replace("\n", "<br>")
+
+        return f"<div style='font-family: {self._font_family}; font-size: {font_size}px; color: {default_color}; line-height: 1.6;'>{formatted}</div>"
+
+    def _escape_and_format(self, text):
+        return self._format_content(text)
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
@@ -536,27 +1118,37 @@ class TextReviewWidget(QWidget):
                 self.zoom_out()
             e.accept()
         else:
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.verticalScrollBar():
+                self.scroll_area.verticalScrollBar().setValue(
+                    self.scroll_area.verticalScrollBar().value() - e.angleDelta().y()
+                )
+                e.accept()
+                return
             super().wheelEvent(e)
 
     def event(self, e):
         if e.type() == QEvent.NativeGesture:
             if e.gestureType() == Qt.ZoomNativeGesture:
                 factor = 1.0 + e.value()
-                self._zoom_factor = max(0.5, min(3.0, self._zoom_factor * factor))
+                self._zoom_factor = max(0.5, min(3.0, round(self._zoom_factor * factor, 2)))
+                TextReviewWidget.save_zoom_factor(self._zoom_factor)
                 self._update_scaled_html()
                 return True
         return super().event(e)
 
     def zoom_in(self):
-        self._zoom_factor = min(self._zoom_factor + 0.1, 3.0)
+        self._zoom_factor = min(round(self._zoom_factor + 0.1, 2), 3.0)
+        TextReviewWidget.save_zoom_factor(self._zoom_factor)
         self._update_scaled_html()
 
     def zoom_out(self):
-        self._zoom_factor = max(self._zoom_factor - 0.1, 0.5)
+        self._zoom_factor = max(round(self._zoom_factor - 0.1, 2), 0.5)
+        TextReviewWidget.save_zoom_factor(self._zoom_factor)
         self._update_scaled_html()
 
     def zoom_reset(self):
         self._zoom_factor = 1.0
+        TextReviewWidget.save_zoom_factor(self._zoom_factor)
         self._update_scaled_html()
 
 class ScratchpadOverlay(QWidget):
@@ -568,18 +1160,60 @@ class ScratchpadOverlay(QWidget):
         self.current_stroke = []
         self.active_color = QColor("#FF4444")
         self.active_width = 2.0
+        self.mode = "pen"  # "pen" or "eraser"
         
-    def set_pen_active(self, active):
+    def set_pen_active(self, active, mode="pen"):
+        self.mode = mode
         self.setAttribute(Qt.WA_TransparentForMouseEvents, not active)
-        self.setVisible(active)
+        self.setVisible(True)
         if active:
             self.raise_()
+            if mode == "eraser":
+                self.setCursor(Qt.PointingHandCursor)
+            else:
+                self.setCursor(Qt.CrossCursor)
             self.update()
+        else:
+            self.setCursor(Qt.ArrowCursor)
+
+    def wheelEvent(self, e):
+        # 1. Forward Ctrl+Wheel to parent for zoom in/out
+        if e.modifiers() & Qt.ControlModifier:
+            p = self.parent()
+            if p and hasattr(p, "wheelEvent"):
+                p.wheelEvent(e)
+            e.accept()
+            return
+        # 2. Forward vertical wheel scrolling to TextReviewWidget scroll area
+        p = self.parent()
+        if p and hasattr(p, "scroll_area") and p.scroll_area:
+            sa = p.scroll_area
+            if sa.verticalScrollBar():
+                sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.angleDelta().y())
+                e.accept()
+                return
+        e.ignore()
             
     def clear(self):
         self.strokes = []
         self.current_stroke = []
         self.update()
+
+    def erase_at(self, pos, radius=24):
+        new_strokes = []
+        changed = False
+        for s in self.strokes:
+            keep = True
+            for pt in s.get("points", []):
+                if (pt.x() - pos.x()) ** 2 + (pt.y() - pos.y()) ** 2 <= radius ** 2:
+                    keep = False
+                    changed = True
+                    break
+            if keep:
+                new_strokes.append(s)
+        if changed:
+            self.strokes = new_strokes
+            self.update()
         
     def paintEvent(self, e):
         painter = QPainter(self)
@@ -600,15 +1234,29 @@ class ScratchpadOverlay(QWidget):
                 painter.drawLine(self.current_stroke[i], self.current_stroke[i+1])
                 
     def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:
+            p = self.parent()
+            while p and not hasattr(p, "_toggle_chrome"):
+                p = p.parent()
+            if p and hasattr(p, "_toggle_chrome"):
+                p._toggle_chrome()
+                e.accept()
+                return
         if e.button() == Qt.LeftButton:
-            self.current_stroke = [e.pos()]
+            if self.mode == "eraser":
+                self.erase_at(e.pos())
+            else:
+                self.current_stroke = [e.pos()]
             self.update()
             e.accept()
         else:
             e.ignore()
             
     def mouseMoveEvent(self, e):
-        if self.current_stroke:
+        if self.mode == "eraser" and (e.buttons() & Qt.LeftButton):
+            self.erase_at(e.pos())
+            e.accept()
+        elif self.current_stroke:
             self.current_stroke.append(e.pos())
             self.update()
             e.accept()
@@ -616,13 +1264,14 @@ class ScratchpadOverlay(QWidget):
             e.ignore()
             
     def mouseReleaseEvent(self, e):
-        if e.button() == Qt.LeftButton and self.current_stroke:
-            self.strokes.append({
-                "color": QColor(self.active_color),
-                "width": self.active_width,
-                "points": self.current_stroke
-            })
-            self.current_stroke = []
+        if e.button() == Qt.LeftButton:
+            if self.mode != "eraser" and self.current_stroke:
+                self.strokes.append({
+                    "color": QColor(self.active_color),
+                    "width": self.active_width,
+                    "points": self.current_stroke
+                })
+                self.current_stroke = []
             self.update()
             e.accept()
         else:

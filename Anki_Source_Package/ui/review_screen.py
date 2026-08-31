@@ -1286,9 +1286,9 @@ class ReviewScreen(QWidget):
         self._floating_timer_reposition_pending = False
         settings = QSettings("AnkiOcclusion", "App")
         try:
-            self._hint_font_size = int(settings.value("review/hint_font_size", 13))
+            self._hint_font_size = int(settings.value("review/hint_font_size", 16))
         except (TypeError, ValueError):
-            self._hint_font_size = 13
+            self._hint_font_size = 16
         self._hint_font_size = max(8, min(40, self._hint_font_size))
         try:
             self._user_hint_width = int(settings.value("review/hint_panel_width", 360))
@@ -1326,7 +1326,7 @@ class ReviewScreen(QWidget):
         self._user_zoom_scale = None
         self._review_ink_width = self._load_review_ink_width()
         self._review_ink_colors, self._review_ink_color_idx = self._load_review_ink_color()
-        self._review_pen_implementation = settings.value("review/pen_implementation", "classic")
+        self._review_pen_implementation = settings.value("review/pen_implementation", "filtered")
 
         raw_summary = settings.value("review/show_summary_popup", True)
         if isinstance(raw_summary, str):
@@ -1863,6 +1863,11 @@ class ReviewScreen(QWidget):
         if "_floating_hint_button" not in self.__dict__ or self._floating_hint_button is None:
             return
             
+        # Yield CPU to active pen drawing: skip proximity fading during strokes
+        if hasattr(self, "canvas") and self.canvas is not None:
+            if getattr(self.canvas, "_ink_current", None):
+                return
+
         # Get mouse position relative to self._canvas_stage
         pos_global = QCursor.pos()
         pos_local = self._canvas_stage.mapFromGlobal(pos_global)
@@ -2706,6 +2711,11 @@ class ReviewScreen(QWidget):
 
     def eventFilter(self, obj, event):
         et = event.type()
+        
+        # Fast path: tablet events bypass drawer & UI hover calculations
+        if et in (QEvent.TabletMove, QEvent.TabletPress, QEvent.TabletRelease):
+            return super().eventFilter(obj, event)
+
         if et in (
             QEvent.MouseMove,
             QEvent.HoverMove,
@@ -2731,6 +2741,10 @@ class ReviewScreen(QWidget):
                     self._set_hint_panel_visible(False)
                     
         if et in (QEvent.MouseMove, QEvent.HoverMove):
+            # Fast path: skip edge drawer & auto hide geometry checks while user is drawing a stroke
+            if hasattr(self, "canvas") and self.canvas is not None and getattr(self.canvas, "_ink_active", False):
+                if getattr(self.canvas, "_ink_current", None):
+                    return super().eventFilter(obj, event)
             self._maybe_show_queue_edge_handle(event, source=obj)
             self._update_queue_auto_hide_from_event(event)
         elif et in (QEvent.Enter, QEvent.Leave):
@@ -2744,6 +2758,9 @@ class ReviewScreen(QWidget):
             self._stimer.note_activity()
 
     def _on_ui_idle_timeout(self):
+        # Do not start background PDF page prefetching while review pen is active
+        if hasattr(self, "canvas") and self.canvas is not None and getattr(self.canvas, "_ink_active", False):
+            return
         self._flush_pending_background_inserts()
         bg_state = self._background_fill_state
         if not bg_state:
@@ -4075,6 +4092,10 @@ class ReviewScreen(QWidget):
                 import os
                 if os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() in {"0", "false", "no", "off"}:
                     return
+                # Skip stylesheet recalculation while pen is active to save CPU
+                if hasattr(self, "canvas") and self.canvas is not None:
+                    if getattr(self.canvas, "_ink_active", False):
+                        return
                 self._prog_glow_step = (self._prog_glow_step + 3) % 100
                 s1 = max(0, self._prog_glow_step - 15) / 100.0
                 s2 = self._prog_glow_step / 100.0
@@ -4285,7 +4306,7 @@ class ReviewScreen(QWidget):
             )
         
         _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-        self._btn_review_pen_perf.setCurrentIndex(_impl_to_idx.get(self._review_pen_implementation, 0))
+        self._btn_review_pen_perf.setCurrentIndex(_impl_to_idx.get(self._review_pen_implementation, 3))
         self._btn_review_pen_perf.currentIndexChanged.connect(self._on_review_pen_perf_changed)
         row2.addWidget(self._btn_review_pen_perf)
 

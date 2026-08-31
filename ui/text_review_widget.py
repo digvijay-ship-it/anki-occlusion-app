@@ -174,6 +174,31 @@ class ZoomableTextBrowser(QTextBrowser):
                 p._cycle_width_mode()
                 e.accept()
                 return
+
+        # Handle scroll navigation keys (Up, Down, PageUp, PageDown, Home, End)
+        k = e.key()
+        if k in (Qt.Key_Down, Qt.Key_Up, Qt.Key_PageDown, Qt.Key_PageUp, Qt.Key_Home, Qt.Key_End) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            p = self.parentWidget()
+            while p and not isinstance(p, QScrollArea) and not hasattr(p, "scroll_area"):
+                p = p.parentWidget()
+            if p:
+                sa = p if isinstance(p, QScrollArea) else getattr(p, "scroll_area", None)
+                if sa and sa.verticalScrollBar():
+                    vb = sa.verticalScrollBar()
+                    if k == Qt.Key_Down:
+                        vb.setValue(vb.value() + 60)
+                    elif k == Qt.Key_Up:
+                        vb.setValue(vb.value() - 60)
+                    elif k == Qt.Key_PageDown:
+                        vb.setValue(vb.value() + 300)
+                    elif k == Qt.Key_PageUp:
+                        vb.setValue(vb.value() - 300)
+                    elif k == Qt.Key_Home:
+                        vb.setValue(vb.minimum())
+                    elif k == Qt.Key_End:
+                        vb.setValue(vb.maximum())
+                    e.accept()
+                    return
         
         # Forward review navigation/rating keys (Space, 1-5, S, etc.) to review_screen
         p = self.parent()
@@ -328,14 +353,40 @@ class TextReviewWidget(QWidget):
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll_area.setStyleSheet("background: transparent; border: none;")
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: rgba(255, 255, 255, 0.04);
+                width: 10px;
+                margin: 4px 2px 4px 2px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(92, 124, 250, 0.45);
+                min-height: 36px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {self.badge_color};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+        """)
         
         self.scroll_content = QWidget()
         self.scroll_content.setStyleSheet("background: transparent;")
         content_layout = QVBoxLayout(self.scroll_content)
-        # Extra 140px bottom padding so card content never gets covered by floating rating bar!
-        content_layout.setContentsMargins(20, 16, 20, 140)
+        # Extra 180px bottom padding so card content never gets covered by floating rating bar!
+        content_layout.setContentsMargins(20, 16, 20, 180)
         content_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
 
         # Centered Card Frame
@@ -579,6 +630,26 @@ class TextReviewWidget(QWidget):
         main_layout.addWidget(self.scroll_area)
 
     def keyPressEvent(self, e):
+        # Handle scroll navigation keys (Up, Down, PageUp, PageDown, Home, End)
+        k = e.key()
+        if k in (Qt.Key_Down, Qt.Key_Up, Qt.Key_PageDown, Qt.Key_PageUp, Qt.Key_Home, Qt.Key_End) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.verticalScrollBar():
+                vb = self.scroll_area.verticalScrollBar()
+                if k == Qt.Key_Down:
+                    vb.setValue(vb.value() + 60)
+                elif k == Qt.Key_Up:
+                    vb.setValue(vb.value() - 60)
+                elif k == Qt.Key_PageDown:
+                    vb.setValue(vb.value() + 300)
+                elif k == Qt.Key_PageUp:
+                    vb.setValue(vb.value() - 300)
+                elif k == Qt.Key_Home:
+                    vb.setValue(vb.minimum())
+                elif k == Qt.Key_End:
+                    vb.setValue(vb.maximum())
+                e.accept()
+                return
+
         # Forward keyboard events to the parent (review_screen) so that shortcuts work correctly
         p = self.parent()
         while p and not hasattr(p, "_reveal_current") and not hasattr(p, "_rate"):
@@ -786,12 +857,17 @@ class TextReviewWidget(QWidget):
             self.scratchpad.setGeometry(self.rect())
         
     def _adjust_browser_heights(self):
-        target_w = max(200, (self.card_frame.width() - 80)) if hasattr(self, "card_frame") and self.card_frame.width() > 100 else 600
+        import math
+        target_w = max(200, (self.card_frame.width() - 72)) if hasattr(self, "card_frame") and self.card_frame.width() > 100 else 600
         for browser in (self.q_browser, self.a_browser, getattr(self, "trap_browser", None), getattr(self, "notes_browser", None)):
             if browser is not None:
                 browser.document().setTextWidth(target_w)
-                doc_h = int(browser.document().size().height())
-                browser.setFixedHeight(max(32, doc_h + 12))
+                doc_layout = browser.document().documentLayout()
+                if doc_layout is not None:
+                    doc_h = int(math.ceil(doc_layout.documentSize().height()))
+                else:
+                    doc_h = int(math.ceil(browser.document().size().height()))
+                browser.setFixedHeight(max(32, doc_h + 16))
 
     def _update_scaled_html(self):
         if not self.card:
@@ -823,16 +899,24 @@ class TextReviewWidget(QWidget):
             notes_color = "#A6ADC8"
             trap_color = "#FFB86C"
             
-        q_font_size = int(28 * self._zoom_factor)
-        a_font_size = int(22 * self._zoom_factor)
-        n_font_size = int(14 * self._zoom_factor)
+        q_font_size = max(16, int(22 * self._zoom_factor))
+        a_font_size = max(15, int(20 * self._zoom_factor))
+        t_font_size = max(14, int(19 * self._zoom_factor))
+        n_font_size = max(14, int(19 * self._zoom_factor))
+        title_font_size = max(11, int(13 * self._zoom_factor))
         
+        # Update section title headers proportionally
+        self.lbl_card_type.setStyleSheet(f"color: {self.badge_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 1.2px; border: none; background: transparent;")
+        self.lbl_ans_title.setStyleSheet(f"color: {self.badge_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 1.2px; border: none; background: transparent;")
+        self.lbl_trap_title.setStyleSheet(f"color: #FFB86C; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 0.8px; border: none; background: transparent;")
+        self.lbl_notes_title.setStyleSheet(f"color: {self.notes_color}; font-size: {title_font_size}px; font-weight: bold; letter-spacing: 0.8px; border: none; background: transparent;")
+
         # Update fonts on browsers based on zoom factor
         self.q_browser.setFont(QFont(self._font_family, q_font_size))
         self.a_browser.setFont(QFont(self._font_family, a_font_size))
         self.notes_browser.setFont(QFont(self._font_family, n_font_size))
         if hasattr(self, "trap_browser"):
-            self.trap_browser.setFont(QFont(self._font_family, n_font_size))
+            self.trap_browser.setFont(QFont(self._font_family, t_font_size))
         
         # Load Question
         question = self.card.get('question', '')
@@ -854,7 +938,7 @@ class TextReviewWidget(QWidget):
             # Load Trap Note (if any)
             trap_note = str(self.card.get("trap_note", "") or "").strip()
             if trap_note and hasattr(self, "trap_browser"):
-                trap_html = self._format_content(trap_note, is_answer=False, default_color=trap_color, font_size=n_font_size)
+                trap_html = self._format_content(trap_note, is_answer=False, default_color=trap_color, font_size=t_font_size)
                 self.trap_browser.setHtml(trap_html)
                 self.trap_container.show()
             elif hasattr(self, "trap_container"):
@@ -932,32 +1016,95 @@ class TextReviewWidget(QWidget):
         import re
         return bool(re.search(r'<(br|b|i|u|p|div|span|strong|em|ul|ol|li|h[1-6]|table|img|font)\b[^>]*>', text, re.IGNORECASE))
 
-    def _format_content(self, text: str, is_answer: bool = False, default_color: str = "#FFFFFF", font_size: int = 16) -> str:
+    def _format_content(self, text: str, is_answer: bool = False, default_color: str = "#FFFFFF", font_size: int = 19) -> str:
         if not text:
             return ""
         import re
         import html
 
-        if self._has_html_markup(text):
-            formatted = text
-            # Enhance Mnemonic section if present
-            formatted = re.sub(
-                r'<b>\s*(?:💡\s*)?(?:Mnemonics?|Mnemonic Trick|Trick):\s*</b>|(?:\b💡\s*Mnemonics?:)',
-                r"<div style='margin-top:14px; margin-bottom:6px; padding:4px 10px; background:rgba(255, 184, 108, 0.16); border-left:3.5px solid #FFB86C; border-radius:5px; font-weight:bold; font-size:14px; color:#FFB86C;'>💡 Mnemonics:</div>",
-                formatted,
-                flags=re.IGNORECASE
-            )
-            # Enhance Example section if present
-            formatted = re.sub(
-                r'<b>\s*(?:📝\s*)?(?:Examples?|Sample Sentences?):\s*</b>|(?:\b📝\s*Examples?:)',
-                r"<div style='margin-top:14px; margin-bottom:6px; padding:4px 10px; background:rgba(80, 250, 123, 0.14); border-left:3.5px solid #50FA7B; border-radius:5px; font-weight:bold; font-size:14px; color:#50FA7B;'>📝 Example:</div>",
-                formatted,
-                flags=re.IGNORECASE
-            )
-            return f"<div style='font-family: {self._font_family}; font-size: {font_size}px; color: {default_color}; line-height: 1.5;'>{formatted}</div>"
-        else:
-            escaped = html.escape(text).replace("\n", "<br>")
-            return f"<div style='font-family: {self._font_family}; font-size: {font_size}px; color: {default_color}; line-height: 1.5;'>{escaped}</div>"
+        formatted = text.strip()
+
+        # 1. Convert ==highlight== syntax to <mark> tags
+        formatted = re.sub(r'==([^=\n]+)==', r'<mark>\1</mark>', formatted)
+
+        # 2. Convert Markdown bold **text** to <b> tags
+        formatted = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', formatted)
+
+        # 3. Convert Markdown italic *text* or _text_ to <i> tags
+        formatted = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<i>\1</i>', formatted)
+
+        # 4. Highlight styling for <mark>...</mark> (Glowing Golden Amber Highlighter)
+        mark_style = (
+            "background-color: rgba(255, 214, 10, 0.28); "
+            "color: #FFE600; "
+            "font-weight: 700; "
+            "padding: 2px 7px; "
+            "border-radius: 4px; "
+            "border: 1px solid rgba(255, 214, 10, 0.60);"
+        )
+        formatted = re.sub(r'<mark>(.*?)</mark>', f'<span style="{mark_style}">\\1</span>', formatted, flags=re.IGNORECASE | re.DOTALL)
+
+        # 5. Crisp Bold Styling
+        bold_color = "#50FA7B" if is_answer else "#FFFFFF"
+        bold_style = f"color: {bold_color}; font-weight: 700;"
+        formatted = re.sub(r'<b>(.*?)</b>', f'<b style="{bold_style}">\\1</b>', formatted, flags=re.IGNORECASE | re.DOTALL)
+
+        # 6. PDF Reference Tag Styling (Cyan/Teal Badge)
+        pdf_style = (
+            "display: inline-block; "
+            "margin-top: 6px; "
+            "padding: 3px 10px; "
+            "background: rgba(99, 230, 190, 0.16); "
+            "color: #63E6BE; "
+            "border: 1px solid rgba(99, 230, 190, 0.45); "
+            "border-radius: 5px; "
+            "font-weight: 600; "
+            f"font-size: {font_size}px;"
+        )
+        formatted = re.sub(
+            r'(📖\s*(?:PDF\s*Ref(?:erence)?|Ref(?:erence)?)\s*:[^\n<]+)',
+            f'<span style="{pdf_style}">\\1</span>',
+            formatted,
+            flags=re.IGNORECASE
+        )
+
+        # 7. TRAP / Pitfall Note Styling (Alert Red/Coral Badge)
+        trap_style = (
+            "display: inline-block; "
+            "margin-top: 4px; "
+            "padding: 3px 10px; "
+            "background: rgba(255, 107, 107, 0.16); "
+            "color: #FF6B6B; "
+            "border: 1px solid rgba(255, 107, 107, 0.45); "
+            "border-radius: 5px; "
+            "font-weight: 700; "
+            f"font-size: {font_size}px;"
+        )
+        formatted = re.sub(
+            r'(\bTRAP\b\s*:[^\n<]+)',
+            f'<span style="{trap_style}">⚠️ \\1</span>',
+            formatted,
+            flags=re.IGNORECASE
+        )
+
+        # 8. Mnemonic / Example enhancement
+        formatted = re.sub(
+            r'<b>\s*(?:💡\s*)?(?:Mnemonics?|Mnemonic Trick|Trick):\s*</b>|(?:\b💡\s*Mnemonics?:)',
+            f"<div style='margin-top:14px; margin-bottom:6px; padding:4px 10px; background:rgba(255, 184, 108, 0.16); border-left:3.5px solid #FFB86C; border-radius:5px; font-weight:bold; font-size:{font_size}px; color:#FFB86C;'>💡 Mnemonics:</div>",
+            formatted,
+            flags=re.IGNORECASE
+        )
+        formatted = re.sub(
+            r'<b>\s*(?:📝\s*)?(?:Examples?|Sample Sentences?):\s*</b>|(?:\b📝\s*Examples?:)',
+            f"<div style='margin-top:14px; margin-bottom:6px; padding:4px 10px; background:rgba(80, 250, 123, 0.14); border-left:3.5px solid #50FA7B; border-radius:5px; font-weight:bold; font-size:{font_size}px; color:#50FA7B;'>📝 Example:</div>",
+            formatted,
+            flags=re.IGNORECASE
+        )
+
+        # 9. Handle newlines
+        formatted = formatted.replace("\n", "<br>")
+
+        return f"<div style='font-family: {self._font_family}; font-size: {font_size}px; color: {default_color}; line-height: 1.6;'>{formatted}</div>"
 
     def _escape_and_format(self, text):
         return self._format_content(text)
@@ -971,6 +1118,12 @@ class TextReviewWidget(QWidget):
                 self.zoom_out()
             e.accept()
         else:
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.verticalScrollBar():
+                self.scroll_area.verticalScrollBar().setValue(
+                    self.scroll_area.verticalScrollBar().value() - e.angleDelta().y()
+                )
+                e.accept()
+                return
             super().wheelEvent(e)
 
     def event(self, e):
@@ -1022,6 +1175,24 @@ class ScratchpadOverlay(QWidget):
             self.update()
         else:
             self.setCursor(Qt.ArrowCursor)
+
+    def wheelEvent(self, e):
+        # 1. Forward Ctrl+Wheel to parent for zoom in/out
+        if e.modifiers() & Qt.ControlModifier:
+            p = self.parent()
+            if p and hasattr(p, "wheelEvent"):
+                p.wheelEvent(e)
+            e.accept()
+            return
+        # 2. Forward vertical wheel scrolling to TextReviewWidget scroll area
+        p = self.parent()
+        if p and hasattr(p, "scroll_area") and p.scroll_area:
+            sa = p.scroll_area
+            if sa.verticalScrollBar():
+                sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.angleDelta().y())
+                e.accept()
+                return
+        e.ignore()
             
     def clear(self):
         self.strokes = []

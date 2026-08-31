@@ -1752,6 +1752,7 @@ Output ONLY a strictly valid JSON object matching this exact structure:
             return
 
         dup_policy = self._get_dup_policy()
+        check_all = self.chk_check_all_decks.isChecked()
 
         # Snapshot for undo
         deck_history.push(self._data)

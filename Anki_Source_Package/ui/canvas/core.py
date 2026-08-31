@@ -103,7 +103,7 @@ class OcclusionCanvas(
         self._ink_pending_press_sp = None
         self._ink_pending_press_time = 0.0
         self._ink_input_kind = None
-        self._ink_implementation = "classic"
+        self._ink_implementation = "filtered"
         self._ink_current_stable_path = QPainterPath()
         self._ink_current_path = QPainterPath()
         self._ink_mode = "pen"

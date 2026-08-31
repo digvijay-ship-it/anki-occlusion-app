@@ -408,7 +408,8 @@ class CanvasInteractionMixin:
         for stroke in strokes:
             new_stroke = StrokeList()
             new_stroke._path_key = getattr(stroke, "_path_key", None)
-            new_stroke._implementation = getattr(stroke, "_implementation", "classic")
+            new_stroke._implementation = getattr(stroke, "_implementation", "filtered")
+            new_stroke._bbox = getattr(stroke, "_bbox", None)
             for item in stroke:
                 if isinstance(item, QColor):
                     new_stroke.append(QColor(item))
@@ -477,12 +478,12 @@ class CanvasInteractionMixin:
             return
         
         # Distance filter for "filtered" mode
-        impl = getattr(self, "_ink_implementation", "classic")
+        impl = getattr(self, "_ink_implementation", "filtered")
         if impl == "filtered":
             last_ip = self._ink_current[-1]
             dx = ip.x() - last_ip.x()
             dy = ip.y() - last_ip.y()
-            if dx * dx + dy * dy < 4.0:  # 2 pixels threshold -> squared distance is 4
+            if dx * dx + dy * dy < 2.25:  # 1.5 pixels threshold -> squared distance is 2.25
                 return
 
         self._ink_current.append(ip)
@@ -540,26 +541,29 @@ class CanvasInteractionMixin:
             self._stroke_seq += 1
             stroke = StrokeList(self._ink_current)
             stroke._path_key = self._stroke_seq
-            stroke._implementation = getattr(self, "_ink_implementation", "classic")
-            self._ink_strokes.append(stroke)
-            # Compute bounding box of completed stroke for dirty-rect update
+            stroke._implementation = getattr(self, "_ink_implementation", "filtered")
             pts = self._ink_current[1:]  # skip color element
             if pts:
+                xs = [pt.x() for pt in pts]
+                ys = [pt.y() for pt in pts]
+                stroke._bbox = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
                 pen_w = max(2.0, self._ink_width * self._scale) + 10
-                xs = [pt.x() * self._scale for pt in pts]
-                ys = [pt.y() * self._scale for pt in pts]
+                sc_xs = [pt.x() * self._scale for pt in pts]
+                sc_ys = [pt.y() * self._scale for pt in pts]
                 import math
                 from PyQt5.QtCore import QRect
                 dirty = QRect(
-                    int(math.floor(min(xs) - pen_w)),
-                    int(math.floor(min(ys) - pen_w)),
-                    int(math.ceil(max(xs) - min(xs) + 2 * pen_w)),
-                    int(math.ceil(max(ys) - min(ys) + 2 * pen_w)),
+                    int(math.floor(min(sc_xs) - pen_w)),
+                    int(math.floor(min(sc_ys) - pen_w)),
+                    int(math.ceil(max(sc_xs) - min(sc_xs) + 2 * pen_w)),
+                    int(math.ceil(max(sc_ys) - min(sc_ys) + 2 * pen_w)),
                 )
+                self._ink_strokes.append(stroke)
                 self._ink_current = []
                 self._ink_input_kind = None
                 self.update(dirty)
                 return
+            self._ink_strokes.append(stroke)
         self._ink_current = []
         self._ink_input_kind = None
         self.update()

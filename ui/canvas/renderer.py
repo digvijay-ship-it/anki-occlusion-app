@@ -386,7 +386,7 @@ class CanvasRendererMixin:
 
         if profile:
             ink_t0 = time.perf_counter()
-        self._draw_ink_layer(p)
+        self._draw_ink_layer(p, clip)
         if profile:
             phases["ink_ms"] += (time.perf_counter() - ink_t0) * 1000.0
         p.end()
@@ -592,7 +592,7 @@ class CanvasRendererMixin:
                 path.lineTo(QPointF(pt.x() * sc, pt.y() * sc))
         return path
 
-    def _draw_ink_layer(self, p: QPainter):
+    def _draw_ink_layer(self, p: QPainter, clip=None):
         if not self._ink_strokes and not self._ink_current:
             return
         p.save()
@@ -604,15 +604,33 @@ class CanvasRendererMixin:
         if not hasattr(self, "_ink_path_cache"):
             self._ink_path_cache = {}
 
-        # Draw completed strokes using cached QPainterPath
+        # Draw completed strokes using cached QPainterPath with bounding-box culling
+        pad = max(4.0, pen_w + 6.0)
         for stroke in self._ink_strokes:
             if len(stroke) < 2:
                 continue
-            color = stroke[0]
             pts = stroke[1:]
             if not pts:
                 continue
             
+            # Spatial culling check if clip rect is provided
+            if clip is not None:
+                bbox = getattr(stroke, "_bbox", None)
+                if bbox is None:
+                    xs = [pt.x() for pt in pts]
+                    ys = [pt.y() for pt in pts]
+                    bbox = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+                    stroke._bbox = bbox
+                sr_bbox = QRectF(
+                    bbox.x() * sc - pad,
+                    bbox.y() * sc - pad,
+                    bbox.width() * sc + 2 * pad,
+                    bbox.height() * sc + 2 * pad,
+                )
+                if not clip.intersects(sr_bbox.toRect()):
+                    continue
+
+            color = stroke[0]
             # Cache check by stable key and scale
             stroke_id = stroke.get("_path_key") if hasattr(stroke, "get") else getattr(stroke, "_path_key", None)
             if stroke_id is None:
@@ -631,7 +649,7 @@ class CanvasRendererMixin:
             pts = self._ink_current[1:]
             if pts:
                 p.setPen(QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-                impl = getattr(self, "_ink_implementation", "classic")
+                impl = getattr(self, "_ink_implementation", "filtered")
                 if impl == "classic":
                     if len(pts) == 1:
                         p.drawPoint(QPointF(pts[0].x() * sc, pts[0].y() * sc))
@@ -641,6 +659,9 @@ class CanvasRendererMixin:
                 else:
                     if hasattr(self, "_ink_current_path") and not self._ink_current_path.isEmpty():
                         p.drawPath(self._ink_current_path)
+                    elif len(pts) >= 2:
+                        path = self._smooth_points_to_path(pts, sc)
+                        p.drawPath(path)
         p.restore()
 
     def _redraw(self):
