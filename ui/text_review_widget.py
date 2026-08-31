@@ -565,7 +565,7 @@ class TextReviewWidget(QWidget):
         self.a_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.a_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.a_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.a_browser.setFont(QFont(self._font_family, 16))
+        self.a_browser.setFont(QFont(self._font_family, 20))
         self.a_browser.document().setDocumentMargin(0)
         self.a_browser.document().setDefaultStyleSheet("img { width: 100%; }")
         ans_layout.addWidget(self.a_browser)
@@ -579,7 +579,7 @@ class TextReviewWidget(QWidget):
         self.lbl_trap_title = QLabel("⚠️ TRAP / PITFALL NOTE:")
         self.lbl_trap_title.setStyleSheet(f"""
             color: #FFB86C;
-            font-size: 12px;
+            font-size: 14px;
             font-weight: bold;
             letter-spacing: 0.8px;
             border: none;
@@ -591,7 +591,7 @@ class TextReviewWidget(QWidget):
         self.trap_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.trap_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.trap_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.trap_browser.setFont(QFont(self._font_family, 13))
+        self.trap_browser.setFont(QFont(self._font_family, 20))
         self.trap_browser.document().setDocumentMargin(0)
         trap_layout.addWidget(self.trap_browser)
         ans_layout.addWidget(self.trap_container)
@@ -605,7 +605,7 @@ class TextReviewWidget(QWidget):
         self.lbl_notes_title = QLabel("📝 NOTES / HINTS:")
         self.lbl_notes_title.setStyleSheet(f"""
             color: {self.notes_color};
-            font-size: 12px;
+            font-size: 14px;
             font-weight: bold;
             letter-spacing: 0.8px;
             border: none;
@@ -617,7 +617,7 @@ class TextReviewWidget(QWidget):
         self.notes_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.notes_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.notes_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.notes_browser.setFont(QFont(self._font_family, 13))
+        self.notes_browser.setFont(QFont(self._font_family, 20))
         self.notes_browser.document().setDocumentMargin(0)
         notes_layout.addWidget(self.notes_browser)
         ans_layout.addWidget(self.notes_container)
@@ -1055,13 +1055,28 @@ class TextReviewWidget(QWidget):
         import re
         return bool(re.search(r'<(br|b|i|u|p|div|span|strong|em|ul|ol|li|h[1-6]|table|img|font)\b[^>]*>', text, re.IGNORECASE))
 
-    def _format_content(self, text: str, is_answer: bool = False, default_color: str = "#FFFFFF", font_size: int = 19) -> str:
+    def _format_content(self, text: str, is_answer: bool = False, default_color: str = "#FFFFFF", font_size: int = 20) -> str:
         if not text:
             return ""
         import re
         import html
 
         formatted = text.strip()
+
+        # 0. Sanitize legacy embedded HTML wrapper & strip hardcoded font sizes/families
+        body_match = re.search(r'<body[^>]*>(.*?)</body>', formatted, flags=re.DOTALL | re.IGNORECASE)
+        if body_match:
+            formatted = body_match.group(1).strip()
+        else:
+            formatted = re.sub(r'<!DOCTYPE[^>]*>', '', formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r'</?(?:html|head|body|meta|style)[^>]*>', '', formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r'<head>.*?</head>', '', formatted, flags=re.DOTALL | re.IGNORECASE)
+
+        # Strip hardcoded font-family and font-size from all style attributes
+        formatted = re.sub(r'font-family\s*:\s*[^;\'"]+;?', '', formatted, flags=re.IGNORECASE)
+        formatted = re.sub(r'font-size\s*:\s*[^;\'"]+;?', '', formatted, flags=re.IGNORECASE)
+        formatted = re.sub(r'style\s*=\s*["\']\s*["\']', '', formatted, flags=re.IGNORECASE)
+        formatted = re.sub(r'<span>(.*?)</span>', r'\1', formatted, flags=re.DOTALL | re.IGNORECASE)
 
         # 1. Convert ==highlight== syntax to <mark> tags
         formatted = re.sub(r'==([^=\n]+)==', r'<mark>\1</mark>', formatted)
