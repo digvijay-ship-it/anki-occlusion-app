@@ -2022,59 +2022,8 @@ class JournalDialog(QDialog):
     # ── Daily Activity Stats ──────────────────────────────────────────────────
 
     def _get_activity_stats(self, date_str):
-        from data_manager import store
-        data = store.get()
-        
-        total = again = hard = good = easy = perfect = 0
-        deck_counts = {}
-        
-        def walk(deck, parent_path):
-            nonlocal total, again, hard, good, easy, perfect
-            name = deck.get("name", "Unnamed Deck")
-            full_path = f"{parent_path} / {name}" if parent_path else name
-            
-            # Cards in deck
-            for card in deck.get("cards", []) or []:
-                rat = card.get("reviewed_at")
-                if rat and rat.startswith(date_str):
-                    total += 1
-                    q = card.get("last_quality", -1)
-                    if q == 1: again += 1
-                    elif q == 3: hard += 1
-                    elif q == 4: good += 1
-                    elif q == 5: easy += 1
-                    elif q == 6: perfect += 1
-                    deck_counts[full_path] = deck_counts.get(full_path, 0) + 1
-                
-                # Boxes in card (occlusions)
-                for box in card.get("boxes", []) or []:
-                    brat = box.get("reviewed_at")
-                    if brat and brat.startswith(date_str):
-                        total += 1
-                        q = box.get("last_quality", -1)
-                        if q == 1: again += 1
-                        elif q == 3: hard += 1
-                        elif q == 4: good += 1
-                        elif q == 5: easy += 1
-                        elif q == 6: perfect += 1
-                        deck_counts[full_path] = deck_counts.get(full_path, 0) + 1
-                        
-            # Subdecks
-            for child in deck.get("children", []) or deck.get("subdecks", []) or []:
-                walk(child, full_path)
-                
-        for deck in data.get("decks", []) or []:
-            walk(deck, "")
-            
-        return {
-            "total": total,
-            "again": again,
-            "hard": hard,
-            "good": good,
-            "easy": easy,
-            "perfect": perfect,
-            "decks": deck_counts
-        }
+        from services.activity_stats import get_daily_activity_stats
+        return get_daily_activity_stats(date_str)
 
     def _build_stats_panel(self):
         from PyQt5.QtWidgets import QScrollArea, QProgressBar
@@ -2249,6 +2198,28 @@ class JournalDialog(QDialog):
         dvl.addLayout(self._decks_list_layout)
         
         scl_container.addWidget(decks_box)
+
+        # Button to open full dedicated Mission Report Card
+        self._btn_open_report_card = QPushButton("📋 Full Report Card" if self._ninja else "📋 Full Report Card")
+        self._btn_open_report_card.setCursor(Qt.PointingHandCursor)
+        self._btn_open_report_card.setFixedHeight(30)
+        c_acc = self._p.get("C_ACCENT", "#72FF4F")
+        c_card_bg = self._p.get("C_CARD", "#14141F")
+        self._btn_open_report_card.setStyleSheet(f"""
+            QPushButton {{
+                background: {c_card_bg};
+                color: {c_acc};
+                border: 1px solid {c_acc};
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background: rgba(114, 255, 79, 0.12);
+            }}
+        """)
+        self._btn_open_report_card.clicked.connect(self._open_full_report)
+        scl_container.addWidget(self._btn_open_report_card)
         
         # Add to scroll area layout
         scl.addWidget(self._stats_container)
@@ -2307,14 +2278,15 @@ class JournalDialog(QDialog):
             pct = round(count / total_rated * 100) if total_rated > 0 else 0
             lbl_val.setText(f"{count} ({pct}%)")
             
-        # 5. Clear and rebuild decks covered list
-        num_decks = len(stats["decks"])
-        total_deck_reviews = sum(stats["decks"].values())
-        if num_decks > 0:
+        # 5. Clear and rebuild decks covered list (Hierarchical Tree)
+        tree_nodes = stats.get("tree", [])
+        total_deck_reviews = sum(node["total_reviews"] for node in tree_nodes)
+        num_topics = len(tree_nodes)
+        if num_topics > 0:
             if self._ninja:
-                hdr_text = f"DECKS COVERED ({num_decks} DECKS, {total_deck_reviews} REVIEWS)"
+                hdr_text = f"DECKS COVERED ({num_topics} TOPICS, {total_deck_reviews} REVIEWS)"
             else:
-                hdr_text = f"Decks Covered ({num_decks} decks, {total_deck_reviews} reviews)"
+                hdr_text = f"Decks Covered ({num_topics} topics, {total_deck_reviews} reviews)"
         else:
             hdr_text = "DECKS COVERED" if self._ninja else "Decks Covered"
         self._lbl_decks_hdr.setText(hdr_text)
@@ -2327,32 +2299,82 @@ class JournalDialog(QDialog):
                 
         hf = self._p.get("header_font", "").split(",")[0].strip("'")
         is_ps = (hf == "Press Start 2P")
-        deck_font_size = 11 if is_ps else 14
+        deck_font_size = 10 if is_ps else 12
 
-        if not stats["decks"]:
+        if not tree_nodes:
             lbl_none = QLabel("No decks studied.")
             lbl_none.setStyleSheet(f"color:{self._p['C_SUBTEXT']}; font-size:{deck_font_size}px; font-style:italic;")
             self._decks_list_layout.addWidget(lbl_none)
         else:
-            for deck_name, count in sorted(stats["decks"].items(), key=lambda x: x[1], reverse=True):
+            def _create_node_widget(node_data, depth=0):
+                container = QWidget()
+                container.setStyleSheet("background:transparent;")
+                clayout = QVBoxLayout(container)
+                clayout.setContentsMargins(0, 0, 0, 0)
+                clayout.setSpacing(2)
+
                 row = QWidget()
                 row.setStyleSheet("background:transparent;")
                 row_l = QHBoxLayout(row)
-                row_l.setContentsMargins(0, 2, 0, 2)
+                row_l.setContentsMargins(depth * 12, 1, 0, 1)
                 row_l.setSpacing(4)
-                
-                display_name = deck_name.split(" / ")[-1]
+
+                has_children = bool(node_data.get("children"))
+
+                if has_children:
+                    btn_toggle = QPushButton("▶")
+                    btn_toggle.setFixedSize(16, 16)
+                    btn_toggle.setCursor(Qt.PointingHandCursor)
+                    btn_toggle.setStyleSheet(f"QPushButton {{ background:transparent; color:{self._p['C_ACCENT']}; border:none; font-size:9px; font-weight:bold; }}")
+                    row_l.addWidget(btn_toggle)
+                else:
+                    lbl_bullet = QLabel("•")
+                    lbl_bullet.setFixedWidth(16)
+                    lbl_bullet.setStyleSheet(f"color:{self._p['C_SUBTEXT']}; font-size:11px;")
+                    row_l.addWidget(lbl_bullet)
+
+                display_name = node_data["name"]
                 lbl_deck = QLabel(display_name)
-                lbl_deck.setToolTip(deck_name)
-                lbl_deck.setStyleSheet(f"color:{self._p['C_TEXT']}; font-size:{deck_font_size}px;")
-                
-                lbl_count = QLabel(f"{count} review(s)")
-                lbl_count.setStyleSheet(f"color:{self._p['C_ACCENT']}; font-size:{deck_font_size}px; font-weight:bold;")
+                lbl_deck.setToolTip(node_data.get("full_path", display_name))
+                name_weight = "bold" if has_children else "normal"
+                name_color = self._p['C_TEXT'] if has_children else self._p.get('C_TEXT', '#DDD')
+                lbl_deck.setStyleSheet(f"color:{name_color}; font-size:{deck_font_size}px; font-weight:{name_weight};")
+
+                revs = node_data["total_reviews"]
+                lbl_count = QLabel(f"{revs} rev(s)")
+                badge_color = self._p['C_ACCENT'] if has_children else self._p.get('C_PURPLE', '#BD93F9')
+                lbl_count.setStyleSheet(f"color:{badge_color}; font-size:{deck_font_size}px; font-weight:bold;")
                 lbl_count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                
+
                 row_l.addWidget(lbl_deck, 1)
                 row_l.addWidget(lbl_count)
-                self._decks_list_layout.addWidget(row)
+                clayout.addWidget(row)
+
+                if has_children:
+                    child_box = QWidget()
+                    child_box.setStyleSheet("background:transparent;")
+                    child_l = QVBoxLayout(child_box)
+                    child_l.setContentsMargins(0, 0, 0, 0)
+                    child_l.setSpacing(2)
+                    for child in node_data["children"]:
+                        child_l.addWidget(_create_node_widget(child, depth + 1))
+                    child_box.hide()
+                    clayout.addWidget(child_box)
+
+                    def _toggle_child(checked=False, cbox=child_box, btn=btn_toggle):
+                        if cbox.isVisible():
+                            cbox.hide()
+                            btn.setText("▶")
+                        else:
+                            cbox.show()
+                            btn.setText("▼")
+
+                    btn_toggle.clicked.connect(_toggle_child)
+
+                return container
+
+            for top_node in tree_nodes:
+                self._decks_list_layout.addWidget(_create_node_widget(top_node, depth=0))
 
         # Force layout update to compute the new minimum size hint
         if hasattr(self, "_stats_scroll_content") and self._stats_scroll_content.layout():
@@ -2383,6 +2405,25 @@ class JournalDialog(QDialog):
         else:
             self._stats_panel.setMinimumWidth(base_w)
 
+    def _open_full_report(self):
+        home = None
+        w = self
+        while w:
+            if hasattr(w, "_show_mission_report"):
+                home = w
+                break
+            w = w.parent()
+
+        target_date = getattr(self, "_current_date", None)
+        if home is not None:
+            self._on_close()
+            home._show_mission_report(date_str=target_date)
+        else:
+            from ui.mission_report_dialog import MissionReportDialog
+            rw = MissionReportDialog(initial_date=target_date)
+            rw.setWindowFlags(Qt.Window)
+            rw.showMaximized()
+
     # ── Tools ─────────────────────────────────────────────────────────────────
 
     def _cycle_color(self):
@@ -2403,6 +2444,7 @@ class JournalDialog(QDialog):
                 "Clear Page",
                 "Clear everything on this page?",
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
             == QMessageBox.Yes
         ):

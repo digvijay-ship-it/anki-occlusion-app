@@ -537,6 +537,7 @@ class TMNTMissionBanner(QFrame):
     train_clicked = pyqtSignal()
     selected_clicked = pyqtSignal()
     resume_clicked = pyqtSignal()
+    practice_clicked = pyqtSignal()
     GLOW_INTERVAL_MS = 50
 
     def __init__(self, data=None, parent=None):
@@ -752,9 +753,38 @@ class TMNTMissionBanner(QFrame):
         self.btn_resume.setEnabled(False)
         _apply_glow(self.btn_resume, "#ff9f43", blur=_px(16, self._scale), alpha=120)
 
+        self.btn_practice = QPushButton("🎯  PRACTICE ALL")
+        self.btn_practice.setStyleSheet(
+            _scale_ss(
+                f"""
+            QPushButton {{
+                background: transparent;
+                color: #72FF4F;
+                border: 1px solid #72FF4F;
+                border-radius: 2px;
+                font-size: {btn_selected_size}px;
+                font-weight: 700;
+                font-family: {btn_selected_family};
+                letter-spacing: 1px;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{ background: rgba(114,255,79,0.1); color: #8BFF6B; border-color: #8BFF6B; }}
+            QPushButton:disabled {{
+                background: transparent;
+                color: {T_SUBTEXT};
+                border: 1px solid {T_BORDER};
+            }}
+        """,
+                self._scale,
+            )
+        )
+        self.btn_practice.setFont(btn_sel_font)
+        self.btn_practice.clicked.connect(self.practice_clicked)
+
         right.addWidget(self.btn_train_container)
         right.addWidget(self.btn_resume)
         right.addWidget(self.btn_selected)
+        right.addWidget(self.btn_practice)
         l.addLayout(right)
 
         # Animated glow on train button
@@ -763,25 +793,44 @@ class TMNTMissionBanner(QFrame):
         self._glow_timer.timeout.connect(self._tick_glow)
         self._glow_timer.setInterval(self.GLOW_INTERVAL_MS)
 
+        try:
+            from ui.canvas.retro_effects import register_retro_widget
+            register_retro_widget(self)
+        except Exception:
+            pass
+
         self.setMinimumHeight(_px(110, self._scale))
         self.btn_train.setMinimumHeight(_px(76, self._scale))
         self.btn_selected.setMinimumHeight(_px(36, self._scale))
 
     def set_animation_enabled(self, enabled):
-        enabled = bool(enabled)
+        try:
+            from ui.canvas.retro_effects import animations_suspended
+            if animations_suspended():
+                enabled = False
+        except Exception:
+            pass
         if enabled:
             if not self._glow_timer.isActive():
                 self._glow_timer.start()
-            return
-        if self._glow_timer.isActive():
-            self._glow_timer.stop()
+        else:
+            if self._glow_timer.isActive():
+                self._glow_timer.stop()
+
+    def sync_timer(self):
+        try:
+            from ui.canvas.retro_effects import _home_animations_enabled
+            self.set_animation_enabled(_home_animations_enabled())
+        except Exception:
+            self.set_animation_enabled(True)
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.set_animation_enabled(True)
+        self.sync_timer()
 
     def hideEvent(self, event):
-        self.set_animation_enabled(False)
+        if self._glow_timer.isActive():
+            self._glow_timer.stop()
         super().hideEvent(event)
 
     def _tick_glow(self):
@@ -1687,6 +1736,30 @@ class TMNTDeckEngine(DeckTree):
 
     def keyPressEvent(self, event):
         key = event.key()
+        if shortcut_manager.event_matches(event, "home.browse_cards"):
+            sel_deck = getattr(self, "_selected_deck", None)
+            p = self.parent()
+            while p is not None:
+                if not sel_deck:
+                    sel_deck = getattr(p, "_selected_deck", None)
+                if hasattr(p, "main") and hasattr(p.main, "_open_card_browser"):
+                    if not getattr(p.main, "deck", None) and sel_deck:
+                        p.main.load_deck(sel_deck, getattr(p.main, "_data", None) or getattr(self, "_data", None))
+                    p.main._open_card_browser()
+                    event.accept()
+                    return
+                if hasattr(p, "_open_card_browser"):
+                    p._open_card_browser()
+                    event.accept()
+                    return
+                p = p.parent()
+            win = self.window()
+            if win and hasattr(win, "centralWidget"):
+                home = win.centralWidget()
+                if home and hasattr(home, "_open_card_browser"):
+                    home._open_card_browser()
+                    event.accept()
+                    return
         if key in (Qt.Key_Delete, Qt.Key_Backspace):
             self._delete_selected()
             event.accept()
@@ -2027,7 +2100,25 @@ class TMNTSidebar(QFrame):
         fl.addWidget(btn_open)
         L.addWidget(foot)
 
+    @property
+    def tree(self):
+        return getattr(self._engine, "tree", None) if hasattr(self, "_engine") else None
+
     def keyPressEvent(self, event):
+        if shortcut_manager.event_matches(event, "home.browse_cards"):
+            p = self.parent()
+            while p is not None:
+                if hasattr(p, "main") and hasattr(p.main, "_open_card_browser"):
+                    if not getattr(p.main, "deck", None) and hasattr(self, "_selected_deck") and self._selected_deck:
+                        p.main.load_deck(self._selected_deck, getattr(p.main, "_data", None) or getattr(self, "_data", None))
+                    p.main._open_card_browser()
+                    event.accept()
+                    return
+                if hasattr(p, "_open_card_browser"):
+                    p._open_card_browser()
+                    event.accept()
+                    return
+                p = p.parent()
         if event.key() in (Qt.Key_F, Qt.Key_K) and event.modifiers() & Qt.ControlModifier:
             self._focus_search()
             event.accept()
@@ -2591,8 +2682,10 @@ class TMNTMainContent(DeckView):
         self.banner = TMNTMissionBanner(data=self._data)
         self.btn_due = self.banner.btn_train
         self.btn_all = self.banner.btn_selected
+        self.btn_practice = self.banner.btn_practice
         self.btn_due.clicked.connect(self._review_due)
         self.btn_all.clicked.connect(self._review_selected)
+        self.banner.practice_clicked.connect(self._practice_deck)
         L.addWidget(self.banner)
 
         # ── Card list area ──
@@ -2809,12 +2902,16 @@ class TMNTMainContent(DeckView):
         has_deck = self.deck is not None
         has_card = self.card_list.currentRow() >= 0 and self.card_list.count() > 0
         has_due = bool(has_deck and self._collect_due_by_pdf(self.deck))
+        all_deck_cards = self._collect_all_by_pdf(self.deck) if has_deck else []
+        has_any_cards = bool(has_deck and len(all_deck_cards) > 0)
         self.btn_add.setEnabled(has_deck)
         self.btn_add_text.setEnabled(has_deck)
         self.btn_due.setEnabled(has_due)
         self.btn_edit.setEnabled(has_card)
         self.btn_delete_tmnt.setEnabled(has_card)
         self.btn_all.setEnabled(has_card)
+        if hasattr(self, "btn_practice") and self.btn_practice:
+            self.btn_practice.setEnabled(has_any_cards)
 
     def _review_selected(self):
         row = self.card_list.currentRow()
@@ -2944,6 +3041,7 @@ class TMNTTopBar(QFrame):
     btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
+    btn_report_clicked = pyqtSignal()
     btn_theme_clicked = pyqtSignal(object)
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()
@@ -2994,6 +3092,16 @@ class TMNTTopBar(QFrame):
         self._quote_timer = QTimer(self)
         self._quote_timer.timeout.connect(self._rotate_quote)
         self._quote_timer.setInterval(8000)
+        self._set_quote_rotation_enabled(True)
+
+        try:
+            from ui.canvas.retro_effects import register_retro_widget
+            register_retro_widget(self)
+        except Exception:
+            pass
+
+    def sync_timer(self):
+        self._set_brand_animations_enabled(True)
         self._set_quote_rotation_enabled(True)
 
     def _set_brand_animations_enabled(self, enabled):
@@ -3112,12 +3220,35 @@ class TMNTTopBar(QFrame):
                 self._scale,
             )
         )
+        btn_report = self._make_nav_button("📊", "Mission Report Card")
+        btn_report.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {T_SUBTEXT};
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    font-family: {T_MONO};
+                    font-size: 24px;
+                    font-weight: bold;
+                    padding: 6px 8px;
+                }}
+                QPushButton:hover {{
+                    color: {T_GREEN};
+                    border-bottom: 2px solid {T_GREEN};
+                }}
+            """,
+                self._scale,
+            )
+        )
         self._more_btn = self._make_nav_button("MORE ▾", "More")
         self._more_btn.installEventFilter(self)
         self._more_panel = self._build_more_panel()
 
         btn_math.clicked.connect(self.btn_math_clicked)
         btn_journal.clicked.connect(self.btn_journal_clicked)
+        btn_report.clicked.connect(self.btn_report_clicked)
         self._more_btn.clicked.connect(
             lambda: self._toggle_panel(self._more_panel, self._more_btn, "left")
         )
@@ -3128,7 +3259,7 @@ class TMNTTopBar(QFrame):
         center_l.setContentsMargins(0, 0, 0, 0)
         center_l.setSpacing(_px(10, self._scale))
         center_l.addStretch()
-        for b in (btn_math, btn_journal, self._more_btn):
+        for b in (btn_math, btn_journal, btn_report, self._more_btn):
             center_l.addWidget(b, 0, Qt.AlignCenter)
         center_l.addStretch()
         L.addWidget(center, 1)
@@ -4674,6 +4805,7 @@ class TMNTHomeLayout(QWidget):
     btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
+    btn_report_clicked = pyqtSignal()
     btn_resume_clicked = pyqtSignal()
     btn_theme_clicked = pyqtSignal(object)
     btn_help_clicked = pyqtSignal()
@@ -4899,6 +5031,7 @@ class TMNTHomeLayout(QWidget):
         self.topbar.btn_save_clicked.connect(self.btn_save_clicked)
         self.topbar.btn_math_clicked.connect(self.btn_math_clicked)
         self.topbar.btn_journal_clicked.connect(self.btn_journal_clicked)
+        self.topbar.btn_report_clicked.connect(self.btn_report_clicked)
         self.main.banner.resume_clicked.connect(self.btn_resume_clicked)
         self.topbar.btn_theme_clicked.connect(self.btn_theme_clicked)
         self.topbar.btn_help_clicked.connect(self.btn_help_clicked)
@@ -4962,6 +5095,13 @@ class TMNTHomeLayout(QWidget):
         if shortcut_manager.event_matches(event, "home.add_card"):
             if self.main and self.main.isVisible() and self.main.btn_add.isEnabled():
                 self.main._add_card()
+                event.accept()
+                return
+        if shortcut_manager.event_matches(event, "home.browse_cards"):
+            if self.main:
+                if not getattr(self.main, "deck", None) and hasattr(self, "sidebar") and getattr(self.sidebar, "_selected_deck", None):
+                    self.main.load_deck(self.sidebar._selected_deck, getattr(self.main, "_data", None) or getattr(self, "_data", None))
+                self.main._open_card_browser()
                 event.accept()
                 return
         super().keyPressEvent(event)

@@ -2151,7 +2151,7 @@ class PdfAnnotationDialog(QDialog):
                 "Discard Changes",
                 "Unsaved annotation changes will be lost. Close anyway?",
                 QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                QMessageBox.Yes,
             )
             if reply != QMessageBox.Yes:
                 return

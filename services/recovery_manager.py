@@ -810,11 +810,15 @@ def scan_recovery(data, startup=False):
         drafts.append(item)
     pending_events = []
     moved_applied = 0
+    discarded_missing = 0
     for event in load_pending_review_events():
         status = review_event_status(data, event)
         if status == "already_applied":
             _mark_event_applied(event)
             moved_applied += 1
+        elif status in ("missing", "missing_card", "missing_box"):
+            discard_review_event(event)
+            discarded_missing += 1
         else:
             item = copy.deepcopy(event)
             item["status"] = status
@@ -825,6 +829,7 @@ def scan_recovery(data, startup=False):
         "moved_applied": moved_applied,
         "moved_saved_drafts": moved_saved_drafts,
         "skipped_stale_drafts": skipped_stale_drafts,
+        "discarded_missing": discarded_missing,
     }
 
 
@@ -840,6 +845,8 @@ def apply_pending_review_events(data):
         elif status == "already_applied":
             already_applied += 1
             _mark_event_applied(event)
+        elif status in ("missing", "missing_card", "missing_box"):
+            discard_review_event(event)
         else:
             blocked.append({"event_id": event.get("event_id"), "status": status})
     prune_old_records()

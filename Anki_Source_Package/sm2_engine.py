@@ -1,0 +1,519 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SM-2 ENGINE — Fixed & Extended
+#  Fixes:
+#    1. Hard (q=3) EF penalty now correctly applies -0.15 in review state
+#    2. Hard (q=3) interval uses 1.2x multiplier (was correct, now explicit)
+#    3. Good (q=4) in review now uses standard SM-2 EF (no change = correct)
+#    4. Easy (q=5) in review now applies +0.15 EF bonus
+#    5. Interval fuzzing added for review intervals > 2 days
+#    6. Max interval cap added (default 365 days)
+#    7. Button ordering enforced: Hard ≤ Good ≤ Easy after fuzzing (preview + actual)
+#    8. _due_in_days now uses date.today() as reference instead of datetime.now()
+#       Old: reviewed at 11:58 PM + 1d = next day 11:58 PM (same date, shows up same day)
+#       New: date.today() + Nd = pure calendar date at 00:00 — time of review irrelevant
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import copy
+import hashlib
+import random
+from datetime import datetime, date, timedelta
+
+LEARNING_STEPS = [1, 10]  # minutes
+GRADUATING_IV = 1  # days
+EASY_IV = 4  # days
+RELEARN_STEPS = [10]  # minutes
+MAX_INTERVAL = 365  # days — cap to avoid 10-year intervals
+EASY_BONUS = 1.3  # Standard Anki multiplier for Easy ratings
+PERFECT_BONUS = 1.6
+PERFECT_IV = 7
+
+
+def _now_iso():
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _due_in_minutes(mins):
+    return (datetime.now() + timedelta(minutes=mins)).isoformat(timespec="seconds")
+
+
+def _due_in_days(days):
+    # ⚡ FIX: Use date.today() as reference, not datetime.now().
+    # Old: datetime.now() + 1d = same time tomorrow → card due same time next day
+    #      Reviewed at 11 PM Monday + 1d = 11 PM Tuesday → shows up Tuesday ✅
+    #      but reviewed at 11:58 PM Monday + 1d = 11:58 PM Tuesday → still Tuesday ✅
+    #      WORSE: interval=1 from 11PM Monday = Tuesday 11PM, but user opens at
+    #      9AM Tuesday → card NOT due yet. Opens at midnight = due immediately.
+    #
+    # New: date.today() + Nd = a pure calendar date, no time.
+    #      Reviewed any time Monday + 1d = Tuesday (00:00:00)
+    #      is_due_today() compares date-only → consistent regardless of review time.
+    due_date = date.today() + timedelta(days=days)
+    return datetime.combine(due_date, datetime.min.time()).isoformat(timespec="seconds")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  INTERVAL FUZZING
+#  Prevents card pile-ups by adding a small random offset to review intervals.
+#  Anki-style: fuzz range grows with interval size.
+# ─────────────────────────────────────────────────────────────────────────────
+_FUZZ_ID_KEYS = (
+    "box_id",
+    "group_id",
+    "_id",
+    "id",
+    "card_id",
+    "uuid",
+    "created",
+)
+
+
+def _stable_seed(*parts) -> int:
+    text = "|".join(str(part) for part in parts)
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big")
+
+
+def _fuzz_identity(c):
+    for key in _FUZZ_ID_KEYS:
+        val = c.get(key)
+        if val not in (None, ""):
+            return f"{key}:{val}"
+    return None
+
+
+def _fuzz_seed(c, iv: int) -> int:
+    identity = _fuzz_identity(c)
+    reviews = c.get("reviews", 0)
+    if identity is None:
+        return reviews + iv
+    return _stable_seed(identity, reviews, iv)
+
+
+def _fuzz_interval(iv: int, seed_val: int = None) -> int:
+    """Add a small random fuzz to intervals > 2 days to avoid pile-ups.
+    Uses seed_val to guarantee the preview matches the actual interval applied."""
+    if iv <= 2:
+        return iv  # No fuzz for very short intervals
+
+    use_seed = seed_val is not None
+    if use_seed:
+        state = random.getstate()
+        random.seed(seed_val)
+
+    try:
+        if iv <= 7:
+            fuzz = random.randint(-1, 1)  # ±1 day
+        elif iv <= 30:
+            fuzz = random.randint(-2, 2)  # ±2 days
+        elif iv <= 90:
+            fuzz = random.randint(-3, 4)  # -3 to +4 days
+        else:
+            fuzz = random.randint(-4, 7)  # -4 to +7 days
+    finally:
+        if use_seed:
+            random.setstate(state)
+    return max(1, iv + fuzz)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  EF UPDATES — Discrete Anki-style penalties per quality rating
+#  Replaces the continuous formula for review cards.
+#  Again (q=1): -0.20  Hard (q=3): -0.15  Good (q=4): 0.00  Easy (q=5): +0.15  Perfect (q=6): +0.30
+# ─────────────────────────────────────────────────────────────────────────────
+EF_DELTA = {
+    1: -0.20,  # Again
+    3: -0.15,  # Hard
+    4: 0.00,  # Good
+    5: +0.15,  # Easy
+    6: +0.30,  # Perfect
+}
+
+
+def _update_ef(ef: float, quality: int) -> float:
+    """Apply discrete EF delta. Clamp between 1.3 and 2.5 (Anki max is 2.5)."""
+    delta = EF_DELTA.get(quality, 0.0)
+    return round(max(1.3, min(2.5, ef + delta)), 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SCHEDULER INIT
+# ─────────────────────────────────────────────────────────────────────────────
+def sched_init(c):
+    c.setdefault("sched_state", "new")
+    c.setdefault("sched_step", 0)
+    c.setdefault("sm2_interval", 1)
+    c.setdefault("sm2_ease", 2.5)
+    c.setdefault("sm2_due", _now_iso())
+    c.setdefault("sm2_repetitions", 0)
+    c.setdefault("sm2_last_quality", -1)
+    c.setdefault("reviews", 0)
+    return c
+
+
+def sm2_init(c):
+    return sched_init(c)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CORE SCHEDULER UPDATE
+# ─────────────────────────────────────────────────────────────────────────────
+def sched_update(c, quality):
+    c = sched_init(c)
+    state = c["sched_state"]
+    step = c["sched_step"]
+    ef = c["sm2_ease"]
+    iv = c["sm2_interval"]
+
+    # Use stable card identity in the seed so same-state cards can spread out,
+    # while preview simulation and actual clicks still produce the same fuzz.
+    seed_val = _fuzz_seed(c, iv)
+
+    # Transition new → learning on first touch
+    if state == "new":
+        state = "learning"
+
+    # Pre-calculate the raw "Good" interval to use as an anchor for Hard/Easy clamps
+    if state == "review":
+        good_iv_raw = (
+            1
+            if c["sm2_repetitions"] == 0
+            else (
+                6
+                if c["sm2_repetitions"] == 1
+                else min(MAX_INTERVAL, max(1, round(iv * ef)))
+            )
+        )
+    else:
+        good_iv_raw = GRADUATING_IV
+
+    # ── AGAIN (quality <= 1) ──────────────────────────────────────────────────
+    if quality <= 1:
+        if state == "review":
+            ef = _update_ef(ef, 1)  # Penalize EF on lapse
+        steps = RELEARN_STEPS if state == "review" else LEARNING_STEPS
+        new_state = "relearn" if state == "review" else "learning"
+        new_step = 0
+        due = _due_in_minutes(steps[0])
+
+    # ── HARD (quality == 3) ───────────────────────────────────────────────────
+    elif quality == 3:
+        if state in ("learning", "relearn"):
+            steps = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
+            new_state = state
+            new_step = step
+            # Hard = midpoint between current step and next step
+            if step == 0 and len(steps) > 1:
+                hard_mins = (steps[0] + steps[1]) // 2  # (1+10)//2 = 5 min
+            else:
+                hard_mins = steps[min(step, len(steps) - 1)]
+            due = _due_in_minutes(hard_mins)
+        else:
+            # Review state: Hard → 1.2x interval, EF -0.15
+            ef = _update_ef(ef, 3)
+            new_state = "review"
+            new_step = 0
+
+            # Calculate raw Hard interval
+            hard_iv_raw = min(MAX_INTERVAL, max(1, round(iv * 1.2)))
+
+            # ⚡ ALGORITHMIC ENFORCEMENT: Hard < Good
+            if good_iv_raw > 1:
+                hard_iv_raw = min(hard_iv_raw, good_iv_raw - 1)
+
+            hard_iv = _fuzz_interval(hard_iv_raw, seed_val)
+            good_iv_for_order = _fuzz_interval(good_iv_raw, seed_val)
+            iv = min(hard_iv, good_iv_for_order)
+            due = _due_in_days(iv)
+
+    # ── EASY (quality == 5) ───────────────────────────────────────────────────
+    elif quality == 5:
+        if state == "review":
+            ef = _update_ef(ef, 5)  # Reward EF on easy
+        new_state = "review"
+        new_step = 0
+        if state == "review":
+            easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef * EASY_BONUS)))
+
+            # Clamp Easy interval to at most 1.8x of Good interval to prevent massive leaps
+            easy_iv_raw = min(easy_iv_raw, round(good_iv_raw * 1.8))
+
+            # ⚡ ALGORITHMIC ENFORCEMENT: Easy > Good
+            easy_iv_raw = min(MAX_INTERVAL, max(easy_iv_raw, good_iv_raw + 1))
+
+            easy_iv = _fuzz_interval(easy_iv_raw, seed_val)
+            good_iv_for_order = _fuzz_interval(good_iv_raw, seed_val)
+            iv = max(easy_iv, good_iv_for_order + 1)
+        else:
+            iv = EASY_IV
+            iv = _fuzz_interval(iv, seed_val)
+        due = _due_in_days(iv)
+
+    # ── PERFECT (quality >= 6) ────────────────────────────────────────────────
+    elif quality >= 6:
+        if state == "review":
+            ef = _update_ef(ef, 6)
+        new_state = "review"
+        new_step = 0
+        if state == "review":
+            easy_iv_raw = min(MAX_INTERVAL, max(EASY_IV, round(iv * ef * EASY_BONUS)))
+            
+            # Clamp Easy interval to at most 1.8x of Good interval
+            easy_iv_raw = min(easy_iv_raw, round(good_iv_raw * 1.8))
+            
+            easy_iv_raw = max(easy_iv_raw, good_iv_raw + 1)
+            perfect_iv_raw = min(
+                MAX_INTERVAL, max(PERFECT_IV, round(iv * ef * PERFECT_BONUS))
+            )
+            
+            # Clamp Perfect interval to at most 2.5x of Good interval
+            perfect_iv_raw = min(perfect_iv_raw, round(good_iv_raw * 2.5))
+            
+            perfect_iv_raw = max(perfect_iv_raw, easy_iv_raw + 1)
+
+            perfect_iv = _fuzz_interval(perfect_iv_raw, seed_val)
+            easy_iv_for_order = _fuzz_interval(easy_iv_raw, seed_val)
+            iv = max(perfect_iv, easy_iv_for_order + 1)
+        else:
+            iv = _fuzz_interval(PERFECT_IV, seed_val)
+        due = _due_in_days(iv)
+
+    # ── GOOD (quality == 4) ───────────────────────────────────────────────────
+    else:
+        if state in ("learning", "relearn"):
+            steps = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
+            next_step = step + 1
+            if next_step >= len(steps):
+                # Graduated!
+                new_state = "review"
+                new_step = 0
+                iv = GRADUATING_IV
+                due = _due_in_days(iv)
+            else:
+                new_state = state
+                new_step = next_step
+                due = _due_in_minutes(steps[next_step])
+        else:
+            # Review state: Good → standard SM-2, EF unchanged
+            ef = _update_ef(ef, 4)  # delta = 0, but keeps clamp logic
+            new_state = "review"
+            new_step = 0
+            iv = _fuzz_interval(good_iv_raw, seed_val)
+            due = _due_in_days(iv)
+
+    c.update(
+        {
+            "sched_state": new_state,
+            "sched_step": new_step,
+            "sm2_interval": iv,
+            "sm2_ease": ef,
+            "sm2_due": due,
+            "sm2_last_quality": quality,
+            "sm2_repetitions": c["sm2_repetitions"] + (1 if quality >= 3 else 0),
+            "reviews": c.get("reviews", 0) + 1,
+        }
+    )
+    return c
+
+
+def sm2_update(c, quality):
+    return sched_update(c, quality)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  DUE CHECKS
+# ─────────────────────────────────────────────────────────────────────────────
+def is_due_now(c):
+    if c.get("sm2_last_quality", -1) == -1:
+        return True
+    due_str = c.get("sm2_due", "")
+    if not due_str:
+        return True
+    try:
+        if len(due_str) >= 19:
+            return due_str[:19] <= datetime.now().isoformat()[:19]
+        return datetime.fromisoformat(due_str) <= datetime.now()
+    except Exception:
+        return True
+
+
+def is_due_today(c):
+    due_str = c.get("sm2_due", "")
+    if due_str:
+        try:
+            if len(due_str) >= 10:
+                if due_str[:10] > date.today().isoformat():
+                    return False
+            else:
+                due_date = datetime.fromisoformat(due_str).date()
+                if due_date > date.today():
+                    return False
+        except Exception:
+            pass
+
+    state = c.get("sched_state", "new")
+
+    if state == "new":
+        return is_due_now(c)
+
+    if state in ("learning", "relearn"):
+        # [BUG FIX] Learning/relearn cards that were already rated
+        # (sm2_last_quality != -1) must ALWAYS show on the same day,
+        # even if their intraday due time is still in the future.
+        # Scenario: user rates m2 Good (→ due in 1min), exits, reopens
+        # within that 1min window — m2 should still appear in the queue.
+        # Strict datetime check was hiding it until the exact minute passed.
+        if c.get("sm2_last_quality", -1) != -1:
+            # Already rated today — show it regardless of exact due time
+            # (as long as due date is today or earlier)
+            due_str = c.get("sm2_due", "")
+            if not due_str:
+                return True
+            try:
+                if len(due_str) >= 10:
+                    return due_str[:10] <= date.today().isoformat()
+                return datetime.fromisoformat(due_str).date() <= date.today()
+            except Exception:
+                return True
+        # Never rated — treat as new
+        return is_due_now(c)
+
+    # review state: compare by date only
+    due_str = c.get("sm2_due", "")
+    if not due_str:
+        return True
+    try:
+        if len(due_str) >= 10:
+            return due_str[:10] <= date.today().isoformat()
+        return datetime.fromisoformat(due_str).date() <= date.today()
+    except Exception:
+        return True
+
+
+def sm2_is_due(c):
+    return is_due_today(c)
+
+
+def sm2_days_left(c):
+    try:
+        due_str = c.get("sm2_due", "")
+        if len(due_str) >= 10:
+            due_date = date.fromisoformat(due_str[:10])
+            delta = (due_date - date.today()).days
+            return max(0, delta)
+        due = datetime.fromisoformat(due_str)
+        delta = (due.date() - date.today()).days
+        return max(0, delta)
+    except Exception:
+        return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PREVIEW SIMULATOR  (what interval will each button show?)
+# ─────────────────────────────────────────────────────────────────────────────
+_SM2_PREVIEW_KEYS = frozenset(
+    {
+        "sched_state",
+        "sched_step",
+        "sm2_interval",
+        "sm2_ease",
+        "sm2_due",
+        "sm2_last_quality",
+        "sm2_repetitions",
+        "reviews",
+        *_FUZZ_ID_KEYS,
+    }
+)
+
+
+def _fmt_due_interval(c):
+    def _preview(quality):
+        s = {k: c[k] for k in _SM2_PREVIEW_KEYS if k in c}
+        sched_init(s)
+        sched_update(s, quality)
+        ns = s["sched_state"]
+        if ns in ("learning", "relearn"):
+            # ✅ FIX: Read actual due datetime, not step index
+            # Step index was always 0 for Hard, giving wrong 1m label
+            try:
+                due_dt = datetime.fromisoformat(s["sm2_due"])
+                delta = due_dt - datetime.now()
+                mins = max(1, round(delta.total_seconds() / 60))
+                return f"{mins}m" if mins < 60 else f"{mins // 60}h"
+            except Exception:
+                steps = RELEARN_STEPS if ns == "relearn" else LEARNING_STEPS
+                mins = steps[min(s["sched_step"], len(steps) - 1)]
+                return f"{mins}m" if mins < 60 else f"{mins // 60}h"
+        else:
+            days = s["sm2_interval"]
+            return f"{days}d"
+
+    previews = {q: _preview(q) for q in [1, 3, 4, 5, 6]}
+    return previews
+
+
+def sm2_simulate(c, q):
+    previews = _fmt_due_interval(c)
+    return previews.get(q, "?")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  BADGE
+# ─────────────────────────────────────────────────────────────────────────────
+def sm2_badge(c):
+    state = c.get("sched_state", "new")
+    iv = c.get("sm2_interval", 1)
+    ef = c.get("sm2_ease", 2.5)
+    step = c.get("sched_step", 0)
+    if state == "new":
+        return "🆕 New"
+    if state in ("learning", "relearn"):
+        steps = RELEARN_STEPS if state == "relearn" else LEARNING_STEPS
+        mins = steps[min(step, len(steps) - 1)]
+        tag = "🔁 Relearn" if state == "relearn" else "📖 Learning"
+        return f"{tag}  step:{step + 1}/{len(steps)}  next:{mins}m"
+    if is_due_today(c):
+        return f"🔴 Review Due  iv:{iv}d  EF:{ef:.2f}"
+    return f"✅ {sm2_days_left(c)}d left  iv:{iv}d  EF:{ef:.2f}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  QUICK SMOKE TEST
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    print("=== Learning Phase ===")
+    card = {}
+    sched_init(card)
+
+    for label, q in [("Again", 1), ("Hard", 3), ("Good", 4), ("Easy", 5), ("Perfect", 6)]:
+        c = copy.deepcopy(card)
+        sched_update(c, q)
+        print(
+            f"  {label:5s} (q={q}) → state:{c['sched_state']:8s}  due:{c['sm2_due'][11:16]}  ef:{c['sm2_ease']:.2f}"
+        )
+
+    print("\n=== Review Phase ===")
+    review_card = {
+        "sched_state": "review",
+        "sched_step": 0,
+        "sm2_interval": 10,
+        "sm2_ease": 2.5,
+        "sm2_due": _now_iso(),
+        "sm2_repetitions": 5,
+        "sm2_last_quality": 4,
+        "reviews": 5,
+    }
+    for label, q in [("Again", 1), ("Hard", 3), ("Good", 4), ("Easy", 5), ("Perfect", 6)]:
+        c = copy.deepcopy(review_card)
+        sched_update(c, q)
+        print(
+            f"  {label:5s} (q={q}) → iv:{c['sm2_interval']:3d}d  ef:{c['sm2_ease']:.2f}  due:{c['sm2_due'][:10]}"
+        )
+
+    print("\n=== Button Ordering Check (Easy >= Good >= Hard) ===")
+    for _ in range(10):
+        c = copy.deepcopy(review_card)
+        previews = _fmt_due_interval(c)
+        print(
+            f"  Hard:{previews[3]}  Good:{previews[4]}  "
+            f"Easy:{previews[5]}  Perfect:{previews[6]}"
+        )

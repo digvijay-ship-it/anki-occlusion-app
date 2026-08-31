@@ -54,6 +54,7 @@ class ReviewSessionManager:
     def __init__(self, rs):
         self.rs = rs
         self.is_practice = False
+        self._session_ratings = []
         self._items = []
         self._idx = 0
         self._done = 0
@@ -90,6 +91,14 @@ class ReviewSessionManager:
         self._review_undo_stack.append(snapshot)
         # New rating clears redo stack
         self._review_redo_stack.clear()
+
+        # Track session rating
+        self._session_ratings.append({
+            "card": card,
+            "box_idx": box_idx,
+            "quality": quality,
+            "sm2_obj": sm2_obj,
+        })
 
         if self.is_practice:
             self._done += 1
@@ -221,6 +230,14 @@ class ReviewSessionManager:
         self._idx = snap["idx"]
         self._done = snap["done"]
 
+        if self._session_ratings:
+            self._session_ratings.pop()
+
+        if self.is_practice:
+            self.rs.canvas._show_toast(f"↩ Undo — back to card {self._idx + 1}")
+            self.rs._load_item()
+            return
+
         # Restore SM-2 state of main box
         sm2_obj = snap["sm2_obj"]
         _restore_sm2_snapshot(sm2_obj, snap["sm2_state"])
@@ -266,6 +283,7 @@ class ReviewSessionManager:
         card = snap.get("card")
         box_idx = snap.get("box_idx")
         sm2_obj = snap["sm2_obj"]
+        quality = snap.get("quality")
 
         # Save current state back to undo stack
         undo_snap = {
@@ -274,7 +292,7 @@ class ReviewSessionManager:
             "items_order": list(self._items),
             "card": card,
             "box_idx": box_idx,
-            "quality": snap.get("quality"),
+            "quality": quality,
             "sm2_obj": sm2_obj,
             "sm2_state": _sm2_snapshot(sm2_obj),
             "sibling_snapshots": _sibling_snapshots_for_item(
@@ -290,6 +308,19 @@ class ReviewSessionManager:
         self._queue_needs_full_rebuild = True
         self._idx = snap["idx"]
         self._done = snap["done"]
+
+        if quality is not None:
+            self._session_ratings.append({
+                "card": card,
+                "box_idx": box_idx,
+                "quality": quality,
+                "sm2_obj": sm2_obj,
+            })
+
+        if self.is_practice:
+            self.rs.canvas._show_toast(f"↪ Redo — card {self._idx + 1}")
+            self.rs._load_item()
+            return
 
         _restore_sm2_snapshot(sm2_obj, snap["sm2_state"])
         for box, state in snap.get("sibling_snapshots", []):
@@ -492,7 +523,11 @@ class ReviewSessionManager:
             peek_idx = getattr(self.rs, "__dict__", {}).get("_peek_idx")
 
         if hasattr(self.rs, "_update_queue_label"):
-            active_count = sum(1 for _, _, sm2 in self._items if is_due_today(sm2))
+            if getattr(self, "is_practice", False) or getattr(self.rs, "is_practice", False):
+                active_count = max(0, len(self._items) - self._idx)
+            else:
+                due_c = sum(1 for _, _, sm2 in self._items[self._idx:] if is_due_today(sm2))
+                active_count = due_c if due_c > 0 else max(0, len(self._items) - self._idx)
             self.rs._update_queue_label(active_count)
 
         rows = {
@@ -522,7 +557,11 @@ class ReviewSessionManager:
         """Rebuild the right-side queue list — reflects current order + states."""
         self.rs._queue_list.clear()
         if hasattr(self.rs, "_update_queue_label"):
-            active_count = sum(1 for _, _, sm2 in self._items if is_due_today(sm2))
+            if getattr(self, "is_practice", False) or getattr(self.rs, "is_practice", False):
+                active_count = max(0, len(self._items) - self._idx)
+            else:
+                due_c = sum(1 for _, _, sm2 in self._items[self._idx:] if is_due_today(sm2))
+                active_count = due_c if due_c > 0 else max(0, len(self._items) - self._idx)
             self.rs._update_queue_label(active_count)
         if peek_idx is None:
             peek_idx = getattr(self, "_peek_idx", None)

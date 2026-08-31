@@ -179,7 +179,114 @@ class TestCardBrowser(unittest.TestCase):
         self.assertEqual(self.mock_deck["cards"][0]["_id"], 103)
         self.assertEqual(dlg.table.rowCount(), 1)
 
+    def test_review_screen_card_manager_integration(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QDialog
+        cards = [self.mock_cards[0]]
+        review_scr = ReviewScreen(cards=cards, data=self.mock_data)
+        
+        # Verify button exists on review screen
+        self.assertTrue(hasattr(review_scr, "_btn_card_manager"))
+        self.assertEqual(review_scr._btn_card_manager.text(), "📋 Card Manager")
+        
+        # Verify action exists in options menu
+        self.assertTrue(hasattr(review_scr, "_act_card_manager"))
+        self.assertEqual(review_scr._act_card_manager.text(), "📋 Bulk Card Manager")
+        self.assertIn(review_scr._act_card_manager, review_scr._menu_options.actions())
+        
+        # Test triggering _open_card_browser
+        with patch.object(CardBrowserDialog, "exec_", return_value=QDialog.Accepted):
+            review_scr._open_card_browser()
+
+    def test_edit_text_card_syncs_with_review_screen(self):
+        from PyQt5.QtWidgets import QDialog, QTableWidgetSelectionRange
+        mock_review = MagicMock()
+        mock_review._text_card_cache = {(101, True): "dummy_cached", (101, False): "dummy_cached"}
+        mock_review._items = [(self.mock_cards[0], 0, None)]
+        
+        dlg = CardBrowserDialog(deck=self.mock_deck, data=self.mock_data, review_screen=mock_review)
+        dlg.table.setRangeSelected(QTableWidgetSelectionRange(0, 0, 0, 5), True)
+        
+        mock_editor = MagicMock()
+        mock_editor.exec_.return_value = QDialog.Accepted
+        mock_editor.get_card.return_value = {
+            "_id": 101,
+            "card_type": "text",
+            "title": "Yakshagana Updated",
+            "question": "Yakshagana Dance Updated",
+            "answer": "Karnataka traditional dance form updated",
+            "notes": "Coastal Karnataka",
+            "tags": ["folk", "art"],
+            "reviews": 2,
+            "sched_state": "review"
+        }
+        
+        with patch("ui.text_card_editor_dialog.TextCardEditorDialog", return_value=mock_editor):
+            dlg._edit_selected_card()
+            
+        # Verify cache was cleared and _load_item was called on review screen
+        self.assertNotIn((101, True), mock_review._text_card_cache)
+        self.assertNotIn((101, False), mock_review._text_card_cache)
+        mock_review._load_item.assert_called_once()
+        self.assertEqual(self.mock_deck["cards"][0]["question"], "Yakshagana Dance Updated")
+
+    def test_ctrl_b_opens_card_browser_from_tmnt_tree(self):
+        from ui.tmnt_home import TMNTHomeLayout
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        layout = TMNTHomeLayout(data=self.mock_data)
+        layout.sidebar.tree._selected_deck = self.mock_deck
+        layout.main._open_card_browser = MagicMock()
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_B, Qt.ControlModifier)
+        layout.sidebar.tree.keyPressEvent(event)
+        
+        layout.main._open_card_browser.assert_called_once()
+
+    def test_ctrl_b_opens_card_browser_from_tmnt_sidebar(self):
+        from ui.tmnt_home import TMNTHomeLayout
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        layout = TMNTHomeLayout(data=self.mock_data)
+        layout.sidebar._selected_deck = self.mock_deck
+        layout.main._open_card_browser = MagicMock()
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_B, Qt.ControlModifier)
+        layout.sidebar.keyPressEvent(event)
+        
+        layout.main._open_card_browser.assert_called_once()
+
+    def test_ctrl_b_opens_card_browser_from_tmnt_layout(self):
+        from ui.tmnt_home import TMNTHomeLayout
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        layout = TMNTHomeLayout(data=self.mock_data)
+        layout.main.deck = self.mock_deck
+        layout.main._open_card_browser = MagicMock()
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_B, Qt.ControlModifier)
+        layout.keyPressEvent(event)
+        
+        layout.main._open_card_browser.assert_called_once()
+
+    def test_ctrl_b_opens_card_browser_from_home_screen(self):
+        from ui.home_screen import HomeScreen
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        home = HomeScreen(data=self.mock_data)
+        home._open_card_browser = MagicMock()
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_B, Qt.ControlModifier)
+        home.keyPressEvent(event)
+        
+        home._open_card_browser.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

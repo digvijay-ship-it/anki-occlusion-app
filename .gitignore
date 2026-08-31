@@ -115,3 +115,7 @@ test_err.txt
 test_out.txt
 test_post_*.txt
 test_run_output.txt
+
+*.zip
+Anki_Source_Package.zip
+

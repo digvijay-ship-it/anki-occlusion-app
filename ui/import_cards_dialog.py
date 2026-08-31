@@ -2,6 +2,7 @@
 import os
 import io
 import csv
+import json
 import uuid
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -11,10 +12,11 @@ from PyQt5.QtWidgets import (
     QTabWidget, QWidget, QApplication, QSplitter
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtGui import QFont, QColor, QPalette
 from theme_manager import get_palette, normalize_theme
 from sm2_engine import sm2_init
-from data_manager import find_deck_by_id, next_deck_id, deck_history, store
+from data_manager import find_deck_by_id, next_deck_id, deck_history, store, get_or_create_deck_by_path, scan_and_parse_data_folder, sync_deck_from_source_folder
+
 
 
 def parse_delimited_text(text: str, delimiter: str = ",", has_header: bool = False, strip_whitespace: bool = True) -> list:
@@ -75,7 +77,17 @@ def parse_delimited_text(text: str, delimiter: str = ",", has_header: bool = Fal
     return results
 
 
-def build_text_card(question: str, answer: str, notes: str = "", tags: list = None) -> dict:
+def build_text_card(
+    question: str,
+    answer: str,
+    notes: str = "",
+    tags: list = None,
+    context_anchor: str = "",
+    chain_order: int = 0,
+    parent_chain_id: str = None,
+    trap_note: str = "",
+    priority_tier: int = 1
+) -> dict:
     """Build a fully-formed SM-2 initialized text card dictionary."""
     lines = [line.strip() for line in question.split("\n") if line.strip()]
     first_line = lines[0] if lines else "Untitled"
@@ -90,6 +102,11 @@ def build_text_card(question: str, answer: str, notes: str = "", tags: list = No
         "question": question,
         "answer": answer,
         "notes": notes,
+        "trap_note": trap_note or notes,
+        "context_anchor": context_anchor or "",
+        "chain_order": int(chain_order or 0),
+        "parent_chain_id": parent_chain_id,
+        "priority_tier": int(priority_tier or 1),
         "tags": tags or [],
         "created": datetime.now().isoformat(),
         "reviews": 0,
@@ -100,6 +117,257 @@ def build_text_card(question: str, answer: str, notes: str = "", tags: list = No
     }
     sm2_init(card)
     return card
+
+
+def build_mcq_card(
+    question: str,
+    options: list,
+    correct_option: any = None,
+    solution_data: dict = None,
+    percent_answered_correctly: str = "",
+    exam_meta: dict = None,
+    notes: str = "",
+    trap_note: str = "",
+    context_anchor: str = "",
+    chain_order: int = 0,
+    parent_chain_id: str = None,
+    priority_tier: int = 1,
+    tags: list = None,
+    question_html: str = ""
+) -> dict:
+    """Build a fully-formed SM-2 initialized interactive MCQ card dictionary."""
+    import re
+    clean_q = re.sub(r'<[^>]+>', ' ', question).strip()
+    lines = [line.strip() for line in clean_q.split("\n") if line.strip()]
+    first_line = lines[0] if lines else "Untitled MCQ"
+    title = first_line[:45] + "..." if len(first_line) > 45 else first_line
+    if not title:
+        title = "Untitled MCQ"
+
+    # Find answer text for fallback
+    ans_text = ""
+    if isinstance(correct_option, dict):
+        lbl = correct_option.get("label", "")
+        txt = correct_option.get("text", "")
+        ans_text = f"Option {lbl}: {txt}" if txt else f"Option {lbl}"
+    elif isinstance(correct_option, str):
+        ans_text = correct_option
+    elif options:
+        for opt in options:
+            if isinstance(opt, dict) and opt.get("is_correct"):
+                ans_text = f"Option {opt.get('label', '')}: {opt.get('text', '')}"
+                break
+
+    card = {
+        "_id": str(uuid.uuid4()),
+        "card_type": "mcq",
+        "title": title,
+        "question": question,
+        "question_html": question_html or question,
+        "answer": ans_text,
+        "options": options or [],
+        "correct_option": correct_option,
+        "solution_data": solution_data or {},
+        "percent_answered_correctly": percent_answered_correctly or "",
+        "exam_meta": exam_meta or {},
+        "notes": notes,
+        "trap_note": trap_note or notes,
+        "context_anchor": context_anchor or "",
+        "chain_order": int(chain_order or 0),
+        "parent_chain_id": parent_chain_id,
+        "priority_tier": int(priority_tier or 1),
+        "tags": tags or [],
+        "created": datetime.now().isoformat(),
+        "reviews": 0,
+        "pdf_path": None,
+        "image_path": None,
+        "boxes": [],
+        "is_formula": False
+    }
+    sm2_init(card)
+    return card
+
+
+def parse_testbook_or_mcq_json(text: str) -> tuple:
+    """
+    Parse Testbook / Mock Exam export JSON or list of MCQ question objects.
+    Returns (list of normalized card dicts, suggested_deck_name: str).
+    """
+    import re
+    if not text or not text.strip():
+        return [], ""
+
+    try:
+        raw = json.loads(text)
+    except Exception as e:
+        raise ValueError(f"Invalid JSON syntax: {e}")
+
+    suggested_deck = ""
+    global_section = ""
+    global_platform = "Testbook"
+
+    if isinstance(raw, dict):
+        global_section = raw.get("section", "")
+        raw_platform = raw.get("platform", "Testbook") or "Testbook"
+        clean_platform = raw_platform.lower().replace(".com", "").replace(".in", "").capitalize()
+        global_platform = clean_platform
+        if global_section:
+            suggested_deck = f"{global_platform}::{global_section}"
+        elif global_platform:
+            suggested_deck = f"{global_platform} Exam"
+
+        if "questions" in raw and isinstance(raw["questions"], list):
+            items = raw["questions"]
+        elif "question" in raw:
+            items = [raw]
+        else:
+            items = raw.get("cards", [raw])
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        raise ValueError("JSON must contain an object or list of questions")
+
+    results = []
+    for idx, it in enumerate(items):
+        if not isinstance(it, dict):
+            continue
+
+        q = str(it.get("question", "")).strip()
+        q_html = str(it.get("question_html", "")).strip() or q
+        if not q and not q_html:
+            continue
+
+        # Extract options
+        raw_options = it.get("options", [])
+        clean_options = []
+        for o_idx, opt in enumerate(raw_options):
+            if isinstance(opt, dict):
+                clean_options.append({
+                    "label": opt.get("label") or chr(65 + o_idx),
+                    "text": str(opt.get("text") or "").strip(),
+                    "is_correct": bool(opt.get("is_correct", False)),
+                    "is_user_selected": bool(opt.get("is_user_selected", False))
+                })
+            elif isinstance(opt, str):
+                lbl = chr(65 + o_idx)
+                opt_str = opt.strip()
+                match = re.match(r'^([A-Da-d1-4])[\.\)\:\-]\s*(.*)$', opt_str)
+                if match:
+                    lbl = match.group(1).upper()
+                    opt_str = match.group(2)
+                clean_options.append({
+                    "label": lbl,
+                    "text": opt_str,
+                    "is_correct": False,
+                    "is_user_selected": False
+                })
+
+        # Correct option
+        c_opt = it.get("correct_option")
+        c_label = ""
+        c_text = ""
+        if isinstance(c_opt, dict):
+            c_label = str(c_opt.get("label", "")).strip()
+            c_text = str(c_opt.get("text", "")).strip()
+        elif isinstance(c_opt, str):
+            c_label = c_opt.strip()
+
+        # Match correct flag in clean_options if not set
+        if c_label:
+            for opt in clean_options:
+                if opt["label"].upper() == c_label.upper():
+                    opt["is_correct"] = True
+                    if not c_text:
+                        c_text = opt["text"]
+
+        # Solution data
+        raw_sol = it.get("solution")
+        sol_data = {}
+        if isinstance(raw_sol, dict):
+            sol_data = {
+                "statement": str(raw_sol.get("statement") or "").strip(),
+                "key_points": raw_sol.get("key_points") if isinstance(raw_sol.get("key_points"), list) else [],
+                "additional_info": raw_sol.get("additional_info") if isinstance(raw_sol.get("additional_info"), list) else [],
+                "important_points": raw_sol.get("important_points") if isinstance(raw_sol.get("important_points"), list) else [],
+                "html": str(raw_sol.get("html") or it.get("detailed_solution") or it.get("explanation") or "").strip(),
+                "text": str(raw_sol.get("text") or raw_sol.get("markdown") or it.get("detailed_solution") or it.get("explanation") or "").strip()
+            }
+        elif isinstance(raw_sol, str):
+            sol_data = {
+                "statement": f"The correct answer is Option {c_label}: {c_text}." if c_label else "",
+                "key_points": [line.strip().lstrip("•*- ") for line in raw_sol.split("\n") if line.strip()],
+                "additional_info": [],
+                "important_points": [],
+                "html": raw_sol,
+                "text": raw_sol
+            }
+        elif it.get("detailed_solution") or it.get("explanation"):
+            d_sol = str(it.get("detailed_solution") or it.get("explanation") or "").strip()
+            sol_data = {
+                "statement": f"The correct answer is Option {c_label}: {c_text}." if c_label else "",
+                "key_points": [],
+                "additional_info": [],
+                "important_points": [],
+                "html": d_sol,
+                "text": d_sol
+            }
+
+        # Notes / Deep concept extracted from key points if notes empty
+        notes = str(it.get("notes", "")).strip()
+        if not notes and sol_data.get("key_points"):
+            notes = "\n".join([f"• {kp}" for kp in sol_data["key_points"][:4]])
+
+        # Trap note
+        trap_note = str(it.get("trap_note", "")).strip()
+        if not trap_note and sol_data.get("important_points"):
+            trap_note = "\n".join([f"• {ip}" for ip in sol_data["important_points"][:3]])
+
+        # Context Anchor / Section
+        section = it.get("section") or global_section or ""
+        context_anchor = it.get("context_anchor") or section or "General Awareness"
+
+        # Chain order & Q No
+        try:
+            q_no = int(it.get("question_no") or (idx + 1))
+        except (ValueError, TypeError):
+            q_no = idx + 1
+
+        acc_stat = str(it.get("percent_answered_correctly") or "").strip()
+
+        exam_meta = {
+            "section": section,
+            "platform": it.get("platform") or global_platform,
+            "marks": it.get("marks", ""),
+            "avg_time_raw": it.get("avg_time_raw", ""),
+            "my_time_raw": it.get("my_time_raw", ""),
+            "question_no": str(q_no),
+            "url": it.get("url", "")
+        }
+
+        ans_str = f"Option {c_label}: {c_text}" if c_label else (it.get("answer") or "")
+        deck_name = str(it.get("deck_name") or "").strip()
+
+        results.append({
+            "is_mcq": True,
+            "question": q,
+            "question_html": q_html,
+            "options": clean_options,
+            "correct_option": {"label": c_label, "text": c_text} if c_label else c_opt,
+            "solution_data": sol_data,
+            "percent_answered_correctly": acc_stat,
+            "exam_meta": exam_meta,
+            "answer": ans_str,
+            "notes": notes,
+            "trap_note": trap_note,
+            "context_anchor": context_anchor,
+            "chain_order": q_no,
+            "parent_chain_id": it.get("parent_chain_id"),
+            "priority_tier": int(it.get("priority_tier", 1) or 1),
+            "deck_name": deck_name
+        })
+
+    return results, suggested_deck
+
 
 
 class ImportCardsDialog(QDialog):
@@ -116,6 +384,8 @@ class ImportCardsDialog(QDialog):
         self._skipped_duplicates_count = 0
         self._target_deck_id = None
         self._is_new_deck = False
+        self._folder_path = ""
+        self._selected_folder_path = None
 
         self._existing_cards_map = {}  # norm_question -> list of (deck_id, deck_name)
         self._build_existing_cards_index()
@@ -144,7 +414,7 @@ class ImportCardsDialog(QDialog):
                         continue
                     q = (card.get("question") or card.get("title") or "").strip().lower()
                     if q:
-                        self._existing_cards_map.setdefault(q, []).append((d_id, d_name))
+                        self._existing_cards_map.setdefault(q, []).append((d_id, d_name, card))
                 _walk(d.get("children", []))
 
         _walk(self._data.get("decks", []))
@@ -207,13 +477,29 @@ class ImportCardsDialog(QDialog):
                 selection-background-color: {p['C_ACCENT']};
             }}
             QTableWidget {{
-                background: {p['C_CARD']};
+                background-color: {p['C_CARD']};
+                alternate-background-color: {p.get('C_SURFACE', '#1E2333')};
                 color: {p['C_TEXT']};
                 border: 1px solid {p['C_BORDER']};
                 border-radius: 6px;
                 gridline-color: {p['C_BORDER']};
                 selection-background-color: {p['C_ACCENT']};
                 selection-color: white;
+                font-size: 12px;
+                outline: none;
+            }}
+            QTableWidget::item {{
+                padding: 6px 8px;
+                color: {p['C_TEXT']};
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            }}
+            QTableWidget::item:selected {{
+                background-color: {p['C_ACCENT']};
+                color: white;
+            }}
+            QTableWidget::item:hover {{
+                background-color: {p.get('C_SURFACE', '#1E2333')};
+                color: {p['C_TEXT']};
             }}
             QHeaderView::section {{
                 background: {p['C_SURFACE']};
@@ -265,6 +551,7 @@ class ImportCardsDialog(QDialog):
         main_l.setSpacing(12)
 
         # ── Header ──
+        hdr_row = QHBoxLayout()
         hdr_box = QVBoxLayout()
         hdr_box.setSpacing(2)
         lbl_title = QLabel("📥 Bulk Card Importer & Vocab Checker")
@@ -273,7 +560,28 @@ class ImportCardsDialog(QDialog):
         lbl_sub.setObjectName("header_sub")
         hdr_box.addWidget(lbl_title)
         hdr_box.addWidget(lbl_sub)
-        main_l.addLayout(hdr_box)
+        hdr_row.addLayout(hdr_box, stretch=1)
+
+        btn_hdr_prompt = QPushButton("🤖 Copy AI Prompt (80/20 Rule)")
+        btn_hdr_prompt.setCursor(Qt.PointingHandCursor)
+        btn_hdr_prompt.setToolTip("Copy the 80/20 master prompt to clipboard to give to Gemini / ChatGPT along with your PDF")
+        btn_hdr_prompt.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7950F2, stop:1 #4C6EF5);
+                color: #FFFFFF;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: bold;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #845EF7, stop:1 #5C7CFA);
+            }}
+        """)
+        btn_hdr_prompt.clicked.connect(self._copy_master_prompt)
+        hdr_row.addWidget(btn_hdr_prompt, alignment=Qt.AlignVCenter)
+        main_l.addLayout(hdr_row)
 
         # ── Splitter between (Input & Config) and (Live Preview) ──
         splitter = QSplitter(Qt.Vertical)
@@ -283,9 +591,7 @@ class ImportCardsDialog(QDialog):
         upper_widget = QWidget()
         upper_l = QVBoxLayout(upper_widget)
         upper_l.setContentsMargins(0, 0, 0, 0)
-        upper_l.setSpacing(10)
-
-        # Tabs: Paste Text vs Browse File
+          # Tabs: Paste Text vs Browse File vs Paste JSON
         self.tabs = QTabWidget()
         
         # Tab 1: Paste Text
@@ -311,7 +617,7 @@ class ImportCardsDialog(QDialog):
 
         f_row = QHBoxLayout()
         self.inp_file_path = QLineEdit()
-        self.inp_file_path.setPlaceholderText("Select a .txt, .csv, or .tsv file...")
+        self.inp_file_path.setPlaceholderText("Select a .txt, .csv, .tsv, or .json file...")
         self.inp_file_path.setReadOnly(True)
         btn_browse = QPushButton("📂 Browse...")
         btn_browse.clicked.connect(self._browse_file)
@@ -323,7 +629,179 @@ class ImportCardsDialog(QDialog):
         self.lbl_file_info.setStyleSheet(f"color: {p['C_SUBTEXT']};")
         file_l.addWidget(self.lbl_file_info)
         file_l.addStretch()
-        self.tabs.addTab(tab_file, "📁 Choose File (.txt / .csv / .tsv)")
+        self.tabs.addTab(tab_file, "📁 Choose Single File")
+
+        # Tab 3: Paste JSON
+        tab_json = QWidget()
+        json_l = QVBoxLayout(tab_json)
+        json_l.setContentsMargins(8, 8, 8, 8)
+        json_l.setSpacing(6)
+
+        json_hdr = QHBoxLayout()
+        lbl_json_hint = QLabel("Paste structured flashcards JSON below or copy the prompt:")
+        lbl_json_hint.setStyleSheet(f"color: {p['C_SUBTEXT']}; font-size: 11px;")
+        
+        btn_copy_prompt = QPushButton("📋 Copy AI Master Prompt (80/20 Rule)")
+        btn_copy_prompt.setObjectName("flat")
+        btn_copy_prompt.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(92, 124, 250, 0.15);
+                color: {p['C_ACCENT']};
+                border: 1px solid {p['C_ACCENT']};
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-weight: bold;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background: {p['C_ACCENT']};
+                color: #FFFFFF;
+            }}
+        """)
+        btn_copy_prompt.setCursor(Qt.PointingHandCursor)
+        btn_copy_prompt.setToolTip("Copy the 80/20 master prompt to clipboard to give to Gemini / ChatGPT along with your PDF")
+        btn_copy_prompt.clicked.connect(self._copy_master_prompt)
+        
+        json_hdr.addWidget(lbl_json_hint)
+        json_hdr.addStretch()
+        json_hdr.addWidget(btn_copy_prompt)
+        json_l.addLayout(json_hdr)
+
+        self.txt_json = QPlainTextEdit()
+        self.txt_json.setPlaceholderText(
+            "Paste JSON list of cards here. Example:\n"
+            "[\n"
+            "  {\n"
+            '    "deck_name": "Biology::Genetics",\n'
+            '    "context_anchor": "Mendelian Inheritance",\n'
+            '    "question": "What is the phenotypic ratio of a monohybrid cross?",\n'
+            '    "answer": "3:1 ratio (dominant : recessive)",\n'
+            '    "trap_note": "Do not confuse with genotypic ratio 1:2:1",\n'
+            '    "chain_order": 1\n'
+            "  }\n"
+            "]"
+        )
+        self.txt_json.textChanged.connect(self._on_input_changed)
+        json_l.addWidget(self.txt_json)
+        self.tabs.addTab(tab_json, "📦 Paste JSON / Chained Cards")
+
+        # Tab 4: Paste Exam / Testbook MCQ JSON
+        tab_mcq = QWidget()
+        mcq_l = QVBoxLayout(tab_mcq)
+        mcq_l.setContentsMargins(8, 8, 8, 8)
+        mcq_l.setSpacing(6)
+
+        mcq_hdr = QHBoxLayout()
+        lbl_mcq_hint = QLabel("Paste Testbook / Mock Exam export JSON with 4 choices & solutions:")
+        lbl_mcq_hint.setStyleSheet(f"color: {p['C_SUBTEXT']}; font-size: 11px;")
+
+        btn_sample_mcq = QPushButton("📄 Load Sample Testbook JSON")
+        btn_sample_mcq.setObjectName("flat")
+        btn_sample_mcq.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 184, 108, 0.15);
+                color: #FFB86C;
+                border: 1px solid #FFB86C;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-weight: bold;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background: #FFB86C;
+                color: #111827;
+            }}
+        """)
+        btn_sample_mcq.setCursor(Qt.PointingHandCursor)
+        btn_sample_mcq.setToolTip("Paste a 2-question Testbook sample JSON to test the exam UI immediately")
+        btn_sample_mcq.clicked.connect(self._load_sample_mcq_json)
+
+        btn_copy_exam_prompt = QPushButton("📋 Copy AI Exam Prompt")
+        btn_copy_exam_prompt.setObjectName("flat")
+        btn_copy_exam_prompt.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(92, 124, 250, 0.15);
+                color: {p['C_ACCENT']};
+                border: 1px solid {p['C_ACCENT']};
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-weight: bold;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background: {p['C_ACCENT']};
+                color: #FFFFFF;
+            }}
+        """)
+        btn_copy_exam_prompt.setCursor(Qt.PointingHandCursor)
+        btn_copy_exam_prompt.setToolTip("Copy prompt to ask AI to create Testbook-style 4-choice MCQs with Key Points")
+        btn_copy_exam_prompt.clicked.connect(self._copy_exam_prompt)
+
+        mcq_hdr.addWidget(lbl_mcq_hint)
+        mcq_hdr.addStretch()
+        mcq_hdr.addWidget(btn_sample_mcq)
+        mcq_hdr.addWidget(btn_copy_exam_prompt)
+        mcq_l.addLayout(mcq_hdr)
+
+        self.txt_mcq_json = QPlainTextEdit()
+        self.txt_mcq_json.setPlaceholderText(
+            "Paste Testbook or Exam Paper export JSON here. Example:\n"
+            "{\n"
+            '  "platform": "testbook.com",\n'
+            '  "section": "General Awareness",\n'
+            '  "questions": [\n'
+            "    {\n"
+            '      "question": "Which of the following classical dances originated in Tamil Nadu?",\n'
+            '      "options": [\n'
+            '        {"label": "A", "text": "Kathak", "is_correct": false},\n'
+            '        {"label": "B", "text": "Bharatanatyam", "is_correct": true},\n'
+            '        {"label": "C", "text": "Mohiniyattam", "is_correct": false},\n'
+            '        {"label": "D", "text": "Manipuri", "is_correct": false}\n'
+            "      ],\n"
+            '      "correct_option": {"label": "B", "text": "Bharatanatyam"},\n'
+            '      "percent_answered_correctly": "82%",\n'
+            '      "solution": {\n'
+            '        "statement": "The correct answer is Bharatanatyam.",\n'
+            '        "key_points": ["Bharatanatyam is rooted in Natyashastra and Tamil Nadu temple traditions."]\n'
+            "      }\n"
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+        self.txt_mcq_json.textChanged.connect(self._on_input_changed)
+        mcq_l.addWidget(self.txt_mcq_json)
+        self.tabs.addTab(tab_mcq, "🎯 Paste Exam / Testbook MCQ JSON")
+
+        # Tab 5: Import Folder (Batch Tree)
+        tab_folder = QWidget()
+        folder_l = QVBoxLayout(tab_folder)
+        folder_l.setContentsMargins(12, 12, 12, 12)
+        folder_l.setSpacing(10)
+
+        fld_row = QHBoxLayout()
+        self.inp_folder_path = QLineEdit()
+        self.inp_folder_path.setPlaceholderText("Select a folder containing .csv / .tsv / .json files (e.g. A1_All_OWS)...")
+        self.inp_folder_path.setReadOnly(True)
+        btn_browse_folder = QPushButton("📂 Browse Folder...")
+        btn_browse_folder.clicked.connect(self._browse_folder)
+        fld_row.addWidget(self.inp_folder_path)
+        fld_row.addWidget(btn_browse_folder)
+        folder_l.addLayout(fld_row)
+
+        self.lbl_folder_summary = QLabel("No folder selected yet.")
+        self.lbl_folder_summary.setStyleSheet(f"color: {p['C_SUBTEXT']};")
+        folder_l.addWidget(self.lbl_folder_summary)
+
+        fld_opts_row = QHBoxLayout()
+        self.chk_folder_subdecks = QCheckBox("🌿 Mirror sub-folders / files as Sub-Decks (e.g. OWS::A, OWS::B)")
+        self.chk_folder_subdecks.setChecked(True)
+        self.chk_folder_subdecks.toggled.connect(self._on_input_changed)
+        fld_opts_row.addWidget(self.chk_folder_subdecks)
+        folder_l.addLayout(fld_opts_row)
+
+        folder_l.addStretch()
+        self.tabs.addTab(tab_folder, "📂 Batch Folder / Directory Tree")
+
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         upper_l.addWidget(self.tabs)
@@ -375,16 +853,32 @@ class ImportCardsDialog(QDialog):
 
         # Row 2: Duplicate Detection & Policy
         dup_row = QHBoxLayout()
-        dup_row.setSpacing(12)
+        dup_row.setSpacing(10)
 
         lbl_dup = QLabel("Duplicate Policy:")
         lbl_dup.setStyleSheet("font-weight: bold;")
         dup_row.addWidget(lbl_dup)
 
-        self.chk_skip_duplicates = QCheckBox("🛡️ Auto-skip duplicate cards / words (Recommended)")
+        self.combo_dup_policy = QComboBox()
+        self.combo_dup_policy.addItems([
+            "🛡️ Auto-skip duplicate cards / words (Recommended)",
+            "🔄 Update existing cards (Update Back/Tricks, Keep SM-2 stats)",
+            "➕ Add as new duplicates (Create duplicate cards)"
+        ])
+        self.combo_dup_policy.setToolTip(
+            "Choose action when Front (Question/Word) already exists in database:\n"
+            "• Skip: Ignores duplicates (Recommended)\n"
+            "• Update: Overwrites Answer/Tricks and keeps review history\n"
+            "• Add: Imports as new duplicate card"
+        )
+        self.combo_dup_policy.currentIndexChanged.connect(self._on_dup_policy_changed)
+        dup_row.addWidget(self.combo_dup_policy)
+
+        # Backward compatibility proxy
+        self.chk_skip_duplicates = QCheckBox()
         self.chk_skip_duplicates.setChecked(True)
-        self.chk_skip_duplicates.toggled.connect(self._on_input_changed)
-        dup_row.addWidget(self.chk_skip_duplicates)
+        self.chk_skip_duplicates.hide()
+        self.chk_skip_duplicates.toggled.connect(self._on_chk_skip_toggled)
 
         self.chk_check_all_decks = QCheckBox("Check across all decks")
         self.chk_check_all_decks.setChecked(True)
@@ -443,18 +937,39 @@ class ImportCardsDialog(QDialog):
         preview_hdr.addWidget(self.lbl_summary_badge)
         lower_l.addLayout(preview_hdr)
 
-        self.table_preview = QTableWidget(0, 4)
-        self.table_preview.setHorizontalHeaderLabels(["#", "Front (Word / Question)", "Back (Meaning / Answer)", "Duplicate Status"])
+        self.table_preview = QTableWidget(0, 6)
+        self.table_preview.setHorizontalHeaderLabels([
+            "#",
+            "Context / Deck",
+            "Front (Word / Question)",
+            "Back (Meaning / Answer)",
+            "Chain / Trap",
+            "Duplicate Status"
+        ])
         self.table_preview.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table_preview.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table_preview.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.table_preview.setColumnWidth(1, 140)
         self.table_preview.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table_preview.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table_preview.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table_preview.horizontalHeader().setSectionResizeMode(4, QHeaderView.Interactive)
+        self.table_preview.setColumnWidth(4, 110)
+        self.table_preview.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table_preview.setAlternatingRowColors(True)
         self.table_preview.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        # Enforce dark theme colors on QTableWidget palette so alternate rows don't default to white
+        pal = self.table_preview.palette()
+        pal.setColor(QPalette.Base, QColor(p.get('C_CARD', '#141824')))
+        pal.setColor(QPalette.AlternateBase, QColor(p.get('C_SURFACE', '#1E2333')))
+        pal.setColor(QPalette.Text, QColor(p.get('C_TEXT', '#FFFFFF')))
+        pal.setColor(QPalette.Highlight, QColor(p.get('C_ACCENT', '#5C7CFA')))
+        pal.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+        self.table_preview.setPalette(pal)
+
         lower_l.addWidget(self.table_preview)
 
         splitter.addWidget(lower_widget)
-        splitter.setSizes([330, 260])
+        splitter.setSizes([260, 360])
         main_l.addWidget(splitter, stretch=1)
 
         # ── Bottom Action Row ──
@@ -535,15 +1050,248 @@ class ImportCardsDialog(QDialog):
     def _on_tab_changed(self, idx):
         self._on_input_changed()
 
+    def _copy_master_prompt(self):
+        prompt_text = """# TASK: Generate 100% Complete, Mind-Map Interlinked Knowledge Chains (80/20 Rule) Flashcards (JSON) from Attached Document
+
+### ROLE & CORE OBJECTIVE:
+You are an expert SSC/Competitive Exam Curriculum Architect, Cognitive Mind-Map Specialist, and Anki Flashcard Engineer.
+Your objective is to convert 100% of the factual, conceptual, legal, and analytical content from the attached document into rich, **Mind-Map Interlinked Knowledge Chains** formatted as structured JSON flashcards.
+The student must NEVER learn concepts in isolated silos—every card must form a connected cognitive web where related concepts (e.g., Article 56 linked with Article 55 and Article 65) can be navigated back and forth seamlessly with zero need for external Google searches.
+
+---
+
+### CRITICAL MIND-MAP & CHAIN ARCHITECTURE RULES:
+
+1. **Interlinked Knowledge Chains (`context_anchor` & `chain_order`):**
+   - **Do NOT create isolated, random cards.** Group interconnected concepts, chronological sequences, and legal/scientific mechanisms under a common `context_anchor` cluster (e.g., `Polity::President_Term_and_Succession` or `Biology::Photosynthesis_Light_and_Dark_Reactions`).
+   - Order the cards within each chain logically using sequential integers (`chain_order: 1, 2, 3...`):
+     - **Step 1 (`chain_order: 1`): Foundation Anchor & Definition** — Core rule, article number, definition, or primary formula.
+     - **Step 2 (`chain_order: 2`): Operating Mechanism & Procedure** — How and why the mechanism works step-by-step.
+     - **Step 3 (`chain_order: 3`): Connected Cross-Provisions & Sibling Links** — Explicitly connect and contrast this concept with surrounding related articles/laws/concepts (e.g., How Article 56 connects to Article 55 election method and Article 65 acting president rules).
+     - **Step 4 (`chain_order: 4`): Edge Cases, Exceptions & Exam Traps** — Critical differences, tricky MCQ option pairs, and disqualification/vacancy edge cases.
+
+2. **3-Layer Deep Card Architecture (Active Recall + Deep Context):**
+   - **Layer 1 (`question`):** 1 sharp, focused question targeting one concept with full terms and decimal numbers.
+   - **Layer 2 (`answer`):** 1-2 lines of direct, punchy core answer with bold key terms for instant 5-second active recall.
+   - **Layer 3 (`notes` — Deep Theory, Background & Mind-Map Connections):**
+     - Must be 100% self-contained so no external Googling is ever needed. Structured as:
+       - `• 🧠 Connected Provisions & Mind Map:` Explicitly list all connected articles/concepts with 1-line reason for connection so the brain connects the whole web.
+       - `• ⚙️ Mechanism & Deep Logic:` Detailed explanation of why and how this provision operates.
+       - `• 📜 Historical / Constitutional Background:` Relevant evolution, previous position, or related amendment.
+   - **Layer 4 (`trap_note`):** 1 punchy line warning against specific exam traps and confusing option pairs between related concepts.
+
+3. **Explicit Cross-Linking Fields (`related_concepts` & `tags`):**
+   - **`related_concepts`:** Array of connected sibling topics/articles (e.g., `["Article 55 (Election Manner)", "Article 65 (VP Acting as President)", "Article 62 (Vacancy Timeline)"]`).
+   - **`tags`:** Array of key searchable tags (e.g., `["Article 56", "President", "Executive", "Term of Office"]`).
+
+4. **80/20 Tier-Ranked Prioritization (`priority_tier`):**
+   - **`"priority_tier": 1` (Core 20% Data / 80% Value):** Core definitions, essential articles, mandatory timelines/majorities, and high-frequency exam concepts.
+   - **`"priority_tier": 2` (Elimination 80% Data / 20% Value):** Nuanced details, secondary committees, background facts, specific case citations, and minor historical points used for MCQ option elimination.
+
+5. **Zero-Drop Coverage (100% Completeness):**
+   - Extract every article, amendment number, year, committee, landmark case, numerical timeline, majority type, exception, and handwritten annotation. No detail must be skipped.
+
+6. **Roman Numerals to Common Decimal Numbers (Mandatory Rule):**
+   - Whenever writing Constitutional Parts, Schedules, or Roman numerals, ALWAYS write the Roman numeral followed by its common decimal/Arabic number (0-9) in parentheses.
+   - *Examples:* Write `Part XVIII (18)`, `Part XV (15)`, `Schedule VIII (8)`.
+
+7. **Self-Contained Acronyms & Full Forms (Zero-Search Rule):**
+   - Include full expansion (in English and Hindi) in parentheses on first mention.
+   - *Examples:* `ECI (Election Commission of India / भारतीय चुनाव आयोग)`, `CAA (Constitutional Amendment Act / संविधान संशोधन अधिनियम)`.
+
+8. **Language & Tone:**
+   - Bilingual (Hinglish/Hindi with standard English technical/legal terms in brackets) for maximum active recall and memory retention.
+
+---
+
+### REQUIRED JSON SCHEMA:
+Output ONLY a strictly valid JSON array of objects matching this exact structure:
+
+[
+  {
+    "deck_name": "Subject::Chapter_Name",
+    "context_anchor": "Concept Cluster (e.g., Polity::President_Term_and_Succession)",
+    "chain_order": 1,
+    "priority_tier": 1,
+    "question": "Single sharp question targeting one concept with full forms and decimal numbers.",
+    "answer": "• Crisp 1-2 line direct answer with bold key terms.",
+    "notes": "• 🧠 Connected Provisions & Mind Map: Article 56 connects to Article 55 (Election manner) and Article 65 (VP acting on vacancy).\n• ⚙️ Mechanism & Deep Logic: Detailed explanation of why and how this provision operates.\n• 📜 Historical / Constitutional Background: Relevant constitutional history, previous position, or related amendment.",
+    "trap_note": "TRAP: Direct exam pitfall, confusing pair, or exception.",
+    "related_concepts": ["Article 55 (Election Manner)", "Article 65 (VP Acting as President)"],
+    "tags": ["Article 56", "President", "Executive"]
+  }
+]
+
+### INSTRUCTIONS:
+- Replace "Subject::Chapter_Name" with the subject and topic of the attached PDF (e.g., Polity::Emergency_and_Amendments).
+- Ensure the `notes` field is rich, detailed, and completely explains the context so the user never has to search Google.
+- Return ONLY the raw JSON array. Do not wrap in conversational chit-chat."""
+        cb = QApplication.clipboard()
+        if cb:
+            cb.setText(prompt_text)
+            QMessageBox.information(
+                self,
+                "📋 Prompt Copied!",
+                "✅ AI Master Prompt (Interlinked Knowledge Chains & 80/20 Rule) copied to clipboard!\n\n"
+                "Next Steps:\n"
+                "1. Open Gemini / ChatGPT / Claude.\n"
+                "2. Attach your lecture/revision PDF.\n"
+                "3. Paste this prompt and generate interlinked cards.\n"
+                "4. Copy the resulting JSON and paste it right here!"
+            )
+
+    def _copy_exam_prompt(self):
+        prompt_text = """# TASK: Generate Complete, Authentic Testbook/Exam-Style 4-Option MCQ Flashcards (JSON)
+
+### ROLE & CORE OBJECTIVE:
+You are an expert SSC/Competitive Exam Architect. Convert the provided document or test questions into authentic 4-option MCQs with comprehensive Testbook-style solution explanations (Key Points, Additional Information, and Important Points).
+
+---
+
+### REQUIRED JSON SCHEMA:
+Output ONLY a strictly valid JSON object matching this exact structure:
+
+{
+  "platform": "testbook.com",
+  "section": "General Awareness",
+  "total_questions": 5,
+  "questions": [
+    {
+      "question_no": "1",
+      "section": "General Awareness",
+      "question": "Arrange the following classical dances in chronological order of earliest historical references (oldest to newest):\\n\\n1. Bharatanatyam\\n\\n2. Mohiniyattam\\n\\n3. Kathak\\n\\n4. Manipuri",
+      "options": [
+        {"label": "A", "text": "1 - 3 - 2 - 4", "is_correct": false},
+        {"label": "B", "text": "1 - 2 - 4 - 3", "is_correct": false},
+        {"label": "C", "text": "1 - 3 - 4 - 2", "is_correct": true},
+        {"label": "D", "text": "1 - 4 - 3 - 2", "is_correct": false}
+      ],
+      "correct_option": {
+        "label": "C",
+        "text": "1 - 3 - 4 - 2"
+      },
+      "percent_answered_correctly": "22%",
+      "solution": {
+        "statement": "The correct answer is 1 - 3 - 4 - 2.",
+        "key_points": [
+          "Bharatanatyam is considered one of the oldest classical dance forms of India, with references dating back to the Natyashastra (200 BCE - 200 CE).",
+          "Kathak traces its roots to ancient storytelling traditions, flourishing during the Bhakti movement (15th-17th century).",
+          "Manipuri developed in Manipur under Vaishnavite traditions in the 18th century.",
+          "Mohiniyattam gained prominence in Kerala during the late 18th century."
+        ],
+        "additional_info": [
+          "Bharatanatyam: Performed in Tamil Nadu temples to Carnatic music.",
+          "Kathak: North Indian dance accompanied by Hindustani music, tabla and pakhawaj.",
+          "Manipuri: Features graceful Radha-Krishna Raas Leela with cylindrical Potloi skirts.",
+          "Mohiniyattam: Known as the dance of the enchantress in Kerala."
+        ],
+        "important_points": [
+          "Chronological Order: Bharatanatyam (Oldest) -> Kathak -> Manipuri -> Mohiniyattam.",
+          "Natyashastra serves as foundational treatise for classical dances."
+        ]
+      }
+    }
+  ]
+}
+
+### INSTRUCTIONS:
+- Return ONLY valid raw JSON. Do not wrap in conversational chit-chat."""
+        cb = QApplication.clipboard()
+        if cb:
+            cb.setText(prompt_text)
+            QMessageBox.information(
+                self,
+                "📋 Exam Prompt Copied!",
+                "✅ AI Testbook / Exam MCQ Prompt copied to clipboard!\n\n"
+                "Next Steps:\n"
+                "1. Open Gemini / ChatGPT / Claude.\n"
+                "2. Attach your study material or mock test questions.\n"
+                "3. Paste this prompt and generate JSON.\n"
+                "4. Paste the output right into the '🎯 Paste Exam / Testbook MCQ JSON' tab!"
+            )
+
+    def _load_sample_mcq_json(self):
+        sample = {
+            "platform": "testbook.com",
+            "section": "General Awareness",
+            "total_questions": 2,
+            "questions": [
+                {
+                    "question_no": "1",
+                    "section": "General Awareness",
+                    "question": "Arrange the following classical dances in chronological order of earliest historical references (oldest to newest):\n\n1. Bharatanatyam\n\n2. Mohiniyattam\n\n3. Kathak\n\n4. Manipuri",
+                    "options": [
+                        {"label": "A", "text": "1 - 3 - 2 - 4", "is_correct": False},
+                        {"label": "B", "text": "1 - 2 - 4 - 3", "is_correct": False},
+                        {"label": "C", "text": "1 - 3 - 4 - 2", "is_correct": True},
+                        {"label": "D", "text": "1 - 4 - 3 - 2", "is_correct": False}
+                    ],
+                    "correct_option": {"label": "C", "text": "1 - 3 - 4 - 2"},
+                    "percent_answered_correctly": "22%",
+                    "solution": {
+                        "statement": "The correct answer is 1 - 3 - 4 - 2.",
+                        "key_points": [
+                            "Bharatanatyam is considered one of the oldest classical dance forms of India, with references dating back to the Natyashastra (200 BCE - 200 CE).",
+                            "Kathak traces its roots to ancient storytelling traditions, flourishing during the Bhakti movement (15th-17th century).",
+                            "Manipuri developed in Manipur under Vaishnavite traditions in the 18th century.",
+                            "Mohiniyattam gained prominence in Kerala during the late 18th century."
+                        ],
+                        "additional_info": [
+                            "Bharatanatyam: Performed in Tamil Nadu temples to Carnatic music.",
+                            "Kathak: North Indian dance accompanied by Hindustani music, tabla and pakhawaj.",
+                            "Manipuri: Features graceful Radha-Krishna Raas Leela with cylindrical Potloi skirts.",
+                            "Mohiniyattam: Known as the dance of the enchantress in Kerala."
+                        ],
+                        "important_points": [
+                            "Chronological Order: Bharatanatyam (Oldest) -> Kathak -> Manipuri -> Mohiniyattam.",
+                            "Natyashastra serves as foundational treatise for classical dances."
+                        ]
+                    }
+                },
+                {
+                    "question_no": "2",
+                    "section": "General Awareness",
+                    "question": "Which of the following pairs is correctly matched with the shape of its roof?",
+                    "options": [
+                        {"label": "A", "text": "Latina — rectangular, wagon-shaped", "is_correct": False},
+                        {"label": "B", "text": "Phamsana — slabs rising to a point, straight incline", "is_correct": True},
+                        {"label": "C", "text": "Valabhi — tall, curving inward sharply", "is_correct": False},
+                        {"label": "D", "text": "Latina — low and broad with stepped roofing", "is_correct": False}
+                    ],
+                    "correct_option": {"label": "B", "text": "Phamsana — slabs rising to a point, straight incline"},
+                    "percent_answered_correctly": "9%",
+                    "solution": {
+                        "statement": "The correct answer is Phamsana — slabs rising to a point, straight incline.",
+                        "key_points": [
+                            "Phamsana roofs are characterized by horizontal slabs rising in a straight slope to a central apex (pyramidal).",
+                            "Latina (Rekha-Prasada) is a tall curvilinear tower curving gently inward.",
+                            "Valabhi features a rectangular wagon-vaulted roof resembling ancient Buddhist chaitya halls."
+                        ],
+                        "additional_info": [
+                            "Nagara Style: Dominant North Indian temple architecture style.",
+                            "Latina Shikhara: Most common superstructure over the sanctum sanctorum (Garbhagriha).",
+                            "Phamsana: Broad and lower, widely used over assembly halls (Mandapas)."
+                        ],
+                        "important_points": [
+                            "Latina = Curvilinear spire",
+                            "Phamsana = Stepped straight incline pyramid",
+                            "Valabhi = Wagon-vaulted / Barrel roof"
+                        ]
+                    }
+                }
+            ]
+        }
+        self.txt_mcq_json.setPlainText(json.dumps(sample, indent=2, ensure_ascii=False))
+
     def _on_input_changed(self):
         self._debounce_timer.start()
 
     def _browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Text or CSV File",
+            "Select Cards File",
             "",
-            "Text / CSV Files (*.txt *.csv *.tsv);;CSV Files (*.csv);;Text Files (*.txt);;All Files (*.*)"
+            "All Supported (*.txt *.csv *.tsv *.json);;JSON Files (*.json);;CSV / TSV Files (*.csv *.tsv);;Text Files (*.txt);;All Files (*.*)"
         )
         if not path:
             return
@@ -569,56 +1317,270 @@ class ImportCardsDialog(QDialog):
         if self.inp_new_deck_name.text() in ("", "Vocabulary", "Imported Cards"):
             self.inp_new_deck_name.setText(base_name)
 
-        # Auto-detect tab delimiter if TSV
-        if path.lower().endswith(".tsv"):
+        # Auto-detect format
+        if path.lower().endswith(".json"):
+            self._is_json_file = True
+        elif path.lower().endswith(".tsv"):
+            self._is_json_file = False
             self.combo_delim.setCurrentIndex(1)
         elif path.lower().endswith(".csv"):
+            self._is_json_file = False
             self.combo_delim.setCurrentIndex(0)
+        else:
+            self._is_json_file = False
 
         self._reparse_and_preview()
+
+    def _browse_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Flashcards / Vocab Folder",
+            "",
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if not folder:
+            return
+
+        self._folder_path = folder
+        self._selected_folder_path = folder
+        self.inp_folder_path.setText(folder)
+        base_name = os.path.basename(os.path.normpath(folder))
+        if self.rb_new_deck.isChecked() and self.inp_new_deck_name.text().strip() in ("", "Vocabulary", "Imported Cards"):
+            self.inp_new_deck_name.setText(base_name)
+
+        self._reparse_and_preview()
+
+    def _on_dup_policy_changed(self):
+        idx = self.combo_dup_policy.currentIndex()
+        self.chk_skip_duplicates.blockSignals(True)
+        self.chk_skip_duplicates.setChecked(idx == 0)
+        self.chk_skip_duplicates.blockSignals(False)
+        self._on_input_changed()
+
+    def _on_chk_skip_toggled(self, checked: bool):
+        self.combo_dup_policy.blockSignals(True)
+        self.combo_dup_policy.setCurrentIndex(0 if checked else 2)
+        self.combo_dup_policy.blockSignals(False)
+        self._on_input_changed()
+
+    def _get_dup_policy(self) -> str:
+        """Returns 'skip', 'update', or 'add'."""
+        if hasattr(self, "combo_dup_policy"):
+            idx = self.combo_dup_policy.currentIndex()
+            if idx == 1:
+                return "update"
+            elif idx == 2:
+                return "add"
+            else:
+                return "skip"
+        return "skip" if getattr(self, "chk_skip_duplicates", None) and self.chk_skip_duplicates.isChecked() else "add"
 
     def _check_card_duplicate(self, question: str, target_deck_id=None, check_all=True) -> tuple:
         """
         Check if a card's question already exists.
-        Returns (is_duplicate: bool, location_desc: str)
+        Returns (is_duplicate: bool, location_desc: str, matching_card_ref: dict or None, matched_deck_id: int/str or None)
         """
         norm_q = question.strip().lower()
         if not norm_q:
-            return False, ""
+            return False, "", None, None
 
         matches = self._existing_cards_map.get(norm_q, [])
         if not matches:
-            return False, ""
+            return False, "", None, None
+
+        # Prioritize matching in target_deck_id first
+        if target_deck_id is not None:
+            for did, name, card_obj in matches:
+                if did == target_deck_id:
+                    return True, f"in this deck ('{name}')", card_obj, did
 
         if check_all:
-            # Return first deck location where it appears
-            deck_names = [name for (_, name) in matches]
+            deck_names = [name for (_, name, _) in matches]
             loc_str = f"in '{deck_names[0]}'" if len(deck_names) == 1 else f"in {len(deck_names)} decks"
-            return True, loc_str
-        else:
-            # Check specifically in target deck
-            if target_deck_id is not None:
-                for did, name in matches:
-                    if did == target_deck_id:
-                        return True, f"in this deck ('{name}')"
+            first_did = matches[0][0]
+            first_card = matches[0][2]
+            return True, loc_str, first_card, first_did
 
-        return False, ""
+        return False, "", None, None
 
     def _reparse_and_preview(self):
         # Choose active text source
-        if self.tabs.currentIndex() == 0:
+        curr_tab = self.tabs.currentIndex()
+        is_folder = False
+        if curr_tab == 4:
+            text = ""
+            is_json = False
+            force_mcq = False
+            is_folder = True
+        elif curr_tab == 3:
+            text = self.txt_mcq_json.toPlainText()
+            is_json = True
+            force_mcq = True
+        elif curr_tab == 2:
+            text = self.txt_json.toPlainText()
+            is_json = True
+            force_mcq = False
+        elif curr_tab == 0:
             text = self.txt_paste.toPlainText()
+            s_text = text.strip()
+            is_json = s_text.startswith("[") or (s_text.startswith("{") and ("question" in s_text or "questions" in s_text))
+            force_mcq = False
         else:
             text = self._file_content
+            s_text = text.strip()
+            is_json = getattr(self, "_is_json_file", False) or s_text.startswith("[") or (s_text.startswith("{") and ("question" in s_text or "questions" in s_text))
+            force_mcq = False
 
-        delim = self._get_current_delimiter()
-        has_header = self.chk_header.isChecked()
-        trim = self.chk_trim.isChecked()
+        parsed = []
+        if is_folder:
+            folder_p = getattr(self, "_folder_path", "")
+            if folder_p and os.path.exists(folder_p):
+                target_deck_name = self.inp_new_deck_name.text().strip() if self.rb_new_deck.isChecked() else (self.combo_existing_decks.currentText() or "")
+                if not target_deck_name or target_deck_name in ("", "Vocabulary", "Imported Cards"):
+                    target_deck_name = os.path.basename(os.path.normpath(folder_p))
+                    if self.rb_new_deck.isChecked():
+                        self.inp_new_deck_name.setText(target_deck_name)
+
+                create_subs = self.chk_folder_subdecks.isChecked()
+                scan_res = scan_and_parse_data_folder(
+                    folder_p,
+                    base_deck_path=target_deck_name,
+                    create_subdecks=create_subs
+                )
+                
+                raw_cards = scan_res.get("cards", [])
+                total_f = scan_res.get("total_files", 0)
+                total_c = scan_res.get("total_cards", 0)
+
+                self.lbl_folder_summary.setText(f"✅ Found {total_f} files containing {total_c} cards total.")
+                self.lbl_folder_summary.setStyleSheet("color: #50FA7B; font-weight: bold;")
+
+                for item in raw_cards:
+                    parsed.append({
+                        "is_mcq": item.get("is_mcq", False),
+                        "question": item.get("question", ""),
+                        "answer": item.get("answer", ""),
+                        "notes": item.get("notes", ""),
+                        "trap_note": item.get("trap_note", ""),
+                        "context_anchor": item.get("context_anchor", ""),
+                        "chain_order": item.get("chain_order", 0),
+                        "parent_chain_id": item.get("parent_chain_id"),
+                        "priority_tier": item.get("priority_tier", 1),
+                        "deck_name": item.get("deck_path", ""),
+                        "tags": item.get("tags", []),
+                        "options": item.get("options", []),
+                        "correct_option": item.get("correct_option"),
+                        "solution_data": item.get("solution_data", {}),
+                        "percent_answered_correctly": item.get("percent_answered_correctly", ""),
+                        "exam_meta": item.get("exam_meta", {}),
+                        "question_html": item.get("question_html", "")
+                    })
+            else:
+                self.lbl_folder_summary.setText("No folder selected yet.")
+                self.lbl_folder_summary.setStyleSheet(f"color: {self._theme_p['C_SUBTEXT']};")
+        elif is_json and text.strip():
+            try:
+                s_lower = text.strip().lower()
+                is_mcq_format = force_mcq or ("options" in s_lower and ("correct_option" in s_lower or "is_correct" in s_lower)) or '"questions"' in s_lower or "'questions'" in s_lower
+                
+                if is_mcq_format:
+                    parsed, suggested_deck = parse_testbook_or_mcq_json(text)
+                    if suggested_deck and self.rb_new_deck.isChecked() and self.inp_new_deck_name.text().strip() in ("", "Vocabulary", "Imported Cards"):
+                        self.inp_new_deck_name.setText(suggested_deck)
+                else:
+                    raw = json.loads(text)
+                    items = raw if isinstance(raw, list) else raw.get("cards", [raw])
+                    
+                    # Auto-chaining
+                    chain_id_map = {}
+                    deck_orders = {}
+                    for it in items:
+                        if isinstance(it, dict):
+                            d_name = str(it.get("deck_name", "")).strip()
+                            c_order = it.get("chain_order", 0)
+                            if c_order:
+                                deck_orders.setdefault(d_name, []).append(c_order)
+
+                    for it in items:
+                        if not isinstance(it, dict):
+                            continue
+                        c_anchor = str(it.get("context_anchor", "")).strip()
+                        c_order = it.get("chain_order", 0)
+                        c_parent = it.get("parent_chain_id")
+                        d_name = str(it.get("deck_name", "")).strip()
+                        if not c_parent and c_order:
+                            orders = deck_orders.get(d_name, [])
+                            if len(orders) > 1 and max(orders) > 1:
+                                grp = (d_name, "deck_chain")
+                            else:
+                                grp = (d_name, c_anchor or "default_chain")
+                            if grp not in chain_id_map:
+                                chain_id_map[grp] = str(uuid.uuid4())
+                            it["parent_chain_id"] = chain_id_map[grp]
+
+                        q = str(it.get("question", "")).strip()
+                        a = str(it.get("answer", "")).strip()
+                        if not q and not a:
+                            continue
+                        
+                        trap = str(it.get("trap_note", "")).strip()
+                        notes = str(it.get("notes", "")).strip()
+                        if trap and not notes:
+                            notes = trap
+                        elif notes and not trap:
+                            trap = notes
+
+                        try:
+                            chain_order = int(it.get("chain_order", 0) or 0)
+                        except (ValueError, TypeError):
+                            chain_order = 0
+
+                        try:
+                            priority_tier = int(it.get("priority_tier", 1) or 1)
+                        except (ValueError, TypeError):
+                            priority_tier = 1
+
+                        parsed.append({
+                            "is_mcq": False,
+                            "question": q,
+                            "answer": a,
+                            "notes": notes,
+                            "trap_note": trap,
+                            "context_anchor": c_anchor,
+                            "chain_order": chain_order,
+                            "parent_chain_id": it.get("parent_chain_id"),
+                            "priority_tier": priority_tier,
+                            "deck_name": it.get("deck_name", "").strip()
+                        })
+            except Exception as e:
+                self.lbl_summary_badge.setText(f"⚠️ JSON Parse error: {e}")
+                self.lbl_summary_badge.setStyleSheet("color: #FF5555; font-weight: bold;")
+                self.table_preview.setRowCount(0)
+                self.btn_import.setEnabled(False)
+                return
+        else:
+            delim = self._get_current_delimiter()
+            has_header = self.chk_header.isChecked()
+            trim = self.chk_trim.isChecked()
+            raw_parsed = parse_delimited_text(text, delimiter=delim, has_header=has_header, strip_whitespace=trim)
+            for item in raw_parsed:
+                parsed.append({
+                    "is_mcq": False,
+                    "question": item.get("question", ""),
+                    "answer": item.get("answer", ""),
+                    "notes": item.get("notes", ""),
+                    "trap_note": "",
+                    "context_anchor": "",
+                    "chain_order": 0,
+                    "parent_chain_id": None,
+                    "priority_tier": 1,
+                    "deck_name": ""
+                })
+
         check_all = self.chk_check_all_decks.isChecked()
         target_did = self.combo_existing_decks.currentData() if self.rb_existing_deck.isChecked() else None
+        dup_policy = self._get_dup_policy()
 
-        parsed = parse_delimited_text(text, delimiter=delim, has_header=has_header, strip_whitespace=trim)
-        
         # Analyze duplicates
         seen_in_batch = set()
         new_count = 0
@@ -632,11 +1594,15 @@ class ImportCardsDialog(QDialog):
             if norm_q in seen_in_batch:
                 item["is_duplicate"] = True
                 item["dup_location"] = "in this batch"
+                item["existing_card_ref"] = None
+                item["matched_deck_id"] = None
                 dup_count += 1
             else:
-                is_dup, loc_desc = self._check_card_duplicate(q, target_deck_id=target_did, check_all=check_all)
+                is_dup, loc_desc, card_ref, matched_did = self._check_card_duplicate(q, target_deck_id=target_did, check_all=check_all)
                 item["is_duplicate"] = is_dup
                 item["dup_location"] = loc_desc
+                item["existing_card_ref"] = card_ref
+                item["matched_deck_id"] = matched_did
                 if is_dup:
                     dup_count += 1
                 else:
@@ -649,11 +1615,22 @@ class ImportCardsDialog(QDialog):
 
         # Update Summary Badge
         if total_count > 0:
-            if dup_count > 0:
-                self.lbl_summary_badge.setText(f"✨ {new_count} New   |   ⚠️ {dup_count} Duplicates Detected")
-                self.lbl_summary_badge.setStyleSheet("color: #FFB86C; font-weight: bold;")
-            else:
-                self.lbl_summary_badge.setText(f"✅ All {new_count} cards are unique and new!")
+            if dup_policy == "update":
+                if dup_count > 0:
+                    self.lbl_summary_badge.setText(f"✨ {new_count} New Cards   |   🔄 {dup_count} Cards Will Be Updated")
+                    self.lbl_summary_badge.setStyleSheet("color: #70A5FD; font-weight: bold;")
+                else:
+                    self.lbl_summary_badge.setText(f"✅ All {new_count} cards are unique and new!")
+                    self.lbl_summary_badge.setStyleSheet(f"color: {self._theme_p.get('C_GREEN', '#50FA7B')}; font-weight: bold;")
+            elif dup_policy == "skip":
+                if dup_count > 0:
+                    self.lbl_summary_badge.setText(f"✨ {new_count} New Cards   |   ⚠️ {dup_count} Duplicates Skipped")
+                    self.lbl_summary_badge.setStyleSheet("color: #FFB86C; font-weight: bold;")
+                else:
+                    self.lbl_summary_badge.setText(f"✅ All {new_count} cards are unique and new!")
+                    self.lbl_summary_badge.setStyleSheet(f"color: {self._theme_p.get('C_GREEN', '#50FA7B')}; font-weight: bold;")
+            else:  # add
+                self.lbl_summary_badge.setText(f"➕ Importing All {total_count} Cards ({dup_count} Duplicates Allowed)")
                 self.lbl_summary_badge.setStyleSheet(f"color: {self._theme_p.get('C_GREEN', '#50FA7B')}; font-weight: bold;")
         else:
             self.lbl_summary_badge.setText("")
@@ -666,39 +1643,100 @@ class ImportCardsDialog(QDialog):
             # Column 0: Index
             it_idx = QTableWidgetItem(str(row_idx + 1))
             it_idx.setTextAlignment(Qt.AlignCenter)
+            it_idx.setForeground(QColor(self._theme_p.get("C_SUBTEXT", "#A0AEC0")))
             self.table_preview.setItem(row_idx, 0, it_idx)
 
-            # Column 1: Front (Question / Word)
-            it_q = QTableWidgetItem(item["question"])
-            self.table_preview.setItem(row_idx, 1, it_q)
+            # Column 1: Context / Deck
+            c_text = item.get("context_anchor") or item.get("deck_name") or "—"
+            it_ctx = QTableWidgetItem(c_text)
+            if item.get("context_anchor"):
+                it_ctx.setForeground(QColor(self._theme_p.get("C_ACCENT", "#5C7CFA")))
+            else:
+                it_ctx.setForeground(QColor(self._theme_p.get("C_SUBTEXT", "#A0AEC0")))
+            self.table_preview.setItem(row_idx, 1, it_ctx)
 
-            # Column 2: Back (Answer / Meaning)
+            # Column 2: Front (Question / Word)
+            it_q = QTableWidgetItem(item["question"])
+            it_q.setForeground(QColor(self._theme_p.get("C_TEXT", "#FFFFFF")))
+            self.table_preview.setItem(row_idx, 2, it_q)
+
+            # Column 3: Back (Answer / Meaning / Correct Option)
             it_a = QTableWidgetItem(item["answer"])
             if not item["answer"]:
                 it_a.setForeground(QColor(self._theme_p.get("C_ORANGE", "#FFB86C")))
                 it_a.setText("[Empty Back]")
-            self.table_preview.setItem(row_idx, 2, it_a)
+            elif item.get("is_mcq"):
+                it_a.setForeground(QColor(self._theme_p.get("C_GREEN", "#50FA7B")))
+            else:
+                it_a.setForeground(QColor(self._theme_p.get("C_TEXT", "#FFFFFF")))
+            self.table_preview.setItem(row_idx, 3, it_a)
 
-            # Column 3: Duplicate Status
+            # Column 4: Chain / Trap / MCQ Stats
+            if item.get("is_mcq"):
+                opts_len = len(item.get("options", []))
+                kp_len = len(item.get("solution_data", {}).get("key_points", []))
+                acc = item.get("percent_answered_correctly", "")
+                chain_str = f"🎯 {opts_len} Opts"
+                if kp_len:
+                    chain_str += f" | 🔑 {kp_len} Pts"
+                if acc:
+                    chain_str += f" | 📊 {acc}"
+                it_chain = QTableWidgetItem(chain_str)
+                it_chain.setForeground(QColor("#8BE9FD"))
+            else:
+                chain_str = ""
+                p_tier = item.get("priority_tier", 1)
+                tier_prefix = "🔥 T1 " if p_tier == 1 else "⚡ T2 "
+                chain_str += tier_prefix
+                if item.get("chain_order"):
+                    chain_str += f"🔗 #{item['chain_order']} "
+                if item.get("trap_note"):
+                    chain_str += "⚠️ Trap"
+                if not chain_str.strip():
+                    chain_str = "—"
+                it_chain = QTableWidgetItem(chain_str.strip())
+                it_chain.setForeground(QColor("#FFD700" if "🔗" in chain_str else ("#FFB86C" if p_tier == 1 else "#8BE9FD")))
+            self.table_preview.setItem(row_idx, 4, it_chain)
+
+            # Column 5: Duplicate Status
             if item["is_duplicate"]:
-                it_status = QTableWidgetItem(f"⚠️ Duplicate ({item['dup_location']})")
-                it_status.setForeground(QColor("#FFB86C"))
+                if dup_policy == "update":
+                    it_status = QTableWidgetItem(f"🔄 Update ({item['dup_location']})")
+                    it_status.setForeground(QColor("#70A5FD"))
+                elif dup_policy == "skip":
+                    it_status = QTableWidgetItem(f"⚠️ Dup ({item['dup_location']}) - Skip")
+                    it_status.setForeground(QColor("#FFB86C"))
+                else:
+                    it_status = QTableWidgetItem(f"➕ Dup ({item['dup_location']}) - Add")
+                    it_status.setForeground(QColor("#F1FA8C"))
             else:
                 it_status = QTableWidgetItem("✅ New")
                 it_status.setForeground(QColor(self._theme_p.get("C_GREEN", "#50FA7B")))
-            self.table_preview.setItem(row_idx, 3, it_status)
+            self.table_preview.setItem(row_idx, 5, it_status)
 
         # Update button text & enabled state
-        skip_dups = self.chk_skip_duplicates.isChecked()
-        import_target_count = new_count if skip_dups else total_count
-
-        self.btn_import.setEnabled(import_target_count > 0)
-        if skip_dups and dup_count > 0:
-            self.btn_import.setText(f"📥 Import {new_count} New Cards (Skip {dup_count} Dups)")
-        elif total_count > 0:
-            self.btn_import.setText(f"📥 Import {total_count} Card{'s' if total_count != 1 else ''}")
-        else:
-            self.btn_import.setText("📥 Import Cards")
+        if dup_policy == "update":
+            self.btn_import.setEnabled(total_count > 0)
+            if dup_count > 0:
+                self.btn_import.setText(f"📥 Import ({new_count} New, {dup_count} Updated)")
+            elif total_count > 0:
+                self.btn_import.setText(f"📥 Import {total_count} Card{'s' if total_count != 1 else ''}")
+            else:
+                self.btn_import.setText("📥 Import Cards")
+        elif dup_policy == "skip":
+            self.btn_import.setEnabled(new_count > 0)
+            if dup_count > 0:
+                self.btn_import.setText(f"📥 Import {new_count} New Cards (Skip {dup_count} Dups)")
+            elif total_count > 0:
+                self.btn_import.setText(f"📥 Import {total_count} Card{'s' if total_count != 1 else ''}")
+            else:
+                self.btn_import.setText("📥 Import Cards")
+        else:  # add
+            self.btn_import.setEnabled(total_count > 0)
+            if total_count > 0:
+                self.btn_import.setText(f"📥 Import All {total_count} Card{'s' if total_count != 1 else ''}")
+            else:
+                self.btn_import.setText("📥 Import Cards")
 
     def _do_import(self):
         if not self._parsed_rows:
@@ -706,32 +1744,161 @@ class ImportCardsDialog(QDialog):
             return
 
         is_new_deck = self.rb_new_deck.isChecked()
-        deck_name = self.inp_new_deck_name.text().strip()
+        default_deck_name = self.inp_new_deck_name.text().strip()
 
-        if is_new_deck and not deck_name:
+        if is_new_deck and not default_deck_name:
             QMessageBox.warning(self, "Deck Name Required", "Please enter a name for the new deck.")
             self.inp_new_deck_name.setFocus()
             return
 
-        skip_dups = self.chk_skip_duplicates.isChecked()
+        dup_policy = self._get_dup_policy()
 
-        # Build cards to import
+        # Snapshot for undo
+        deck_history.push(self._data)
+
         new_cards = []
+        updated_cards = []
         skipped_count = 0
+        target_deck_ids = set()
+
+        # Fallback default target deck if row has no specific deck_name
+        default_target_deck = None
+        if is_new_deck:
+            new_id = next_deck_id(self._data)
+            default_target_deck = {
+                "_id": new_id,
+                "name": default_deck_name,
+                "cards": [],
+                "children": [],
+                "expanded": False
+            }
+            self._data.setdefault("decks", []).append(default_target_deck)
+            self._target_deck_id = new_id
+            self._is_new_deck = True
+            target_deck_ids.add(new_id)
+        else:
+            target_id = self.combo_existing_decks.currentData()
+            default_target_deck = find_deck_by_id(target_id, self._data.get("decks", []))
+            if not default_target_deck:
+                QMessageBox.critical(self, "Error", "Target deck could not be found.")
+                return
+            self._target_deck_id = target_id
+            self._is_new_deck = False
+            target_deck_ids.add(target_id)
 
         for row in self._parsed_rows:
-            if skip_dups and row.get("is_duplicate", False):
-                skipped_count += 1
-                continue
+            # Route to target deck
+            d_name = row.get("deck_name", "").strip()
+            if d_name:
+                deck_dest = get_or_create_deck_by_path(self._data, d_name, context_deck=default_target_deck)
+            else:
+                deck_dest = default_target_deck
 
-            card = build_text_card(
-                question=row["question"],
-                answer=row["answer"],
-                notes=row.get("notes", "")
-            )
+            is_dup = row.get("is_duplicate", False)
+            existing_ref = row.get("existing_card_ref")
+            matched_did = row.get("matched_deck_id")
+
+            if is_dup:
+                if dup_policy == "skip":
+                    if not check_all and matched_did != deck_dest.get("_id"):
+                        # Duplicate was in a different deck and user unchecked check_all -> allow import into this deck!
+                        pass
+                    else:
+                        skipped_count += 1
+                        continue
+                elif dup_policy == "update":
+                    if existing_ref is not None:
+                        # Only update if the duplicate is in the destination deck
+                        if matched_did == deck_dest.get("_id"):
+                            # Update existing database card while keeping SM-2 learning progress intact!
+                            existing_ref["answer"] = row["answer"]
+                            if row.get("is_mcq"):
+                                existing_ref["card_type"] = "mcq"
+                                existing_ref["options"] = row.get("options", [])
+                                existing_ref["correct_option"] = row.get("correct_option")
+                                existing_ref["solution_data"] = row.get("solution_data", {})
+                                existing_ref["percent_answered_correctly"] = row.get("percent_answered_correctly", "")
+                                existing_ref["exam_meta"] = row.get("exam_meta", {})
+                                existing_ref["question_html"] = row.get("question_html", "")
+                            if row.get("notes"):
+                                existing_ref["notes"] = row["notes"]
+                            if row.get("trap_note"):
+                                existing_ref["trap_note"] = row["trap_note"]
+                            if row.get("context_anchor"):
+                                existing_ref["context_anchor"] = row["context_anchor"]
+                            if row.get("chain_order"):
+                                existing_ref["chain_order"] = row["chain_order"]
+                            if row.get("parent_chain_id"):
+                                existing_ref["parent_chain_id"] = row["parent_chain_id"]
+                            if row.get("priority_tier"):
+                                existing_ref["priority_tier"] = row["priority_tier"]
+                            updated_cards.append(existing_ref)
+                            target_deck_ids.add(deck_dest.get("_id"))
+                            continue
+                    else:
+                        # Duplicate within this batch: update previously added card in new_cards
+                        for nc in reversed(new_cards):
+                            if nc["question"].strip().lower() == row["question"].strip().lower():
+                                nc["answer"] = row["answer"]
+                                if row.get("is_mcq"):
+                                    nc["card_type"] = "mcq"
+                                    nc["options"] = row.get("options", [])
+                                    nc["correct_option"] = row.get("correct_option")
+                                    nc["solution_data"] = row.get("solution_data", {})
+                                    nc["percent_answered_correctly"] = row.get("percent_answered_correctly", "")
+                                    nc["exam_meta"] = row.get("exam_meta", {})
+                                    nc["question_html"] = row.get("question_html", "")
+                                if row.get("notes"):
+                                    nc["notes"] = row["notes"]
+                                if row.get("trap_note"):
+                                    nc["trap_note"] = row["trap_note"]
+                                if row.get("priority_tier"):
+                                    nc["priority_tier"] = row["priority_tier"]
+                                break
+                        skipped_count += 1
+                        continue
+
+            # Build card
+            if row.get("is_mcq"):
+                card = build_mcq_card(
+                    question=row["question"],
+                    options=row.get("options", []),
+                    correct_option=row.get("correct_option"),
+                    solution_data=row.get("solution_data", {}),
+                    percent_answered_correctly=row.get("percent_answered_correctly", ""),
+                    exam_meta=row.get("exam_meta", {}),
+                    notes=row.get("notes", ""),
+                    trap_note=row.get("trap_note", ""),
+                    context_anchor=row.get("context_anchor", ""),
+                    chain_order=row.get("chain_order", 0),
+                    parent_chain_id=row.get("parent_chain_id"),
+                    priority_tier=row.get("priority_tier", 1),
+                    tags=row.get("tags", []),
+                    question_html=row.get("question_html", "")
+                )
+            else:
+                card = build_text_card(
+                    question=row["question"],
+                    answer=row["answer"],
+                    notes=row.get("notes", ""),
+                    tags=[],
+                    context_anchor=row.get("context_anchor", ""),
+                    chain_order=row.get("chain_order", 0),
+                    parent_chain_id=row.get("parent_chain_id"),
+                    trap_note=row.get("trap_note", ""),
+                    priority_tier=row.get("priority_tier", 1)
+                )
+
+            deck_dest.setdefault("cards", []).append(card)
+            target_deck_ids.add(deck_dest.get("_id"))
             new_cards.append(card)
 
-        if not new_cards:
+        # If default_target_deck was newly created but never used because cards had explicit deck_names, clean it up
+        if is_new_deck and default_target_deck and not default_target_deck.get("cards") and not default_target_deck.get("children"):
+            if default_target_deck in self._data.get("decks", []):
+                self._data["decks"].remove(default_target_deck)
+
+        if not new_cards and not updated_cards:
             QMessageBox.information(
                 self,
                 "All Cards Skipped",
@@ -739,33 +1906,16 @@ class ImportCardsDialog(QDialog):
             )
             return
 
-        # Snapshot for undo
-        deck_history.push(self._data)
-
-        if is_new_deck:
-            new_id = next_deck_id(self._data)
-            new_deck = {
-                "_id": new_id,
-                "name": deck_name,
-                "cards": new_cards,
-                "children": [],
-                "expanded": False
-            }
-            self._data.setdefault("decks", []).append(new_deck)
-            self._target_deck_id = new_id
-            self._is_new_deck = True
-        else:
-            target_id = self.combo_existing_decks.currentData()
-            target_deck = find_deck_by_id(target_id, self._data.get("decks", []))
-            if not target_deck:
-                QMessageBox.critical(self, "Error", "Target deck could not be found.")
-                return
-            target_deck.setdefault("cards", []).extend(new_cards)
-            self._target_deck_id = target_id
-            self._is_new_deck = False
-
         self._imported_count = len(new_cards)
+        self._updated_count = len(updated_cards)
         self._skipped_duplicates_count = skipped_count
+
+        # Store source folder path on target deck for future 1-click sync
+        if getattr(self, "_selected_folder_path", None) and default_target_deck:
+            default_target_deck["source_folder_path"] = self._selected_folder_path
+
+        from perf_utils import invalidate_deck_stats
+        invalidate_deck_stats()
         store.mark_dirty()
         store.save_force(async_save=True)
 
@@ -775,6 +1925,7 @@ class ImportCardsDialog(QDialog):
         """Returns details about the completed import operation."""
         return {
             "count": self._imported_count,
+            "updated_count": getattr(self, "_updated_count", 0),
             "skipped_duplicates": self._skipped_duplicates_count,
             "target_deck_id": self._target_deck_id,
             "is_new_deck": self._is_new_deck

@@ -411,7 +411,11 @@ class CardBrowserDialog(QDialog):
             deck_name = deck.get("name", "Unknown Deck")
             
             # Type label & icon
-            if card_type == "text":
+            if card_type in ("mcq", "testbook_mcq"):
+                type_display = "🎯 MCQ"
+                front_display = _clean_text_preview(question) or title
+                back_display = _clean_text_preview(answer)
+            elif card_type == "text":
                 type_display = "🏷️ Text"
                 front_display = _clean_text_preview(question) or title
                 back_display = _clean_text_preview(answer)
@@ -520,13 +524,20 @@ class CardBrowserDialog(QDialog):
         card, deck = self._all_cards_data[orig_idx]
         
         card_type = card.get("card_type", "pdf")
-        if card_type == "text":
+        if card_type in ("text", "mcq", "testbook_mcq"):
             from ui.text_card_editor_dialog import TextCardEditorDialog
             dlg = TextCardEditorDialog(self, card=dict(card), data=self._data, deck=deck)
             if dlg.exec_() == QDialog.Accepted:
                 edited = dlg.get_card()
                 card.update(edited)
                 store.mark_dirty()
+                if self._review_screen is not None:
+                    if hasattr(self._review_screen, "_text_card_cache"):
+                        card_id = card.get("_id")
+                        self._review_screen._text_card_cache.pop((card_id, True), None)
+                        self._review_screen._text_card_cache.pop((card_id, False), None)
+                    if hasattr(self._review_screen, "_load_item") and getattr(self._review_screen, "_items", None):
+                        self._review_screen._load_item()
                 self._collect_cards()
                 self._populate_table()
         else:
@@ -536,6 +547,8 @@ class CardBrowserDialog(QDialog):
                 edited = dlg.get_card()
                 card.update(edited)
                 store.mark_dirty()
+                if self._review_screen is not None and hasattr(self._review_screen, "_load_item") and getattr(self._review_screen, "_items", None):
+                    self._review_screen._load_item()
                 self._collect_cards()
                 self._populate_table()
 
@@ -550,7 +563,7 @@ class CardBrowserDialog(QDialog):
             "Delete Cards Confirmation",
             f"Are you sure you want to permanently delete {count} selected card{'s' if count != 1 else ''}?\n\nThis action cannot be undone.",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.Yes
         )
         
         if confirm != QMessageBox.Yes:

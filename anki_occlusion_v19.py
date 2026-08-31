@@ -427,11 +427,19 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         log_memory("App Cold Start - Init")
+        from services.dialog_key_filter import install_dialog_key_filter
+        install_dialog_key_filter()
         initialize_mission_archive()
         self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
         self.setWindowIcon(make_app_icon())
         self._recovery_prompt_shown = False
+
+        from PyQt5.QtWidgets import QShortcut
+        from PyQt5.QtGui import QKeySequence
+        self._shortcut_report = QShortcut(QKeySequence("Ctrl+R"), self)
+        self._shortcut_report.setContext(Qt.ApplicationShortcut)
+        self._shortcut_report.activated.connect(self._toggle_mission_report)
 
         import sys
         is_testing = "unittest" in sys.modules
@@ -713,10 +721,31 @@ class MainWindow(QMainWindow):
         if home is not None and hasattr(home, "show_recovery_center"):
             home.show_recovery_center(startup=True)
 
+    def _toggle_mission_report(self):
+        home = self.centralWidget()
+        if home is not None and hasattr(home, "_show_mission_report"):
+            if getattr(home, "_report_widget", None) is not None:
+                home._hide_mission_report()
+            else:
+                home._show_mission_report()
+
     def keyPressEvent(self, e):
         key = e.key()
         mods = e.modifiers()
         clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+
+        # Ctrl+R toggle to open mission report
+        is_ctrl_r = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            not (clean_mods & Qt.ShiftModifier) and
+            (key == Qt.Key_R)
+        )
+        if is_ctrl_r:
+            self._toggle_mission_report()
+            e.accept()
+            return
         
         # Ctrl+? toggle to open shortcuts dialog
         is_ctrl_question = (
@@ -740,6 +769,13 @@ class MainWindow(QMainWindow):
             home._active_review.cancelled.emit()
             e.accept()
             return
+
+        if shortcut_manager.event_matches(e, "home.browse_cards"):
+            if home is not None and getattr(home, "_active_review", None) is None:
+                if hasattr(home, "_open_card_browser"):
+                    home._open_card_browser()
+                    e.accept()
+                    return
 
         if key == Qt.Key_Escape:
             if home is not None:
@@ -888,6 +924,8 @@ if __name__ == "__main__":
     _os.environ.setdefault("QT_MULTIMEDIA_PREFERRED_PLUGINS", "windowsmediafoundation")
 
     app = QApplication(sys.argv)
+    from services.dialog_key_filter import install_dialog_key_filter
+    install_dialog_key_filter(app)
     load_custom_fonts()
     app.setStyleSheet(SS)
     app.setApplicationName("Anki Occlusion")

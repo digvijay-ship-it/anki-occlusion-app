@@ -457,6 +457,94 @@ class DojoMissionBanner(QFrame):
         self._shadow.setColor(QColor(r, g, b, shadow_alpha))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SELECTIVE STUDY MODE DIALOG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SelectiveStudyDialog(QDialog):
+    def __init__(self, parent=None, tier1_count=0, tier2_count=0, is_due_mode=False):
+        super().__init__(parent)
+        self.setWindowTitle("🎯 Select Study Mode")
+        self.setFixedWidth(440)
+        self.selected_mode = "all"  # "tier1" or "all"
+        self.setStyleSheet("""
+            QDialog {
+                background: #181926;
+                color: #CAD3F5;
+            }
+            QPushButton#btn_tier1 {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF9A3C, stop:1 #FF6B6B);
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 12px 16px;
+                border-radius: 8px;
+                text-align: left;
+                border: none;
+            }
+            QPushButton#btn_tier1:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFAA55, stop:1 #FF7F7F);
+            }
+            QPushButton#btn_all {
+                background: #24273A;
+                border: 1px solid #494D64;
+                color: #CAD3F5;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 12px 16px;
+                border-radius: 8px;
+                text-align: left;
+            }
+            QPushButton#btn_all:hover {
+                background: #363A4F;
+                border-color: #5C7CFA;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        lbl_title = QLabel("🎯 Select Study Focus")
+        lbl_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #FFFFFF;")
+        layout.addWidget(lbl_title)
+
+        mode_text = "Due" if is_due_mode else "Total"
+        lbl_sub = QLabel(f"Choose your review depth for this session ({tier1_count + tier2_count} {mode_text} Cards):")
+        lbl_sub.setStyleSheet("color: #A5ADCB; font-size: 12px;")
+        lbl_sub.setWordWrap(True)
+        layout.addWidget(lbl_sub)
+
+        # Button 1: Tier-1 High-Yield Core
+        self.btn_t1 = QPushButton(f"🔥  High-Yield Core Only (Tier-1)\n     {tier1_count} Core High-Yield Cards")
+        self.btn_t1.setObjectName("btn_tier1")
+        self.btn_t1.setCursor(Qt.PointingHandCursor)
+        self.btn_t1.clicked.connect(self._select_tier1)
+        layout.addWidget(self.btn_t1)
+
+        # Button 2: All Cards (100% Comprehensive)
+        self.btn_all_mode = QPushButton(f"⚡  100% Comprehensive Mode (All Cards)\n     {tier1_count + tier2_count} Total Cards ({tier1_count} Core + {tier2_count} Details)")
+        self.btn_all_mode.setObjectName("btn_all")
+        self.btn_all_mode.setCursor(Qt.PointingHandCursor)
+        self.btn_all_mode.clicked.connect(self._select_all)
+        layout.addWidget(self.btn_all_mode)
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setObjectName("flat")
+        btn_cancel.setStyleSheet("color: #6E738D; padding: 4px;")
+        btn_cancel.setCursor(Qt.PointingHandCursor)
+        btn_cancel.clicked.connect(self.reject)
+        layout.addWidget(btn_cancel, alignment=Qt.AlignCenter)
+
+    def _select_tier1(self):
+        self.selected_mode = "tier1"
+        self.accept()
+
+    def _select_all(self):
+        self.selected_mode = "all"
+        self.accept()
+
+
 #  DECK VIEW
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -518,12 +606,18 @@ class DeckView(QWidget):
         self.btn_import = QPushButton("📥 Import")
         self.btn_import.setToolTip("Bulk import cards from comma-separated text or files")
         self.btn_import.clicked.connect(self._import_cards)
+        self.btn_sync = QPushButton("🔄 Sync")
+        self.btn_sync.setToolTip("Incrementally sync & update cards from linked local source folder (preserves all SM-2 review progress)")
+        self.btn_sync.clicked.connect(self._sync_deck)
         self.btn_due = QPushButton("🔴 Review Due")
         self.btn_due.setObjectName("danger")
         self.btn_due.clicked.connect(self._review_due)
         self.btn_all = QPushButton("▶ Review")
         self.btn_all.setObjectName("success")
         self.btn_all.clicked.connect(self._review_all)
+        self.btn_practice = QPushButton("🎯 Practice")
+        self.btn_practice.setToolTip("Practice all cards without affecting SM-2 schedule")
+        self.btn_practice.clicked.connect(self._practice_deck)
         self.btn_formulas = QPushButton("📐 Formulas")
         self.btn_formulas.setObjectName("formulas_btn")
         self.btn_formulas.setCursor(Qt.PointingHandCursor)
@@ -532,8 +626,10 @@ class DeckView(QWidget):
         hdr.addWidget(self.btn_add)
         hdr.addWidget(self.btn_add_text)
         hdr.addWidget(self.btn_import)
+        hdr.addWidget(self.btn_sync)
         hdr.addWidget(self.btn_due)
         hdr.addWidget(self.btn_all)
+        hdr.addWidget(self.btn_practice)
         hdr.addWidget(self.btn_formulas)
         L.addWidget(self.hdr_w)
 
@@ -1072,6 +1168,8 @@ class DeckView(QWidget):
         self.stat_missions.set_value(due_c)
         self.stat_scrolls.set_value(untouched_c)
         self.stat_battles.set_value(total_rev)
+        if hasattr(self, "btn_practice") and self.btn_practice:
+            self.btn_practice.setEnabled(len(all_cards) > 0)
 
         if not direct_cards and getattr(self, "_theme", "classic") == "dojo":
             # Empty state for Dojo mode
@@ -1214,12 +1312,71 @@ class DeckView(QWidget):
                 self._refresh()
         dlg.deleteLater()
 
+    def _sync_deck(self, *args):
+        if not self.deck:
+            return
+        source_p = self.deck.get("source_folder_path") or self.deck.get("source_file_path")
+        if not source_p or not os.path.exists(source_p):
+            from PyQt5.QtWidgets import QFileDialog
+            folder = QFileDialog.getExistingDirectory(
+                self,
+                f"Select Source Folder to Sync with '{self.deck.get('name')}'",
+                "",
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            )
+            if not folder:
+                return
+            source_p = folder
+
+        from data_manager import sync_deck_from_source_folder
+        from PyQt5.QtWidgets import QMessageBox
+
+        res = sync_deck_from_source_folder(self._data, deck=self.deck, custom_folder_path=source_p)
+        if res.get("status") == "error":
+            QMessageBox.warning(self, "Sync Failed", res.get("message", "Unknown error during sync."))
+            return
+
+        new_c = res.get("new_count", 0)
+        upd_c = res.get("updated_count", 0)
+        unch_c = res.get("unchanged_count", 0)
+        total_s = res.get("total_cards_scanned", 0)
+
+        home = self._find_home()
+        if home and hasattr(home, "_clear_home_ram_caches"):
+            home._clear_home_ram_caches()
+        if home:
+            home.refresh()
+        else:
+            self._refresh()
+
+        from perf_utils import invalidate_deck_stats
+        invalidate_deck_stats()
+
+        msg = (
+            f"<b>✅ Sync Complete for '{self.deck.get('name')}'</b><br><br>"
+            f"• <b>{new_c}</b> new card(s) added<br>"
+            f"• <b>{upd_c}</b> card(s) updated (all SM-2 learning progress preserved)<br>"
+            f"• <b>{unch_c}</b> card(s) unchanged<br>"
+            f"• Total scanned: {total_s} card(s)<br><br>"
+            f"<i>Source: {source_p}</i>"
+        )
+        box = QMessageBox(QMessageBox.Information, "Deck Synchronized", msg, parent=self)
+        box.setTextFormat(Qt.RichText)
+        box.exec_()
+
     def _find_home(self):
         w = self.parent()
         while w is not None:
             if type(w).__name__ == "HomeScreen" or hasattr(w, "show_review"):
                 return w
             w = w.parent()
+        app = QApplication.instance()
+        if app:
+            for top in app.topLevelWidgets():
+                if hasattr(top, "centralWidget"):
+                    cw = top.centralWidget()
+                    if type(cw).__name__ == "HomeScreen" or hasattr(cw, "show_review"):
+                        return cw
         return None
 
     def _edit_card(self, item):
@@ -1340,7 +1497,7 @@ class DeckView(QWidget):
             return
         if (
             QMessageBox.question(
-                self, "Delete", "Delete this card?", QMessageBox.Yes | QMessageBox.No
+                self, "Delete", "Delete this card?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
             )
             == QMessageBox.Yes
         ):
@@ -1359,24 +1516,65 @@ class DeckView(QWidget):
         return card_has_due_today(card)
 
     def _collect_due_by_pdf(self, deck):
-        """Recursively collect due cards from deck+children, grouped by pdf_path.
-        Returns a list of card-lists, one per unique PDF, in DFS order."""
+        """Recursively collect due cards from deck+children in DFS tree order,
+        grouped by (deck_id, asset_path) so each subdeck and document retains its sequential order."""
         from collections import OrderedDict
 
         groups = OrderedDict()
 
         def _walk(d):
+            did = d.get("_id")
             for card in d.get("cards", []):
                 if self._card_has_due_today(card):
-                    key = (
-                        card.get("pdf_path") or card.get("image_path") or "__no_path__"
+                    asset = (
+                        card.get("pdf_path") or card.get("image_path") or "__text__"
                     )
+                    key = (did, asset)
                     groups.setdefault(key, []).append(card)
             for child in d.get("children", []):
                 _walk(child)
 
         _walk(deck)
         return list(groups.values())
+
+    def _collect_all_by_pdf(self, deck):
+        """Recursively collect all cards from deck+children in DFS tree order,
+        grouped by (deck_id, asset_path) so each subdeck and document retains its sequential order."""
+        from collections import OrderedDict
+
+        groups = OrderedDict()
+
+        def _walk(d):
+            did = d.get("_id")
+            for card in d.get("cards", []):
+                if not card.get("is_formula", False):
+                    asset = (
+                        card.get("pdf_path") or card.get("image_path") or "__text__"
+                    )
+                    key = (did, asset)
+                    groups.setdefault(key, []).append(card)
+            for child in d.get("children", []):
+                _walk(child)
+
+        _walk(deck)
+        return list(groups.values())
+
+    def _prompt_selective_cards(self, cards, is_due=False):
+        """Prompt user to choose between Tier-1 Core or 100% Comprehensive mode if mixed tiers exist."""
+        if not cards:
+            return cards
+        
+        t1_cards = [c for c in cards if int(c.get("priority_tier", 1) or 1) == 1]
+        t2_cards = [c for c in cards if int(c.get("priority_tier", 1) or 1) == 2]
+
+        if t2_cards and t1_cards:
+            dlg = SelectiveStudyDialog(self, tier1_count=len(t1_cards), tier2_count=len(t2_cards), is_due_mode=is_due)
+            if dlg.exec_() == QDialog.Accepted:
+                if dlg.selected_mode == "tier1":
+                    return t1_cards
+                return cards
+            return None  # User canceled
+        return cards
 
     @trace_perf
     def _review_due(self, *args):
@@ -1400,7 +1598,9 @@ class DeckView(QWidget):
                     self, "✅ All clear!", "No cards due today.\nCome back tomorrow! 🌙"
                 )
                 return
-            self._start_review(due)
+            filtered_due = self._prompt_selective_cards(due, is_due=True)
+            if filtered_due is not None and len(filtered_due) > 0:
+                self._start_review(filtered_due)
 
     @trace_perf
     def _review_all(self, *args):
@@ -1410,7 +1610,31 @@ class DeckView(QWidget):
         if not cards:
             QMessageBox.information(self, "Empty", "Add some cards first!")
             return
-        self._start_review(cards)
+        filtered_cards = self._prompt_selective_cards(cards, is_due=False)
+        if filtered_cards is not None and len(filtered_cards) > 0:
+            self._start_review(filtered_cards)
+
+    @trace_perf
+    def _practice_deck(self, *args):
+        """Review cards in practice mode (self-assessment ratings without altering SM-2 schedule)."""
+        if not self.deck:
+            return
+        if self.deck.get("children"):
+            groups = self._collect_all_by_pdf(self.deck)
+            if not groups:
+                QMessageBox.information(self, "Empty", "Add some cards first!")
+                return
+            home = self._find_home()
+            if home:
+                home.show_review_sequential(groups, self._data, is_practice=True)
+        else:
+            cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False)]
+            if not cards:
+                QMessageBox.information(self, "Empty", "Add some cards first!")
+                return
+            filtered_cards = self._prompt_selective_cards(cards, is_due=False)
+            if filtered_cards is not None and len(filtered_cards) > 0:
+                self._start_review(filtered_cards, is_practice=True)
 
     @trace_perf
     def _start_review(self, cards, is_practice=False):

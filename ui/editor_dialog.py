@@ -1141,7 +1141,7 @@ class CardEditorDialog(QDialog):
             "Duplicate Card Detected",
             msg,
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-            QMessageBox.Cancel
+            QMessageBox.Yes
         )
         
         if reply == QMessageBox.Yes:

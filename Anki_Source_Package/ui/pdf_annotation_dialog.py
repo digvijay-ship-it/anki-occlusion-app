@@ -1,0 +1,2158 @@
+import os
+import time
+
+from PyQt5.QtCore import (
+    QByteArray,
+    QBuffer,
+    QIODevice,
+    QPointF,
+    QRect,
+    QRectF,
+    Qt,
+    QTimer,
+    QEvent,
+    pyqtSignal,
+    QSettings,
+)
+from PyQt5.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QPixmap, QImage
+from PyQt5.QtWidgets import (
+    QApplication,
+    QColorDialog,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QShortcut,
+    QVBoxLayout,
+    QWidget,
+)
+
+from pdf_engine import (
+    PAGE_CACHE,
+    PdfOnDemandThread,
+    get_cached_pdf_page_set,
+    load_pdf_skeleton,
+)
+from perf_utils import perf_log
+from services.pdf_annotation_service import PdfAnnotationSession
+from ui.canvas.retro_effects import CRTOverlay
+from ui.pdf_viewer_controller import PdfViewerController
+
+ANNOTATION_VERBOSE_ENV = "ANKI_ANNOTATION_VERBOSE"
+
+PAGE_GAP = 10
+
+
+class AnnotationScrollArea(QScrollArea):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._canvas = None
+        self.viewport().installEventFilter(self)
+
+    def set_canvas(self, canvas):
+        self._canvas = canvas
+        if self._canvas is not None:
+            self._canvas.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if (
+            obj in (self.viewport(), self._canvas)
+            and event.type() == QEvent.NativeGesture
+        ):
+            if event.gestureType() == Qt.ZoomNativeGesture and self._canvas is not None:
+                self._canvas.handle_native_zoom(event.value())
+                return True
+        return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event):
+        if (event.modifiers() & Qt.ControlModifier) and self._canvas is not None:
+            self._canvas.handle_ctrl_wheel_zoom(event)
+            return
+        super().wheelEvent(event)
+
+
+class PdfAnnotationCanvas(QWidget):
+    stroke_finished = pyqtSignal(int, str, object)
+    erase_dragged = pyqtSignal(int, object)
+    image_move_finished = pyqtSignal(int, int, str, object, object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
+        self._pages = []
+        self._page_tops = []
+        self._scale = 1.0
+        self._tool = "pen"
+        self._overlay_provider = None
+        self._drawing_page = None
+        self._live_points = []
+        self._live_widths = []
+        self._live_tool = "pen"
+        self._erase_active = False
+        self._image_drag_item = None
+        self._image_drag_page = None
+        self._image_drag_start = None
+        self._image_drag_start_global = None
+        self._image_drag_start_rect = None
+        self._image_drag_current_page = None
+        self._selected_image_page = None
+        self._selected_image_id = None
+        self._resize_handle = None  # "tl"|"tr"|"bl"|"br" = resize; None = move
+        
+        from collections import OrderedDict
+        self._spx_cache = OrderedDict()
+        self._ink_path_cache = {}
+        self._overlay_cache = {}
+        self._overlay_sig_cache = {}
+        
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def set_overlay_provider(self, provider):
+        self._overlay_provider = provider
+
+    def load_pages(self, pages):
+        if hasattr(self, "_spx_cache"):
+            self._spx_cache.clear()
+        if hasattr(self, "_ink_path_cache"):
+            self._ink_path_cache.clear()
+        if hasattr(self, "_overlay_cache"):
+            self._overlay_cache.clear()
+        if hasattr(self, "_overlay_sig_cache"):
+            self._overlay_sig_cache.clear()
+        self._pages = list(pages or [])
+        self._page_tops = []
+        y = 0
+        max_w = 1
+        for px in self._pages:
+            self._page_tops.append(y)
+            y += px.height() + PAGE_GAP
+            max_w = max(max_w, px.width())
+        total_h = max(1, y - PAGE_GAP if self._pages else 1)
+        self.resize(int(max_w * self._scale), int(total_h * self._scale))
+        self.setMinimumSize(int(max_w * self._scale), int(total_h * self._scale))
+        self.updateGeometry()
+        self.update()
+
+    def _page_screen_rect(self, page_num: int) -> QRect:
+        if not (0 <= page_num < len(self._pages)):
+            return QRect()
+        px = self._pages[page_num]
+        top = int(self._page_tops[page_num] * self._scale)
+        return QRect(
+            0,
+            top,
+            int(px.width() * self._scale),
+            int(px.height() * self._scale),
+        )
+
+    def replace_page(self, page_num: int, pixmap: QPixmap):
+        if 0 <= page_num < len(self._pages):
+            if hasattr(self, "_spx_cache"):
+                self._spx_cache.pop(page_num, None)
+            if hasattr(self, "_overlay_cache"):
+                self._overlay_cache.pop(page_num, None)
+            if hasattr(self, "_overlay_sig_cache"):
+                self._overlay_sig_cache.pop(page_num, None)
+            old = self._pages[page_num]
+            same_size = (
+                old is not None
+                and not old.isNull()
+                and pixmap is not None
+                and not pixmap.isNull()
+                and old.size() == pixmap.size()
+            )
+            self._pages[page_num] = pixmap
+            if same_size:
+                self.update(self._page_screen_rect(page_num))
+            else:
+                self.load_pages(self._pages)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if getattr(self, "_tool", "pen") != "image":
+            self._update_ink_cursor()
+
+    def _update_ink_cursor(self):
+        if getattr(self, "_tool", "pen") == "image":
+            self.setCursor(Qt.ArrowCursor)
+            return
+
+        if self._tool == "erase":
+            w = 24
+        else:
+            base_w = self._get_pen_base_width() if self._tool == "pen" else 12.0
+            w = max(4, min(8, int(base_w)))
+
+        margin = 10
+        pix_size = w + 2 * margin
+        pix = QPixmap(pix_size, pix_size)
+        pix.fill(Qt.transparent)
+
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        cx = margin + w // 2
+        cy = margin + w // 2
+        r = w // 2
+        gap = 2
+        length = 6
+
+        # Draw white outline
+        painter.setPen(QPen(Qt.white, 3))
+        if self._tool == "erase":
+            painter.drawRect(margin, margin, w, w)
+        else:
+            painter.drawEllipse(margin, margin, w, w)
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+
+        # Draw black inner line
+        painter.setPen(QPen(Qt.black, 1))
+        if self._tool == "erase":
+            painter.drawRect(margin, margin, w, w)
+        else:
+            painter.drawEllipse(margin, margin, w, w)
+        painter.drawLine(cx - r - gap - length, cy, cx - r - gap, cy)
+        painter.drawLine(cx + r + gap, cy, cx + r + gap + length, cy)
+        painter.drawLine(cx, cy - r - gap - length, cx, cy - r - gap)
+        painter.drawLine(cx, cy + r + gap, cx, cy + r + gap + length)
+
+        painter.end()
+        self.setCursor(QCursor(pix, cx, cy))
+
+    def set_tool(self, tool: str):
+        self._tool = tool
+        if tool == "image":
+            self.setCursor(Qt.ArrowCursor)
+        else:
+            self._update_ink_cursor()
+
+    def set_view_scale(self, scale: float):
+        self._scale = max(0.2, min(4.0, float(scale)))
+        self.load_pages(self._pages)
+        self.repaint()
+
+    def zoom(self):
+        return self._scale
+
+    def zoom_in(self):
+        self.set_view_scale(self._scale * 1.10)
+
+    def zoom_out(self):
+        self.set_view_scale(self._scale / 1.10)
+
+    def handle_native_zoom(self, gesture_value: float):
+        self._scale = max(0.2, min(4.0, self._scale * (1.0 + float(gesture_value))))
+        self.load_pages(self._pages)
+        self.repaint()
+
+    def handle_ctrl_wheel_zoom(self, event):
+        angle = event.angleDelta().y()
+        if angle == 0:
+            event.accept()
+            return
+        factor = max(0.90, min(1.0 + (angle / 120.0) * 0.10, 1.11))
+        self._scale = max(0.2, min(4.0, self._scale * factor))
+        self.load_pages(self._pages)
+        self.repaint()
+        event.accept()
+
+    def _get_pen_base_width(self) -> float:
+        parent_dlg = self.window()
+        if hasattr(parent_dlg, "_annotation_pen_width"):
+            try:
+                return float(parent_dlg._annotation_pen_width)
+            except (TypeError, ValueError):
+                pass
+        return 2.8
+
+    def page_count(self):
+        return len(self._pages)
+
+    def current_page_index(self, scroll_value: int = 0) -> int:
+        if not self._pages:
+            return 0
+        marker = max(0, int(scroll_value) + 1)
+        for idx, top in enumerate(self._page_tops):
+            bottom = top + self._pages[idx].height()
+            if top <= marker / self._scale <= bottom:
+                return idx
+        return max(0, min(len(self._pages) - 1, len(self._pages) - 1))
+
+    def get_current_page(self, scroll_value: int = 0) -> int:
+        return self.current_page_index(scroll_value)
+
+    def scroll_to_page(self, page_num: int, scroll_area: QScrollArea):
+        if not self._pages:
+            return
+        page_num = max(0, min(int(page_num), len(self._pages) - 1))
+        scroll_area.verticalScrollBar().setValue(
+            int(self._page_tops[page_num] * self._scale)
+        )
+
+    def zoom_fit_width(self, viewport_width: int):
+        if not self._pages:
+            return
+        max_w = max(px.width() for px in self._pages)
+        if max_w <= 0:
+            return
+        usable = max(1, int(viewport_width))
+        self.set_view_scale(usable / max_w)
+
+    def _page_info_for_pos(self, pos):
+        if not self._pages:
+            return None, None
+        x = pos.x() / self._scale
+        y = pos.y() / self._scale
+        for idx, top in enumerate(self._page_tops):
+            px = self._pages[idx]
+            if top <= y <= top + px.height():
+                return idx, QPointF(x, y - top)
+        return None, None
+
+    def _get_scaled_page(self, idx: int) -> QPixmap:
+        if not (0 <= idx < len(self._pages)):
+            return QPixmap()
+        page_px = self._pages[idx]
+        if not page_px or page_px.isNull():
+            return QPixmap()
+        cached_scale, cached_spx = self._spx_cache.get(idx, (None, None))
+        if (
+            cached_scale == self._scale
+            and cached_spx is not None
+            and not cached_spx.isNull()
+        ):
+            return cached_spx
+        sw = max(int(page_px.width() * self._scale), 1)
+        sh = max(int(page_px.height() * self._scale), 1)
+        cached_spx = page_px.scaled(sw, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._spx_cache[idx] = (self._scale, cached_spx)
+        return cached_spx
+
+    def paintEvent(self, event):
+        from theme_manager import get_palette
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        palette_colors = get_palette(theme)
+        bg_color = palette_colors.get("C_BG", "#1E1E2E")
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(bg_color))
+        p.setRenderHint(QPainter.Antialiasing)
+        clip = event.rect()
+        for idx, px in enumerate(self._pages):
+            top = int(self._page_tops[idx] * self._scale)
+            rect = QRectF(
+                0.0,
+                float(top),
+                float(px.width()) * self._scale,
+                float(px.height()) * self._scale,
+            )
+            if rect.bottom() < clip.top() or rect.top() > clip.bottom():
+                continue
+            p.fillRect(rect, Qt.white)
+            scaled_page = self._get_scaled_page(idx)
+            p.drawPixmap(rect.topLeft(), scaled_page)
+            p.setPen(QPen(QColor("#4A4A5A"), 1))
+            p.drawRect(rect)
+            
+            # Check/rebuild overlay cache for this page
+            sig = (self._scale, self._get_page_items_key(idx))
+            cached_sig = self._overlay_sig_cache.get(idx)
+            if idx not in self._overlay_cache or cached_sig != sig:
+                self._rebuild_overlay_cache(idx, rect.size(), sig)
+            
+            # Draw overlay cache
+            p.drawPixmap(rect.topLeft(), self._overlay_cache[idx])
+            
+            # Draw decorations (selection borders/handles)
+            self._draw_page_decorations(p, idx, rect.top())
+
+        if self._live_points and self._drawing_page is not None:
+            live_color = None
+            live_width = None
+            parent_dlg = self.window()
+            if hasattr(parent_dlg, "_annotation_pen_color") and self._live_tool == "pen":
+                live_color = parent_dlg._annotation_pen_color
+                live_width = parent_dlg._annotation_pen_width
+            elif self._live_tool == "highlight":
+                live_color = "#FFD54A"
+                live_width = 12.0
+            
+            self._draw_points(
+                p,
+                self._live_points,
+                self._drawing_page,
+                self._live_tool,
+                color=live_color,
+                width=live_width,
+                widths=self._live_widths,
+            )
+            
+        if self._tool == "image" and self._image_drag_item is not None and self._image_drag_page is not None:
+            current_page = getattr(self, "_image_drag_current_page", self._image_drag_page)
+            if current_page is None:
+                current_page = self._image_drag_page
+            self._draw_image_item_global(p, self._image_drag_item, current_page)
+
+        p.end()
+
+    def _get_page_items_key(self, page_num: int):
+        if not self._overlay_provider:
+            return ()
+        items = list(self._overlay_provider(page_num))
+        sig = []
+        for item in items:
+            item_id = item.get("id", "")
+            pts = item.get("points", [])
+            pts_len = len(pts)
+            
+            pts_sig = ()
+            if pts_len >= 2:
+                p0, p1 = pts[0], pts[-1]
+                p0_x = p0.x() if hasattr(p0, "x") else p0[0]
+                p0_y = p0.y() if hasattr(p0, "y") else p0[1]
+                p1_x = p1.x() if hasattr(p1, "x") else p1[0]
+                p1_y = p1.y() if hasattr(p1, "y") else p1[1]
+                pts_sig = (p0_x, p0_y, p1_x, p1_y)
+            
+            # If the item is currently being dragged, ignore its rect in the cache signature
+            # to prevent rebuilding the cache on every mouse move.
+            if self._tool == "image" and self._image_drag_item is not None and item_id == self._image_drag_item.get("id"):
+                rect_val = ()
+            else:
+                rect = item.get("rect")
+                if rect is None:
+                    rect_val = ()
+                elif isinstance(rect, QRectF):
+                    rect_val = (rect.x(), rect.y(), rect.width(), rect.height())
+                elif isinstance(rect, (tuple, list)) and len(rect) >= 4:
+                    rect_val = (rect[0], rect[1], rect[2], rect[3])
+                else:
+                    rect_val = ()
+                
+            sig.append((item_id, pts_len, pts_sig, rect_val))
+        return tuple(sig)
+
+    def _rebuild_overlay_cache(self, page_num: int, size, sig):
+        w = max(1, int(size.width()))
+        h = max(1, int(size.height()))
+        px = QPixmap(w, h)
+        px.fill(Qt.transparent)
+        
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        top = self._page_tops[page_num] * self._scale
+        painter.translate(0.0, -top)
+        
+        if self._overlay_provider:
+            items = list(self._overlay_provider(page_num))
+            for item in items:
+                if self._is_selectable_visual(item):
+                    self._draw_image_item(painter, item, page_num)
+            for item in items:
+                if self._is_selectable_visual(item):
+                    continue
+                self._draw_points(
+                    painter,
+                    item.get("points", []),
+                    page_num,
+                    item.get("kind", "pen"),
+                    color=item.get("color"),
+                    width=item.get("width"),
+                    opacity=item.get("opacity", 1.0),
+                    item_id=item.get("id"),
+                    widths=item.get("widths"),
+                )
+        
+        painter.end()
+        self._overlay_cache[page_num] = px
+        self._overlay_sig_cache[page_num] = sig
+
+    def _draw_page_decorations(self, painter: QPainter, page_num: int, top: float):
+        if not self._overlay_provider:
+            return
+        items = list(self._overlay_provider(page_num))
+        for item in items:
+            if self._is_selectable_visual(item):
+                self._draw_image_selection(painter, item, page_num)
+
+    def _draw_image_item_global(self, painter: QPainter, item, page_num: int):
+        pixmap = item.get("pixmap")
+        rect = self._item_rect(item)
+        if pixmap is None or pixmap.isNull() or rect is None:
+            return
+        top = self._page_tops[page_num] * self._scale
+        target = QRectF(
+            rect.x() * self._scale,
+            top + rect.y() * self._scale,
+            rect.width() * self._scale,
+            rect.height() * self._scale,
+        )
+        painter.save()
+        painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+        
+        # Premium Figma-style selection border and handles for dragged item
+        border_color = QColor("#3B82F6")
+        border_width = max(1.5, 2.0 * self._scale)
+        
+        # 1. White border outline
+        painter.setPen(QPen(QColor(255, 255, 255, 200), border_width + 1.0, Qt.SolidLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(target)
+        
+        # 2. Primary blue border
+        painter.setPen(QPen(border_color, border_width, Qt.SolidLine))
+        painter.drawRect(target)
+        
+        # Blue tint overlay
+        painter.fillRect(target, QColor(59, 130, 246, 20))
+        
+        # Handles
+        hr = max(6.0, 7.0 * self._scale)
+        for cx, cy in [
+            (target.left(), target.top()),
+            (target.right(), target.top()),
+            (target.left(), target.bottom()),
+            (target.right(), target.bottom()),
+        ]:
+            painter.setPen(QPen(QColor(0, 0, 0, 80), 2.0))
+            painter.drawEllipse(QRectF(cx - hr / 2, cy - hr / 2, hr, hr))
+            painter.setPen(QPen(border_color, 1.5))
+            painter.setBrush(QColor(255, 255, 255))
+            painter.drawEllipse(QRectF(cx - hr / 2, cy - hr / 2, hr, hr))
+        painter.restore()
+
+    def _draw_image_item(self, painter: QPainter, item, page_num: int):
+        if self._tool == "image" and self._image_drag_item is not None:
+            if item.get("id") == self._image_drag_item.get("id") and page_num == self._image_drag_page:
+                return
+        pixmap = item.get("pixmap")
+        rect = self._item_rect(item)
+        if pixmap is None or pixmap.isNull() or rect is None:
+            return
+        is_existing = item.get("source") == "existing"
+        is_selected = item.get("id") == self._selected_image_id
+        in_img_tool = getattr(self, "_tool", "") == "image"
+        if is_existing and not is_selected and not in_img_tool:
+            return
+        top = self._page_tops[page_num] * self._scale
+        target = QRectF(
+            rect.x() * self._scale,
+            top + rect.y() * self._scale,
+            rect.width() * self._scale,
+            rect.height() * self._scale,
+        )
+        painter.save()
+        painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+        
+        # When in image tool, draw a soft hoverable border around non-selected images
+        if self._tool == "image" and not is_selected:
+            painter.setPen(
+                QPen(QColor(147, 197, 253, 120), max(1.0, 1.0 * self._scale), Qt.DashLine)
+            )
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(target)
+        painter.restore()
+
+    def _draw_image_selection(self, painter: QPainter, item, page_num: int):
+        if self._tool == "image" and self._image_drag_item is not None:
+            if item.get("id") == self._image_drag_item.get("id") and page_num == self._image_drag_page:
+                return
+        if self._tool != "image" and item.get("id") != self._selected_image_id:
+            return
+        rect = self._item_rect(item)
+        if rect is None:
+            return
+        top = self._page_tops[page_num] * self._scale
+        target = QRectF(
+            rect.x() * self._scale,
+            top + rect.y() * self._scale,
+            rect.width() * self._scale,
+            rect.height() * self._scale,
+        )
+        painter.save()
+        is_sel = item.get("id") == self._selected_image_id
+        
+        # Figma-style selection border: blue for selected, softer cyan/blue for others
+        border_color = QColor("#3B82F6") if is_sel else QColor("#93C5FD")
+        border_width = max(1.5, 2.0 * self._scale)
+        
+        # 1. White border outline
+        painter.setPen(QPen(QColor(255, 255, 255, 200), border_width + 1.0, Qt.SolidLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(target)
+        
+        # 2. Primary blue border
+        painter.setPen(QPen(border_color, border_width, Qt.SolidLine))
+        painter.drawRect(target)
+        
+        if is_sel:
+            # Subtle semi-transparent overlay inside the selection
+            painter.fillRect(target, QColor(59, 130, 246, 20))
+            
+            # Premium circular handles (like modern design tools)
+            hr = max(6.0, 7.0 * self._scale)
+            for cx, cy in [
+                (target.left(), target.top()),
+                (target.right(), target.top()),
+                (target.left(), target.bottom()),
+                (target.right(), target.bottom()),
+            ]:
+                # Outer shadow outline
+                painter.setPen(QPen(QColor(0, 0, 0, 80), 2.0))
+                painter.drawEllipse(QRectF(cx - hr / 2, cy - hr / 2, hr, hr))
+                
+                # Inner fill with blue border
+                painter.setPen(QPen(border_color, 1.5))
+                painter.setBrush(QColor(255, 255, 255))
+                painter.drawEllipse(QRectF(cx - hr / 2, cy - hr / 2, hr, hr))
+        painter.restore()
+
+    def _draw_points(
+        self,
+        painter: QPainter,
+        points,
+        page_num: int,
+        tool: str,
+        color=None,
+        width=None,
+        opacity=1.0,
+        item_id=None,
+        widths=None,
+    ):
+        pts = [
+            pt if isinstance(pt, QPointF) else QPointF(pt[0], pt[1]) for pt in points
+        ]
+        if len(pts) < 2:
+            return
+        top = self._page_tops[page_num] * self._scale
+        
+        pen_color = QColor(color or ("#FFD54A" if tool == "highlight" else "#FF4444"))
+        from cache_manager import get_pdf_invert_setting
+        if get_pdf_invert_setting():
+            pen_color = QColor(
+                255 - pen_color.red(),
+                255 - pen_color.green(),
+                255 - pen_color.blue(),
+                pen_color.alpha()
+            )
+        painter.save()
+        painter.setOpacity(float(opacity))
+        
+        base_w = max(
+            1.0,
+            float(width or (12.0 if tool == "highlight" else 2.8)) * self._scale,
+        )
+        
+        if widths and len(widths) >= len(pts) - 1:
+            for i in range(len(pts) - 1):
+                p0 = pts[i]
+                p1 = pts[i + 1]
+                pt0 = QPointF(p0.x() * self._scale, top + p0.y() * self._scale)
+                pt1 = QPointF(p1.x() * self._scale, top + p1.y() * self._scale)
+                w = max(1.0, float(widths[i]) * self._scale)
+                pen = QPen(pen_color, w)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawLine(pt0, pt1)
+        else:
+            path = None
+            if item_id is not None:
+                cached_scale, cached_path = self._ink_path_cache.get(item_id, (None, None))
+                if cached_scale == self._scale and cached_path is not None:
+                    path = cached_path
+                    
+            if path is None:
+                from ui.canvas.geometry import smooth_points_to_path
+                path = smooth_points_to_path(
+                    pts,
+                    scale=self._scale,
+                    offset=QPointF(0.0, top),
+                )
+                if item_id is not None:
+                    self._ink_path_cache[item_id] = (self._scale, path)
+                    
+            pen = QPen(pen_color, base_w)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+            
+        painter.restore()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return super().mousePressEvent(event)
+        page_num, point = self._page_info_for_pos(event.pos())
+        if page_num is None:
+            return
+
+        # Check if any annotation was clicked
+        hit_annot = None
+        session = getattr(self, "session", None)
+        if session is not None:
+            for item in session.new_items.get(page_num, []):
+                if item.get("deleted", False):
+                    continue
+                if session._new_item_hit(item, point):
+                    hit_annot = item
+                    break
+            if not hit_annot:
+                for item in session.existing_annots.get(page_num, []):
+                    if item.get("xref") in session.pending_deleted_xrefs:
+                        continue
+                    if session._existing_item_hit(item, point):
+                        hit_annot = item
+                        break
+        if self._tool == "image":
+            handle = self._handle_at(page_num, point)
+            if handle is not None:
+                item = (
+                    next(
+                        (
+                            i
+                            for i in self._overlay_provider(page_num)
+                            if i.get("id") == self._selected_image_id
+                        ),
+                        None,
+                    )
+                    if self._overlay_provider
+                    else None
+                )
+                if item is not None:
+                    self._resize_handle = handle
+                    self._image_drag_item = item
+                    self._image_drag_page = page_num
+                    self._image_drag_current_page = page_num
+                    self._image_drag_start = QPointF(point)
+                    self._image_drag_start_global = QPointF(event.pos())
+                    self._image_drag_start_rect = self._item_rect(item)
+                return
+            item = self._image_item_at(page_num, point)
+            if item is None:
+                self.clear_selected_image()
+                self._resize_handle = None
+                return
+            self._selected_image_page = page_num
+            self._selected_image_id = item.get("id")
+            self._image_drag_item = item
+            self._image_drag_page = page_num
+            self._image_drag_current_page = page_num
+            self._image_drag_start = QPointF(point)
+            self._image_drag_start_global = QPointF(event.pos())
+            self._image_drag_start_rect = self._item_rect(item)
+            self._resize_handle = None
+            self.update()
+            return
+        if self._tool == "erase":
+            self._erase_active = True
+            self.erase_dragged.emit(page_num, point)
+            return
+        self._drawing_page = page_num
+        self._live_tool = self._tool
+        self._live_points = [point]
+        self._live_widths = []
+        import time
+        self._last_time = time.time()
+        self._last_point = point
+        self._current_width = 12.0 if self._live_tool == "highlight" else self._get_pen_base_width()
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        page_num, point = self._page_info_for_pos(event.pos())
+        if self._tool == "image":
+            # Active drag logic
+            if self._image_drag_item is not None:
+                if point is None and not self._resize_handle:
+                    pass
+                if (
+                    self._image_drag_page is None
+                    or self._image_drag_start is None
+                    or self._image_drag_start_rect is None
+                ):
+                    return
+                orig = self._image_drag_start_rect
+                if self._resize_handle:
+                    dx = point.x() - self._image_drag_start.x() if point else 0
+                    dy = point.y() - self._image_drag_start.y() if point else 0
+                    h = self._resize_handle
+                    fx = orig.right() if h in ("tl", "bl") else orig.left()
+                    fy = orig.bottom() if h in ("tl", "tr") else orig.top()
+                    mx = (orig.left() + dx) if h in ("tl", "bl") else (orig.right() + dx)
+                    my = (orig.top() + dy) if h in ("tl", "tr") else (orig.bottom() + dy)
+                    new_rect = QRectF(
+                        min(fx, mx),
+                        min(fy, my),
+                        max(8.0, abs(mx - fx)),
+                        max(8.0, abs(my - fy)),
+                    )
+                    self._image_drag_item["rect"] = self._clamp_image_rect(
+                        self._image_drag_page, new_rect
+                    )
+                else:
+                    delta = QPointF(
+                        (event.pos().x() - self._image_drag_start_global.x()) / self._scale,
+                        (event.pos().y() - self._image_drag_start_global.y()) / self._scale,
+                    )
+                    
+                    moved = QRectF(orig)
+                    moved.translate(delta)
+                    
+                    target_page = page_num
+                    if target_page is None:
+                        # Fallback to the center of the dragged rect if mouse is in a gap
+                        global_center_y = self._page_tops[self._image_drag_page] + moved.center().y()
+                        target_page, _ = self._page_info_for_pos(QPointF(moved.center().x() * self._scale, global_center_y * self._scale))
+                    
+                    if target_page is None:
+                        target_page = self._image_drag_page
+                        
+                    y_offset = self._page_tops[self._image_drag_page] - self._page_tops[target_page]
+                    moved.translate(0, y_offset)
+                    
+                    clamped = self._clamp_image_rect(target_page, moved)
+                    
+                    self._image_drag_item["rect"] = clamped
+                    self._image_drag_current_page = target_page
+
+                cursors = {
+                    "tl": Qt.SizeFDiagCursor,
+                    "br": Qt.SizeFDiagCursor,
+                    "tr": Qt.SizeBDiagCursor,
+                    "bl": Qt.SizeBDiagCursor,
+                }
+                self.setCursor(cursors.get(self._resize_handle, Qt.SizeAllCursor))
+                self.update()
+                return
+
+            # Hover logic (not dragging)
+            if page_num is not None and point is not None:
+                handle = self._handle_at(page_num, point)
+                if handle:
+                    cursors = {
+                        "tl": Qt.SizeFDiagCursor,
+                        "br": Qt.SizeFDiagCursor,
+                        "tr": Qt.SizeBDiagCursor,
+                        "bl": Qt.SizeBDiagCursor,
+                    }
+                    self.setCursor(cursors.get(handle, Qt.ArrowCursor))
+                    return
+                item = self._image_item_at(page_num, point)
+                if item is not None:
+                    self.setCursor(Qt.SizeAllCursor)
+                    return
+
+            # Default image tool cursor
+            self.set_tool("image")
+            return
+
+        if self._tool == "erase" and self._erase_active and page_num is not None:
+            self.erase_dragged.emit(page_num, point)
+            return
+        if self._drawing_page is None or page_num != self._drawing_page:
+            return super().mouseMoveEvent(event)
+            
+        # Distance filter to avoid duplicate/ultra-dense points
+        if self._live_points:
+            last_pt = self._live_points[-1]
+            dx = point.x() - last_pt.x()
+            dy = point.y() - last_pt.y()
+            if dx * dx + dy * dy < 1.0:  # 1 pixel threshold in image-space
+                return
+
+        # Calculate velocity for dynamic brush width
+        if self._live_tool == "pen":
+            import time
+            now = time.time()
+            dt = now - self._last_time
+            if dt <= 0:
+                dt = 0.001
+            
+            p0 = self._live_points[-1]
+            p1 = point
+            dist = ((p1.x() - p0.x()) ** 2 + (p1.y() - p0.y()) ** 2) ** 0.5
+            velocity = dist / dt
+            
+            base_w = self._get_pen_base_width()
+            min_w = base_w * 0.4
+            max_w = base_w * 1.6
+            target_w = max_w - (max_w - min_w) * min(1.0, velocity / 1200.0)
+            
+            # Exponential smoothing (alpha = 0.20)
+            w = 0.20 * target_w + 0.80 * self._current_width
+            self._current_width = w
+            self._live_widths.append(w)
+            
+            self._last_time = now
+            self._last_point = point
+        else:
+            w = 12.0 if self._live_tool == "highlight" else self._get_pen_base_width()
+            self._live_widths.append(w)
+
+        self._live_points.append(point)
+        
+        # Dirty-rect update to only repaint the modified region
+        if len(self._live_points) >= 2:
+            import math
+            p0, p1 = self._live_points[-2], self._live_points[-1]
+            top0 = self._page_tops[self._drawing_page] * self._scale
+            # Find the segment width
+            w = self._live_widths[-1] if self._live_widths else 2.8
+            pen_w = max(4.0, float(w) * self._scale) + 15
+            x0 = int(min(p0.x(), p1.x()) * self._scale - pen_w)
+            y0 = int(min(p0.y(), p1.y()) * self._scale + top0 - pen_w)
+            x1 = int(max(p0.x(), p1.x()) * self._scale + pen_w)
+            y1 = int(max(p0.y(), p1.y()) * self._scale + top0 + pen_w)
+            from PyQt5.QtCore import QRect
+            self.update(QRect(x0, y0, x1 - x0, y1 - y0))
+        else:
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return super().mouseReleaseEvent(event)
+        if self._tool == "image":
+            if self._image_drag_item is not None and self._image_drag_page is not None:
+                rect = self._item_rect(self._image_drag_item)
+                if rect is None:
+                    rect = QRectF()
+                
+                target_page = getattr(self, "_image_drag_current_page", self._image_drag_page)
+                if target_page is None:
+                    target_page = self._image_drag_page
+                
+                self.image_move_finished.emit(
+                    self._image_drag_page,
+                    target_page,
+                    self._image_drag_item["id"],
+                    QRectF(self._image_drag_start_rect),
+                    rect,
+                )
+            self._image_drag_item = None
+            self._image_drag_page = None
+            self._image_drag_start = None
+            self._image_drag_start_rect = None
+            self._image_drag_current_page = None
+            self._resize_handle = None
+            self.setCursor(Qt.SizeAllCursor)
+            return
+        if self._tool == "erase":
+            self._erase_active = False
+            return
+        if self._drawing_page is not None and len(self._live_points) >= 2:
+            self.stroke_finished.emit(
+                self._drawing_page,
+                self._live_tool,
+                (list(self._live_points), list(self._live_widths)),
+            )
+        self._drawing_page = None
+        self._live_points = []
+        self._live_widths = []
+        self.update()
+
+    def _handle_at(self, page_num: int, point: QPointF):
+        """Return corner name (tl/tr/bl/br) if point hits a resize handle."""
+        if (
+            self._selected_image_id is None
+            or self._selected_image_page != page_num
+            or not self._overlay_provider
+        ):
+            return None
+        item = next(
+            (
+                i
+                for i in self._overlay_provider(page_num)
+                if i.get("id") == self._selected_image_id
+            ),
+            None,
+        )
+        if item is None:
+            return None
+        rect = self._item_rect(item)
+        if rect is None:
+            return None
+        hr = max(6.0, 6.0 / max(self._scale, 0.1))  # handle radius in image-space
+        corners = {
+            "tl": (rect.left(), rect.top()),
+            "tr": (rect.right(), rect.top()),
+            "bl": (rect.left(), rect.bottom()),
+            "br": (rect.right(), rect.bottom()),
+        }
+        for name, (cx, cy) in corners.items():
+            if abs(point.x() - cx) <= hr and abs(point.y() - cy) <= hr:
+                return name
+        return None
+
+    def _image_item_at(self, page_num: int, point: QPointF):
+        if not self._overlay_provider:
+            return None
+        for item in reversed(list(self._overlay_provider(page_num))):
+            if not self._is_selectable_visual(item):
+                continue
+            rect = self._item_rect(item)
+            if rect is None:
+                continue
+            if rect.contains(point):
+                return item
+        return None
+
+    @staticmethod
+    def _is_selectable_visual(item):
+        if item.get("kind") in {"image", "stamp"}:
+            pix = item.get("pixmap")
+            return pix is not None and not pix.isNull()
+        return False
+
+    @staticmethod
+    def _item_rect(item):
+        rect = item.get("rect")
+        if rect is None:
+            return None
+        if isinstance(rect, QRectF):
+            return QRectF(rect)
+        if item.get("source") == "existing" and item.get("kind") in {"image", "stamp"}:
+            return QRectF(
+                float(rect[0]),
+                float(rect[1]),
+                max(1.0, float(rect[2]) - float(rect[0])),
+                max(1.0, float(rect[3]) - float(rect[1])),
+            )
+        return QRectF(*rect)
+
+    def _clamp_image_rect(self, page_num: int, rect: QRectF) -> QRectF:
+        if page_num is None or page_num < 0 or page_num >= len(self._pages):
+            return QRectF(rect)
+        page = self._pages[page_num]
+        page_w = max(float(page.width()), 1.0)
+        page_h = max(float(page.height()), 1.0)
+        width = min(max(rect.width(), 1.0), page_w)
+        height = min(max(rect.height(), 1.0), page_h)
+        x = max(0.0, min(page_w - width, rect.x()))
+        y = max(0.0, min(page_h - height, rect.y()))
+        return QRectF(x, y, width, height)
+
+    def selected_image(self):
+        if self._selected_image_page is None or not self._selected_image_id:
+            return None, None
+        return self._selected_image_page, self._selected_image_id
+
+    def select_image(self, page_num: int, item_id: str):
+        self._selected_image_page = int(page_num)
+        self._selected_image_id = item_id
+        self.update()
+
+    def clear_selected_image(self):
+        self._selected_image_page = None
+        self._selected_image_id = None
+        self.update()
+
+    def _tablet_pos(self, e):
+        for name in ("posF", "position", "pos"):
+            attr = getattr(e, name, None)
+            if attr is None:
+                continue
+            try:
+                value = attr()
+            except TypeError:
+                value = attr
+            return QPointF(value)
+        return QPointF()
+
+    def tabletEvent(self, e):
+        if self._tool == "image":
+            e.ignore()
+            return
+
+        from PyQt5.QtCore import QEvent, QRect
+        et = e.type()
+        
+        if et == QEvent.TabletPress:
+            page_num, point = self._page_info_for_pos(self._tablet_pos(e))
+            if page_num is None:
+                e.ignore()
+                return
+            if self._tool == "erase":
+                self._erase_active = True
+                self.erase_dragged.emit(page_num, point)
+                e.accept()
+                return
+            self._drawing_page = page_num
+            self._live_tool = self._tool
+            self._live_points = [point]
+            self._live_widths = []
+            
+            base_w = self._get_pen_base_width()
+            if self._live_tool == "pen":
+                pressure = e.pressure()
+                if pressure <= 0.0:
+                    pressure = 0.5
+                min_w = base_w * 0.4
+                max_w = base_w * 1.6
+                self._current_width = min_w + (max_w - min_w) * pressure
+            elif self._live_tool == "highlight":
+                self._current_width = 12.0
+            else:
+                self._current_width = base_w
+            self._live_widths.append(self._current_width)
+            self.update()
+            e.accept()
+            
+        elif et == QEvent.TabletMove:
+            page_num, point = self._page_info_for_pos(self._tablet_pos(e))
+            if self._tool == "erase" and self._erase_active and page_num is not None:
+                self.erase_dragged.emit(page_num, point)
+                e.accept()
+                return
+            if self._drawing_page is None or page_num != self._drawing_page:
+                e.ignore()
+                return
+            
+            # Distance filter to avoid duplicate/ultra-dense points
+            if self._live_points:
+                last_pt = self._live_points[-1]
+                dx = point.x() - last_pt.x()
+                dy = point.y() - last_pt.y()
+                if dx * dx + dy * dy < 1.0:  # 1 pixel threshold in image-space
+                    e.accept()
+                    return
+
+            if self._live_tool == "pen":
+                base_w = self._get_pen_base_width()
+                pressure = e.pressure()
+                if pressure <= 0.0:
+                    pressure = 0.5
+                min_w = base_w * 0.4
+                max_w = base_w * 1.6
+                w = min_w + (max_w - min_w) * pressure
+                # Smooth the width transition
+                w = 0.20 * w + 0.80 * self._current_width
+                self._current_width = w
+                self._live_widths.append(w)
+            else:
+                w = 12.0 if self._live_tool == "highlight" else self._get_pen_base_width()
+                self._live_widths.append(w)
+
+            self._live_points.append(point)
+            
+            # Dirty-rect update to only repaint the modified region
+            if len(self._live_points) >= 2:
+                p0, p1 = self._live_points[-2], self._live_points[-1]
+                top0 = self._page_tops[self._drawing_page] * self._scale
+                w_seg = self._live_widths[-1] if self._live_widths else 2.8
+                pen_w = max(4.0, float(w_seg) * self._scale) + 15
+                x0 = int(min(p0.x(), p1.x()) * self._scale - pen_w)
+                y0 = int(min(p0.y(), p1.y()) * self._scale + top0 - pen_w)
+                x1 = int(max(p0.x(), p1.x()) * self._scale + pen_w)
+                y1 = int(max(p0.y(), p1.y()) * self._scale + top0 + pen_w)
+                self.update(QRect(x0, y0, x1 - x0, y1 - y0))
+            else:
+                self.update()
+            e.accept()
+            
+        elif et == QEvent.TabletRelease:
+            if self._tool == "erase":
+                self._erase_active = False
+                e.accept()
+                return
+            if self._drawing_page is not None and len(self._live_points) >= 2:
+                # Ensure width list matches points length
+                while len(self._live_widths) < len(self._live_points) - 1:
+                    self._live_widths.append(self._current_width)
+                self.stroke_finished.emit(
+                    self._drawing_page,
+                    self._live_tool,
+                    (list(self._live_points), list(self._live_widths)),
+                )
+            self._drawing_page = None
+            self._live_points = []
+            self._live_widths = []
+            self.update()
+            e.accept()
+        else:
+            e.ignore()
+
+
+class PdfAnnotationDialog(QDialog):
+    PEN_DEFAULT_COLOR = "#FF4444"
+    PEN_DEFAULT_WIDTH = 2.8
+    PREFETCH_RADIUS = 1
+
+    def __init__(
+        self,
+        pdf_path: str,
+        parent=None,
+        initial_page: int = 0,
+        initial_anchor_y: float | None = None,
+    ):
+        super().__init__(parent)
+        self.pdf_path = os.path.abspath(pdf_path)
+        self.initial_page = max(0, int(initial_page or 0))
+        self.initial_anchor_y = initial_anchor_y
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+        self.session = PdfAnnotationSession(
+            self.pdf_path,
+            initial_page=self.initial_page,
+            preload_radius=self.PREFETCH_RADIUS,
+        )
+        self._annotation_pen_color = self._load_annotation_pen_color()
+        self._annotation_pen_width = self._load_annotation_pen_width()
+        self._current_page_zero = self.initial_page
+        self._loader_thread = None
+        self._loader_targets = ()
+        self._saved_pages = []
+        self.return_page = self.initial_page
+        self.return_anchor_y = initial_anchor_y
+        self._setup_ui()
+        
+        # Instantiate CRT overlay if theme is retro
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        self.crt = None
+        from theme_manager import is_retro_theme
+        if is_retro_theme(theme):
+            self.crt = CRTOverlay(self)
+            self.crt.trigger_boot_flicker()
+
+        self._load_pages()
+
+    def showEvent(self, event):
+        # Annotation should never compete with theme effects for paint time.
+        from ui.canvas.retro_effects import suspend_animations
+
+        suspend_animations(self)
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        from ui.canvas.retro_effects import resume_animations
+
+        resume_animations(self)
+
+    def _debug(self, action: str, **data):
+        return
+
+    @staticmethod
+    def _annotation_verbose_debug_enabled():
+        raw = os.environ.get(ANNOTATION_VERBOSE_ENV, "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _target_page_window(self, center_page: int):
+        total = max(0, int(getattr(self.session, "page_count", 0) or 0))
+        if total <= 0:
+            return []
+        center = max(0, min(int(center_page), total - 1))
+        start = max(0, center - self.PREFETCH_RADIUS)
+        end = min(total - 1, center + self.PREFETCH_RADIUS)
+        return list(range(start, end + 1))
+
+    def _ensure_annotation_window(self, center_page: int, reason: str):
+        loaded = self.session.ensure_existing_annotations_loaded(
+            center_page=center_page,
+            radius=self.PREFETCH_RADIUS,
+        )
+        if loaded:
+            self.canvas.update()
+        return loaded
+
+    def _stop_loader_thread(self):
+        thread = getattr(self, "_loader_thread", None)
+        if thread and thread.isRunning():
+            thread.stop()
+            thread.quit()
+            thread.wait(500)
+        self._loader_thread = None
+        self._loader_targets = ()
+
+    def _ensure_render_window(self, center_page: int, reason: str):
+        t0 = time.perf_counter()
+        targets = self._target_page_window(center_page)
+        if not targets:
+            return []
+        missing = []
+        cache_hits = 0
+        cache_checks = 0
+        for page_num in targets:
+            cache_checks += 1
+            cached = PAGE_CACHE.get(self.pdf_path, page_num, ram_only=True)
+            if cached is not None and not cached.isNull():
+                cache_hits += 1
+                self.canvas.replace_page(page_num, cached)
+                continue
+            missing.append(page_num)
+        target_key = tuple(missing)
+        if not missing:
+            self.lbl_status.setText(f"ready p.{center_page + 1}")
+            self._stop_loader_thread()
+            perf_log(
+                "annotation_render_window",
+                reason=reason,
+                center_page=center_page,
+                targets=len(targets),
+                missing=0,
+                cache_checks=cache_checks,
+                cache_hits=cache_hits,
+                elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+            )
+            return []
+        if (
+            self._loader_thread
+            and self._loader_thread.isRunning()
+            and target_key == self._loader_targets
+        ):
+            perf_log(
+                "annotation_render_window",
+                reason=reason,
+                center_page=center_page,
+                targets=len(targets),
+                missing=len(missing),
+                cache_checks=cache_checks,
+                cache_hits=cache_hits,
+                reused_loader=True,
+                elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+            )
+            return list(missing)
+        self._stop_loader_thread()
+        self._loader_targets = target_key
+        self.lbl_status.setText(
+            f"loading p.{missing[0] + 1}"
+            if len(missing) == 1
+            else "loading " + ", ".join(f"p.{pn + 1}" for pn in missing)
+        )
+        self._loader_thread = PdfOnDemandThread(
+            self.pdf_path,
+            page_nums=missing,
+            zoom=self.session.render_zoom,
+            parent=self,
+        )
+        self._loader_thread.page_ready.connect(self._on_page_ready)
+        self._loader_thread.batch_done.connect(self._on_render_window_done)
+        self._loader_thread.error.connect(self._on_render_window_error)
+        self._loader_thread.start()
+        perf_log(
+            "annotation_render_window",
+            reason=reason,
+            center_page=center_page,
+            targets=len(targets),
+            missing=len(missing),
+            cache_checks=cache_checks,
+            cache_hits=cache_hits,
+            reused_loader=False,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
+        return list(missing)
+
+    def _setup_ui(self):
+        self.setWindowTitle("Anotate Scroll")
+        self.setMinimumSize(1200, 800)
+        from theme_manager import get_palette
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        p = get_palette(theme)
+        bg = p.get("C_BG", "#1E1E2E")
+        surface = p.get("C_SURFACE", "#2A2A3E")
+        card = p.get("C_CARD", "#313145")
+        border = p.get("C_BORDER", "#45475A")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        text = p.get("C_TEXT", "#CDD6F4")
+        font_name = p.get("body_font", "'Segoe UI'")
+        from theme_manager import is_retro_theme
+        radius = (
+            "0px" if theme in ("dojo", "tmnt", "manhattan")
+            else "4px" if theme == "arcanum"
+            else "6px"
+        )
+
+        self.setStyleSheet(
+            f"QDialog{{background:{bg};color:{text};}}"
+            f"QWidget{{background:{bg};color:{text};font-family:{font_name};font-size:12px;}}"
+            f"QPushButton{{background:{surface};color:{accent};border:1px solid {border};border-radius:{radius};padding:6px 10px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{card};}}"
+            f"QPushButton:checked{{background:{accent};color:{bg};}}"
+            f"QLineEdit{{background:{card};color:{text};border:1px solid {border};border-radius:{radius};padding:4px;}}"
+        )
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        bar = QWidget()
+        bar_l = QHBoxLayout(bar)
+        bar_l.setContentsMargins(8, 8, 8, 8)
+        bar_l.setSpacing(6)
+
+        self.btn_undo = QPushButton("↩ Undo")
+        self.btn_redo = QPushButton("↪ Redo")
+        self.btn_pen = QPushButton("🖊 Pen")
+        self.btn_highlight = QPushButton("🟨 Highlight")
+        self.btn_color = QPushButton("🎨 Ink")
+        self.btn_erase = QPushButton("🧽 Erase")
+        self.btn_image = QPushButton("🖼 Move Image")
+        self.btn_pen.setCheckable(True)
+        self.btn_highlight.setCheckable(True)
+        self.btn_erase.setCheckable(True)
+        self.btn_image.setCheckable(True)
+        self.btn_pen.setChecked(True)
+        self.btn_zoom_out = QPushButton("Zoom -")
+        self.btn_zoom_in = QPushButton("Zoom +")
+        self.btn_fit = QPushButton("Fit")
+        self.btn_prev = QPushButton("←")
+        self.btn_next = QPushButton("→")
+        self.page_jump = QLineEdit()
+        self.page_jump.setFixedWidth(52)
+        self.page_jump.setAlignment(Qt.AlignCenter)
+        self.lbl_page_total = QLabel("/ 0")
+        self.btn_save = QPushButton("💾 Save PDF")
+        self.btn_close = QPushButton("Close")
+        self.lbl_status = QLabel("")
+        self.lbl_title = QLabel(
+            f"{os.path.basename(self.pdf_path)}  •  {self.session.page_count} pages  •  {self.session.render_label}"
+        )
+
+        for btn in (
+            self.btn_undo,
+            self.btn_redo,
+            self.btn_pen,
+            self.btn_highlight,
+            self.btn_color,
+            self.btn_erase,
+            self.btn_image,
+        ):
+            bar_l.addWidget(btn)
+        bar_l.addSpacing(8)
+        bar_l.addWidget(self.btn_zoom_out)
+        bar_l.addWidget(self.btn_zoom_in)
+        bar_l.addWidget(self.btn_fit)
+        bar_l.addWidget(self.btn_prev)
+        bar_l.addWidget(self.btn_next)
+        bar_l.addWidget(self.page_jump)
+        bar_l.addWidget(self.lbl_page_total)
+        bar_l.addSpacing(8)
+        bar_l.addWidget(self.btn_save)
+        bar_l.addStretch()
+        bar_l.addWidget(self.lbl_title)
+        bar_l.addStretch()
+        bar_l.addWidget(self.lbl_status)
+        bar_l.addWidget(self.btn_close)
+        root.addWidget(bar)
+
+        self.scroll = AnnotationScrollArea()
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.canvas = PdfAnnotationCanvas()
+        self.canvas.session = self.session
+        self.canvas.set_overlay_provider(self.session.get_new_items_for_page)
+        self.scroll.setWidget(self.canvas)
+        self.scroll.set_canvas(self.canvas)
+        root.addWidget(self.scroll, 1)
+        self._viewer = PdfViewerController(
+            canvas=self.canvas,
+            scroll_area=self.scroll,
+            page_input=self.page_jump,
+            page_total_label=self.lbl_page_total,
+            prev_button=self.btn_prev,
+            next_button=self.btn_next,
+            debug_hook=self._debug,
+        )
+
+        self.btn_pen.clicked.connect(lambda: self._set_tool("pen"))
+        self.btn_highlight.clicked.connect(lambda: self._set_tool("highlight"))
+        self.btn_color.clicked.connect(self._choose_pen_color)
+        self.btn_erase.clicked.connect(lambda: self._set_tool("erase"))
+        self.btn_image.clicked.connect(lambda: self._set_tool("image"))
+        self.btn_zoom_out.clicked.connect(self._viewer.zoom_out)
+        self.btn_zoom_in.clicked.connect(self._viewer.zoom_in)
+        self.btn_fit.clicked.connect(self._viewer.reset_fit)
+        self.btn_prev.clicked.connect(self._viewer.go_prev_page)
+        self.btn_next.clicked.connect(self._viewer.go_next_page)
+        self.page_jump.returnPressed.connect(self._viewer.jump_from_input)
+        self.btn_undo.clicked.connect(self._undo)
+        self.btn_redo.clicked.connect(self._redo)
+        self.btn_save.clicked.connect(self._save_pdf)
+        self.btn_close.clicked.connect(self.reject)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+        self.canvas.stroke_finished.connect(self._on_stroke_finished)
+        self.canvas.erase_dragged.connect(self._on_erase_dragged)
+        self.canvas.image_move_finished.connect(self._on_image_move_finished)
+
+        QShortcut(Qt.CTRL + Qt.Key_S, self, activated=self._save_pdf)
+        QShortcut(Qt.CTRL + Qt.Key_V, self, activated=self._paste_clipboard_image)
+        QShortcut(Qt.CTRL + Qt.Key_C, self, activated=self._copy_selected_image)
+        QShortcut(Qt.CTRL + Qt.Key_X, self, activated=self._cut_selected_image)
+        QShortcut(Qt.Key_Delete, self, activated=self._delete_selected_image)
+        QShortcut(Qt.CTRL + Qt.Key_Z, self, activated=self._undo)
+        QShortcut(Qt.CTRL + Qt.Key_Y, self, activated=self._redo)
+        QShortcut(Qt.Key_Left, self, activated=self._viewer.go_prev_page)
+        QShortcut(Qt.Key_Right, self, activated=self._viewer.go_next_page)
+        QShortcut(Qt.Key_1, self, activated=lambda: self._set_tool("pen"))
+        QShortcut(Qt.Key_2, self, activated=lambda: self._set_tool("highlight"))
+        QShortcut(Qt.Key_3, self, activated=lambda: self._set_tool("erase"))
+        QShortcut(Qt.Key_P, self, activated=lambda: self._set_tool("pen"))
+        QShortcut(Qt.Key_E, self, activated=lambda: self._set_tool("erase"))
+        QShortcut(Qt.Key_S, self, activated=lambda: self._set_tool("image"))
+        QShortcut(Qt.Key_Minus, self, activated=lambda: self._adjust_pen_width(-0.4))
+        QShortcut(Qt.Key_Equal, self, activated=lambda: self._adjust_pen_width(0.4))
+        QShortcut(Qt.Key_Plus, self, activated=lambda: self._adjust_pen_width(0.4))
+        QShortcut(Qt.Key_0, self, activated=self._reset_pen_style)
+        QShortcut(Qt.Key_C, self, activated=self._viewer.reset_fit)
+        QShortcut(Qt.Key_X, self, activated=self._choose_pen_color)
+        self._update_pen_controls()
+
+    def exec_(self):
+        self.showFullScreen()
+        return super().exec_()
+
+    def keyPressEvent(self, e):
+        key = e.key()
+        mods = e.modifiers()
+        clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        is_ctrl_question = (
+            (clean_mods & Qt.ControlModifier) and
+            not (clean_mods & Qt.AltModifier) and
+            not (clean_mods & Qt.MetaModifier) and
+            (key == Qt.Key_Question or (key == Qt.Key_Slash and (clean_mods & Qt.ShiftModifier)))
+        )
+        if is_ctrl_question:
+            from ui.shortcut_dialog import ShortcutSettingsDialog
+            dlg = ShortcutSettingsDialog(self)
+            dlg.exec_()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def _set_tool(self, tool: str):
+        self.btn_pen.setChecked(tool == "pen")
+        self.btn_highlight.setChecked(tool == "highlight")
+        self.btn_erase.setChecked(tool == "erase")
+        self.btn_image.setChecked(tool == "image")
+        self.canvas.set_tool(tool)
+        if tool == "image":
+            self.lbl_status.setText("image move mode: drag pasted screenshot")
+        elif tool == "highlight":
+            self.lbl_status.setText("highlight tool")
+        elif tool == "pen":
+            self.lbl_status.setText(
+                f"pen {self._annotation_pen_width:.1f}px {self._annotation_pen_color}"
+            )
+        self._update_pen_controls()
+
+    def _annotation_pen_style_override(self, tool: str) -> dict | None:
+        if tool != "pen":
+            return None
+        return {
+            "color": self._annotation_pen_color,
+            "width": float(self._annotation_pen_width),
+        }
+
+    def _load_annotation_pen_color(self) -> str:
+        raw = QSettings("AnkiOcclusion", "App").value(
+            "annotation/pen_color", self.PEN_DEFAULT_COLOR
+        )
+        color = str(raw or self.PEN_DEFAULT_COLOR).strip() or self.PEN_DEFAULT_COLOR
+        if not QColor(color).isValid():
+            color = self.PEN_DEFAULT_COLOR
+        return color
+
+    def _load_annotation_pen_width(self) -> float:
+        raw = QSettings("AnkiOcclusion", "App").value(
+            "annotation/pen_width", self.PEN_DEFAULT_WIDTH
+        )
+        try:
+            width = float(raw)
+        except (TypeError, ValueError):
+            width = self.PEN_DEFAULT_WIDTH
+        width = max(0.8, min(24.0, width))
+        return width
+
+    def _save_annotation_pen_settings(self):
+        settings = QSettings("AnkiOcclusion", "App")
+        settings.setValue("annotation/pen_color", self._annotation_pen_color)
+        settings.setValue("annotation/pen_width", float(self._annotation_pen_width))
+        settings.sync()
+        self._debug(
+            "save_pen_settings",
+            color=self._annotation_pen_color,
+            width=f"{self._annotation_pen_width:.1f}",
+        )
+
+    def _update_pen_controls(self):
+        from cache_manager import get_pdf_invert_setting
+        doc_color = QColor(self._annotation_pen_color)
+        if get_pdf_invert_setting() and doc_color.isValid():
+            screen_color = QColor(
+                255 - doc_color.red(),
+                255 - doc_color.green(),
+                255 - doc_color.blue(),
+                doc_color.alpha(),
+            )
+        else:
+            screen_color = doc_color
+
+        color_name = screen_color.name() if screen_color.isValid() else self.PEN_DEFAULT_COLOR
+        # Calculate luminance for high contrast text color (white on dark, dark on light)
+        r, g, b = (screen_color.red(), screen_color.green(), screen_color.blue()) if screen_color.isValid() else (255, 68, 68)
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        text_color = "#FFFFFF" if luminance < 128 else "#111111"
+        border_color = "#FFFFFF" if luminance < 60 else "#45475A"
+        
+        self.btn_color.setStyleSheet(
+            "QPushButton{"
+            f"background:{color_name};"
+            f"color:{text_color};border:1px solid {border_color};border-radius:6px;padding:6px 10px;font-weight:bold;}}"
+            "QPushButton:hover{opacity:0.9;}"
+        )
+        self.btn_color.setText(f"🎨 {self._annotation_pen_width:.1f}px")
+        self.btn_color.setEnabled(getattr(self.canvas, "_tool", "pen") == "pen")
+
+    def _adjust_pen_width(self, delta: float):
+        if getattr(self.canvas, "_tool", "pen") != "pen":
+            self.lbl_status.setText("pen width shortcuts apply in pen tool")
+            return
+        self._annotation_pen_width = max(
+            0.8, min(24.0, float(self._annotation_pen_width) + float(delta))
+        )
+        self._save_annotation_pen_settings()
+        self._update_pen_controls()
+        self.lbl_status.setText(
+            f"pen {self._annotation_pen_width:.1f}px {self._annotation_pen_color}"
+        )
+        self._debug(
+            "pen_width_adjust", delta=delta, width=f"{self._annotation_pen_width:.1f}"
+        )
+
+    def _reset_pen_style(self):
+        self._annotation_pen_color = self.PEN_DEFAULT_COLOR
+        self._annotation_pen_width = float(self.PEN_DEFAULT_WIDTH)
+        self._save_annotation_pen_settings()
+        self._update_pen_controls()
+        self.lbl_status.setText(
+            f"pen reset {self._annotation_pen_width:.1f}px {self._annotation_pen_color}"
+        )
+        self._debug(
+            "pen_reset",
+            color=self._annotation_pen_color,
+            width=f"{self._annotation_pen_width:.1f}",
+        )
+
+    def _choose_pen_color(self):
+        from cache_manager import get_pdf_invert_setting
+        current_doc = QColor(self._annotation_pen_color)
+        if get_pdf_invert_setting() and current_doc.isValid():
+            initial_color = QColor(
+                255 - current_doc.red(),
+                255 - current_doc.green(),
+                255 - current_doc.blue(),
+            )
+        else:
+            initial_color = current_doc
+
+        chosen = QColorDialog.getColor(
+            initial_color, self, "Choose Pen Color"
+        )
+        if not chosen.isValid():
+            self._debug("pen_color_cancel")
+            return
+
+        if get_pdf_invert_setting():
+            doc_color = QColor(
+                255 - chosen.red(),
+                255 - chosen.green(),
+                255 - chosen.blue(),
+            )
+            self._annotation_pen_color = doc_color.name()
+        else:
+            self._annotation_pen_color = chosen.name()
+
+        self._save_annotation_pen_settings()
+        self._update_pen_controls()
+        self.lbl_status.setText(
+            f"pen {self._annotation_pen_width:.1f}px {self._annotation_pen_color}"
+        )
+        self._debug("pen_color_pick", color=self._annotation_pen_color)
+
+    def _load_pages(self):
+        t0 = time.perf_counter()
+        startup_pages = self._target_page_window(self.initial_page)
+        cache_state = get_cached_pdf_page_set(
+            self.pdf_path,
+            self.session.page_count,
+            hydrate_pages=startup_pages,
+        )
+        total = cache_state["total_pages"]
+        cached_pages = cache_state["cached_pages_by_index"]
+        self._debug(
+            "open",
+            pages=total,
+            zoom=self.session.render_label,
+            cache_hits=cache_state["cache_hit_count"],
+            cache_misses=cache_state["cache_miss_count"],
+            reset_cache=self.session.cache_reset,
+        )
+        skeleton = load_pdf_skeleton(self.pdf_path, zoom=self.session.render_zoom)
+        base_pages = (
+            list(skeleton.placeholders)
+            if skeleton and not skeleton.error
+            else [QPixmap() for _ in range(total)]
+        )
+        for page_num, px in cached_pages.items():
+            if 0 <= page_num < len(base_pages):
+                base_pages[page_num] = px
+        self.canvas.load_pages(base_pages)
+        self._viewer.reset_fit()
+        self._viewer.set_page_ui(self.initial_page)
+        if self.initial_anchor_y is not None:
+            self._schedule_initial_anchor_restore("open")
+        else:
+            self._viewer.restore_position(page_zero=self.initial_page)
+        self._ensure_annotation_window(self.initial_page, reason="open")
+        self._ensure_render_window(self.initial_page, reason="open")
+        perf_log(
+            "annotation_load_pages",
+            pages=total,
+            startup_pages=startup_pages,
+            cache_hits=cache_state["cache_hit_count"],
+            cache_misses=cache_state["cache_miss_count"],
+            hydrated=len(cached_pages),
+            zoom=self.session.render_zoom,
+            elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+        )
+
+    def _apply_initial_anchor_position(
+        self, reason: str = "manual", finalize: bool = False
+    ):
+        if self.initial_anchor_y is None:
+            return False
+        img_y = float(self.initial_anchor_y)
+        scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
+        scroll_y = int(img_y * scale)
+        self.scroll.verticalScrollBar().setValue(scroll_y)
+        if finalize:
+            self.initial_anchor_y = None
+        return True
+
+    def _schedule_initial_anchor_restore(self, reason: str, delays_ms=(0, 35, 90)):
+        if self.initial_anchor_y is None:
+            return
+        delays = list(delays_ms) if delays_ms else [0]
+        for idx, delay in enumerate(delays):
+            finalize = idx == len(delays) - 1
+            QTimer.singleShot(
+                int(delay),
+                lambda rsn=f"{reason}@{delay}ms", fin=finalize: self._apply_initial_anchor_position(
+                    rsn, finalize=fin
+                ),
+            )
+
+    def retarget_from_review(
+        self, page_zero: int, anchor_y: float | None = None, delays_ms=(0, 35, 90)
+    ):
+        total = max(0, int(getattr(self.session, "page_count", 0) or 0))
+        if total <= 0:
+            return
+        page_zero = max(0, min(int(page_zero), total - 1))
+        self.initial_page = page_zero
+        self.return_page = page_zero
+        self._current_page_zero = page_zero
+        self._viewer.set_page_ui(page_zero)
+        self._ensure_annotation_window(page_zero, reason="review_handoff")
+        self._ensure_render_window(page_zero, reason="review_handoff")
+
+        if anchor_y is None:
+            self._viewer.go_to_page(page_zero)
+            return
+
+        self.return_anchor_y = anchor_y
+        self.__dict__["_review_handoff_seq"] = (
+            int(self.__dict__.get("_review_handoff_seq", 0) or 0) + 1
+        )
+        seq = self.__dict__["_review_handoff_seq"]
+        delays = list(delays_ms) if delays_ms else [0]
+
+        def _apply(seq_id=seq, target_page=page_zero, img_y=float(anchor_y)):
+            if self.__dict__.get("_review_handoff_seq") != seq_id:
+                return
+            scale = max(float(getattr(self.canvas, "_scale", 1.0) or 1.0), 0.01)
+            self.scroll.verticalScrollBar().setValue(int(img_y * scale))
+            self._current_page_zero = target_page
+            self._viewer.set_page_ui(target_page)
+
+        for delay in delays:
+            QTimer.singleShot(int(delay), _apply)
+
+    def _on_page_ready(self, page_num, qpx):
+        if qpx is None:
+            return
+        pixmap = qpx if isinstance(qpx, QPixmap) else QPixmap.fromImage(qpx)
+        if pixmap.isNull():
+            return
+        if self._annotation_verbose_debug_enabled():
+            print(f"[DEBUG][annotation_lazy] 👀 p.{int(page_num) + 1}")
+        self.canvas.replace_page(page_num, pixmap)
+
+    def _on_render_window_done(self, rendered_pages):
+        self._loader_thread = None
+        self._loader_targets = ()
+        current = self._current_page_zero
+        self.lbl_status.setText(f"ready p.{current + 1}")
+
+    def _on_render_window_error(self, message: str):
+        self._loader_thread = None
+        self._loader_targets = ()
+        self.lbl_status.setText(message or "render failed")
+
+    def _on_scroll_changed(self, value: int):
+        page_zero = self.canvas.get_current_page(value)
+        if page_zero != self._current_page_zero:
+            self._debug("scroll", value=value, page=page_zero + 1)
+            self._ensure_annotation_window(page_zero, reason="scroll")
+            self._ensure_render_window(page_zero, reason="scroll")
+        self._current_page_zero = page_zero
+        self._viewer.set_page_ui(page_zero)
+        self.return_page = page_zero
+
+    def _on_stroke_finished(self, page_num: int, tool: str, points):
+        widths = None
+        if isinstance(points, tuple) and len(points) == 2:
+            points, widths = points
+        
+        style = self._annotation_pen_style_override(tool)
+        if widths is not None:
+            style = dict(style) if style else {}
+            style["widths"] = widths
+
+        item = self.session.add_new_item(
+            page_num,
+            tool,
+            points,
+            style_override=style,
+        )
+        if item is not None:
+            self.canvas.update()
+            self.lbl_status.setText(f"unsaved changes p.{page_num + 1}")
+
+    def _on_erase_dragged(self, page_num: int, point):
+        changed = self.session.erase_at_point(page_num, point)
+        if not changed:
+            return
+        preview = self.session.build_page_preview(page_num)
+        if preview is not None and not preview.isNull():
+            self.canvas.replace_page(page_num, preview)
+        else:
+            self.canvas.update()
+        self.lbl_status.setText(f"erase touched p.{page_num + 1}")
+
+    def _on_image_move_finished(
+        self, old_page: int, target_page: int, item_id: str, old_rect: QRectF, rect: QRectF
+    ):
+        if old_page == target_page:
+            if self.session.move_image_item(old_page, item_id, rect, old_rect=old_rect):
+                self.lbl_status.setText(f"moved screenshot p.{target_page + 1}")
+                if item_id.startswith("existing:"):
+                    preview = self.session.build_page_preview(target_page)
+                    if preview is not None and not preview.isNull():
+                        self.canvas.replace_page(target_page, preview)
+                self.canvas.update()
+        else:
+            item = next((i for i in self.session.get_new_items_for_page(old_page) if i.get("id") == item_id), None)
+            if item and item.get("image_bytes"):
+                if self.session.delete_image_item(old_page, item_id):
+                    new_item = self.session.add_image_item(target_page, item.get("image_bytes"), item.get("pixmap"), rect)
+                    if new_item:
+                        self.lbl_status.setText(f"moved screenshot p.{target_page + 1}")
+                        self.canvas.select_image(target_page, new_item["id"])
+                        if item_id.startswith("existing:"):
+                            preview = self.session.build_page_preview(target_page)
+                            if preview is not None and not preview.isNull():
+                                self.canvas.replace_page(target_page, preview)
+                            old_preview = self.session.build_page_preview(old_page)
+                            if old_preview is not None and not old_preview.isNull():
+                                self.canvas.replace_page(old_page, old_preview)
+                        self.canvas.update()
+
+    def _delete_selected_image(self):
+        page_num, item_id = self.canvas.selected_image()
+        if page_num is None or not item_id:
+            self.lbl_status.setText("no screenshot selected")
+            return
+        if not self.session.delete_image_item(page_num, item_id):
+            self.lbl_status.setText("selected screenshot could not be deleted")
+            return
+        self.canvas.clear_selected_image()
+        preview = self.session.build_page_preview(page_num)
+        if preview is not None and not preview.isNull():
+            self.canvas.replace_page(page_num, preview)
+        else:
+            self.canvas.update()
+        self.lbl_status.setText(f"deleted screenshot p.{page_num + 1}; save to persist")
+
+    def _paste_clipboard_image(self):
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        image = QImage()
+        
+        # 1. Try standard hasImage / image()
+        if mime.hasImage():
+            image = clipboard.image()
+            
+        # 2. Try raw image formats directly from mime formats
+        if image.isNull():
+            for fmt in mime.formats():
+                if fmt.startswith("image/"):
+                    try:
+                        data = mime.data(fmt)
+                        if data and not data.isEmpty():
+                            img = QImage.fromData(data)
+                            if not img.isNull():
+                                image = img
+                                break
+                    except Exception:
+                        pass
+                        
+        # 3. Try files (URLs) if user copied a file from Explorer
+        if image.isNull() and mime.hasUrls():
+            urls = mime.urls()
+            if urls:
+                try:
+                    local_path = urls[0].toLocalFile()
+                    if local_path and os.path.exists(local_path):
+                        img = QImage(local_path)
+                        if not img.isNull():
+                            image = img
+                except Exception:
+                    pass
+
+        # 4. Try HTML fallback (extracting image src from HTML tag)
+        if image.isNull() and mime.hasHtml():
+            try:
+                html = mime.html()
+                import re
+                match = re.search(r'src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                if match:
+                    src = match.group(1)
+                    
+                    import urllib.parse
+                    src = urllib.parse.unquote(src)
+                    
+                    if src.startswith("data:image/") and ";base64," in src:
+                        try:
+                            import base64
+                            header, base64_data = src.split(";base64,", 1)
+                            img_data = base64.b64decode(base64_data)
+                            img = QImage.fromData(img_data)
+                            if not img.isNull():
+                                image = img
+                        except Exception:
+                            pass
+                    else:
+                        if src.startswith("file:///"):
+                            src_path = src[8:]
+                            if len(src_path) > 2 and src_path[0] == '/' and src_path[2] == ':':
+                                src_path = src_path[1:]
+                        elif src.startswith("file://"):
+                            src_path = src[7:]
+                        else:
+                            src_path = src
+                            
+                        if not os.path.isabs(src_path):
+                            try:
+                                from storage_paths import resolve_asset_path
+                                resolved = resolve_asset_path(src_path)
+                                if resolved and os.path.exists(resolved):
+                                    src_path = resolved
+                            except Exception:
+                                pass
+                                
+                        if os.path.exists(src_path):
+                            img = QImage(src_path)
+                            if not img.isNull():
+                                image = img
+            except Exception:
+                pass
+
+        # 5. Check if we found a valid image
+        if image.isNull():
+            self.lbl_status.setText("clipboard has no valid image")
+            return
+            
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.WriteOnly)
+        image.save(buffer, "PNG")
+        image_bytes = bytes(data)
+        pixmap = QPixmap.fromImage(image)
+        page_num = self.canvas.get_current_page(self.scroll.verticalScrollBar().value())
+        rect = self._default_image_rect(page_num, pixmap)
+        item = self.session.add_image_item(page_num, image_bytes, pixmap, rect)
+        if item is None:
+            self.lbl_status.setText("could not paste screenshot")
+            return
+        self._set_tool("image")
+        self.canvas.select_image(page_num, item["id"])
+        self.lbl_status.setText(f"pasted screenshot p.{page_num + 1}; press P to write")
+        self.canvas.update()
+
+    def _copy_selected_image(self) -> bool:
+        page_num, item_id = self.canvas.selected_image()
+        if page_num is None or not item_id:
+            self.lbl_status.setText("no screenshot selected to copy")
+            return False
+
+        item = self.session._find_new_item(page_num, item_id)
+        if item is None:
+            item = self.session._find_existing_item(page_num, item_id)
+
+        if item is None:
+            self.lbl_status.setText("could not find selected screenshot")
+            return False
+
+        pixmap = item.get("pixmap")
+        if not pixmap or pixmap.isNull():
+            if item.get("image_bytes"):
+                pixmap = QPixmap()
+                if not pixmap.loadFromData(item["image_bytes"]):
+                    pixmap = None
+            else:
+                pixmap = None
+
+        if not pixmap or pixmap.isNull():
+            self.lbl_status.setText("selected screenshot has no image data")
+            return False
+
+        clipboard = QApplication.clipboard()
+        clipboard.setPixmap(pixmap)
+        self.lbl_status.setText("copied screenshot to clipboard")
+        return True
+
+    def _cut_selected_image(self):
+        if self._copy_selected_image():
+            self._delete_selected_image()
+            self.lbl_status.setText("cut selected screenshot")
+
+    def _default_image_rect(self, page_num: int, pixmap: QPixmap) -> QRectF:
+        if page_num < 0 or page_num >= len(self.canvas._pages) or pixmap.isNull():
+            return QRectF(20.0, 20.0, 200.0, 120.0)
+        page = self.canvas._pages[page_num]
+        page_w = max(float(page.width()), 1.0)
+        page_h = max(float(page.height()), 1.0)
+        target_w = min(page_w * 0.60, max(page_w * 0.28, float(pixmap.width())))
+        target_h = target_w * float(pixmap.height()) / max(float(pixmap.width()), 1.0)
+        if target_h > page_h * 0.45:
+            target_h = page_h * 0.45
+            target_w = (
+                target_h * float(pixmap.width()) / max(float(pixmap.height()), 1.0)
+            )
+
+        viewport_center_x = (
+            self.scroll.horizontalScrollBar().value()
+            + self.scroll.viewport().width() / 2.0
+        ) / max(self.canvas.zoom(), 0.01)
+        viewport_center_y = (
+            self.scroll.verticalScrollBar().value()
+            + self.scroll.viewport().height() / 2.0
+        ) / max(self.canvas.zoom(), 0.01)
+        page_top = (
+            self.canvas._page_tops[page_num]
+            if page_num < len(self.canvas._page_tops)
+            else 0
+        )
+        local_y = viewport_center_y - page_top
+        x = max(0.0, min(page_w - target_w, viewport_center_x - target_w / 2.0))
+        y = max(0.0, min(page_h - target_h, local_y - target_h / 2.0))
+        return QRectF(x, y, target_w, target_h)
+
+    def _undo(self):
+        if not self.session.undo():
+            return
+        self._refresh_dirty_pages()
+        self.lbl_status.setText("undo")
+
+    def _redo(self):
+        if not self.session.redo():
+            return
+        self._refresh_dirty_pages()
+        self.lbl_status.setText("redo")
+
+    def _refresh_dirty_pages(self):
+        dirty = sorted(self.session.dirty_pages)
+        for page_num in dirty:
+            preview = self.session.build_page_preview(page_num)
+            if preview is not None and not preview.isNull():
+                self.canvas.replace_page(page_num, preview)
+        self.canvas.update()
+
+    def _save_pdf(self):
+        if self.__dict__.get("_save_in_progress", False):
+            return
+        self._save_in_progress = True
+        try:
+            try:
+                changed_pages = self.session.save()
+            except Exception as ex:
+                QMessageBox.warning(
+                    self, "Annotation Save Failed", f"Could not update PDF:\n{ex}"
+                )
+                self.lbl_status.setText("save failed")
+                return
+            self._saved_pages = changed_pages
+            # Clear selection — saved items become "existing:" source.
+            # Leaving them selected would draw a floating overlay on top
+            # of the freshly rendered page background.
+            self.canvas.clear_selected_image()
+            for page_num in changed_pages:
+                # session.save() already re-rendered dirty pages into PAGE_CACHE.
+                # Pull fresh pixmap from cache.
+                px = PAGE_CACHE.get(self.pdf_path, page_num)
+                if px is not None and not px.isNull():
+                    self.canvas.replace_page(page_num, px)
+                else:
+                    preview = self.session.build_page_preview(page_num)
+                    if preview is not None and not preview.isNull():
+                        self.canvas.replace_page(page_num, preview)
+            self.canvas.update()
+            if changed_pages:
+                self.lbl_status.setText(
+                    "saved " + ", ".join(f"p.{pn + 1}" for pn in changed_pages)
+                )
+            else:
+                self.lbl_status.setText("no changes")
+        finally:
+            self._save_in_progress = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_viewer"):
+            QTimer.singleShot(0, self._viewer.on_resize)
+        if self.initial_anchor_y is not None:
+            self._schedule_initial_anchor_restore("resize", delays_ms=(0, 35))
+        if getattr(self, "crt", None) is not None:
+            self.crt.setGeometry(self.rect())
+            self.crt.raise_()
+
+    def closeEvent(self, event):
+        from ui.canvas.retro_effects import resume_animations
+
+        resume_animations(self)
+        self._stop_loader_thread()
+        self.return_page = self._current_page_zero
+        self.return_anchor_y = self.scroll.verticalScrollBar().value()
+        self.session.close()
+        super().closeEvent(event)
+
+    def reject(self):
+        if self.session.has_unsaved_changes():
+            reply = QMessageBox.question(
+                self,
+                "Discard Changes",
+                "Unsaved annotation changes will be lost. Close anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        super().reject()

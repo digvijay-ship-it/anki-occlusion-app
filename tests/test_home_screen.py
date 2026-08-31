@@ -337,23 +337,28 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         refresh.assert_not_called()
         dialog_cls.assert_not_called()
 
-    def test_startup_review_recovery_with_blocked_event_still_opens_dialog(self):
+    def test_startup_review_recovery_with_missing_card_does_not_open_dialog(self):
         summary = {
             "drafts": [],
             "review_events": [{"event_id": "r1", "status": "missing_card"}],
         }
-        dialog = MagicMock()
-        dialog.action = "close"
+        empty_summary = {"drafts": [], "review_events": []}
+        result = {"applied": 0, "already_applied": 0, "blocked": []}
 
-        with patch("ui.home_screen.recovery_manager.scan_recovery", return_value=summary), \
-             patch("ui.home_screen.recovery_manager.apply_pending_review_events") as apply_events, \
-             patch("ui.home_screen.RecoveryDialog", return_value=dialog) as dialog_cls:
+        with patch(
+            "ui.home_screen.recovery_manager.scan_recovery",
+            side_effect=[summary, empty_summary],
+        ), patch(
+            "ui.home_screen.recovery_manager.apply_pending_review_events",
+            return_value=result,
+        ) as apply_events, patch(
+            "ui.home_screen.RecoveryDialog"
+        ) as dialog_cls:
             shown = self.home_screen.show_recovery_center(startup=True)
 
         self.assertTrue(shown)
-        apply_events.assert_not_called()
-        dialog_cls.assert_called_once()
-        dialog.exec_.assert_called_once_with()
+        apply_events.assert_called_once()
+        dialog_cls.assert_not_called()
 
     def test_review_cancel_without_changes_does_not_force_save(self):
         class FakeReview(QWidget):
@@ -452,6 +457,7 @@ class _FakeTMNTHomeLayout(QWidget):
     btn_save_clicked = pyqtSignal()
     btn_math_clicked = pyqtSignal()
     btn_journal_clicked = pyqtSignal()
+    btn_report_clicked = pyqtSignal()
     btn_theme_clicked = pyqtSignal()
     btn_help_clicked = pyqtSignal()
     btn_about_clicked = pyqtSignal()

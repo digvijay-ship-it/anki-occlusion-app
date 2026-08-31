@@ -1264,6 +1264,7 @@ class HomeScreen(QWidget):
 
         btn_math = _topbtn("🧮 MATH TRAINER", "Practice Tables, Squares & Cubes")
         btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
+        btn_report = _topbtn("📊 REPORT", "Open Daily Mission Report Card")
         self._btn_resume = _topbtn("⚡ RESUME LAST MISSION", "Resume last review session (R)")
         self._btn_save = _topbtn("💾 SAVE", "Save now  Ctrl+S")
         self._btn_settings = _topbtn("⚙ SETTINGS", "Visual scale and Mission Archive")
@@ -1273,6 +1274,7 @@ class HomeScreen(QWidget):
 
         btn_math.clicked.connect(self._show_math_trainer)
         btn_journal.clicked.connect(self._show_journal)
+        btn_report.clicked.connect(self._show_mission_report)
         self._btn_resume.clicked.connect(self.resume_last_review)
         self._btn_save.clicked.connect(self._on_classic_save_clicked)
         self._btn_settings.clicked.connect(self._toggle_classic_settings_panel)
@@ -1313,6 +1315,7 @@ class HomeScreen(QWidget):
 
         tl.addWidget(btn_math)
         tl.addWidget(btn_journal)
+        tl.addWidget(btn_report)
         tl.addWidget(self._btn_resume)
         tl.addWidget(self._btn_save)
         tl.addWidget(self._btn_settings)
@@ -1596,13 +1599,14 @@ class HomeScreen(QWidget):
         rev.show()
         QTimer.singleShot(0, rev.canvas.setFocus)
 
-    def show_review_sequential(self, groups, data):
+    def show_review_sequential(self, groups, data, is_practice=False):
         """Review card groups one PDF at a time.
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
         self._sequential_groups = list(groups)
         self._past_sequential_sessions = []
         self._current_sequential_group = None
         self._sequential_data = data
+        self._sequential_is_practice = bool(is_practice)
 
         def _clear_ram():
             from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
@@ -1624,7 +1628,7 @@ class HomeScreen(QWidget):
                 return
             batch = self._sequential_groups.pop(0)
             self._current_sequential_group = batch
-            self.show_review(batch, data, _on_batch_done=_on_done)
+            self.show_review(batch, data, _on_batch_done=_on_done, is_practice=self._sequential_is_practice)
 
         self._sequential_on_done = _on_done
         _launch_next()
@@ -1655,6 +1659,7 @@ class HomeScreen(QWidget):
             self._sequential_data,
             _on_batch_done=self._sequential_on_done,
             state_to_restore=prev_state,
+            is_practice=prev_state.get("is_practice", getattr(self, "_sequential_is_practice", False)),
         )
 
     def hide_review(self):
@@ -2047,6 +2052,69 @@ class HomeScreen(QWidget):
     def _show_help(self):
         OnboardingDialog(self).exec_()
 
+    def _show_mission_report(self, date_str=None):
+        if self.__dict__.get("_report_widget") is not None:
+            return
+        t0 = time.perf_counter()
+        from .mission_report_dialog import MissionReportDialog
+        rw = MissionReportDialog(initial_date=date_str, parent=self)
+        rw.closed.connect(self._hide_mission_report)
+        self._report_widget = rw
+
+        if is_retro_theme(self.__dict__.get("_current_theme")) and self.__dict__.get("_tmnt_layout"):
+            self._pre_report_tmnt = True
+            self._pre_report_widget = self._body_stack.currentWidget()
+            self.top_frame.hide()
+            self._body_stack.addWidget(rw)
+            self._body_stack.setCurrentWidget(rw)
+        else:
+            self._pre_report_tmnt = False
+            self._ensure_classic_layout()
+            split = self._get_splitter()
+            if split is None:
+                return
+            self._pre_report_sizes = split.sizes()
+            self._pre_report_widget = split.widget(1)
+            split.replaceWidget(1, rw)
+            rw.show()
+            split.setSizes([split.sizes()[0], split.width(), 0])
+        print(f"[PROFILE][home_show_mission_report] Mission Report initialized and displayed in {(time.perf_counter() - t0) * 1000:.1f}ms")
+
+    def _hide_mission_report(self):
+        rw = self.__dict__.get("_report_widget")
+        self._report_widget = None
+        if not rw:
+            return
+        if self.__dict__.get("_pre_report_tmnt") and self.__dict__.get("_tmnt_layout"):
+            self._body_stack.removeWidget(rw)
+            rw.setParent(None)
+            rw.deleteLater()
+            target_widget = self.__dict__.get("_pre_report_widget")
+            if target_widget and self._body_stack.indexOf(target_widget) != -1:
+                self._body_stack.setCurrentWidget(target_widget)
+            else:
+                self._body_stack.setCurrentWidget(self._tmnt_layout)
+            if self._body_stack.currentWidget() == self._tmnt_layout:
+                self.top_frame.hide()
+                self._tmnt_layout.refresh()
+        else:
+            split = self._get_splitter()
+            if split:
+                target_widget = self.__dict__.get("_pre_report_widget") or self.deck_view
+                split.replaceWidget(1, target_widget)
+                rw.setParent(None)
+                rw.deleteLater()
+                if target_widget:
+                    target_widget.show()
+                if self.deck_tree:
+                    self.deck_tree.show()
+                if getattr(self, "_cache_widget", None):
+                    self._cache_widget.show()
+                sizes = self.__dict__.get("_pre_report_sizes", [340, 760, 220])
+                split.setSizes(sizes)
+        self.refresh()
+        self._clear_home_ram_caches()
+
     def _create_tmnt_layout(self):
         layout_cls = _load_tmnt_home_layout()
         if layout_cls is None:
@@ -2055,6 +2123,8 @@ class HomeScreen(QWidget):
         layout.btn_save_clicked.connect(self._save_current_data_now)
         layout.btn_math_clicked.connect(self._show_math_trainer)
         layout.btn_journal_clicked.connect(self._show_journal)
+        if hasattr(layout, "btn_report_clicked"):
+            layout.btn_report_clicked.connect(self._show_mission_report)
         layout.btn_resume_clicked.connect(self.resume_last_review)
         layout.btn_theme_clicked.connect(self._toggle_theme)
         layout.btn_help_clicked.connect(self._show_help)
@@ -2853,11 +2923,44 @@ class HomeScreen(QWidget):
         if hasattr(win, "change_font_size"):
             win.change_font_size(direction)
 
+    def _open_card_browser(self):
+        if getattr(self, "_active_review", None) is not None:
+            return
+        # If TMNT layout is active
+        if getattr(self, "_tmnt_layout", None) and self._tmnt_layout.isVisible():
+            if hasattr(self._tmnt_layout, "main") and self._tmnt_layout.main:
+                if getattr(self._tmnt_layout.main, "deck", None):
+                    self._tmnt_layout.main._open_card_browser()
+                    return
+                if hasattr(self._tmnt_layout, "sidebar") and getattr(self._tmnt_layout.sidebar, "_selected_deck", None):
+                    self._tmnt_layout.main.load_deck(self._tmnt_layout.sidebar._selected_deck)
+                    self._tmnt_layout.main._open_card_browser()
+                    return
+                self._tmnt_layout.main._open_card_browser()
+                return
+        # Classic layout
+        dv = getattr(self, "deck_view", None) or getattr(self, "_deck_view", None)
+        if dv:
+            if getattr(dv, "deck", None):
+                dv._open_card_browser()
+                return
+            dt = getattr(self, "deck_tree", None) or getattr(self, "_deck_tree", None)
+            if dt and getattr(dt, "_selected_deck", None):
+                dv.load_deck(dt._selected_deck)
+                dv._open_card_browser()
+                return
+            dv._open_card_browser()
+
     def keyPressEvent(self, e):
         key = e.key()
         mods = e.modifiers()
         ctrl = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
+        if shortcut_manager.event_matches(e, "home.browse_cards"):
+            if getattr(self, "_active_review", None) is None:
+                self._open_card_browser()
+                e.accept()
+                return
         if shortcut_manager.event_matches(e, "home.search_decks") or (ctrl and not shift and key in (Qt.Key_F, Qt.Key_K)):
             if getattr(self, "_active_review", None) is None:
                 if getattr(self, "_tmnt_layout", None) and hasattr(self._tmnt_layout, "sidebar") and hasattr(self._tmnt_layout.sidebar, "_focus_search"):
@@ -2878,6 +2981,14 @@ class HomeScreen(QWidget):
                     self.resume_last_review()
                     e.accept()
                     return
+
+        if shortcut_manager.event_matches(e, "home.mission_report") or (ctrl and not shift and key == Qt.Key_R):
+            if getattr(self, "_report_widget", None) is not None:
+                self._hide_mission_report()
+            else:
+                self._show_mission_report()
+            e.accept()
+            return
 
         if shortcut_manager.event_matches(e, "home.save"):
             store.mark_dirty()
@@ -3127,28 +3238,30 @@ class HomeScreen(QWidget):
     def _process_recovery_summary(self, summary, startup):
         has_drafts = bool(summary.get("drafts"))
         has_events = bool(summary.get("review_events"))
-        if startup and has_events and not has_drafts:
-            events = summary.get("review_events", []) or []
-            if events and all(event.get("status") == "recoverable" for event in events):
-                print(
-                    "[DEBUG][recovery] startup_auto_review_recover_start "
-                    f"events={len(events)}"
-                )
-                result = recovery_manager.apply_pending_review_events(store.get())
-                if result.get("applied", 0) > 0:
-                    store.mark_dirty()
-                    store.save_force(async_save=True)
-                print(
-                    "[DEBUG][recovery] startup_auto_review_recover "
-                    f"applied={result.get('applied', 0)} "
-                    f"already={result.get('already_applied', 0)} "
-                    f"blocked={len(result.get('blocked', []))}"
-                )
-                summary = recovery_manager.scan_recovery(store.get(), startup=startup)
-                has_drafts = bool(summary.get("drafts"))
-                has_events = bool(summary.get("review_events"))
-                if not has_drafts and not has_events:
-                    return True
+        if startup and has_events:
+            print(
+                "[DEBUG][recovery] startup_auto_review_recover_start "
+                f"events={len(summary.get('review_events', []))}"
+            )
+            result = recovery_manager.apply_pending_review_events(store.get())
+            if result.get("applied", 0) > 0:
+                store.mark_dirty()
+                store.save_force(async_save=True)
+            print(
+                "[DEBUG][recovery] startup_auto_review_recover "
+                f"applied={result.get('applied', 0)} "
+                f"already={result.get('already_applied', 0)} "
+                f"blocked={len(result.get('blocked', []))}"
+            )
+            summary = recovery_manager.scan_recovery(store.get(), startup=startup)
+            has_drafts = bool(summary.get("drafts"))
+            has_events = bool(summary.get("review_events"))
+
+        if startup:
+            # Silent startup: only show dialog if there are actual un-saved editor drafts waiting to be recovered
+            if not has_drafts:
+                return True
+
         if not has_drafts and not has_events:
             if not startup:
                 QMessageBox.information(
@@ -3597,6 +3710,7 @@ class HomeScreen(QWidget):
                 "This will scan your Google Drive and delete any PDFs or images that are NOT "
                 "referenced by any cards in your active database. This cannot be undone.",
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
             != QMessageBox.Yes
         ):

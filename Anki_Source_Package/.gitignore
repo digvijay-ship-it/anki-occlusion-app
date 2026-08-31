@@ -1,0 +1,117 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+tests/_tmp/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+release/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
+
+# Environments (If you use virtualenv)
+.env
+.venv
+env/
+venv/
+ENV/
+
+# VS Code / IDE settings
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+test_anki_occlusion_v14.py
+*_old.py
+temp/
+swift_render/
+benchmarks/
+debug_log.txt
+
+# Refactoring and temporary files
+README copy.md
+_refactoring_scripts/
+installer/_generated/
+code.html
+release.zip
+services/ocr_import_error.log
+test2.pdf
+test3.pdf
+test.html
+tests/_tmp_files/
+*.new
+*.bak
+*.orig
+
+# Web prototype
+web-prototype/node_modules/
+web-prototype/dist/
+web-prototype/coverage/
+web-prototype/*.log
+web-prototype/*.tsbuildinfo
+web-prototype/local_api/local_data/
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/*.log
+web/backend/*.log
+web/backend/.data/
+web/.run/
+
+# Local agent directories, logs, and scratch files
+.agents/
+scratch/
+scratch_test_render.py
+test_results.txt
+test_run.log
+test_run_v.log
+ORIGINAL_REQUEST.md
+PROJECT.md
+TEST_INFRA.md
+services/run_ocr.ps1
+
+# Review/agent scratch output (diffs, captured test runs, baselines)
+baseline.txt
+*_diff.txt
+review_test.txt
+test_baseline_out.txt
+test_err.txt
+test_out.txt
+test_post_*.txt
+test_run_output.txt
