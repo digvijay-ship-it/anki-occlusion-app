@@ -304,6 +304,8 @@ class DirtyStoreTests(unittest.TestCase):
              patch.object(gdrive_store, "upload_file_to_drive") as mock_upload:
             
             # Case 1: save_if_dirty (default force_gdrive=False)
+            time.sleep(0.05)
+            mock_upload.reset_mock()
             store.set(payload)
             store.save_if_dirty()
             

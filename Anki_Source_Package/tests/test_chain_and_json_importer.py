@@ -187,6 +187,67 @@ class TestChainAndJsonImporter(unittest.TestCase):
         questions_order = [item[0].get("question") for item in items]
         self.assertEqual(questions_order, ["QA", "Q1", "Q2", "Q3", "QB"])
 
+    def test_import_json_matches_by_card_uid_and_preserves_sm2(self):
+        # 1. Initial import of Card #3 (overloaded question)
+        initial_payload = [
+            {
+                "card_uid": "uid-rbi-003",
+                "deck_name": "TestDeck",
+                "question": "RBI के प्रतीक चिह्न में कौन-सा पशु और कौन-सा वृक्ष चित्रित है?",
+                "answer": "रॉयल बंगाल टाइगर और ताड़ का पेड़",
+                "notes": "पुरानी ओवरलोडेड नोट्स"
+            }
+        ]
+        import_json_cards(self.data, initial_payload)
+        deck = self.data["decks"][0]
+        c3 = deck["cards"][0]
+        
+        # Simulate user reviewing card #3 (SM-2 progress accumulated)
+        c3["reps"] = 6
+        c3["interval"] = 15
+        c3["factor"] = 2.6
+        c3["state"] = "review"
+        c3["due"] = "2026-09-20T10:00:00"
+
+        # 2. Re-import where Card #3 is pruned to 1 atomic question (Fact 1),
+        # and a new Card #4 (Fact 2) is added with new UID!
+        split_payload = [
+            {
+                "card_uid": "uid-rbi-003", # SAME UID
+                "deck_name": "TestDeck",
+                "question": "भारतीय रिज़र्व बैंक (RBI) के आधिकारिक प्रतीक चिह्न में कौन-सा पशु चित्रित है?",
+                "answer": "रॉयल बंगाल टाइगर (Royal Bengal Tiger)",
+                "notes": "1935 में शुरुआत में ईस्ट इंडिया कंपनी का डबल मोहर शेर था।"
+            },
+            {
+                "card_uid": "uid-rbi-004", # NEW UID
+                "deck_name": "TestDeck",
+                "question": "भारतीय रिज़र्व बैंक (RBI) के आधिकारिक प्रतीक चिह्न में कौन-सा वृक्ष चित्रित है?",
+                "answer": "ताड़ का पेड़ (Palm Tree)",
+                "notes": "प्रतीक में ताड़ का पेड़ स्थिरता और छाया का प्रतीक है।"
+            }
+        ]
+
+        res = import_json_cards(self.data, split_payload, dup_policy="update")
+        self.assertEqual(res["updated"], 1)
+        self.assertEqual(res["imported"], 1)
+
+        # 3. Verify Card #3 updated text but kept 100% of SM-2 progress
+        updated_c3 = [c for c in deck["cards"] if c.get("card_uid") == "uid-rbi-003"][0]
+        self.assertEqual(updated_c3["question"], "भारतीय रिज़र्व बैंक (RBI) के आधिकारिक प्रतीक चिह्न में कौन-सा पशु चित्रित है?")
+        self.assertEqual(updated_c3["answer"], "रॉयल बंगाल टाइगर (Royal Bengal Tiger)")
+        self.assertEqual(updated_c3["reps"], 6)       # PRESERVED!
+        self.assertEqual(updated_c3["interval"], 15)   # PRESERVED!
+        self.assertEqual(updated_c3["factor"], 2.6)    # PRESERVED!
+        self.assertEqual(updated_c3["state"], "review")# PRESERVED!
+
+        # 4. Verify Card #4 is brand new card
+        new_c4 = [c for c in deck["cards"] if c.get("card_uid") == "uid-rbi-004"][0]
+        self.assertEqual(new_c4.get("reviews", 0), 0)
+        self.assertEqual(new_c4.get("sm2_repetitions", 0), 0)
+        self.assertEqual(new_c4["answer"], "ताड़ का पेड़ (Palm Tree)")
+
 
 if __name__ == "__main__":
     unittest.main()
+

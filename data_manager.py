@@ -461,6 +461,10 @@ class DirtyStore:
             for field in ["due", "interval", "factor", "reps", "lapses", "state"]:
                 if row[field] is not None:
                     card[field] = row[field]
+            # Ensure permanent card_uid is tracked
+            c_uid = card.get("card_uid") or (card.get("_id") if isinstance(card.get("_id"), str) else None)
+            if c_uid:
+                card["card_uid"] = c_uid
             card["_id"] = row["id"]
             cards_by_id[row["id"]] = card
             
@@ -1587,10 +1591,16 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
     target_deck_ids = set()
     created_cards = []
 
-    # Map existing questions for duplicate checking
+    # Map existing questions and UIDs for duplicate checking
+    existing_uid_map = {}
     existing_question_map = {}
     def _index_deck(deck):
         for c in deck.get("cards", []):
+            c_uid = str(c.get("card_uid") or "").strip()
+            if not c_uid and isinstance(c.get("_id"), str):
+                c_uid = c.get("_id").strip()
+            if c_uid:
+                existing_uid_map[c_uid] = (c, deck)
             q_norm = str(c.get("question", "")).strip().lower()
             if q_norm:
                 existing_question_map[q_norm] = (c, deck)
@@ -1641,15 +1651,26 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
             
         target_deck_ids.add(target_deck.get("_id"))
 
-        # Duplicate checking
+        # Duplicate checking: match by card_uid first, then question text
+        item_uid = str(item.get("card_uid") or item.get("_id") or "").strip()
         q_norm = q.lower()
-        if q_norm in existing_question_map:
-            existing_c, existing_d = existing_question_map[q_norm]
+        matched_c = None
+        matched_d = None
+        if item_uid and item_uid in existing_uid_map:
+            matched_c, matched_d = existing_uid_map[item_uid]
+        elif q_norm in existing_question_map:
+            matched_c, matched_d = existing_question_map[q_norm]
+
+        if matched_c is not None:
+            existing_c = matched_c
             if dup_policy == "skip":
                 skipped_count += 1
                 continue
-            elif dup_policy == "update":
+            elif dup_policy in ("update", "add"):
+                existing_c["question"] = q
                 existing_c["answer"] = a
+                first_line = [line.strip() for line in q.split("\n") if line.strip()]
+                existing_c["title"] = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
                 if notes:
                     existing_c["notes"] = notes
                 if trap_note:
@@ -1665,6 +1686,9 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
                     existing_c["related_concepts"] = item.get("related_concepts", [])
                 if "tags" in item:
                     existing_c["tags"] = item.get("tags", [])
+                if item_uid and not existing_c.get("card_uid"):
+                    existing_c["card_uid"] = item_uid
+                # CRITICAL: SM-2 fields (interval, factor, reps, lapses, state, due) are NEVER touched!
                 updated_count += 1
                 continue
 
@@ -1672,8 +1696,10 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
         first_line = [line.strip() for line in q.split("\n") if line.strip()]
         title = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
         
+        card_unique_id = item_uid or str(uuid.uuid4())
         card = {
             "_id": str(uuid.uuid4()),
+            "card_uid": card_unique_id,
             "card_type": "text",
             "title": title,
             "question": q,
@@ -1695,6 +1721,8 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
         }
         sm2_init(card)
         target_deck.setdefault("cards", []).append(card)
+        if card_unique_id:
+            existing_uid_map[card_unique_id] = (card, target_deck)
         existing_question_map[q_norm] = (card, target_deck)
         created_cards.append(card)
         imported_count += 1
@@ -1766,12 +1794,22 @@ def parse_single_file_cards(file_path: str, context_tags: list = None) -> list:
                     tags.extend(it["tags"])
 
                 is_mcq = "options" in it or "correct_option" in it
+                card_uid = str(it.get("card_uid") or it.get("_id") or "").strip()
+                deck_name = str(it.get("deck_name") or (raw.get("deck_name") if isinstance(raw, dict) else "") or "").strip()
+                deck_uid = str(it.get("deck_uid") or (raw.get("deck_uid") if isinstance(raw, dict) else "") or "").strip()
                 card_item = {
+                    "card_uid": card_uid,
+                    "deck_name": deck_name,
+                    "deck_uid": deck_uid,
                     "question": q,
                     "answer": a,
                     "notes": notes,
                     "trap_note": trap,
                     "tags": tags,
+                    "context_anchor": it.get("context_anchor", ""),
+                    "related_concepts": it.get("related_concepts", []),
+                    "chain_order": it.get("chain_order", 0),
+                    "priority_tier": it.get("priority_tier", 1),
                     "is_mcq": is_mcq,
                     "source_file": file_path
                 }
@@ -1783,8 +1821,9 @@ def parse_single_file_cards(file_path: str, context_tags: list = None) -> list:
                     card_item["question_html"] = it.get("question_html", "")
                 results.append(card_item)
             return results
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[parse_single_file_cards] JSON parse error in {file_path}: {ex}")
+            return []
 
     # 2. Delimited text / CSV parsing
     import csv
@@ -1908,18 +1947,6 @@ def scan_and_parse_data_folder(
         rel_dir = os.path.dirname(rel_to_root)
         file_stem = os.path.splitext(os.path.basename(f_path))[0]
 
-        # Build sub-deck path
-        if create_subdecks:
-            deck_parts = [effective_base]
-            if rel_dir and rel_dir != ".":
-                for part in rel_dir.split("/"):
-                    if part.strip():
-                        deck_parts.append(part.strip())
-            deck_parts.append(file_stem)
-            deck_path = "::".join(deck_parts)
-        else:
-            deck_path = effective_base
-
         tags = list(context_tags or [])
         if not create_subdecks:
             tags.append(f"file:{file_stem}")
@@ -1928,17 +1955,54 @@ def scan_and_parse_data_folder(
         if not file_cards:
             continue
 
+        # Determine clean subdeck name and deck_uid from parsed cards
+        target_subdeck_name = None
+        target_deck_uid = None
+        for c in file_cards:
+            if c.get("deck_name") and not target_subdeck_name:
+                target_subdeck_name = c["deck_name"].strip()
+            if c.get("deck_uid") and not target_deck_uid:
+                target_deck_uid = c["deck_uid"].strip()
+            if target_subdeck_name and target_deck_uid:
+                break
+
+        if not target_subdeck_name:
+            clean_stem = file_stem
+            for sfx in ["_App_Import", "_app_import", "_Import", "_import"]:
+                if clean_stem.endswith(sfx):
+                    clean_stem = clean_stem[:-len(sfx)]
+            clean_stem = clean_stem.replace("_", " ").strip()
+            target_subdeck_name = clean_stem
+
+        # Build sub-deck path
+        if create_subdecks:
+            deck_parts = [effective_base]
+            if rel_dir and rel_dir != ".":
+                for part in rel_dir.split("/"):
+                    if part.strip():
+                        deck_parts.append(part.strip())
+            deck_parts.append(target_subdeck_name)
+            deck_path = "::".join(deck_parts)
+        else:
+            deck_path = effective_base
+
         for c in file_cards:
             c["deck_path"] = deck_path
             c["source_relative_path"] = rel_to_root
+            if target_deck_uid and not c.get("deck_uid"):
+                c["deck_uid"] = target_deck_uid
+            if target_subdeck_name and not c.get("deck_name"):
+                c["deck_name"] = target_subdeck_name
             if not c.get("context_anchor"):
-                c["context_anchor"] = file_stem
+                c["context_anchor"] = target_subdeck_name
 
         all_cards.extend(file_cards)
         files_summary.append({
             "file_path": f_path,
             "relative_path": rel_to_root,
             "deck_path": deck_path,
+            "subdeck_name": target_subdeck_name,
+            "deck_uid": target_deck_uid,
             "cards_count": len(file_cards)
         })
 
@@ -2011,13 +2075,19 @@ def sync_deck_from_source_folder(
         parsed_cards = file_cards
 
     # 2. Build index of all existing cards in the target deck & all its sub-decks
-    existing_cards_map = {}  # norm_q -> (card_dict, deck_dict)
+    existing_uid_map = {}   # card_uid -> (card_dict, deck_dict)
+    existing_cards_map = {} # norm_q -> (card_dict, deck_dict)
 
     def _walk_tree(d):
         if not isinstance(d, dict):
             return
         for card in d.get("cards", []) or []:
             if isinstance(card, dict):
+                c_uid = str(card.get("card_uid") or "").strip()
+                if not c_uid and isinstance(card.get("_id"), str):
+                    c_uid = card.get("_id").strip()
+                if c_uid:
+                    existing_uid_map[c_uid] = (card, d)
                 q = (card.get("question") or card.get("title") or "").strip().lower()
                 if q:
                     existing_cards_map[q] = (card, d)
@@ -2037,13 +2107,31 @@ def sync_deck_from_source_folder(
         if not q and not a:
             continue
 
+        item_uid = str(item.get("card_uid") or item.get("_id") or "").strip()
         norm_q = q.lower()
-        if norm_q in existing_cards_map:
+        matched_card = None
+        parent_subdeck = None
+        if item_uid and item_uid in existing_uid_map:
+            matched_card, parent_subdeck = existing_uid_map[item_uid]
+        elif norm_q in existing_cards_map:
+            matched_card, parent_subdeck = existing_cards_map[norm_q]
+
+        if matched_card is not None:
             # Card already exists!
             # CRITICAL: Preserve all SM-2 fields (interval, repetitions, ease, due, last_quality, reviews, etc.)
-            existing_card, _ = existing_cards_map[norm_q]
+            existing_card = matched_card
             changed = False
 
+            if item.get("deck_uid") and parent_subdeck and not parent_subdeck.get("deck_uid"):
+                parent_subdeck["deck_uid"] = item["deck_uid"].strip()
+            if item.get("source_file") and parent_subdeck and not parent_subdeck.get("source_file_path"):
+                parent_subdeck["source_file_path"] = item["source_file"].replace("\\", "/")
+
+            if existing_card.get("question") != q:
+                existing_card["question"] = q
+                first_line = [line.strip() for line in q.split("\n") if line.strip()]
+                existing_card["title"] = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
+                changed = True
             if existing_card.get("answer") != a:
                 existing_card["answer"] = a
                 changed = True
@@ -2055,6 +2143,15 @@ def sync_deck_from_source_folder(
                 changed = True
             if item.get("context_anchor") and existing_card.get("context_anchor") != item["context_anchor"]:
                 existing_card["context_anchor"] = item["context_anchor"]
+                changed = True
+            if item.get("tags") and existing_card.get("tags") != item["tags"]:
+                existing_card["tags"] = item["tags"]
+                changed = True
+            if item.get("related_concepts") and existing_card.get("related_concepts") != item["related_concepts"]:
+                existing_card["related_concepts"] = item["related_concepts"]
+                changed = True
+            if item_uid and not existing_card.get("card_uid"):
+                existing_card["card_uid"] = item_uid
                 changed = True
             if item.get("is_mcq"):
                 if item.get("options"):
@@ -2076,8 +2173,10 @@ def sync_deck_from_source_folder(
             first_line = [line.strip() for line in q.split("\n") if line.strip()]
             title = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
 
+            card_unique_id = item_uid or str(uuid.uuid4())
             new_card = {
                 "_id": str(uuid.uuid4()),
+                "card_uid": card_unique_id,
                 "card_type": "mcq" if item.get("is_mcq") else "text",
                 "title": title,
                 "question": q,
@@ -2086,6 +2185,7 @@ def sync_deck_from_source_folder(
                 "trap_note": item.get("trap_note", ""),
                 "context_anchor": item.get("context_anchor", ""),
                 "tags": item.get("tags", []),
+                "related_concepts": item.get("related_concepts", []),
                 "created": datetime.now().isoformat(),
                 "reviews": 0,
                 "pdf_path": None,
@@ -2105,9 +2205,51 @@ def sync_deck_from_source_folder(
 
             # Route into target subdeck path
             target_subdeck_path = item.get("deck_path") or target_deck.get("name", "Default Deck")
-            dest_deck = get_or_create_deck_by_path(data, target_subdeck_path, context_deck=target_deck)
+            dest_deck = None
+            item_deck_uid = str(item.get("deck_uid") or "").strip()
+            item_deck_name = str(item.get("deck_name") or "").strip()
+
+            # 1. Match subdeck by deck_uid within target_deck's subtree
+            if item_deck_uid:
+                def _find_by_uid(d):
+                    for child in d.get("children", []) or []:
+                        if str(child.get("deck_uid") or "").strip() == item_deck_uid:
+                            return child
+                        res = _find_by_uid(child)
+                        if res:
+                            return res
+                    return None
+                dest_deck = _find_by_uid(target_deck)
+
+            # 2. Match subdeck by deck_name within target_deck's subtree
+            if dest_deck is None and item_deck_name:
+                def _find_by_name(d):
+                    for child in d.get("children", []) or []:
+                        if str(child.get("name", "")).strip().lower() == item_deck_name.lower():
+                            return child
+                        res = _find_by_name(child)
+                        if res:
+                            return res
+                    return None
+                dest_deck = _find_by_name(target_deck)
+
+            # 3. Fallback to get_or_create_deck_by_path
+            if dest_deck is None:
+                dest_deck = get_or_create_deck_by_path(data, target_subdeck_path, context_deck=target_deck)
+
+            # Ensure deck_uid, source_file_path, and source_folder_path are set on dest_deck
+            if item_deck_uid and not dest_deck.get("deck_uid"):
+                dest_deck["deck_uid"] = item_deck_uid
+            if item.get("source_file"):
+                src_norm = item["source_file"].replace("\\", "/")
+                dest_deck["source_file_path"] = src_norm
+                if not dest_deck.get("source_folder_path"):
+                    dest_deck["source_folder_path"] = src_norm
+
             dest_deck.setdefault("cards", []).append(new_card)
 
+            if card_unique_id:
+                existing_uid_map[card_unique_id] = (new_card, dest_deck)
             existing_cards_map[norm_q] = (new_card, dest_deck)
             new_count += 1
 

@@ -86,7 +86,8 @@ def build_text_card(
     chain_order: int = 0,
     parent_chain_id: str = None,
     trap_note: str = "",
-    priority_tier: int = 1
+    priority_tier: int = 1,
+    related_concepts: list = None
 ) -> dict:
     """Build a fully-formed SM-2 initialized text card dictionary."""
     lines = [line.strip() for line in question.split("\n") if line.strip()]
@@ -108,6 +109,7 @@ def build_text_card(
         "parent_chain_id": parent_chain_id,
         "priority_tier": int(priority_tier or 1),
         "tags": tags or [],
+        "related_concepts": related_concepts or [],
         "created": datetime.now().isoformat(),
         "reviews": 0,
         "pdf_path": None,
@@ -133,7 +135,8 @@ def build_mcq_card(
     parent_chain_id: str = None,
     priority_tier: int = 1,
     tags: list = None,
-    question_html: str = ""
+    question_html: str = "",
+    related_concepts: list = None
 ) -> dict:
     """Build a fully-formed SM-2 initialized interactive MCQ card dictionary."""
     import re
@@ -177,6 +180,7 @@ def build_mcq_card(
         "parent_chain_id": parent_chain_id,
         "priority_tier": int(priority_tier or 1),
         "tags": tags or [],
+        "related_concepts": related_concepts or [],
         "created": datetime.now().isoformat(),
         "reviews": 0,
         "pdf_path": None,
@@ -1833,6 +1837,10 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                                 existing_ref["parent_chain_id"] = row["parent_chain_id"]
                             if row.get("priority_tier"):
                                 existing_ref["priority_tier"] = row["priority_tier"]
+                            if row.get("tags"):
+                                existing_ref["tags"] = row["tags"]
+                            if row.get("related_concepts"):
+                                existing_ref["related_concepts"] = row["related_concepts"]
                             updated_cards.append(existing_ref)
                             target_deck_ids.add(deck_dest.get("_id"))
                             continue
@@ -1853,6 +1861,10 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                                     nc["notes"] = row["notes"]
                                 if row.get("trap_note"):
                                     nc["trap_note"] = row["trap_note"]
+                                if row.get("tags"):
+                                    nc["tags"] = row["tags"]
+                                if row.get("related_concepts"):
+                                    nc["related_concepts"] = row["related_concepts"]
                                 if row.get("priority_tier"):
                                     nc["priority_tier"] = row["priority_tier"]
                                 break
@@ -1875,19 +1887,21 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                     parent_chain_id=row.get("parent_chain_id"),
                     priority_tier=row.get("priority_tier", 1),
                     tags=row.get("tags", []),
-                    question_html=row.get("question_html", "")
+                    question_html=row.get("question_html", ""),
+                    related_concepts=row.get("related_concepts", [])
                 )
             else:
                 card = build_text_card(
                     question=row["question"],
                     answer=row["answer"],
                     notes=row.get("notes", ""),
-                    tags=[],
+                    tags=row.get("tags", []),
                     context_anchor=row.get("context_anchor", ""),
                     chain_order=row.get("chain_order", 0),
                     parent_chain_id=row.get("parent_chain_id"),
                     trap_note=row.get("trap_note", ""),
-                    priority_tier=row.get("priority_tier", 1)
+                    priority_tier=row.get("priority_tier", 1),
+                    related_concepts=row.get("related_concepts", [])
                 )
 
             deck_dest.setdefault("cards", []).append(card)

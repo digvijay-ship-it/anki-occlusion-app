@@ -15,7 +15,8 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor, QPalette
 from theme_manager import get_palette, normalize_theme
 from sm2_engine import sm2_init
-from data_manager import find_deck_by_id, next_deck_id, deck_history, store, get_or_create_deck_by_path
+from data_manager import find_deck_by_id, next_deck_id, deck_history, store, get_or_create_deck_by_path, scan_and_parse_data_folder, sync_deck_from_source_folder
+
 
 
 def parse_delimited_text(text: str, delimiter: str = ",", has_header: bool = False, strip_whitespace: bool = True) -> list:
@@ -85,7 +86,8 @@ def build_text_card(
     chain_order: int = 0,
     parent_chain_id: str = None,
     trap_note: str = "",
-    priority_tier: int = 1
+    priority_tier: int = 1,
+    related_concepts: list = None
 ) -> dict:
     """Build a fully-formed SM-2 initialized text card dictionary."""
     lines = [line.strip() for line in question.split("\n") if line.strip()]
@@ -107,6 +109,7 @@ def build_text_card(
         "parent_chain_id": parent_chain_id,
         "priority_tier": int(priority_tier or 1),
         "tags": tags or [],
+        "related_concepts": related_concepts or [],
         "created": datetime.now().isoformat(),
         "reviews": 0,
         "pdf_path": None,
@@ -132,7 +135,8 @@ def build_mcq_card(
     parent_chain_id: str = None,
     priority_tier: int = 1,
     tags: list = None,
-    question_html: str = ""
+    question_html: str = "",
+    related_concepts: list = None
 ) -> dict:
     """Build a fully-formed SM-2 initialized interactive MCQ card dictionary."""
     import re
@@ -176,6 +180,7 @@ def build_mcq_card(
         "parent_chain_id": parent_chain_id,
         "priority_tier": int(priority_tier or 1),
         "tags": tags or [],
+        "related_concepts": related_concepts or [],
         "created": datetime.now().isoformat(),
         "reviews": 0,
         "pdf_path": None,
@@ -383,6 +388,8 @@ class ImportCardsDialog(QDialog):
         self._skipped_duplicates_count = 0
         self._target_deck_id = None
         self._is_new_deck = False
+        self._folder_path = ""
+        self._selected_folder_path = None
 
         self._existing_cards_map = {}  # norm_question -> list of (deck_id, deck_name)
         self._build_existing_cards_index()
@@ -626,7 +633,7 @@ class ImportCardsDialog(QDialog):
         self.lbl_file_info.setStyleSheet(f"color: {p['C_SUBTEXT']};")
         file_l.addWidget(self.lbl_file_info)
         file_l.addStretch()
-        self.tabs.addTab(tab_file, "📁 Choose File (.txt / .csv / .tsv / .json)")
+        self.tabs.addTab(tab_file, "📁 Choose Single File")
 
         # Tab 3: Paste JSON
         tab_json = QWidget()
@@ -768,6 +775,36 @@ class ImportCardsDialog(QDialog):
         self.txt_mcq_json.textChanged.connect(self._on_input_changed)
         mcq_l.addWidget(self.txt_mcq_json)
         self.tabs.addTab(tab_mcq, "🎯 Paste Exam / Testbook MCQ JSON")
+
+        # Tab 5: Import Folder (Batch Tree)
+        tab_folder = QWidget()
+        folder_l = QVBoxLayout(tab_folder)
+        folder_l.setContentsMargins(12, 12, 12, 12)
+        folder_l.setSpacing(10)
+
+        fld_row = QHBoxLayout()
+        self.inp_folder_path = QLineEdit()
+        self.inp_folder_path.setPlaceholderText("Select a folder containing .csv / .tsv / .json files (e.g. A1_All_OWS)...")
+        self.inp_folder_path.setReadOnly(True)
+        btn_browse_folder = QPushButton("📂 Browse Folder...")
+        btn_browse_folder.clicked.connect(self._browse_folder)
+        fld_row.addWidget(self.inp_folder_path)
+        fld_row.addWidget(btn_browse_folder)
+        folder_l.addLayout(fld_row)
+
+        self.lbl_folder_summary = QLabel("No folder selected yet.")
+        self.lbl_folder_summary.setStyleSheet(f"color: {p['C_SUBTEXT']};")
+        folder_l.addWidget(self.lbl_folder_summary)
+
+        fld_opts_row = QHBoxLayout()
+        self.chk_folder_subdecks = QCheckBox("🌿 Mirror sub-folders / files as Sub-Decks (e.g. OWS::A, OWS::B)")
+        self.chk_folder_subdecks.setChecked(True)
+        self.chk_folder_subdecks.toggled.connect(self._on_input_changed)
+        fld_opts_row.addWidget(self.chk_folder_subdecks)
+        folder_l.addLayout(fld_opts_row)
+
+        folder_l.addStretch()
+        self.tabs.addTab(tab_folder, "📂 Batch Folder / Directory Tree")
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -1018,57 +1055,56 @@ class ImportCardsDialog(QDialog):
         self._on_input_changed()
 
     def _copy_master_prompt(self):
-        prompt_text = """# TASK: Generate 100% Complete, 3-Layer Deep Concept, Visual Diagrams & Mental Maps, Tier-Ranked (80/20) Flashcards (JSON) from Attached Document
+        prompt_text = """# TASK: Generate 100% Complete, Mind-Map Interlinked Knowledge Chains (80/20 Rule) Flashcards (JSON) from Attached Document
 
 ### ROLE & CORE OBJECTIVE:
-You are an expert SSC/Competitive Exam Curriculum Architect, Cartographer, and Anki Flashcard Engineer. Your objective is to convert 100% of the factual, conceptual, spatial, legal, and analytical content from the attached document into rich, 3-layer, sequential, tier-ranked flashcards with embedded visual mental maps, directional diagrams, and spatial flowcharts.
-The student must NEVER need to search Google or open a textbook to clarify doubts—every card must contain the full background story, spatial visualization, mechanism, and reasoning inside the `notes` field.
+You are an expert SSC/Competitive Exam Curriculum Architect, Cognitive Mind-Map Specialist, and Anki Flashcard Engineer.
+Your objective is to convert 100% of the factual, conceptual, legal, and analytical content from the attached document into rich, **Mind-Map Interlinked Knowledge Chains** formatted as structured JSON flashcards.
+The student must NEVER learn concepts in isolated silos—every card must form a connected cognitive web where related concepts (e.g., Article 56 linked with Article 55 and Article 65) can be navigated back and forth seamlessly with zero need for external Google searches.
 
 ---
 
-### CRITICAL PROCESSING & CARD ARCHITECTURE RULES:
+### CRITICAL MIND-MAP & CHAIN ARCHITECTURE RULES:
 
-1. **3-Layer Card Structure (Rapid Active Recall + Deep Concept):**
-   - **Layer 1 (`question`):** 1 sharp, focused question testing a single concept/spatial relationship.
+1. **Interlinked Knowledge Chains (`context_anchor` & `chain_order`):**
+   - **Do NOT create isolated, random cards.** Group interconnected concepts, chronological sequences, and legal/scientific mechanisms under a common `context_anchor` cluster (e.g., `Polity::President_Term_and_Succession` or `Biology::Photosynthesis_Light_and_Dark_Reactions`).
+   - Order the cards within each chain logically using sequential integers (`chain_order: 1, 2, 3...`):
+     - **Step 1 (`chain_order: 1`): Foundation Anchor & Definition** — Core rule, article number, definition, or primary formula.
+     - **Step 2 (`chain_order: 2`): Operating Mechanism & Procedure** — How and why the mechanism works step-by-step.
+     - **Step 3 (`chain_order: 3`): Connected Cross-Provisions & Sibling Links** — Explicitly connect and contrast this concept with surrounding related articles/laws/concepts (e.g., How Article 56 connects to Article 55 election method and Article 65 acting president rules).
+     - **Step 4 (`chain_order: 4`): Edge Cases, Exceptions & Exam Traps** — Critical differences, tricky MCQ option pairs, and disqualification/vacancy edge cases.
+
+2. **3-Layer Deep Card Architecture (Active Recall + Deep Context):**
+   - **Layer 1 (`question`):** 1 sharp, focused question targeting one concept with full terms and decimal numbers.
    - **Layer 2 (`answer`):** 1-2 lines of direct, punchy core answer with bold key terms for instant 5-second active recall.
-   - **Layer 3 (`notes` - Deep Theory, Background & Visual Mental Maps):** 
-     - 3 to 5 rich, structured bullet points explaining the **complete background story, the "Why & How" mechanism, historical evolution, related articles, and common doubts**.
-     - **Visual Mental Map / ASCII Spatial Diagram:** Whenever describing Geography, History chronologies, Biology anatomy, or Spatial locations, ALWAYS embed a clean visual box diagram / directional flowchart (e.g. North-to-South chains, West-to-East sequences, River bifurcations, or Mountain barriers).
-   - **Layer 4 (`trap_note`):** 1 punchy line warning against specific exam traps, confusing option pairs, or exceptions.
+   - **Layer 3 (`notes` — Deep Theory, Background & Mind-Map Connections):**
+     - Must be 100% self-contained so no external Googling is ever needed. Structured as:
+       - `• 🧠 Connected Provisions & Mind Map:` Explicitly list all connected articles/concepts with 1-line reason for connection so the brain connects the whole web.
+       - `• ⚙️ Mechanism & Deep Logic:` Detailed explanation of why and how this provision operates.
+       - `• 📜 Historical / Constitutional Background:` Relevant evolution, previous position, or related amendment.
+   - **Layer 4 (`trap_note`):** 1 punchy line warning against specific exam traps and confusing option pairs between related concepts.
 
-2. **Visual Maps & Spatial Diagrams (Mandatory for Geography / History / Science):**
-   - Rote text memorization fails in Geography and History. Always provide clean, highly structured visual representations:
-     * **Directional Arrows & Box Flowcharts:** e.g. `[Aravalli] ──> [Malwa Plateau] ──> [Vindhya] ──> [Narmada Rift] ──> [Satpura] ──> [Tapi Rift] ──> [Deccan Trap]`
-     * **North-to-South / West-to-East Chains:** e.g. `(North) Nallamala ──> Velikonda ──> Palkonda ──> Javadi ──> Shevaroy ──> Nilgiri ──> Anaimalai ──> Cardamom (South)`
-     * **Mountain Pass Connectors:** e.g. `[Mumbai] ──(Thal Ghat / NH-3)──> [Nashik / Kolkata]`
-     * **Comparison Grids:** Clean visual comparisons for rapid mental picture formation.
-
-3. **Zero-Drop Coverage (100% Completeness):**
-   - Extract every article, amendment number, year, committee, landmark case, mountain height in meters, mineral mine name, river tributary, majority type, exception, and handwritten annotation. No detail must be skipped.
+3. **Explicit Cross-Linking Fields (`related_concepts` & `tags`):**
+   - **`related_concepts`:** Array of connected sibling topics/articles (e.g., `["Article 55 (Election Manner)", "Article 65 (VP Acting as President)", "Article 62 (Vacancy Timeline)"]`).
+   - **`tags`:** Array of key searchable tags (e.g., `["Article 56", "President", "Executive", "Term of Office"]`).
 
 4. **80/20 Tier-Ranked Prioritization (`priority_tier`):**
-   - **`"priority_tier": 1` (Core 20% Data / 80% Value):** Core definitions, essential articles/locations, mandatory timelines/majorities, fundamental mechanisms, and high-frequency exam concepts.
-   - **`"priority_tier": 2` (Elimination 80% Data / 20% Value):** Nuanced details, secondary hills/mines, background facts, specific case citations, and minor historical points used for MCQ option elimination.
+   - **`"priority_tier": 1` (Core 20% Data / 80% Value):** Core definitions, essential articles, mandatory timelines/majorities, and high-frequency exam concepts.
+   - **`"priority_tier": 2` (Elimination 80% Data / 20% Value):** Nuanced details, secondary committees, background facts, specific case citations, and minor historical points used for MCQ option elimination.
 
-5. **Roman Numerals to Common Decimal Numbers (Mandatory Rule):**
+5. **Zero-Drop Coverage (100% Completeness):**
+   - Extract every article, amendment number, year, committee, landmark case, numerical timeline, majority type, exception, and handwritten annotation. No detail must be skipped.
+
+6. **Roman Numerals to Common Decimal Numbers (Mandatory Rule):**
    - Whenever writing Constitutional Parts, Schedules, or Roman numerals, ALWAYS write the Roman numeral followed by its common decimal/Arabic number (0-9) in parentheses.
-   - *Examples:*
-     - Write `Part XVIII (18)` or `भाग XVIII (18)` (NOT just `Part XVIII`).
-     - Write `Schedule VIII (8)` or `8वीं अनुसूची (Schedule VIII - 8)`.
+   - *Examples:* Write `Part XVIII (18)`, `Part XV (15)`, `Schedule VIII (8)`.
 
-6. **Self-Contained Acronyms & Full Forms (Zero-Search Rule):**
-   - Whenever an abbreviation, commission, or short form is used, ALWAYS include its full expansion (in English and Hindi) in parentheses on first mention.
-   - *Examples:*
-     - Write `NH (National Highway / राष्ट्रीय राजमार्ग)`.
-     - Write `DVC (Damodar Valley Corporation / दामोदर घाटी निगम)`.
-     - Write `ECI (Election Commission of India / भारतीय चुनाव आयोग)`.
-
-7. **Sequential Linked Story Chaining:**
-   - Group multi-step concepts, chronologies, or complex physical landscapes under the same `context_anchor` badge.
-   - Order them logically from foundation to advanced traps using sequential integers (`chain_order: 1, 2, 3...`).
+7. **Self-Contained Acronyms & Full Forms (Zero-Search Rule):**
+   - Include full expansion (in English and Hindi) in parentheses on first mention.
+   - *Examples:* `ECI (Election Commission of India / भारतीय चुनाव आयोग)`, `CAA (Constitutional Amendment Act / संविधान संशोधन अधिनियम)`.
 
 8. **Language & Tone:**
-   - Bilingual (Hinglish/Hindi with standard English technical/geographical terms in brackets) for maximum active recall and memory retention.
+   - Bilingual (Hinglish/Hindi with standard English technical/legal terms in brackets) for maximum active recall and memory retention.
 
 ---
 
@@ -1078,19 +1114,21 @@ Output ONLY a strictly valid JSON array of objects matching this exact structure
 [
   {
     "deck_name": "Subject::Chapter_Name",
-    "context_anchor": "Concept Anchor (e.g., Peninsular Plateau Geological Origin)",
-    "question": "Single sharp question targeting one concept or spatial relationship with full forms and decimal numbers.",
-    "answer": "• Crisp 1-2 line direct answer with bold key terms.",
-    "notes": "• Background / Mechanism: Detailed explanation of why and how this feature operates.\n• 🗺️ Visual Mental Map / Spatial Flow:\n  [Feature A] ──> [Feature B] ──> [Feature C]\n• Connected Provisions / Geomorphology: Related facts, peaks, mines, or tributaries.",
-    "trap_note": "TRAP: Direct exam pitfall, confusing pair, or exception.",
+    "context_anchor": "Concept Cluster (e.g., Polity::President_Term_and_Succession)",
     "chain_order": 1,
-    "priority_tier": 1
+    "priority_tier": 1,
+    "question": "Single sharp question targeting one concept with full forms and decimal numbers.",
+    "answer": "• Crisp 1-2 line direct answer with bold key terms.",
+    "notes": "• 🧠 Connected Provisions & Mind Map: Article 56 connects to Article 55 (Election manner) and Article 65 (VP acting on vacancy).\n• ⚙️ Mechanism & Deep Logic: Detailed explanation of why and how this provision operates.\n• 📜 Historical / Constitutional Background: Relevant constitutional history, previous position, or related amendment.",
+    "trap_note": "TRAP: Direct exam pitfall, confusing pair, or exception.",
+    "related_concepts": ["Article 55 (Election Manner)", "Article 65 (VP Acting as President)"],
+    "tags": ["Article 56", "President", "Executive"]
   }
 ]
 
 ### INSTRUCTIONS:
-- Replace "Subject::Chapter_Name" with the subject and topic of the attached PDF (e.g., Geography::Peninsular_Plateau).
-- Ensure the `notes` field contains structured **Visual Mental Maps / ASCII Spatial Diagrams** along with detailed theory so the user can easily visualize locations.
+- Replace "Subject::Chapter_Name" with the subject and topic of the attached PDF (e.g., Polity::Emergency_and_Amendments).
+- Ensure the `notes` field is rich, detailed, and completely explains the context so the user never has to search Google.
 - Return ONLY the raw JSON array. Do not wrap in conversational chit-chat."""
         cb = QApplication.clipboard()
         if cb:
@@ -1098,11 +1136,11 @@ Output ONLY a strictly valid JSON array of objects matching this exact structure
             QMessageBox.information(
                 self,
                 "📋 Prompt Copied!",
-                "✅ AI Master Prompt (80/20 Rule) copied to clipboard!\n\n"
+                "✅ AI Master Prompt (Interlinked Knowledge Chains & 80/20 Rule) copied to clipboard!\n\n"
                 "Next Steps:\n"
                 "1. Open Gemini / ChatGPT / Claude.\n"
                 "2. Attach your lecture/revision PDF.\n"
-                "3. Paste this prompt and generate cards.\n"
+                "3. Paste this prompt and generate interlinked cards.\n"
                 "4. Copy the resulting JSON and paste it right here!"
             )
 
@@ -1297,6 +1335,25 @@ Output ONLY a strictly valid JSON object matching this exact structure:
 
         self._reparse_and_preview()
 
+    def _browse_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Flashcards / Vocab Folder",
+            "",
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if not folder:
+            return
+
+        self._folder_path = folder
+        self._selected_folder_path = folder
+        self.inp_folder_path.setText(folder)
+        base_name = os.path.basename(os.path.normpath(folder))
+        if self.rb_new_deck.isChecked() and self.inp_new_deck_name.text().strip() in ("", "Vocabulary", "Imported Cards"):
+            self.inp_new_deck_name.setText(base_name)
+
+        self._reparse_and_preview()
+
     def _on_dup_policy_changed(self):
         idx = self.combo_dup_policy.currentIndex()
         self.chk_skip_duplicates.blockSignals(True)
@@ -1325,35 +1382,41 @@ Output ONLY a strictly valid JSON object matching this exact structure:
     def _check_card_duplicate(self, question: str, target_deck_id=None, check_all=True) -> tuple:
         """
         Check if a card's question already exists.
-        Returns (is_duplicate: bool, location_desc: str, matching_card_ref: dict or None)
+        Returns (is_duplicate: bool, location_desc: str, matching_card_ref: dict or None, matched_deck_id: int/str or None)
         """
         norm_q = question.strip().lower()
         if not norm_q:
-            return False, "", None
+            return False, "", None, None
 
         matches = self._existing_cards_map.get(norm_q, [])
         if not matches:
-            return False, "", None
+            return False, "", None, None
+
+        # Prioritize matching in target_deck_id first
+        if target_deck_id is not None:
+            for did, name, card_obj in matches:
+                if did == target_deck_id:
+                    return True, f"in this deck ('{name}')", card_obj, did
 
         if check_all:
-            # Return first deck location where it appears
             deck_names = [name for (_, name, _) in matches]
             loc_str = f"in '{deck_names[0]}'" if len(deck_names) == 1 else f"in {len(deck_names)} decks"
+            first_did = matches[0][0]
             first_card = matches[0][2]
-            return True, loc_str, first_card
-        else:
-            # Check specifically in target deck
-            if target_deck_id is not None:
-                for did, name, card_obj in matches:
-                    if did == target_deck_id:
-                        return True, f"in this deck ('{name}')", card_obj
+            return True, loc_str, first_card, first_did
 
-        return False, "", None
+        return False, "", None, None
 
     def _reparse_and_preview(self):
         # Choose active text source
         curr_tab = self.tabs.currentIndex()
-        if curr_tab == 3:
+        is_folder = False
+        if curr_tab == 4:
+            text = ""
+            is_json = False
+            force_mcq = False
+            is_folder = True
+        elif curr_tab == 3:
             text = self.txt_mcq_json.toPlainText()
             is_json = True
             force_mcq = True
@@ -1373,7 +1436,53 @@ Output ONLY a strictly valid JSON object matching this exact structure:
             force_mcq = False
 
         parsed = []
-        if is_json and text.strip():
+        if is_folder:
+            folder_p = getattr(self, "_folder_path", "")
+            if folder_p and os.path.exists(folder_p):
+                target_deck_name = self.inp_new_deck_name.text().strip() if self.rb_new_deck.isChecked() else (self.combo_existing_decks.currentText() or "")
+                if not target_deck_name or target_deck_name in ("", "Vocabulary", "Imported Cards"):
+                    target_deck_name = os.path.basename(os.path.normpath(folder_p))
+                    if self.rb_new_deck.isChecked():
+                        self.inp_new_deck_name.setText(target_deck_name)
+
+                create_subs = self.chk_folder_subdecks.isChecked()
+                scan_res = scan_and_parse_data_folder(
+                    folder_p,
+                    base_deck_path=target_deck_name,
+                    create_subdecks=create_subs
+                )
+                
+                raw_cards = scan_res.get("cards", [])
+                total_f = scan_res.get("total_files", 0)
+                total_c = scan_res.get("total_cards", 0)
+
+                self.lbl_folder_summary.setText(f"✅ Found {total_f} files containing {total_c} cards total.")
+                self.lbl_folder_summary.setStyleSheet("color: #50FA7B; font-weight: bold;")
+
+                for item in raw_cards:
+                    parsed.append({
+                        "is_mcq": item.get("is_mcq", False),
+                        "question": item.get("question", ""),
+                        "answer": item.get("answer", ""),
+                        "notes": item.get("notes", ""),
+                        "trap_note": item.get("trap_note", ""),
+                        "context_anchor": item.get("context_anchor", ""),
+                        "chain_order": item.get("chain_order", 0),
+                        "parent_chain_id": item.get("parent_chain_id"),
+                        "priority_tier": item.get("priority_tier", 1),
+                        "deck_name": item.get("deck_path", ""),
+                        "tags": item.get("tags", []),
+                        "options": item.get("options", []),
+                        "correct_option": item.get("correct_option"),
+                        "solution_data": item.get("solution_data", {}),
+                        "percent_answered_correctly": item.get("percent_answered_correctly", ""),
+                        "exam_meta": item.get("exam_meta", {}),
+                        "question_html": item.get("question_html", "")
+                    })
+            else:
+                self.lbl_folder_summary.setText("No folder selected yet.")
+                self.lbl_folder_summary.setStyleSheet(f"color: {self._theme_p['C_SUBTEXT']};")
+        elif is_json and text.strip():
             try:
                 s_lower = text.strip().lower()
                 is_mcq_format = force_mcq or ("options" in s_lower and ("correct_option" in s_lower or "is_correct" in s_lower)) or '"questions"' in s_lower or "'questions'" in s_lower
@@ -1388,6 +1497,14 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                     
                     # Auto-chaining
                     chain_id_map = {}
+                    deck_orders = {}
+                    for it in items:
+                        if isinstance(it, dict):
+                            d_name = str(it.get("deck_name", "")).strip()
+                            c_order = it.get("chain_order", 0)
+                            if c_order:
+                                deck_orders.setdefault(d_name, []).append(c_order)
+
                     for it in items:
                         if not isinstance(it, dict):
                             continue
@@ -1395,8 +1512,12 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                         c_order = it.get("chain_order", 0)
                         c_parent = it.get("parent_chain_id")
                         d_name = str(it.get("deck_name", "")).strip()
-                        if not c_parent and c_anchor and c_order:
-                            grp = (d_name, c_anchor)
+                        if not c_parent and c_order:
+                            orders = deck_orders.get(d_name, [])
+                            if len(orders) > 1 and max(orders) > 1:
+                                grp = (d_name, "deck_chain")
+                            else:
+                                grp = (d_name, c_anchor or "default_chain")
                             if grp not in chain_id_map:
                                 chain_id_map[grp] = str(uuid.uuid4())
                             it["parent_chain_id"] = chain_id_map[grp]
@@ -1478,12 +1599,14 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                 item["is_duplicate"] = True
                 item["dup_location"] = "in this batch"
                 item["existing_card_ref"] = None
+                item["matched_deck_id"] = None
                 dup_count += 1
             else:
-                is_dup, loc_desc, card_ref = self._check_card_duplicate(q, target_deck_id=target_did, check_all=check_all)
+                is_dup, loc_desc, card_ref, matched_did = self._check_card_duplicate(q, target_deck_id=target_did, check_all=check_all)
                 item["is_duplicate"] = is_dup
                 item["dup_location"] = loc_desc
                 item["existing_card_ref"] = card_ref
+                item["matched_deck_id"] = matched_did
                 if is_dup:
                     dup_count += 1
                 else:
@@ -1633,6 +1756,7 @@ Output ONLY a strictly valid JSON object matching this exact structure:
             return
 
         dup_policy = self._get_dup_policy()
+        check_all = self.chk_check_all_decks.isChecked()
 
         # Snapshot for undo
         deck_history.push(self._data)
@@ -1668,39 +1792,58 @@ Output ONLY a strictly valid JSON object matching this exact structure:
             target_deck_ids.add(target_id)
 
         for row in self._parsed_rows:
+            # Route to target deck
+            d_name = row.get("deck_name", "").strip()
+            if d_name:
+                deck_dest = get_or_create_deck_by_path(self._data, d_name, context_deck=default_target_deck)
+            else:
+                deck_dest = default_target_deck
+
             is_dup = row.get("is_duplicate", False)
             existing_ref = row.get("existing_card_ref")
+            matched_did = row.get("matched_deck_id")
 
             if is_dup:
                 if dup_policy == "skip":
-                    skipped_count += 1
-                    continue
+                    if not check_all and matched_did != deck_dest.get("_id"):
+                        # Duplicate was in a different deck and user unchecked check_all -> allow import into this deck!
+                        pass
+                    else:
+                        skipped_count += 1
+                        continue
                 elif dup_policy == "update":
                     if existing_ref is not None:
-                        # Update existing database card while keeping SM-2 learning progress intact!
-                        existing_ref["answer"] = row["answer"]
-                        if row.get("is_mcq"):
-                            existing_ref["card_type"] = "mcq"
-                            existing_ref["options"] = row.get("options", [])
-                            existing_ref["correct_option"] = row.get("correct_option")
-                            existing_ref["solution_data"] = row.get("solution_data", {})
-                            existing_ref["percent_answered_correctly"] = row.get("percent_answered_correctly", "")
-                            existing_ref["exam_meta"] = row.get("exam_meta", {})
-                            existing_ref["question_html"] = row.get("question_html", "")
-                        if row.get("notes"):
-                            existing_ref["notes"] = row["notes"]
-                        if row.get("trap_note"):
-                            existing_ref["trap_note"] = row["trap_note"]
-                        if row.get("context_anchor"):
-                            existing_ref["context_anchor"] = row["context_anchor"]
-                        if row.get("chain_order"):
-                            existing_ref["chain_order"] = row["chain_order"]
-                        if row.get("parent_chain_id"):
-                            existing_ref["parent_chain_id"] = row["parent_chain_id"]
-                        if row.get("priority_tier"):
-                            existing_ref["priority_tier"] = row["priority_tier"]
-                        updated_cards.append(existing_ref)
-                        continue
+                        # Only update if the duplicate is in the destination deck
+                        if matched_did == deck_dest.get("_id"):
+                            # Update existing database card while keeping SM-2 learning progress intact!
+                            existing_ref["answer"] = row["answer"]
+                            if row.get("is_mcq"):
+                                existing_ref["card_type"] = "mcq"
+                                existing_ref["options"] = row.get("options", [])
+                                existing_ref["correct_option"] = row.get("correct_option")
+                                existing_ref["solution_data"] = row.get("solution_data", {})
+                                existing_ref["percent_answered_correctly"] = row.get("percent_answered_correctly", "")
+                                existing_ref["exam_meta"] = row.get("exam_meta", {})
+                                existing_ref["question_html"] = row.get("question_html", "")
+                            if row.get("notes"):
+                                existing_ref["notes"] = row["notes"]
+                            if row.get("trap_note"):
+                                existing_ref["trap_note"] = row["trap_note"]
+                            if row.get("context_anchor"):
+                                existing_ref["context_anchor"] = row["context_anchor"]
+                            if row.get("chain_order"):
+                                existing_ref["chain_order"] = row["chain_order"]
+                            if row.get("parent_chain_id"):
+                                existing_ref["parent_chain_id"] = row["parent_chain_id"]
+                            if row.get("priority_tier"):
+                                existing_ref["priority_tier"] = row["priority_tier"]
+                            if row.get("tags"):
+                                existing_ref["tags"] = row["tags"]
+                            if row.get("related_concepts"):
+                                existing_ref["related_concepts"] = row["related_concepts"]
+                            updated_cards.append(existing_ref)
+                            target_deck_ids.add(deck_dest.get("_id"))
+                            continue
                     else:
                         # Duplicate within this batch: update previously added card in new_cards
                         for nc in reversed(new_cards):
@@ -1718,6 +1861,10 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                                     nc["notes"] = row["notes"]
                                 if row.get("trap_note"):
                                     nc["trap_note"] = row["trap_note"]
+                                if row.get("tags"):
+                                    nc["tags"] = row["tags"]
+                                if row.get("related_concepts"):
+                                    nc["related_concepts"] = row["related_concepts"]
                                 if row.get("priority_tier"):
                                     nc["priority_tier"] = row["priority_tier"]
                                 break
@@ -1740,27 +1887,22 @@ Output ONLY a strictly valid JSON object matching this exact structure:
                     parent_chain_id=row.get("parent_chain_id"),
                     priority_tier=row.get("priority_tier", 1),
                     tags=row.get("tags", []),
-                    question_html=row.get("question_html", "")
+                    question_html=row.get("question_html", ""),
+                    related_concepts=row.get("related_concepts", [])
                 )
             else:
                 card = build_text_card(
                     question=row["question"],
                     answer=row["answer"],
                     notes=row.get("notes", ""),
-                    tags=[],
+                    tags=row.get("tags", []),
                     context_anchor=row.get("context_anchor", ""),
                     chain_order=row.get("chain_order", 0),
                     parent_chain_id=row.get("parent_chain_id"),
                     trap_note=row.get("trap_note", ""),
-                    priority_tier=row.get("priority_tier", 1)
+                    priority_tier=row.get("priority_tier", 1),
+                    related_concepts=row.get("related_concepts", [])
                 )
-
-            # Route to target deck
-            d_name = row.get("deck_name", "").strip()
-            if d_name:
-                deck_dest = get_or_create_deck_by_path(self._data, d_name, context_deck=default_target_deck)
-            else:
-                deck_dest = default_target_deck
 
             deck_dest.setdefault("cards", []).append(card)
             target_deck_ids.add(deck_dest.get("_id"))
@@ -1782,6 +1924,10 @@ Output ONLY a strictly valid JSON object matching this exact structure:
         self._imported_count = len(new_cards)
         self._updated_count = len(updated_cards)
         self._skipped_duplicates_count = skipped_count
+
+        # Store source folder path on target deck for future 1-click sync
+        if getattr(self, "_selected_folder_path", None) and default_target_deck:
+            default_target_deck["source_folder_path"] = self._selected_folder_path
 
         from perf_utils import invalidate_deck_stats
         invalidate_deck_stats()

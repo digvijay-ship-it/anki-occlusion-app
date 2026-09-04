@@ -461,6 +461,10 @@ class DirtyStore:
             for field in ["due", "interval", "factor", "reps", "lapses", "state"]:
                 if row[field] is not None:
                     card[field] = row[field]
+            # Ensure permanent card_uid is tracked
+            c_uid = card.get("card_uid") or (card.get("_id") if isinstance(card.get("_id"), str) else None)
+            if c_uid:
+                card["card_uid"] = c_uid
             card["_id"] = row["id"]
             cards_by_id[row["id"]] = card
             
@@ -1064,7 +1068,11 @@ def next_deck_id(data):
 
     def _walk(lst):
         for d in lst:
-            max_id[0] = max(max_id[0], d.get("_id", 0))
+            try:
+                val = int(d.get("_id", 0))
+                max_id[0] = max(max_id[0], val)
+            except (ValueError, TypeError):
+                pass
             _walk(d.get("children", []))
 
     _walk(data.get("decks", []))
@@ -1350,55 +1358,74 @@ class _DeckHistory:
 deck_history = _DeckHistory()
 
 
+def _get_deck_lineage_names(data: dict, target_id) -> list:
+    """Return list of deck names from root to target_id (e.g. ['GK', 'Geography'])."""
+    path = []
+    def _walk(nodes):
+        for n in nodes or []:
+            if not isinstance(n, dict):
+                continue
+            if n.get("_id") == target_id:
+                path.append(n.get("name", ""))
+                return True
+            if _walk(n.get("children", [])):
+                path.insert(0, n.get("name", ""))
+                return True
+        return False
+    _walk(data.get("decks", []))
+    return path
+
+
 def get_or_create_deck_by_path(data: dict, deck_path: str, context_deck: dict = None) -> dict:
     """
     Resolve or create hierarchical deck path like 'Biology::Genetics::Mendel'.
-    Smart Resolution:
-    1. If parts[0] is found in existing subtrees (e.g., 'Polity' under 'GK'), routes within that existing branch.
-    2. Respects context_deck if provided.
-    3. Creates intermediate parent decks automatically only if missing everywhere.
-    Returns the target (leaf) deck dict.
+    Strict ID & Context Anchoring:
+    1. If context_deck is provided (e.g. user right-clicked 'GK > Geography'):
+       - If deck_path is generic (Default Deck, Subject::Chapter) or matches context_deck's name/lineage, returns context_deck directly.
+       - If deck_path defines relative subdecks, creates/resolves strictly under context_deck (never hijacking other root decks).
+    2. If context_deck is None:
+       - Resolves strictly top-down from root data['decks'].
     """
-    if not deck_path or not str(deck_path).strip():
-        if context_deck:
-            return context_deck
-        deck_path = "Default Deck"
-    
-    parts = [p.strip() for p in str(deck_path).split("::") if p.strip()]
-    if not parts:
-        return context_deck if context_deck else get_or_create_deck_by_path(data, "Default Deck")
-    
     if "decks" not in data:
         data["decks"] = []
-        
-    # Helper to find any existing deck matching a given name recursively
-    def _find_existing_deck_by_name(nodes, target_name):
-        for node in nodes:
-            if str(node.get("name", "")).strip().lower() == target_name.lower():
-                return node
-            sub = _find_existing_deck_by_name(node.get("children", []), target_name)
-            if sub:
-                return sub
-        return None
 
-    # Check if context_deck matches the starting part or leaf part
-    if context_deck:
-        ctx_name = str(context_deck.get("name", "")).strip().lower()
-        if ctx_name == parts[-1].lower():
+    clean_path = str(deck_path or "").strip()
+    generic_placeholders = {"", "default deck", "vocabulary", "imported cards", "subject::chapter", "subject::chapter_name"}
+
+    if not clean_path or clean_path.lower() in generic_placeholders:
+        if context_deck:
             return context_deck
-        if ctx_name == parts[0].lower():
+        clean_path = "Default Deck"
+
+    parts = [p.strip() for p in clean_path.split("::") if p.strip()]
+    if not parts:
+        return context_deck if context_deck else get_or_create_deck_by_path(data, "Default Deck")
+
+    # If context_deck is provided, enforce strict context routing
+    if context_deck:
+        ctx_id = context_deck.get("_id")
+        ctx_name = str(context_deck.get("name", "")).strip().lower()
+        ctx_lineage = [name.strip().lower() for name in _get_deck_lineage_names(data, ctx_id)]
+        parts_lower = [p.lower() for p in parts]
+
+        # Case 1: deck_path is single part matching context_deck's name exactly
+        if len(parts) == 1 and parts_lower[0] == ctx_name:
+            return context_deck
+
+        # Case 2: deck_path matches the full lineage of context_deck (e.g. "GK::Geography")
+        if parts_lower == ctx_lineage:
+            return context_deck
+
+        # Case 3: deck_path extends the context_deck lineage (e.g. "GK::Geography::Rivers")
+        if len(parts_lower) > len(ctx_lineage) and parts_lower[:len(ctx_lineage)] == ctx_lineage:
+            remaining_parts = parts[len(ctx_lineage):]
             current_deck = context_deck
             current_level = context_deck.setdefault("children", [])
-            for part in parts[1:]:
-                found = None
-                for d in current_level:
-                    if d.get("name", "").strip().lower() == part.lower():
-                        found = d
-                        break
+            for part in remaining_parts:
+                found = next((d for d in current_level if d.get("name", "").strip().lower() == part.lower()), None)
                 if not found:
-                    new_id = next_deck_id(data)
                     found = {
-                        "_id": new_id,
+                        "_id": next_deck_id(data),
                         "name": part,
                         "cards": [],
                         "children": [],
@@ -1409,32 +1436,55 @@ def get_or_create_deck_by_path(data: dict, deck_path: str, context_deck: dict = 
                 current_level = found.setdefault("children", [])
             return current_deck
 
-    # Check if root level already has parts[0]
-    root_match = None
-    for d in data.get("decks", []):
-        if d.get("name", "").strip().lower() == parts[0].lower():
-            root_match = d
-            break
+        # Case 4: deck_path starts with context_deck's name (e.g. "Geography::Rivers" inside context_deck "Geography")
+        if parts_lower[0] == ctx_name:
+            remaining_parts = parts[1:]
+            current_deck = context_deck
+            current_level = context_deck.setdefault("children", [])
+            for part in remaining_parts:
+                found = next((d for d in current_level if d.get("name", "").strip().lower() == part.lower()), None)
+                if not found:
+                    found = {
+                        "_id": next_deck_id(data),
+                        "name": part,
+                        "cards": [],
+                        "children": [],
+                        "expanded": False
+                    }
+                    current_level.append(found)
+                current_deck = found
+                current_level = found.setdefault("children", [])
+            return current_deck
 
-    # If root doesn't have parts[0], search deeper in existing subtrees (e.g. GK -> Polity)
-    if not root_match and len(parts) > 1:
-        existing_branch = _find_existing_deck_by_name(data.get("decks", []), parts[0])
-        if existing_branch:
-            root_match = existing_branch
+        # Case 5: context_deck has a child matching parts[0] (e.g. context_deck is "GK", parts=["Geography", "Rivers"])
+        first_child = next((d for d in context_deck.get("children", []) if d.get("name", "").strip().lower() == parts_lower[0]), None)
+        if first_child:
+            remaining_parts = parts[1:]
+            current_deck = first_child
+            current_level = first_child.setdefault("children", [])
+            for part in remaining_parts:
+                found = next((d for d in current_level if d.get("name", "").strip().lower() == part.lower()), None)
+                if not found:
+                    found = {
+                        "_id": next_deck_id(data),
+                        "name": part,
+                        "cards": [],
+                        "children": [],
+                        "expanded": False
+                    }
+                    current_level.append(found)
+                current_deck = found
+                current_level = found.setdefault("children", [])
+            return current_deck
 
-    if root_match:
-        current_deck = root_match
-        current_level = root_match.setdefault("children", [])
-        for part in parts[1:]:
-            found = None
-            for d in current_level:
-                if d.get("name", "").strip().lower() == part.lower():
-                    found = d
-                    break
+        # Case 6: Relative subdeck path intended strictly under context_deck
+        current_deck = context_deck
+        current_level = context_deck.setdefault("children", [])
+        for part in parts:
+            found = next((d for d in current_level if d.get("name", "").strip().lower() == part.lower()), None)
             if not found:
-                new_id = next_deck_id(data)
                 found = {
-                    "_id": new_id,
+                    "_id": next_deck_id(data),
                     "name": part,
                     "cards": [],
                     "children": [],
@@ -1445,19 +1495,14 @@ def get_or_create_deck_by_path(data: dict, deck_path: str, context_deck: dict = 
             current_level = found.setdefault("children", [])
         return current_deck
 
-    # Standard root-level resolution/creation
+    # Standard root-level resolution (context_deck is None)
     current_level = data["decks"]
     current_deck = None
     for part in parts:
-        found = None
-        for d in current_level:
-            if d.get("name", "").strip().lower() == part.lower():
-                found = d
-                break
+        found = next((d for d in current_level if d.get("name", "").strip().lower() == part.lower()), None)
         if not found:
-            new_id = next_deck_id(data)
             found = {
-                "_id": new_id,
+                "_id": next_deck_id(data),
                 "name": part,
                 "cards": [],
                 "children": [],
@@ -1466,7 +1511,7 @@ def get_or_create_deck_by_path(data: dict, deck_path: str, context_deck: dict = 
             current_level.append(found)
         current_deck = found
         current_level = found.setdefault("children", [])
-        
+
     return current_deck
 
 
@@ -1509,9 +1554,17 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
     from sm2_engine import sm2_init
 
     # Grouping for auto-chaining:
-    # If cards share same deck and context_anchor and have chain_order > 0 without parent_chain_id,
-    # generate a shared parent_chain_id for each distinct (deck_name, context_anchor) cluster.
+    # If cards share same deck and have chain_order > 0 without parent_chain_id,
+    # generate a shared parent_chain_id so progressive chains (1..N) stay grouped together.
     chain_id_map = {}
+    deck_orders = {}
+    for item in items:
+        if isinstance(item, dict):
+            d_name = str(item.get("deck_name", "")).strip()
+            c_order = item.get("chain_order", 0)
+            if c_order:
+                deck_orders.setdefault(d_name, []).append(c_order)
+
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -1519,8 +1572,12 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
         c_order = item.get("chain_order", 0)
         c_parent = item.get("parent_chain_id")
         d_name = str(item.get("deck_name", "")).strip()
-        if not c_parent and c_anchor and c_order:
-            group_key = (d_name, c_anchor)
+        if not c_parent and c_order:
+            orders = deck_orders.get(d_name, [])
+            if len(orders) > 1 and max(orders) > 1:
+                group_key = (d_name, "deck_chain")
+            else:
+                group_key = (d_name, c_anchor or "default_chain")
             if group_key not in chain_id_map:
                 chain_id_map[group_key] = str(uuid.uuid4())
             item["parent_chain_id"] = chain_id_map[group_key]
@@ -1534,10 +1591,16 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
     target_deck_ids = set()
     created_cards = []
 
-    # Map existing questions for duplicate checking
+    # Map existing questions and UIDs for duplicate checking
+    existing_uid_map = {}
     existing_question_map = {}
     def _index_deck(deck):
         for c in deck.get("cards", []):
+            c_uid = str(c.get("card_uid") or "").strip()
+            if not c_uid and isinstance(c.get("_id"), str):
+                c_uid = c.get("_id").strip()
+            if c_uid:
+                existing_uid_map[c_uid] = (c, deck)
             q_norm = str(c.get("question", "")).strip().lower()
             if q_norm:
                 existing_question_map[q_norm] = (c, deck)
@@ -1580,7 +1643,7 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
         # Determine target deck
         deck_name_field = item.get("deck_name")
         if deck_name_field:
-            target_deck = get_or_create_deck_by_path(data, deck_name_field)
+            target_deck = get_or_create_deck_by_path(data, deck_name_field, context_deck=default_deck)
         elif default_deck:
             target_deck = default_deck
         else:
@@ -1588,15 +1651,26 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
             
         target_deck_ids.add(target_deck.get("_id"))
 
-        # Duplicate checking
+        # Duplicate checking: match by card_uid first, then question text
+        item_uid = str(item.get("card_uid") or item.get("_id") or "").strip()
         q_norm = q.lower()
-        if q_norm in existing_question_map:
-            existing_c, existing_d = existing_question_map[q_norm]
+        matched_c = None
+        matched_d = None
+        if item_uid and item_uid in existing_uid_map:
+            matched_c, matched_d = existing_uid_map[item_uid]
+        elif q_norm in existing_question_map:
+            matched_c, matched_d = existing_question_map[q_norm]
+
+        if matched_c is not None:
+            existing_c = matched_c
             if dup_policy == "skip":
                 skipped_count += 1
                 continue
-            elif dup_policy == "update":
+            elif dup_policy in ("update", "add"):
+                existing_c["question"] = q
                 existing_c["answer"] = a
+                first_line = [line.strip() for line in q.split("\n") if line.strip()]
+                existing_c["title"] = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
                 if notes:
                     existing_c["notes"] = notes
                 if trap_note:
@@ -1608,6 +1682,13 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
                 if parent_chain_id:
                     existing_c["parent_chain_id"] = parent_chain_id
                 existing_c["priority_tier"] = priority_tier
+                if "related_concepts" in item:
+                    existing_c["related_concepts"] = item.get("related_concepts", [])
+                if "tags" in item:
+                    existing_c["tags"] = item.get("tags", [])
+                if item_uid and not existing_c.get("card_uid"):
+                    existing_c["card_uid"] = item_uid
+                # CRITICAL: SM-2 fields (interval, factor, reps, lapses, state, due) are NEVER touched!
                 updated_count += 1
                 continue
 
@@ -1615,8 +1696,10 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
         first_line = [line.strip() for line in q.split("\n") if line.strip()]
         title = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
         
+        card_unique_id = item_uid or str(uuid.uuid4())
         card = {
             "_id": str(uuid.uuid4()),
+            "card_uid": card_unique_id,
             "card_type": "text",
             "title": title,
             "question": q,
@@ -1628,6 +1711,7 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
             "parent_chain_id": parent_chain_id,
             "priority_tier": priority_tier,
             "tags": item.get("tags", []),
+            "related_concepts": item.get("related_concepts", []),
             "created": datetime.now().isoformat(),
             "reviews": 0,
             "pdf_path": None,
@@ -1637,6 +1721,8 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
         }
         sm2_init(card)
         target_deck.setdefault("cards", []).append(card)
+        if card_unique_id:
+            existing_uid_map[card_unique_id] = (card, target_deck)
         existing_question_map[q_norm] = (card, target_deck)
         created_cards.append(card)
         imported_count += 1
@@ -1649,4 +1735,534 @@ def import_json_cards(data: dict, raw_json, default_deck_id=None, dup_policy: st
         "created_cards": created_cards,
         "target_deck_ids": list(target_deck_ids)
     }
+
+
+def _natural_sort_key(s: str):
+    import re
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+
+
+def parse_single_file_cards(file_path: str, context_tags: list = None) -> list:
+    """
+    Parses a single .csv, .tsv, .txt, or .json file into standard card dictionaries.
+    Handles encoding fallback, RFC 4180 CSV quoting, and auto-detects column layout.
+    """
+    if not os.path.exists(file_path):
+        return []
+
+    content = ""
+    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                content = f.read()
+            break
+        except Exception:
+            continue
+
+    if not content or not content.strip():
+        return []
+
+    ext = os.path.splitext(file_path)[1].lower()
+    results = []
+
+    # 1. JSON parsing
+    if ext == ".json":
+        try:
+            raw = json.loads(content)
+            items = []
+            if isinstance(raw, list):
+                items = raw
+            elif isinstance(raw, dict):
+                if "questions" in raw and isinstance(raw["questions"], list):
+                    items = raw["questions"]
+                elif "cards" in raw and isinstance(raw["cards"], list):
+                    items = raw["cards"]
+                elif "question" in raw or "front" in raw:
+                    items = [raw]
+
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                q = str(it.get("question") or it.get("front") or it.get("word") or it.get("title") or "").strip()
+                a = str(it.get("answer") or it.get("back") or it.get("meaning") or it.get("definition") or "").strip()
+                if not q and not a:
+                    continue
+                notes = str(it.get("notes") or it.get("explanation") or it.get("detailed_solution") or "").strip()
+                trap = str(it.get("trap_note") or "").strip()
+                tags = list(context_tags or [])
+                if isinstance(it.get("tags"), list):
+                    tags.extend(it["tags"])
+
+                is_mcq = "options" in it or "correct_option" in it
+                card_uid = str(it.get("card_uid") or it.get("_id") or "").strip()
+                deck_name = str(it.get("deck_name") or (raw.get("deck_name") if isinstance(raw, dict) else "") or "").strip()
+                deck_uid = str(it.get("deck_uid") or (raw.get("deck_uid") if isinstance(raw, dict) else "") or "").strip()
+                card_item = {
+                    "card_uid": card_uid,
+                    "deck_name": deck_name,
+                    "deck_uid": deck_uid,
+                    "question": q,
+                    "answer": a,
+                    "notes": notes,
+                    "trap_note": trap,
+                    "tags": tags,
+                    "context_anchor": it.get("context_anchor", ""),
+                    "related_concepts": it.get("related_concepts", []),
+                    "chain_order": it.get("chain_order", 0),
+                    "priority_tier": it.get("priority_tier", 1),
+                    "is_mcq": is_mcq,
+                    "source_file": file_path
+                }
+                if is_mcq:
+                    card_item["options"] = it.get("options", [])
+                    card_item["correct_option"] = it.get("correct_option")
+                    card_item["solution_data"] = it.get("solution_data", {})
+                    card_item["exam_meta"] = it.get("exam_meta", {})
+                    card_item["question_html"] = it.get("question_html", "")
+                results.append(card_item)
+            return results
+        except Exception as ex:
+            print(f"[parse_single_file_cards] JSON parse error in {file_path}: {ex}")
+            return []
+
+    # 2. Delimited text / CSV parsing
+    import csv
+    import io
+
+    delim = "\t" if ext == ".tsv" else ","
+    # Simple delimiter probe if not .tsv
+    if ext != ".tsv":
+        first_line = content.splitlines()[0] if content.splitlines() else ""
+        if "\t" in first_line and "," not in first_line:
+            delim = "\t"
+        elif ";" in first_line and "," not in first_line:
+            delim = ";"
+
+    rows = []
+    try:
+        f = io.StringIO(content)
+        reader = csv.reader(f, delimiter=delim, skipinitialspace=True)
+        rows = list(reader)
+    except Exception:
+        for line in content.splitlines():
+            line_str = line.strip()
+            if line_str:
+                rows.append(line_str.split(delim))
+
+    if not rows:
+        return []
+
+    # Check header
+    first_row = [str(c).strip().lower() for c in rows[0]]
+    header_keywords = {"front", "back", "question", "answer", "word", "meaning", "definition", "term", "notes", "prompt"}
+    if any(col in header_keywords for col in first_row):
+        rows = rows[1:]
+
+    for row in rows:
+        if not row:
+            continue
+        cleaned = [str(c).strip() for c in row]
+        while cleaned and cleaned[-1] == "":
+            cleaned.pop()
+        if not cleaned:
+            continue
+
+        q = cleaned[0] if len(cleaned) > 0 else ""
+        a = cleaned[1] if len(cleaned) > 1 else ""
+        notes = cleaned[2] if len(cleaned) > 2 else ""
+
+        # A valid flashcard MUST have both non-empty front (q) and back (a)
+        if not q.strip() or not a.strip():
+            continue
+
+        results.append({
+            "question": q,
+            "answer": a,
+            "notes": notes,
+            "tags": list(context_tags or []),
+            "is_mcq": False,
+            "source_file": file_path
+        })
+
+    return results
+
+
+def scan_and_parse_data_folder(
+    folder_path: str,
+    base_deck_path: str = "",
+    create_subdecks: bool = True,
+    context_tags: list = None
+) -> dict:
+    """
+    Recursively scans folder_path for supported files (.csv, .tsv, .txt, .json).
+    Automatically identifies and parses cards and mirrors directory hierarchy into sub-deck paths.
+    Filters out system, build, and documentation files (e.g. instruction.txt, readme.md).
+    """
+    if not folder_path or not os.path.exists(folder_path):
+        return {
+            "root_folder": folder_path,
+            "total_files": 0,
+            "total_cards": 0,
+            "files_summary": [],
+            "cards": [],
+            "suggested_deck_name": ""
+        }
+
+    norm_root = os.path.normpath(folder_path).replace("\\", "/")
+    root_basename = os.path.basename(norm_root) or "Imported Folder"
+    effective_base = base_deck_path.strip() if base_deck_path and base_deck_path.strip() else root_basename
+
+    supported_exts = {".csv", ".tsv", ".txt", ".json"}
+    ignored_dirnames = {
+        "__pycache__", "node_modules", ".git", ".vscode", ".idea", "venv", "env", ".pytest_cache", ".gemini", "build", "dist"
+    }
+    ignored_file_stems = {
+        "instruction", "instructions", "readme", "license", "todo", "requirements", "changelog", "notes", "config", "setup"
+    }
+
+    discovered_files = []
+
+    for root, dirs, files in os.walk(norm_root):
+        # Skip hidden and system/build directories
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in ignored_dirnames]
+        for f in files:
+            if f.startswith(".") or f.startswith("~"):
+                continue
+            stem, ext = os.path.splitext(f)
+            stem_lower = stem.strip().lower()
+            if stem_lower in ignored_file_stems or stem_lower.startswith(("instruction", "readme", "license")):
+                continue
+            if ext.lower() in supported_exts:
+                abs_f = os.path.normpath(os.path.join(root, f)).replace("\\", "/")
+                discovered_files.append(abs_f)
+
+    # Sort files naturally (e.g. A.csv, B.csv ... Z.csv, 1.csv, 2.csv, 10.csv)
+    discovered_files.sort(key=lambda p: _natural_sort_key(os.path.basename(p)))
+
+    all_cards = []
+    files_summary = []
+
+    for f_path in discovered_files:
+        rel_to_root = os.path.relpath(f_path, norm_root).replace("\\", "/")
+        rel_dir = os.path.dirname(rel_to_root)
+        file_stem = os.path.splitext(os.path.basename(f_path))[0]
+
+        tags = list(context_tags or [])
+        if not create_subdecks:
+            tags.append(f"file:{file_stem}")
+
+        file_cards = parse_single_file_cards(f_path, context_tags=tags)
+        if not file_cards:
+            continue
+
+        # Determine clean subdeck name and deck_uid from parsed cards
+        target_subdeck_name = None
+        target_deck_uid = None
+        for c in file_cards:
+            if c.get("deck_name") and not target_subdeck_name:
+                target_subdeck_name = c["deck_name"].strip()
+            if c.get("deck_uid") and not target_deck_uid:
+                target_deck_uid = c["deck_uid"].strip()
+            if target_subdeck_name and target_deck_uid:
+                break
+
+        if not target_subdeck_name:
+            clean_stem = file_stem
+            for sfx in ["_App_Import", "_app_import", "_Import", "_import"]:
+                if clean_stem.endswith(sfx):
+                    clean_stem = clean_stem[:-len(sfx)]
+            clean_stem = clean_stem.replace("_", " ").strip()
+            target_subdeck_name = clean_stem
+
+        # Build sub-deck path
+        if create_subdecks:
+            deck_parts = [effective_base]
+            if rel_dir and rel_dir != ".":
+                for part in rel_dir.split("/"):
+                    if part.strip():
+                        deck_parts.append(part.strip())
+            deck_parts.append(target_subdeck_name)
+            deck_path = "::".join(deck_parts)
+        else:
+            deck_path = effective_base
+
+        for c in file_cards:
+            c["deck_path"] = deck_path
+            c["source_relative_path"] = rel_to_root
+            if target_deck_uid and not c.get("deck_uid"):
+                c["deck_uid"] = target_deck_uid
+            if target_subdeck_name and not c.get("deck_name"):
+                c["deck_name"] = target_subdeck_name
+            if not c.get("context_anchor"):
+                c["context_anchor"] = target_subdeck_name
+
+        all_cards.extend(file_cards)
+        files_summary.append({
+            "file_path": f_path,
+            "relative_path": rel_to_root,
+            "deck_path": deck_path,
+            "subdeck_name": target_subdeck_name,
+            "deck_uid": target_deck_uid,
+            "cards_count": len(file_cards)
+        })
+
+    return {
+        "root_folder": norm_root,
+        "total_files": len(discovered_files),
+        "total_cards": len(all_cards),
+        "files_summary": files_summary,
+        "cards": all_cards,
+        "suggested_deck_name": effective_base
+    }
+
+
+def sync_deck_from_source_folder(
+    data: dict,
+    deck: dict = None,
+    deck_id: int = None,
+    custom_folder_path: str = None,
+    create_subdecks: bool = True
+) -> dict:
+    """
+    Incrementally synchronizes a deck (and its subdecks) from a local source folder or file.
+    CRITICAL REQUIREMENT:
+    - Preserves 100% of Spaced Repetition (SM-2) scheduling for existing cards.
+    - Adds newly found words as fresh cards with sm2_init.
+    - Updates card definitions/answers without touching review dates.
+    """
+    if "decks" not in data:
+        data["decks"] = []
+
+    target_deck = deck
+    if target_deck is None and deck_id is not None:
+        target_deck = find_deck_by_id(deck_id, data.get("decks", []))
+
+    if target_deck is None:
+        if data.get("decks"):
+            target_deck = data["decks"][0]
+        else:
+            return {"status": "error", "message": "No target deck found to sync."}
+
+    source_path = custom_folder_path or target_deck.get("source_folder_path") or target_deck.get("source_file_path")
+    if not source_path or not os.path.exists(source_path):
+        return {
+            "status": "error",
+            "message": f"Source path '{source_path}' does not exist or has not been set."
+        }
+
+    norm_source = os.path.normpath(source_path).replace("\\", "/")
+    # Save source folder path on the root deck for future 1-click syncs
+    target_deck["source_folder_path"] = norm_source
+
+    from sm2_engine import sm2_init
+
+    # Snapshot history for undo
+    deck_history.push(data)
+
+    # 1. Scan and parse files
+    if os.path.isdir(norm_source):
+        scan_res = scan_and_parse_data_folder(
+            norm_source,
+            base_deck_path=target_deck.get("name", ""),
+            create_subdecks=create_subdecks
+        )
+        parsed_cards = scan_res["cards"]
+    else:
+        file_cards = parse_single_file_cards(norm_source)
+        for c in file_cards:
+            c["deck_path"] = target_deck.get("name", "Imported Deck")
+            c["source_relative_path"] = os.path.basename(norm_source)
+        parsed_cards = file_cards
+
+    # 2. Build index of all existing cards in the target deck & all its sub-decks
+    existing_uid_map = {}   # card_uid -> (card_dict, deck_dict)
+    existing_cards_map = {} # norm_q -> (card_dict, deck_dict)
+
+    def _walk_tree(d):
+        if not isinstance(d, dict):
+            return
+        for card in d.get("cards", []) or []:
+            if isinstance(card, dict):
+                c_uid = str(card.get("card_uid") or "").strip()
+                if not c_uid and isinstance(card.get("_id"), str):
+                    c_uid = card.get("_id").strip()
+                if c_uid:
+                    existing_uid_map[c_uid] = (card, d)
+                q = (card.get("question") or card.get("title") or "").strip().lower()
+                if q:
+                    existing_cards_map[q] = (card, d)
+        for child in d.get("children", []) or []:
+            _walk_tree(child)
+
+    _walk_tree(target_deck)
+
+    new_count = 0
+    updated_count = 0
+    unchanged_count = 0
+
+    # 3. Process parsed cards
+    for item in parsed_cards:
+        q = item.get("question", "").strip()
+        a = item.get("answer", "").strip()
+        if not q and not a:
+            continue
+
+        item_uid = str(item.get("card_uid") or item.get("_id") or "").strip()
+        norm_q = q.lower()
+        matched_card = None
+        parent_subdeck = None
+        if item_uid and item_uid in existing_uid_map:
+            matched_card, parent_subdeck = existing_uid_map[item_uid]
+        elif norm_q in existing_cards_map:
+            matched_card, parent_subdeck = existing_cards_map[norm_q]
+
+        if matched_card is not None:
+            # Card already exists!
+            # CRITICAL: Preserve all SM-2 fields (interval, repetitions, ease, due, last_quality, reviews, etc.)
+            existing_card = matched_card
+            changed = False
+
+            if item.get("deck_uid") and parent_subdeck and not parent_subdeck.get("deck_uid"):
+                parent_subdeck["deck_uid"] = item["deck_uid"].strip()
+            if item.get("source_file") and parent_subdeck and not parent_subdeck.get("source_file_path"):
+                parent_subdeck["source_file_path"] = item["source_file"].replace("\\", "/")
+
+            if existing_card.get("question") != q:
+                existing_card["question"] = q
+                first_line = [line.strip() for line in q.split("\n") if line.strip()]
+                existing_card["title"] = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
+                changed = True
+            if existing_card.get("answer") != a:
+                existing_card["answer"] = a
+                changed = True
+            if item.get("notes") and existing_card.get("notes") != item["notes"]:
+                existing_card["notes"] = item["notes"]
+                changed = True
+            if item.get("trap_note") and existing_card.get("trap_note") != item["trap_note"]:
+                existing_card["trap_note"] = item["trap_note"]
+                changed = True
+            if item.get("context_anchor") and existing_card.get("context_anchor") != item["context_anchor"]:
+                existing_card["context_anchor"] = item["context_anchor"]
+                changed = True
+            if item.get("tags") and existing_card.get("tags") != item["tags"]:
+                existing_card["tags"] = item["tags"]
+                changed = True
+            if item.get("related_concepts") and existing_card.get("related_concepts") != item["related_concepts"]:
+                existing_card["related_concepts"] = item["related_concepts"]
+                changed = True
+            if item_uid and not existing_card.get("card_uid"):
+                existing_card["card_uid"] = item_uid
+                changed = True
+            if item.get("is_mcq"):
+                if item.get("options"):
+                    existing_card["options"] = item["options"]
+                if item.get("correct_option"):
+                    existing_card["correct_option"] = item["correct_option"]
+                if item.get("solution_data"):
+                    existing_card["solution_data"] = item["solution_data"]
+                if item.get("question_html"):
+                    existing_card["question_html"] = item["question_html"]
+                changed = True
+
+            if changed:
+                updated_count += 1
+            else:
+                unchanged_count += 1
+        else:
+            # New card!
+            first_line = [line.strip() for line in q.split("\n") if line.strip()]
+            title = (first_line[0][:45] + "...") if first_line and len(first_line[0]) > 45 else (first_line[0] if first_line else "Untitled")
+
+            card_unique_id = item_uid or str(uuid.uuid4())
+            new_card = {
+                "_id": str(uuid.uuid4()),
+                "card_uid": card_unique_id,
+                "card_type": "mcq" if item.get("is_mcq") else "text",
+                "title": title,
+                "question": q,
+                "answer": a,
+                "notes": item.get("notes", ""),
+                "trap_note": item.get("trap_note", ""),
+                "context_anchor": item.get("context_anchor", ""),
+                "tags": item.get("tags", []),
+                "related_concepts": item.get("related_concepts", []),
+                "created": datetime.now().isoformat(),
+                "reviews": 0,
+                "pdf_path": None,
+                "image_path": None,
+                "boxes": [],
+                "is_formula": False
+            }
+            if item.get("is_mcq"):
+                new_card["options"] = item.get("options", [])
+                new_card["correct_option"] = item.get("correct_option")
+                new_card["solution_data"] = item.get("solution_data", {})
+                new_card["exam_meta"] = item.get("exam_meta", {})
+                new_card["question_html"] = item.get("question_html", "")
+
+            # Fresh Spaced Repetition initialization for new card
+            sm2_init(new_card)
+
+            # Route into target subdeck path
+            target_subdeck_path = item.get("deck_path") or target_deck.get("name", "Default Deck")
+            dest_deck = None
+            item_deck_uid = str(item.get("deck_uid") or "").strip()
+            item_deck_name = str(item.get("deck_name") or "").strip()
+
+            # 1. Match subdeck by deck_uid within target_deck's subtree
+            if item_deck_uid:
+                def _find_by_uid(d):
+                    for child in d.get("children", []) or []:
+                        if str(child.get("deck_uid") or "").strip() == item_deck_uid:
+                            return child
+                        res = _find_by_uid(child)
+                        if res:
+                            return res
+                    return None
+                dest_deck = _find_by_uid(target_deck)
+
+            # 2. Match subdeck by deck_name within target_deck's subtree
+            if dest_deck is None and item_deck_name:
+                def _find_by_name(d):
+                    for child in d.get("children", []) or []:
+                        if str(child.get("name", "")).strip().lower() == item_deck_name.lower():
+                            return child
+                        res = _find_by_name(child)
+                        if res:
+                            return res
+                    return None
+                dest_deck = _find_by_name(target_deck)
+
+            # 3. Fallback to get_or_create_deck_by_path
+            if dest_deck is None:
+                dest_deck = get_or_create_deck_by_path(data, target_subdeck_path, context_deck=target_deck)
+
+            # Ensure deck_uid, source_file_path, and source_folder_path are set on dest_deck
+            if item_deck_uid and not dest_deck.get("deck_uid"):
+                dest_deck["deck_uid"] = item_deck_uid
+            if item.get("source_file"):
+                src_norm = item["source_file"].replace("\\", "/")
+                dest_deck["source_file_path"] = src_norm
+                if not dest_deck.get("source_folder_path"):
+                    dest_deck["source_folder_path"] = src_norm
+
+            dest_deck.setdefault("cards", []).append(new_card)
+
+            if card_unique_id:
+                existing_uid_map[card_unique_id] = (new_card, dest_deck)
+            existing_cards_map[norm_q] = (new_card, dest_deck)
+            new_count += 1
+
+    store.mark_dirty()
+
+    return {
+        "status": "ok",
+        "new_count": new_count,
+        "updated_count": updated_count,
+        "unchanged_count": unchanged_count,
+        "total_cards_scanned": len(parsed_cards),
+        "deck_name": target_deck.get("name", "Deck"),
+        "source_path": norm_source
+    }
+
 

@@ -53,11 +53,21 @@ The student must NEVER need to search Google or open a textbook to clarify doubt
      - Write `NCBC (National Commission for Backward Classes / राष्ट्रीय पिछड़ा वर्ग आयोग)`.
 
 6. **Sequential Linked Story Chaining:**
-   - Group multi-step concepts, chronologies, or complex mechanisms under the same `context_anchor` badge.
+   - Group multi-step concepts, chronologies, or complex physical landscapes under the same `context_anchor` badge.
    - Order them logically from foundation to advanced traps using sequential integers (`chain_order: 1, 2, 3...`).
 
-7. **Language & Tone:**
-   - Bilingual (Hinglish/Hindi with standard English technical/legal terms in brackets) for maximum active recall and memory retention.
+7. **Cross-Subject Knowledge Mesh (Multi-Disciplinary 360° Chaining):**
+   - Whenever a concept intersects with another subject (Polity, History, Geography, Economics, Static GK, Science), ALWAYS embed a `🔗 Cross-Subject Connect:` bullet in `notes` referencing the connected subject and chapter.
+   - *Example:* `• 🔗 Cross-Subject Connect [Polity & History]: रायसीना हिल्स पर ही राष्ट्रपति भवन (Rashtrapati Bhavan - Article 52-62) व संसद परिसर स्थित है (1911 में लुटियंस द्वारा निर्मित)।`
+   - *Example:* `• 🔗 Cross-Subject Connect [Ancient History / Jainism]: पारसनाथ पहाड़ी 23वें जैन तीर्थंकर भगवान पार्श्वनाथ का निर्वाण स्थल (सम्मेद शिखरजी) है।`
+
+8. **Language & Tone:**
+   - Bilingual (Hinglish/Hindi with standard English technical/geographical terms in brackets) for maximum active recall and memory retention.
+
+9. **Mandatory Post-Generation Verification (Q-A Alignment & 100% MCQ Coverage):**
+   - **Q-A Semantic Alignment:** Verify that every Front (Question) and Back (Answer) pair directly, accurately, and satisfactorily answers each other. Never allow an answer to give a company name when a percentage/share is asked, or an unrelated formula when a market/instrument name is asked.
+   - **Zero Answer Leaks:** Never leak or reveal the answer on the Front (e.g. expanding an acronym on the question side that gives away the core recall).
+   - **Exhaustive PDF & MCQ Solvability:** Ensure 100% of all topics and sub-points from the source notes are covered, and that every single past MCQ from the chapter can be solved with 100% accuracy using these cards alone.
 
 ---
 
