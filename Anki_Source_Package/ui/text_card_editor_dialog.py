@@ -2,10 +2,10 @@ import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
-    QTextEdit, QFormLayout, QFrame, QApplication, QMessageBox, QWidget, QFileDialog, QMenu, QCheckBox, QShortcut
+    QTextEdit, QFormLayout, QFrame, QApplication, QMessageBox, QWidget, QFileDialog, QMenu, QCheckBox, QShortcut, QScrollArea
 )
 from PyQt5.QtCore import Qt, QSize, QUrl, QEvent
-from PyQt5.QtGui import QFont, QIcon, QKeySequence
+from PyQt5.QtGui import QFont, QIcon, QKeySequence, QTextDocument
 from theme_manager import get_palette, normalize_theme
 from sm2_engine import sm2_init
 
@@ -19,11 +19,11 @@ def get_base_url():
     return QUrl()
 
 class RichTextEdit(QTextEdit):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, font_size=25):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.document().setBaseUrl(get_base_url())
-        self.document().setDefaultStyleSheet("img { width: 100%; }")
+        self.document().setDefaultStyleSheet(f"body, p, div, span, td, li {{ font-size: {font_size}px; }} img {{ width: 100%; }}")
 
     def copy(self):
         cursor = self.textCursor()
@@ -279,14 +279,42 @@ class TextCardEditorDialog(QDialog):
     def __init__(self, parent=None, card=None, data=None, deck=None):
         super().__init__(parent)
         self.setWindowTitle("Text Card Editor")
-        self.setMinimumSize(950, 700)
-        self.resize(1000, 750)
+        self._apply_screen_geometry()
         self.card = card or {}
         self._data = data
         self._deck = deck
         self._setup_ui()
         self._load_card_data()
-        
+
+    def _apply_screen_geometry(self):
+        screen = None
+        if self.parent() and hasattr(self.parent(), "window") and self.parent().window():
+            p_win = self.parent().window()
+            if hasattr(p_win, "screen"):
+                screen = p_win.screen()
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        if screen:
+            geo = screen.availableGeometry()
+            # Occupy 80% screen width and 80% screen height (leaving only 20% margin)
+            target_w = max(1100, int(geo.width() * 0.80))
+            target_h = max(750, int(geo.height() * 0.80))
+            self.setMinimumSize(int(geo.width() * 0.50), int(geo.height() * 0.50))
+            self.resize(target_w, target_h)
+            target_x = geo.x() + (geo.width() - target_w) // 2
+            target_y = geo.y() + (geo.height() - target_h) // 2
+            self.move(target_x, target_y)
+        else:
+            self.setMinimumSize(950, 700)
+            self.resize(1300, 850)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_geometry_initialized", False):
+            self._geometry_initialized = True
+            self._apply_screen_geometry()
+
     def _setup_ui(self):
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         p = get_palette(theme)
@@ -296,25 +324,26 @@ class TextCardEditorDialog(QDialog):
                 background: #0B0E14;
                 color: #FFFFFF;
             }}
-            QWidget {{
-                background: transparent;
-                color: #FFFFFF;
-                font-family: 'Segoe UI', sans-serif;
-                font-size: 13px;
+            QScrollArea {{
+                background: #0B0E14;
+                border: none;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background: #0B0E14;
             }}
             QLabel {{
                 background: transparent;
                 color: #E2E8F0;
                 font-weight: bold;
-                font-size: 13px;
+                font-size: 23px;
             }}
             QLineEdit {{
                 background: #141824;
                 color: #FFFFFF;
                 border: 1.5px solid #2B3347;
                 border-radius: 6px;
-                padding: 8px 12px;
-                font-size: 15px;
+                padding: 10px 14px;
+                font-size: 25px;
                 selection-background-color: #5C7CFA;
             }}
             QLineEdit:focus {{
@@ -326,8 +355,8 @@ class TextCardEditorDialog(QDialog):
                 color: #FFFFFF;
                 border: 1.5px solid #2B3347;
                 border-radius: 6px;
-                padding: 12px;
-                font-size: 16px;
+                padding: 12px 14px;
+                font-size: 25px;
                 line-height: 1.5;
                 selection-background-color: #5C7CFA;
             }}
@@ -340,9 +369,9 @@ class TextCardEditorDialog(QDialog):
                 color: #FFFFFF;
                 border: 1px solid #374158;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 10px 20px;
                 font-weight: bold;
-                font-size: 13px;
+                font-size: 23px;
             }}
             QPushButton:hover {{
                 background: #283046;
@@ -352,31 +381,57 @@ class TextCardEditorDialog(QDialog):
                 background: #10B981;
                 color: #07090E;
                 border: none;
-                padding: 9px 24px;
-                font-size: 14px;
+                padding: 11px 28px;
+                font-size: 24px;
                 font-weight: bold;
             }}
             QPushButton#save:hover {{
                 background: #34D399;
             }}
             QCheckBox {{
+                background: transparent;
                 color: #A0AEC0;
-                font-size: 13px;
+                font-size: 23px;
+            }}
+            QCheckBox::indicator {{
+                width: 22px;
+                height: 22px;
+            }}
+            QScrollBar:vertical {{
+                background: #0B0E14;
+                width: 10px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: #2B3347;
+                min-height: 24px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: #5C7CFA;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
             }}
         """)
         
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(24, 20, 24, 20)
-        main_layout.setSpacing(14)
-        
+        main_layout.setContentsMargins(28, 22, 28, 22)
+        main_layout.setSpacing(16)
+
+        # Form Scroll Area
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
         # Form Container
         form_frame = QFrame()
         form_layout = QFormLayout(form_frame)
-        form_layout.setSpacing(12)
+        form_layout.setSpacing(16)
         form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
         
         self.inp_title = QLineEdit()
-        self.inp_title.setFont(QFont("Segoe UI", 14))
+        self.inp_title.setFont(QFont("Segoe UI", 24))
         self.inp_title.setPlaceholderText("Optional card title (auto-generated if empty)...")
         form_layout.addRow("Title:", self.inp_title)
         
@@ -384,16 +439,17 @@ class TextCardEditorDialog(QDialog):
         q_widget = QWidget()
         q_lay = QHBoxLayout(q_widget)
         q_lay.setContentsMargins(0, 0, 0, 0)
-        q_lay.setSpacing(8)
-        self.inp_question = RichTextEdit()
-        self.inp_question.setFont(QFont("Segoe UI", 16, QFont.DemiBold))
+        q_lay.setSpacing(10)
+        self.inp_question = RichTextEdit(font_size=26)
+        self.inp_question.setFont(QFont("Segoe UI", 26, QFont.DemiBold))
         self.inp_question.setPlaceholderText("Type the question or front word here (e.g. 'Nascent (Adj.)')...")
-        self.inp_question.setMinimumHeight(170)
+        self.inp_question.setMinimumHeight(220)
         q_lay.addWidget(self.inp_question)
         
         q_btn_layout = QVBoxLayout()
         q_btn_layout.setContentsMargins(0, 0, 0, 0)
         self.btn_q_img = QPushButton("🖼️ Image")
+        self.btn_q_img.setFont(QFont("Segoe UI", 20, QFont.Bold))
         self.btn_q_img.setToolTip("Insert image from file")
         self.btn_q_img.clicked.connect(self._select_q_image)
         q_btn_layout.addWidget(self.btn_q_img)
@@ -405,16 +461,17 @@ class TextCardEditorDialog(QDialog):
         a_widget = QWidget()
         a_lay = QHBoxLayout(a_widget)
         a_lay.setContentsMargins(0, 0, 0, 0)
-        a_lay.setSpacing(8)
-        self.inp_answer = RichTextEdit()
-        self.inp_answer.setFont(QFont("Segoe UI", 15))
+        a_lay.setSpacing(10)
+        self.inp_answer = RichTextEdit(font_size=25)
+        self.inp_answer.setFont(QFont("Segoe UI", 25))
         self.inp_answer.setPlaceholderText("Type the answer, meaning or definition here...")
-        self.inp_answer.setMinimumHeight(170)
+        self.inp_answer.setMinimumHeight(220)
         a_lay.addWidget(self.inp_answer)
         
         a_btn_layout = QVBoxLayout()
         a_btn_layout.setContentsMargins(0, 0, 0, 0)
         self.btn_a_img = QPushButton("🖼️ Image")
+        self.btn_a_img.setFont(QFont("Segoe UI", 20, QFont.Bold))
         self.btn_a_img.setToolTip("Insert image from file")
         self.btn_a_img.clicked.connect(self._select_a_image)
         a_btn_layout.addWidget(self.btn_a_img)
@@ -422,33 +479,45 @@ class TextCardEditorDialog(QDialog):
         a_lay.addLayout(a_btn_layout)
         form_layout.addRow("Back (Meaning / Answer):", a_widget)
         
+        self.inp_trap = QTextEdit()
+        self.inp_trap.setFont(QFont("Segoe UI", 23))
+        self.inp_trap.setPlaceholderText("Optional exam trap, confusing pair, or pitfall note...")
+        self.inp_trap.setMinimumHeight(100)
+        self.inp_trap.setMaximumHeight(140)
+        form_layout.addRow("⚠️ Trap / Pitfall Note:", self.inp_trap)
+
         self.inp_notes = QTextEdit()
-        self.inp_notes.setFont(QFont("Segoe UI", 13))
+        self.inp_notes.setFont(QFont("Segoe UI", 23))
         self.inp_notes.setPlaceholderText("Optional hints, mnemonics or study notes...")
-        self.inp_notes.setMaximumHeight(85)
+        self.inp_notes.setMinimumHeight(100)
+        self.inp_notes.setMaximumHeight(140)
         form_layout.addRow("Notes / Hints:", self.inp_notes)
         
         self.inp_tags = QLineEdit()
-        self.inp_tags.setFont(QFont("Segoe UI", 13))
+        self.inp_tags.setFont(QFont("Segoe UI", 23))
         self.inp_tags.setPlaceholderText("e.g. vocab, idioms, biology...")
         form_layout.addRow("Tags:", self.inp_tags)
         
         self.chk_formula = QCheckBox("Mark as Formula")
+        self.chk_formula.setFont(QFont("Segoe UI", 23))
         self.chk_formula.setToolTip("Formula cards are excluded from normal reviews and can be viewed/practiced anytime.")
         form_layout.addRow("", self.chk_formula)
         
-        main_layout.addWidget(form_frame, stretch=1)
+        scroll.setWidget(form_frame)
+        main_layout.addWidget(scroll, stretch=1)
         
         # Buttons Row
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(12)
+        btn_layout.setSpacing(14)
         btn_layout.addStretch()
         
         self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setFont(QFont("Segoe UI", 23, QFont.Bold))
         self.btn_cancel.clicked.connect(self.reject)
         
         self.btn_save = QPushButton("💾 Save Card")
         self.btn_save.setObjectName("save")
+        self.btn_save.setFont(QFont("Segoe UI", 24, QFont.Bold))
         self.btn_save.setToolTip("Save card changes (Ctrl+S)")
         self.btn_save.setShortcut(QKeySequence("Ctrl+S"))
         self.btn_save.clicked.connect(self._save)
@@ -459,7 +528,7 @@ class TextCardEditorDialog(QDialog):
         self._shortcut_save.activated.connect(self._save)
         
         # Install eventFilter on dialog and all input fields so Ctrl+S always intercepts
-        for w in (self, self.inp_title, self.inp_question, self.inp_answer, self.inp_notes, self.inp_tags, self.chk_formula, self.btn_save, self.btn_cancel):
+        for w in (self, self.inp_title, self.inp_question, self.inp_answer, self.inp_trap, self.inp_notes, self.inp_tags, self.chk_formula, self.btn_save, self.btn_cancel):
             w.installEventFilter(self)
         
         btn_layout.addWidget(self.btn_cancel)
@@ -496,7 +565,7 @@ class TextCardEditorDialog(QDialog):
             editor.setHtml(text)
         else:
             editor.setPlainText(text)
-        font = QFont("Segoe UI", 16 if editor == self.inp_question else 15)
+        font = QFont("Segoe UI", 26 if editor == self.inp_question else 25)
         editor.setFont(font)
         
     def _load_card_data(self):
@@ -504,7 +573,8 @@ class TextCardEditorDialog(QDialog):
             self.inp_title.setText(self.card.get("title", ""))
             self._set_editor_content(self.inp_question, self.card.get("question", ""))
             self._set_editor_content(self.inp_answer, self.card.get("answer", ""))
-            self.inp_notes.setText(self.card.get("notes", ""))
+            self.inp_trap.setText(self.card.get("trap_note", "") or "")
+            self.inp_notes.setText(self.card.get("notes", "") or "")
             self.inp_tags.setText(", ".join(self.card.get("tags", [])))
             self.chk_formula.setChecked(self.card.get("is_formula", False))
             
@@ -552,6 +622,7 @@ class TextCardEditorDialog(QDialog):
             title = lines[0][:40] + "..." if len(lines[0]) > 40 else lines[0]
             
         tags = [t.strip() for t in self.inp_tags.text().split(",") if t.strip()]
+        trap_note = self.inp_trap.toPlainText().strip()
         notes = self.inp_notes.toPlainText().strip()
         
         self.card.update({
@@ -559,6 +630,7 @@ class TextCardEditorDialog(QDialog):
             "title": title,
             "question": question,
             "answer": answer,
+            "trap_note": trap_note,
             "notes": notes,
             "tags": tags,
             "created": self.card.get("created", datetime.now().isoformat()),

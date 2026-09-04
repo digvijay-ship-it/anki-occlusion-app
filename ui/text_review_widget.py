@@ -128,6 +128,11 @@ class ZoomableTextBrowser(QTextBrowser):
 
             menu.addSeparator()
 
+            # Sync Deck from Source
+            act_sync = QAction("🔄 Sync & Reload Deck from Source  (F5)", menu)
+            act_sync.triggered.connect(lambda: p._sync_current_deck_from_source() if hasattr(p, "_sync_current_deck_from_source") else None)
+            menu.addAction(act_sync)
+
             # Mind Map Hub
             act_mindmap = QAction("🧠 Open Mind-Map Concept Hub  (Alt+M)", menu)
             act_mindmap.triggered.connect(lambda: p._toggle_concept_hub() if hasattr(p, "_toggle_concept_hub") else None)
@@ -276,8 +281,9 @@ class TextReviewWidget(QWidget):
         self._zoom_factor = TextReviewWidget.get_saved_zoom_factor()
         self._setup_ui()
         self._apply_width_mode()
-        self.scratchpad = ScratchpadOverlay(self)
-        self.scratchpad.setGeometry(self.rect())
+        self.scratchpad = ScratchpadOverlay(self.scroll_content)
+        self.scratchpad.setGeometry(0, 0, self.scroll_content.width(), self.scroll_content.height())
+        self.scratchpad.raise_()
 
     def _get_width_button_text(self) -> str:
         mode = self.get_saved_width_mode()
@@ -288,15 +294,43 @@ class TextReviewWidget(QWidget):
         else:
             return "↔️ Wide"
 
+    def _get_max_content_width(self) -> int:
+        viewport_w = (
+            self.scroll_area.viewport().width()
+            if hasattr(self, "scroll_area") and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+            else self.width()
+        )
+        if viewport_w <= 100:
+            viewport_w = 900
+        mode = self.get_saved_width_mode()
+        avail_frame_w = max(300, viewport_w - 40)
+        if mode == "standard":
+            frame_w = min(avail_frame_w, 960)
+        elif mode == "max":
+            w = max(1100, int(viewport_w * 0.96)) if viewport_w > 500 else 1650
+            frame_w = min(avail_frame_w, w)
+        else:  # "wide" (default)
+            frame_w = min(avail_frame_w, 1380)
+        content_w = max(200, frame_w - 80)
+        return int(content_w)
+
     def _apply_width_mode(self):
         mode = self.get_saved_width_mode()
+        viewport_w = (
+            self.scroll_area.viewport().width()
+            if hasattr(self, "scroll_area") and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+            else self.width()
+        )
+        if viewport_w <= 100:
+            viewport_w = 900
+        avail_frame_w = max(340, viewport_w - 40)
         if mode == "standard":
-            self.card_frame.setMaximumWidth(960)
+            self.card_frame.setMaximumWidth(min(avail_frame_w, 960))
         elif mode == "max":
-            w = max(1100, int(self.width() * 0.94)) if self.width() > 500 else 1650
-            self.card_frame.setMaximumWidth(w)
+            w = max(1100, int(viewport_w * 0.96)) if viewport_w > 500 else 1650
+            self.card_frame.setMaximumWidth(min(avail_frame_w, w))
         else:  # "wide" (default)
-            self.card_frame.setMaximumWidth(1380)
+            self.card_frame.setMaximumWidth(min(avail_frame_w, 1380))
 
     def _cycle_width_mode(self):
         modes = ["wide", "max", "standard"]
@@ -515,6 +549,28 @@ class TextReviewWidget(QWidget):
         self.btn_mindmap.clicked.connect(lambda: self._on_open_mindmap())
         self.hdr_layout.addWidget(self.btn_mindmap)
 
+        self.btn_sync_deck = QPushButton("🔄 Sync Deck (F5)")
+        self.btn_sync_deck.setCursor(Qt.PointingHandCursor)
+        self.btn_sync_deck.setToolTip("Sync and refresh deck directly from linked source file (F5 / Alt+R)")
+        self.btn_sync_deck.setStyleSheet("""
+            QPushButton {
+                color: #50FA7B;
+                background: rgba(80, 250, 123, 0.15);
+                border: 1px solid #50FA7B;
+                border-radius: 6px;
+                padding: 3px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(80, 250, 123, 0.35);
+                border: 1px solid #69FF94;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_sync_deck.clicked.connect(lambda: self._on_sync_deck())
+        self.hdr_layout.addWidget(self.btn_sync_deck)
+
         card_layout.addLayout(self.hdr_layout)
 
         # Interactive Tag & Connected Concepts Pill Row
@@ -666,12 +722,20 @@ class TextReviewWidget(QWidget):
         if p and hasattr(p, "_open_concept_hub"):
             p._open_concept_hub(tag=tag if isinstance(tag, str) else None)
 
+    def _on_sync_deck(self):
+        p = self.parent()
+        while p and not hasattr(p, "_sync_current_deck_from_source"):
+            p = p.parent()
+        if p and hasattr(p, "_sync_current_deck_from_source"):
+            p._sync_current_deck_from_source()
+
     def load_card(self, card):
         self.card = card
         self.is_revealed = False
         self._zoom_factor = TextReviewWidget.get_saved_zoom_factor()
         if hasattr(self, "scratchpad"):
             self.scratchpad.clear()
+            self.scratchpad.sync_geometry_with_parent()
         
         self.q_browser.document().setBaseUrl(get_base_url())
         self.a_browser.document().setBaseUrl(get_base_url())
@@ -831,6 +895,9 @@ class TextReviewWidget(QWidget):
         self._update_scaled_html()
         self.answer_container.show()
         self._adjust_browser_heights()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
+            self.scratchpad.raise_()
         
     def hide_answer(self):
         if not self.is_revealed:
@@ -847,6 +914,8 @@ class TextReviewWidget(QWidget):
         if hasattr(self, "notes_container"):
             self.notes_container.hide()
         self._adjust_browser_heights()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
         
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -854,11 +923,11 @@ class TextReviewWidget(QWidget):
         self._update_scaled_html()
         self._adjust_browser_heights()
         if hasattr(self, "scratchpad"):
-            self.scratchpad.setGeometry(self.rect())
+            self.scratchpad.sync_geometry_with_parent()
         
     def _adjust_browser_heights(self):
         import math
-        target_w = max(200, (self.card_frame.width() - 72)) if hasattr(self, "card_frame") and self.card_frame.width() > 100 else 600
+        target_w = self._get_max_content_width()
         for browser in (self.q_browser, self.a_browser, getattr(self, "trap_browser", None), getattr(self, "notes_browser", None)):
             if browser is not None:
                 browser.document().setTextWidth(target_w)
@@ -868,12 +937,14 @@ class TextReviewWidget(QWidget):
                 else:
                     doc_h = int(math.ceil(browser.document().size().height()))
                 browser.setFixedHeight(max(32, doc_h + 16))
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
 
     def _update_scaled_html(self):
         if not self.card:
             return
             
-        target_width = int(max(200, (self.card_frame.width() - 80) * self._zoom_factor)) if hasattr(self, "card_frame") else 600
+        target_width = self._get_max_content_width()
         
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         p = get_palette(theme)
@@ -929,7 +1000,7 @@ class TextReviewWidget(QWidget):
                         line-height: 1.6;
                     }}
                     img {{
-                        width: 100%;
+                        max-width: 100%;
                         margin-top: 10px;
                         border-radius: 8px;
                     }}
@@ -937,7 +1008,7 @@ class TextReviewWidget(QWidget):
         
         # Load Question
         question = self.card.get('question', '')
-        if "<img" in question or "<html>" in question:
+        if "<img" in question or "![" in question or "<html>" in question:
             self._scale_and_load_html(self.q_browser, question, target_width, font_size=q_font_size, default_color=front_color, is_answer=False)
         else:
             question_html = self._format_content(question, is_answer=False, default_color=front_color, font_size=q_font_size)
@@ -946,7 +1017,7 @@ class TextReviewWidget(QWidget):
         # Load Answer if revealed
         if self.is_revealed:
             answer = self.card.get("answer", "")
-            if "<img" in answer or "<html>" in answer:
+            if "<img" in answer or "![" in answer or "<html>" in answer:
                 self._scale_and_load_html(self.a_browser, answer, target_width, font_size=a_font_size, default_color=answer_color, is_answer=True)
             else:
                 answer_html = self._format_content(answer, is_answer=True, default_color=answer_color, font_size=a_font_size)
@@ -955,7 +1026,7 @@ class TextReviewWidget(QWidget):
             # Load Trap Note (if any)
             trap_note = str(self.card.get("trap_note", "") or "").strip()
             if trap_note and hasattr(self, "trap_browser"):
-                if "<img" in trap_note or "<html>" in trap_note:
+                if "<img" in trap_note or "![" in trap_note or "<html>" in trap_note:
                     self._scale_and_load_html(self.trap_browser, trap_note, target_width, font_size=t_font_size, default_color=trap_color, is_answer=False)
                 else:
                     trap_html = self._format_content(trap_note, is_answer=False, default_color=trap_color, font_size=t_font_size)
@@ -968,7 +1039,7 @@ class TextReviewWidget(QWidget):
             notes = str(self.card.get("notes", "") or "").strip()
             # Only show separate notes if it differs from trap_note
             if notes and (not trap_note or notes != trap_note):
-                if "<img" in notes or "<html>" in notes:
+                if "<img" in notes or "![" in notes or "<html>" in notes:
                     self._scale_and_load_html(self.notes_browser, notes, target_width, font_size=n_font_size, default_color=notes_color, is_answer=False)
                 else:
                     notes_html = self._format_content(notes, is_answer=False, default_color=notes_color, font_size=n_font_size)
@@ -981,10 +1052,14 @@ class TextReviewWidget(QWidget):
         
     def _scale_and_load_html(self, browser, html_content, target_width, font_size=19, default_color="#FFFFFF", is_answer=False):
         import re
-        from PyQt5.QtGui import QPixmap, QTextDocument, QFont
+        import base64
+        from PyQt5.QtGui import QPixmap, QImage, QTextDocument, QFont
         from PyQt5.QtCore import QUrl, Qt
         
-        # 1. Parse img tags and their src attributes
+        # 1. Convert markdown images ![alt](src) to <img> tags
+        html_content = re.sub(r'!\[[^\]]*\]\(([^)]+)\)', r'<img src="\1" />', html_content)
+        
+        # 2. Parse img tags and their src attributes
         img_pattern = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
         sources = img_pattern.findall(html_content)
         
@@ -993,44 +1068,65 @@ class TextReviewWidget(QWidget):
         if base_url.isLocalFile():
             base_path = base_url.toLocalFile()
             
+        img_dims = {}
         for src in sources:
-            # Resolve the absolute path of the image
-            abs_path = src
-            if not os.path.isabs(src):
-                if base_path:
-                    abs_path = os.path.join(base_path, src)
-                else:
-                    from storage_paths import get_mission_archive_root
-                    root = get_mission_archive_root()
-                    if root:
-                        abs_path = os.path.join(root, src)
-            abs_path = os.path.normpath(abs_path)
+            pixmap = None
+            if src.startswith("data:image"):
+                try:
+                    comma_idx = src.find(",")
+                    if comma_idx != -1:
+                        b64_data = src[comma_idx + 1:]
+                        raw_bytes = base64.b64decode(b64_data)
+                        img = QImage()
+                        if img.loadFromData(raw_bytes):
+                            pixmap = QPixmap.fromImage(img)
+                except Exception:
+                    pass
+            else:
+                # Resolve the absolute path of the image
+                abs_path = src
+                if not os.path.isabs(src):
+                    if base_path:
+                        abs_path = os.path.join(base_path, src)
+                    else:
+                        from storage_paths import get_mission_archive_root
+                        root = get_mission_archive_root()
+                        if root:
+                            abs_path = os.path.join(root, src)
+                abs_path = os.path.normpath(abs_path)
+                if os.path.exists(abs_path):
+                    pixmap = QPixmap(abs_path)
             
-            if os.path.exists(abs_path):
-                pixmap = QPixmap(abs_path)
-                if not pixmap.isNull():
-                    w = pixmap.width()
-                    if w > 0:
-                        # Scale pixmap smoothly to target_width
-                        scaled_pixmap = pixmap.scaledToWidth(target_width, Qt.SmoothTransformation)
-                        # Register in document cache
-                        browser.document().addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
+            if pixmap and not pixmap.isNull():
+                orig_w = pixmap.width()
+                if orig_w > 0:
+                    if orig_w > target_width:
+                        scaled_w = target_width
+                    else:
+                        if getattr(self, "_zoom_factor", 1.0) != 1.0:
+                            scaled_w = min(target_width, max(40, int(orig_w * self._zoom_factor)))
+                        else:
+                            scaled_w = min(target_width, orig_w)
+                    img_dims[src] = scaled_w
+                    scaled_pixmap = pixmap.scaledToWidth(scaled_w, Qt.SmoothTransformation)
+                    browser.document().addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
+                    if not src.startswith("data:image"):
                         browser.document().addResource(QTextDocument.ImageResource, QUrl.fromLocalFile(abs_path), scaled_pixmap)
                         
-        # 2. Clean width/height/style attributes specifically on img tags
-        def clean_img_tags(match):
+        # 3. Clean and size img tags with explicit width attribute bounded by target_width
+        def clean_and_size_img_tags(match):
             tag = match.group(0)
-            tag = re.sub(r'width\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'height\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'style\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
-            return tag
+            src_m = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+            src_val = src_m.group(1) if src_m else ""
+            w_val = img_dims.get(src_val, target_width)
+            return f'<img src="{src_val}" width="{w_val}" style="max-width: 100%; border-radius: 8px; margin: 10px 0;" />'
             
-        cleaned = re.compile(r'<img\s+[^>]+>', re.IGNORECASE).sub(clean_img_tags, html_content)
+        cleaned = re.compile(r'<img\s+[^>]+>', re.IGNORECASE).sub(clean_and_size_img_tags, html_content)
         
-        # 3. Format markdown and syntax if mixed with HTML
+        # 4. Format markdown and syntax if mixed with HTML
         formatted = self._format_content(cleaned, is_answer=is_answer, default_color=default_color, font_size=font_size)
         
-        # 4. Set document default font and style sheet so ALL tags (p, div, li, span, code, pre) inherit
+        # 5. Set document default font and style sheet so ALL tags inherit
         browser.document().setDefaultFont(QFont(self._font_family, font_size))
         browser.document().setDefaultStyleSheet(f"""
             body, div, p, span, li, td, th, code, pre {{
@@ -1040,7 +1136,7 @@ class TextReviewWidget(QWidget):
                 line-height: 1.6;
             }}
             img {{
-                width: 100%;
+                max-width: 100%;
                 margin-top: 10px;
                 border-radius: 8px;
             }}
@@ -1077,6 +1173,9 @@ class TextReviewWidget(QWidget):
         formatted = re.sub(r'font-size\s*:\s*[^;\'"]+;?', '', formatted, flags=re.IGNORECASE)
         formatted = re.sub(r'style\s*=\s*["\']\s*["\']', '', formatted, flags=re.IGNORECASE)
         formatted = re.sub(r'<span>(.*?)</span>', r'\1', formatted, flags=re.DOTALL | re.IGNORECASE)
+
+        # Convert Markdown image ![alt](url) to <img src="url" />
+        formatted = re.sub(r'!\[[^\]]*\]\(([^)]+)\)', r'<img src="\1" />', formatted)
 
         # 1. Convert ==highlight== syntax to <mark> tags
         formatted = re.sub(r'==([^=\n]+)==', r'<mark>\1</mark>', formatted)
@@ -1211,10 +1310,42 @@ class ScratchpadOverlay(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setVisible(False)
         self.strokes = []
+        self.redo_stack = []
         self.current_stroke = []
         self.active_color = QColor("#FF4444")
         self.active_width = 2.0
         self.mode = "pen"  # "pen" or "eraser"
+        if parent is not None:
+            try:
+                parent.installEventFilter(self)
+            except Exception:
+                pass
+            self.sync_geometry_with_parent()
+
+    def setParent(self, parent):
+        old_p = self.parent()
+        if old_p is not None:
+            try:
+                old_p.removeEventFilter(self)
+            except Exception:
+                pass
+        super().setParent(parent)
+        if parent is not None:
+            try:
+                parent.installEventFilter(self)
+            except Exception:
+                pass
+            self.sync_geometry_with_parent()
+
+    def eventFilter(self, obj, event):
+        if obj == self.parent() and event.type() == QEvent.Resize:
+            self.sync_geometry_with_parent()
+        return super().eventFilter(obj, event)
+
+    def sync_geometry_with_parent(self):
+        p = self.parent()
+        if p is not None:
+            self.setGeometry(0, 0, p.width(), p.height())
         
     def set_pen_active(self, active, mode="pen"):
         self.mode = mode
@@ -1230,26 +1361,66 @@ class ScratchpadOverlay(QWidget):
         else:
             self.setCursor(Qt.ArrowCursor)
 
+    def undo(self):
+        if self.strokes:
+            self.redo_stack.append(self.strokes.pop())
+            self.update()
+            return True
+        return False
+
+    def redo(self):
+        if self.redo_stack:
+            self.strokes.append(self.redo_stack.pop())
+            self.update()
+            return True
+        return False
+
+    def has_undo(self):
+        return bool(self.strokes)
+
+    def has_redo(self):
+        return bool(self.redo_stack)
+
     def wheelEvent(self, e):
-        # 1. Forward Ctrl+Wheel to parent for zoom in/out
+        # 1. Forward Ctrl+Wheel to parent/ancestor for zoom in/out
         if e.modifiers() & Qt.ControlModifier:
             p = self.parent()
-            if p and hasattr(p, "wheelEvent"):
-                p.wheelEvent(e)
+            while p and not hasattr(p, "zoom_in") and not hasattr(p, "wheelEvent"):
+                p = p.parent()
+            if p:
+                if hasattr(p, "zoom_in") and hasattr(p, "zoom_out"):
+                    if e.angleDelta().y() > 0:
+                        p.zoom_in()
+                    elif e.angleDelta().y() < 0:
+                        p.zoom_out()
+                    e.accept()
+                    return
+                elif hasattr(p, "wheelEvent"):
+                    p.wheelEvent(e)
+                    e.accept()
+                    return
+
+        # 2. Forward vertical wheel scrolling to QScrollArea
+        p = self.parent()
+        sa = None
+        while p:
+            if hasattr(p, "scroll_area") and p.scroll_area:
+                sa = p.scroll_area
+                break
+            if isinstance(p, QScrollArea):
+                sa = p
+                break
+            p = p.parent()
+
+        if sa and sa.verticalScrollBar():
+            sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.angleDelta().y())
             e.accept()
             return
-        # 2. Forward vertical wheel scrolling to TextReviewWidget scroll area
-        p = self.parent()
-        if p and hasattr(p, "scroll_area") and p.scroll_area:
-            sa = p.scroll_area
-            if sa.verticalScrollBar():
-                sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.angleDelta().y())
-                e.accept()
-                return
         e.ignore()
             
     def clear(self):
         self.strokes = []
+        self.redo_stack = []
         self.current_stroke = []
         self.update()
 
@@ -1326,6 +1497,7 @@ class ScratchpadOverlay(QWidget):
                     "points": self.current_stroke
                 })
                 self.current_stroke = []
+                self.redo_stack.clear()
             self.update()
             e.accept()
         else:

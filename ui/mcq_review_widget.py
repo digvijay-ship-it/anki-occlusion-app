@@ -269,8 +269,9 @@ class MCQReviewWidget(QWidget):
         self._option_buttons = []
 
         self._setup_ui()
-        self.scratchpad = ScratchpadOverlay(self)
-        self.scratchpad.setGeometry(self.rect())
+        self.scratchpad = ScratchpadOverlay(self.scroll_content)
+        self.scratchpad.setGeometry(0, 0, self.scroll_content.width(), self.scroll_content.height())
+        self.scratchpad.raise_()
 
     def _setup_ui(self):
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
@@ -592,6 +593,7 @@ class MCQReviewWidget(QWidget):
 
         if hasattr(self, "scratchpad"):
             self.scratchpad.clear()
+            self.scratchpad.sync_geometry_with_parent()
 
         self.q_browser.document().setBaseUrl(get_base_url())
         self.sol_browser.document().setBaseUrl(get_base_url())
@@ -733,6 +735,9 @@ class MCQReviewWidget(QWidget):
         # Render Solution HTML
         self._render_solution_html()
         self.solution_container.show()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
+            self.scratchpad.raise_()
 
     def hide_answer(self):
         """Hide solution and reset options to idle unrevealed state."""
@@ -748,6 +753,8 @@ class MCQReviewWidget(QWidget):
 
         self.solution_container.hide()
         self.sol_browser.clear()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
 
     def _on_open_mindmap(self, tag=None):
         p = self.parent()
@@ -800,7 +807,7 @@ class MCQReviewWidget(QWidget):
             super().keyPressEvent(e)
 
     def _scale_images_in_html(self, html_text: str, zoom_factor: float = 1.0) -> str:
-        """Scales all img tags (including Base64 and local paths) directly proportional to zoom factor."""
+        """Scales all img tags (including Base64 and local paths) bounded by available content width."""
         if not html_text:
             return ""
 
@@ -811,6 +818,15 @@ class MCQReviewWidget(QWidget):
         if not hasattr(self, "_dim_cache"):
             self._dim_cache = {}
         dim_cache = self._dim_cache
+
+        viewport_w = (
+            self.scroll_area.viewport().width()
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+            else self.width()
+        )
+        if viewport_w <= 100:
+            viewport_w = 900
+        avail_w = max(200, viewport_w - 100)
 
         def repl_img(match):
             full_tag = match.group(0)
@@ -842,7 +858,10 @@ class MCQReviewWidget(QWidget):
                     w = 340
                 dim_cache[src] = w
 
-            scaled_w = max(60, min(920, int(w * zoom_factor * 1.35)))
+            if w > avail_w:
+                scaled_w = avail_w
+            else:
+                scaled_w = min(avail_w, max(60, int(w * zoom_factor)))
             return f'<img width="{scaled_w}" src="{src}" style="max-width: 100%; border-radius: 6px; background: white; padding: 4px; border: 1px solid rgba(255,255,255,0.15); margin: 6px 0;" />'
 
         html_text = re.sub(r'!\[[^\]]*\]\(([^)]+)\)', r'<img src="\1" />', html_text)
@@ -1011,7 +1030,7 @@ class MCQReviewWidget(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if hasattr(self, "scratchpad"):
-            self.scratchpad.setGeometry(self.rect())
+            self.scratchpad.sync_geometry_with_parent()
         if hasattr(self, "q_browser"):
             self.q_browser._adjust_height()
         if hasattr(self, "sol_browser"):
