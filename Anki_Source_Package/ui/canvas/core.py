@@ -48,6 +48,7 @@ class OcclusionCanvas(
         # This eliminates the implicit background fill pass Qt does before paintEvent,
         # which is the main cause of scroll lag on large canvas widgets.
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
 
         # ── image sources ─────────────────────────────────────────────────────
@@ -111,6 +112,11 @@ class OcclusionCanvas(
         self._ink_undo_stack = []
         self._ink_redo_stack = []
         self._ink_pre_erase_snapshot = None
+        self._ink_layer_pixmap = None
+        self._ink_layer_dirty = True
+        self._ink_live_segment = None
+        self._ink_last_mid = None
+        self._ink_path_cache = {}
 
 
 

@@ -330,6 +330,8 @@ class CanvasStateMixin:
     def _on_zoom(self):
         # Don't clear _spx_cache here — _get_scaled_page checks scale per entry
         self._resize_canvas()
+        if hasattr(self, "_invalidate_ink_layer"):
+            self._invalidate_ink_layer()
         self.update()
         self.zoom_changed.emit(self._scale)
         if getattr(self, "_ink_active", False) and hasattr(self, "_update_ink_cursor"):
@@ -346,6 +348,8 @@ class CanvasStateMixin:
         stale FastTransformation pixmaps miss lazily on the next paint and
         get replaced with SmoothTransformation versions one page at a time.
         """
+        if hasattr(self, "_invalidate_ink_layer"):
+            self._invalidate_ink_layer()
         self.update()
 
     def set_tool(self, tool: str):
@@ -435,13 +439,10 @@ class CanvasStateMixin:
             b["revealed"] = False
         if mode == "review":
             self.setFocusPolicy(Qt.NoFocus)
-            self.setCursor(
-                QCursor(
-                    Qt.CrossCursor
-                    if getattr(self, "_ink_active", False)
-                    else Qt.PointingHandCursor
-                )
-            )
+            if getattr(self, "_ink_active", False) and hasattr(self, "_update_ink_cursor"):
+                self._update_ink_cursor()
+            else:
+                self.setCursor(QCursor(Qt.PointingHandCursor))
         else:
             self.setFocusPolicy(Qt.StrongFocus)
             self.setCursor(QCursor(Qt.CrossCursor))

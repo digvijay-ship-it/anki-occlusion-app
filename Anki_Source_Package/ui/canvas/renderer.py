@@ -592,6 +592,12 @@ class CanvasRendererMixin:
                 path.lineTo(QPointF(pt.x() * sc, pt.y() * sc))
         return path
 
+    def _invalidate_ink_layer(self):
+        pass
+
+    def _ensure_ink_layer(self):
+        pass
+
     def _draw_ink_layer(self, p: QPainter, clip=None):
         if not self._ink_strokes and not self._ink_current:
             return
@@ -599,12 +605,11 @@ class CanvasRendererMixin:
         p.setRenderHint(QPainter.Antialiasing)
         pen_w = max(1.0, self._ink_width * self._scale)
         sc = self._scale
-        
-        # Initialize the path cache if not present
+
         if not hasattr(self, "_ink_path_cache"):
             self._ink_path_cache = {}
 
-        # Draw completed strokes using cached QPainterPath with bounding-box culling
+        # 1. Draw completed strokes using cached QPainterPath with bounding-box culling
         pad = max(4.0, pen_w + 6.0)
         for stroke in self._ink_strokes:
             if len(stroke) < 2:
@@ -642,24 +647,26 @@ class CanvasRendererMixin:
                 
             p.setPen(QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             p.drawPath(path)
-            
-        # Draw current stroke (live drawing)
+
+        # 2. Draw live stroke segment
         if self._ink_current and len(self._ink_current) >= 2:
             color = self._ink_current[0]
             pts = self._ink_current[1:]
             if pts:
                 p.setPen(QPen(color, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-                impl = getattr(self, "_ink_implementation", "filtered")
-                if impl == "classic":
+                stable_path = getattr(self, "_ink_current_stable_path", None)
+                live_seg = getattr(self, "_ink_live_segment", None)
+                drawn = False
+                if stable_path is not None and not stable_path.isEmpty():
+                    p.drawPath(stable_path)
+                    drawn = True
+                if live_seg is not None and not live_seg.isEmpty():
+                    p.drawPath(live_seg)
+                    drawn = True
+                if not drawn:
                     if len(pts) == 1:
                         p.drawPoint(QPointF(pts[0].x() * sc, pts[0].y() * sc))
                     else:
-                        path = self._smooth_points_to_path(pts, sc)
-                        p.drawPath(path)
-                else:
-                    if hasattr(self, "_ink_current_path") and not self._ink_current_path.isEmpty():
-                        p.drawPath(self._ink_current_path)
-                    elif len(pts) >= 2:
                         path = self._smooth_points_to_path(pts, sc)
                         p.drawPath(path)
         p.restore()

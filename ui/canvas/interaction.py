@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QWidget, QScrollArea, QApplication, QLabel
-from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, QTimer, QRect, QRectF, QPointF, pyqtSignal, QEvent
 from PyQt5.QtGui import (
     QPainter,
     QColor,
@@ -297,21 +297,28 @@ class CanvasInteractionMixin:
         if self._ink_active:
             self._clear_pending_ink_mask_action()
         self._ink_active = not self._ink_active
-        self._ink_mode = "pen"
+        if not hasattr(self, "_ink_mode") or not self._ink_mode:
+            self._ink_mode = "pen"
         if self._ink_active:
             self._update_ink_cursor()
         else:
             self.setCursor(QCursor(Qt.PointingHandCursor))
 
-    def ink_set_active(self, active: bool):
+    def ink_set_active(self, active: bool, mode: str = None):
         if not active:
             self._clear_pending_ink_mask_action()
+        prev = getattr(self, "_ink_active", False)
         self._ink_active = bool(active)
-        self._ink_mode = "pen"
+        if mode is not None:
+            self._ink_mode = mode
+        elif not hasattr(self, "_ink_mode") or not self._ink_mode:
+            self._ink_mode = "pen"
         if self._ink_active:
             self._update_ink_cursor()
         else:
             self.setCursor(QCursor(Qt.PointingHandCursor))
+        if prev != self._ink_active and hasattr(self, "ink_changed"):
+            self.ink_changed.emit()
 
     def ink_set_mode(self, mode: str):
         self._ink_mode = mode
@@ -363,6 +370,7 @@ class CanvasInteractionMixin:
             i -= 1
             
         if erased_any:
+            self._invalidate_ink_layer()
             self.repaint()
 
     def ink_cycle_color(self):
@@ -383,6 +391,7 @@ class CanvasInteractionMixin:
         self._ink_current.clear()
         if hasattr(self, "_ink_path_cache"):
             self._ink_path_cache.clear()
+        self._invalidate_ink_layer()
         self._clear_pending_ink_mask_action()
         self.update()
         self._show_toast("🧹 Ink cleared")
@@ -393,6 +402,7 @@ class CanvasInteractionMixin:
         self._ink_current.clear()
         if hasattr(self, "_ink_path_cache"):
             self._ink_path_cache.clear()
+        self._invalidate_ink_layer()
         self._ink_input_kind = None
         self._clear_pending_ink_mask_action()
         if hasattr(self, "_ink_undo_stack"):
@@ -445,6 +455,7 @@ class CanvasInteractionMixin:
             self._ink_strokes = self._ink_undo_stack.pop()
             if hasattr(self, "_ink_path_cache"):
                 self._ink_path_cache.clear()
+            self._invalidate_ink_layer()
             self.update()
 
     def ink_redo_stroke(self):
@@ -455,6 +466,7 @@ class CanvasInteractionMixin:
             self._ink_strokes = self._ink_redo_stack.pop()
             if hasattr(self, "_ink_path_cache"):
                 self._ink_path_cache.clear()
+            self._invalidate_ink_layer()
             self.update()
 
     @property
@@ -468,8 +480,10 @@ class CanvasInteractionMixin:
         # Reset incremental path caches
         self._ink_current_stable_path = QPainterPath()
         self._ink_current_path = QPainterPath()
+        self._ink_live_segment = None
         sc = self._scale
         p0 = QPointF(ip.x() * sc, ip.y() * sc)
+        self._ink_last_mid = p0
         self._ink_current_stable_path.moveTo(p0)
         self._ink_current_path.moveTo(p0)
 
@@ -487,10 +501,12 @@ class CanvasInteractionMixin:
                 return
 
         self._ink_current.append(ip)
+        sc = self._scale
+        pen_w = max(1.0, self._ink_width * sc)
+        pen_pad = max(2.0, pen_w) + 8  # generous AA padding
         
         # Incremental path building for non-classic modes
         if impl != "classic":
-            sc = self._scale
             p_new = QPointF(ip.x() * sc, ip.y() * sc)
             if impl in ("incremental", "filtered"):
                 pts_count = len(self._ink_current) - 1
@@ -498,37 +514,64 @@ class CanvasInteractionMixin:
                     p0 = QPointF(self._ink_current[1].x() * sc, self._ink_current[1].y() * sc)
                     p1 = p_new
                     mid = QPointF((p0.x() + p1.x()) / 2.0, (p0.y() + p1.y()) / 2.0)
+                    
+                    seg = QPainterPath()
+                    seg.moveTo(p0)
+                    seg.lineTo(mid)
+                    seg.lineTo(p1)
+                    self._ink_live_segment = seg
+                    self._ink_last_mid = mid
+                    
                     self._ink_current_stable_path = QPainterPath()
                     self._ink_current_stable_path.moveTo(p0)
                     self._ink_current_stable_path.lineTo(mid)
+                    self._ink_current_path = seg
                     
-                    self._ink_current_path = QPainterPath(self._ink_current_stable_path)
-                    self._ink_current_path.lineTo(p1)
+                    xs = [p0.x(), mid.x(), p1.x()]
+                    ys = [p0.y(), mid.y(), p1.y()]
+                    dirty = QRect(
+                        int(math.floor(min(xs) - pen_pad)),
+                        int(math.floor(min(ys) - pen_pad)),
+                        int(math.ceil(max(xs) - min(xs) + 2 * pen_pad)),
+                        int(math.ceil(max(ys) - min(ys) + 2 * pen_pad)),
+                    )
+                    self.update(dirty)
+                    return
                 elif pts_count >= 3:
                     p_prev = QPointF(self._ink_current[-2].x() * sc, self._ink_current[-2].y() * sc)
                     p_curr = p_new
                     mid = QPointF((p_prev.x() + p_curr.x()) / 2.0, (p_prev.y() + p_curr.y()) / 2.0)
-                    self._ink_current_stable_path.quadTo(p_prev, mid)
                     
-                    self._ink_current_path = QPainterPath(self._ink_current_stable_path)
-                    self._ink_current_path.lineTo(p_curr)
+                    seg = QPainterPath()
+                    seg.moveTo(mid)
+                    seg.lineTo(p_curr)
+                    self._ink_live_segment = seg
+                    
+                    xs = [self._ink_last_mid.x(), p_prev.x(), mid.x(), p_curr.x()]
+                    ys = [self._ink_last_mid.y(), p_prev.y(), mid.y(), p_curr.y()]
+                    self._ink_last_mid = mid
+                    
+                    self._ink_current_stable_path.quadTo(p_prev, mid)
+                    self._ink_current_path = seg
+                    
+                    dirty = QRect(
+                        int(math.floor(min(xs) - pen_pad)),
+                        int(math.floor(min(ys) - pen_pad)),
+                        int(math.ceil(max(xs) - min(xs) + 2 * pen_pad)),
+                        int(math.ceil(max(ys) - min(ys) + 2 * pen_pad)),
+                    )
+                    self.update(dirty)
+                    return
             elif impl == "polyline":
                 self._ink_current_path.lineTo(p_new)
 
-        # ⚡ FIX: Only repaint the tiny bounding rect of the last segment,
-        # not the entire canvas. This is the primary cause of pen lag —
-        # a full-canvas update() on every mouseMoveEvent is 10–50x more work
-        # than needed. A 2-point segment bbox is typically <50×50px.
         pts = self._ink_current[1:]
         if len(pts) >= 2:
             p0, p1 = pts[-2], pts[-1]
-            pen_w = max(2.0, self._ink_width * self._scale) + 10  # generous AA padding
-            x0 = math.floor(min(p0.x(), p1.x()) * self._scale - pen_w)
-            y0 = math.floor(min(p0.y(), p1.y()) * self._scale - pen_w)
-            x1 = math.ceil(max(p0.x(), p1.x()) * self._scale + pen_w)
-            y1 = math.ceil(max(p0.y(), p1.y()) * self._scale + pen_w)
-            from PyQt5.QtCore import QRect
-
+            x0 = math.floor(min(p0.x(), p1.x()) * sc - pen_pad)
+            y0 = math.floor(min(p0.y(), p1.y()) * sc - pen_pad)
+            x1 = math.ceil(max(p0.x(), p1.x()) * sc + pen_pad)
+            y1 = math.ceil(max(p0.y(), p1.y()) * sc + pen_pad)
             self.update(QRect(x0, y0, x1 - x0, y1 - y0))
         else:
             self.update()
@@ -547,24 +590,33 @@ class CanvasInteractionMixin:
                 xs = [pt.x() for pt in pts]
                 ys = [pt.y() for pt in pts]
                 stroke._bbox = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
-                pen_w = max(2.0, self._ink_width * self._scale) + 10
-                sc_xs = [pt.x() * self._scale for pt in pts]
-                sc_ys = [pt.y() * self._scale for pt in pts]
-                import math
-                from PyQt5.QtCore import QRect
-                dirty = QRect(
-                    int(math.floor(min(sc_xs) - pen_w)),
-                    int(math.floor(min(sc_ys) - pen_w)),
-                    int(math.ceil(max(sc_xs) - min(sc_xs) + 2 * pen_w)),
-                    int(math.ceil(max(sc_ys) - min(sc_ys) + 2 * pen_w)),
-                )
                 self._ink_strokes.append(stroke)
+                
+                sc = self._scale
+                pen_w = max(1.0, self._ink_width * sc)
+                pen_pad = max(2.0, pen_w) + 10
+                
                 self._ink_current = []
+                self._ink_live_segment = None
+                self._ink_current_stable_path = QPainterPath()
+                self._ink_current_path = QPainterPath()
+                self._ink_last_mid = None
                 self._ink_input_kind = None
+                
+                sc_xs = [pt.x() * sc for pt in pts]
+                sc_ys = [pt.y() * sc for pt in pts]
+                dirty = QRect(
+                    int(math.floor(min(sc_xs) - pen_pad)),
+                    int(math.floor(min(sc_ys) - pen_pad)),
+                    int(math.ceil(max(sc_xs) - min(sc_xs) + 2 * pen_pad)),
+                    int(math.ceil(max(sc_ys) - min(sc_ys) + 2 * pen_pad)),
+                )
                 self.update(dirty)
                 return
             self._ink_strokes.append(stroke)
         self._ink_current = []
+        self._ink_live_segment = None
+        self._ink_last_mid = None
         self._ink_input_kind = None
         self.update()
 
@@ -1043,6 +1095,8 @@ class CanvasInteractionMixin:
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        if hasattr(self, "_invalidate_ink_layer"):
+            self._invalidate_ink_layer()
 
     def _update_cursor_for_position(self, pos):
         if getattr(self, "_ink_active", False):
