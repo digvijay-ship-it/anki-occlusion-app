@@ -2439,7 +2439,7 @@ class HomeScreen(QWidget):
 
         from PyQt5.QtCore import QSettings
         settings = QSettings("AnkiOcclusion", "App")
-        saved_impl = settings.value("review/pen_implementation", "classic")
+        saved_impl = settings.value("review/pen_implementation", "filtered")
 
         from PyQt5.QtWidgets import QComboBox
         self._btn_pen_perf = QComboBox()
@@ -2453,7 +2453,7 @@ class HomeScreen(QWidget):
         self._btn_pen_perf.setObjectName("font_btn")
         
         _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
         self._btn_pen_perf.currentIndexChanged.connect(self._on_classic_pen_perf_changed)
         pen_perf_layout.addWidget(self._btn_pen_perf, 0, Qt.AlignRight)
         layout.addWidget(pen_perf_box)
@@ -2714,9 +2714,9 @@ class HomeScreen(QWidget):
         if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
             self._btn_pen_perf.blockSignals(True)
             from PyQt5.QtCore import QSettings
-            saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "classic")
+            saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "filtered")
             _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-            self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+            self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
             self._btn_pen_perf.blockSignals(False)
         self._refresh_classic_archive_display()
         self._refresh_gdrive_display()

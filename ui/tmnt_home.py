@@ -819,8 +819,8 @@ class TMNTMissionBanner(QFrame):
 
     def sync_timer(self):
         try:
-            from ui.canvas.retro_effects import _home_animations_enabled
-            self.set_animation_enabled(_home_animations_enabled())
+            from ui.canvas.retro_effects import animations_suspended
+            self.set_animation_enabled(not animations_suspended())
         except Exception:
             self.set_animation_enabled(True)
 
@@ -4009,7 +4009,7 @@ class TMNTTopBar(QFrame):
 
         from PyQt5.QtCore import QSettings
         settings = QSettings("AnkiOcclusion", "App")
-        saved_impl = settings.value("review/pen_implementation", "classic")
+        saved_impl = settings.value("review/pen_implementation", "filtered")
 
         from PyQt5.QtWidgets import QComboBox
         self._btn_pen_perf = QComboBox()
@@ -4045,7 +4045,7 @@ class TMNTTopBar(QFrame):
         )
         
         _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
         self._btn_pen_perf.currentIndexChanged.connect(self._on_tmnt_pen_perf_changed)
         pen_layout.addWidget(self._btn_pen_perf)
         panel_l.addWidget(pen_box)
@@ -4526,9 +4526,9 @@ class TMNTTopBar(QFrame):
             if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
                 self._btn_pen_perf.blockSignals(True)
                 from PyQt5.QtCore import QSettings
-                saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "classic")
+                saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "filtered")
                 _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-                self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+                self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
                 self._btn_pen_perf.blockSignals(False)
             self._refresh_gdrive_display()
         

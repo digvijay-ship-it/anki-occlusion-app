@@ -1599,13 +1599,14 @@ class HomeScreen(QWidget):
         rev.show()
         QTimer.singleShot(0, rev.canvas.setFocus)
 
-    def show_review_sequential(self, groups, data):
+    def show_review_sequential(self, groups, data, is_practice=False):
         """Review card groups one PDF at a time.
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
         self._sequential_groups = list(groups)
         self._past_sequential_sessions = []
         self._current_sequential_group = None
         self._sequential_data = data
+        self._sequential_is_practice = bool(is_practice)
 
         def _clear_ram():
             from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
@@ -1627,7 +1628,7 @@ class HomeScreen(QWidget):
                 return
             batch = self._sequential_groups.pop(0)
             self._current_sequential_group = batch
-            self.show_review(batch, data, _on_batch_done=_on_done)
+            self.show_review(batch, data, _on_batch_done=_on_done, is_practice=self._sequential_is_practice)
 
         self._sequential_on_done = _on_done
         _launch_next()
@@ -1658,6 +1659,7 @@ class HomeScreen(QWidget):
             self._sequential_data,
             _on_batch_done=self._sequential_on_done,
             state_to_restore=prev_state,
+            is_practice=prev_state.get("is_practice", getattr(self, "_sequential_is_practice", False)),
         )
 
     def hide_review(self):
@@ -2437,7 +2439,7 @@ class HomeScreen(QWidget):
 
         from PyQt5.QtCore import QSettings
         settings = QSettings("AnkiOcclusion", "App")
-        saved_impl = settings.value("review/pen_implementation", "classic")
+        saved_impl = settings.value("review/pen_implementation", "filtered")
 
         from PyQt5.QtWidgets import QComboBox
         self._btn_pen_perf = QComboBox()
@@ -2451,7 +2453,7 @@ class HomeScreen(QWidget):
         self._btn_pen_perf.setObjectName("font_btn")
         
         _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
         self._btn_pen_perf.currentIndexChanged.connect(self._on_classic_pen_perf_changed)
         pen_perf_layout.addWidget(self._btn_pen_perf, 0, Qt.AlignRight)
         layout.addWidget(pen_perf_box)
@@ -2712,9 +2714,9 @@ class HomeScreen(QWidget):
         if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
             self._btn_pen_perf.blockSignals(True)
             from PyQt5.QtCore import QSettings
-            saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "classic")
+            saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "filtered")
             _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-            self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 0))
+            self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
             self._btn_pen_perf.blockSignals(False)
         self._refresh_classic_archive_display()
         self._refresh_gdrive_display()
@@ -2921,11 +2923,44 @@ class HomeScreen(QWidget):
         if hasattr(win, "change_font_size"):
             win.change_font_size(direction)
 
+    def _open_card_browser(self):
+        if getattr(self, "_active_review", None) is not None:
+            return
+        # If TMNT layout is active
+        if getattr(self, "_tmnt_layout", None) and self._tmnt_layout.isVisible():
+            if hasattr(self._tmnt_layout, "main") and self._tmnt_layout.main:
+                if getattr(self._tmnt_layout.main, "deck", None):
+                    self._tmnt_layout.main._open_card_browser()
+                    return
+                if hasattr(self._tmnt_layout, "sidebar") and getattr(self._tmnt_layout.sidebar, "_selected_deck", None):
+                    self._tmnt_layout.main.load_deck(self._tmnt_layout.sidebar._selected_deck)
+                    self._tmnt_layout.main._open_card_browser()
+                    return
+                self._tmnt_layout.main._open_card_browser()
+                return
+        # Classic layout
+        dv = getattr(self, "deck_view", None) or getattr(self, "_deck_view", None)
+        if dv:
+            if getattr(dv, "deck", None):
+                dv._open_card_browser()
+                return
+            dt = getattr(self, "deck_tree", None) or getattr(self, "_deck_tree", None)
+            if dt and getattr(dt, "_selected_deck", None):
+                dv.load_deck(dt._selected_deck)
+                dv._open_card_browser()
+                return
+            dv._open_card_browser()
+
     def keyPressEvent(self, e):
         key = e.key()
         mods = e.modifiers()
         ctrl = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
+        if shortcut_manager.event_matches(e, "home.browse_cards"):
+            if getattr(self, "_active_review", None) is None:
+                self._open_card_browser()
+                e.accept()
+                return
         if shortcut_manager.event_matches(e, "home.search_decks") or (ctrl and not shift and key in (Qt.Key_F, Qt.Key_K)):
             if getattr(self, "_active_review", None) is None:
                 if getattr(self, "_tmnt_layout", None) and hasattr(self._tmnt_layout, "sidebar") and hasattr(self._tmnt_layout.sidebar, "_focus_search"):
@@ -3203,28 +3238,30 @@ class HomeScreen(QWidget):
     def _process_recovery_summary(self, summary, startup):
         has_drafts = bool(summary.get("drafts"))
         has_events = bool(summary.get("review_events"))
-        if startup and has_events and not has_drafts:
-            events = summary.get("review_events", []) or []
-            if events and all(event.get("status") == "recoverable" for event in events):
-                print(
-                    "[DEBUG][recovery] startup_auto_review_recover_start "
-                    f"events={len(events)}"
-                )
-                result = recovery_manager.apply_pending_review_events(store.get())
-                if result.get("applied", 0) > 0:
-                    store.mark_dirty()
-                    store.save_force(async_save=True)
-                print(
-                    "[DEBUG][recovery] startup_auto_review_recover "
-                    f"applied={result.get('applied', 0)} "
-                    f"already={result.get('already_applied', 0)} "
-                    f"blocked={len(result.get('blocked', []))}"
-                )
-                summary = recovery_manager.scan_recovery(store.get(), startup=startup)
-                has_drafts = bool(summary.get("drafts"))
-                has_events = bool(summary.get("review_events"))
-                if not has_drafts and not has_events:
-                    return True
+        if startup and has_events:
+            print(
+                "[DEBUG][recovery] startup_auto_review_recover_start "
+                f"events={len(summary.get('review_events', []))}"
+            )
+            result = recovery_manager.apply_pending_review_events(store.get())
+            if result.get("applied", 0) > 0:
+                store.mark_dirty()
+                store.save_force(async_save=True)
+            print(
+                "[DEBUG][recovery] startup_auto_review_recover "
+                f"applied={result.get('applied', 0)} "
+                f"already={result.get('already_applied', 0)} "
+                f"blocked={len(result.get('blocked', []))}"
+            )
+            summary = recovery_manager.scan_recovery(store.get(), startup=startup)
+            has_drafts = bool(summary.get("drafts"))
+            has_events = bool(summary.get("review_events"))
+
+        if startup:
+            # Silent startup: only show dialog if there are actual un-saved editor drafts waiting to be recovered
+            if not has_drafts:
+                return True
+
         if not has_drafts and not has_events:
             if not startup:
                 QMessageBox.information(
@@ -3673,6 +3710,7 @@ class HomeScreen(QWidget):
                 "This will scan your Google Drive and delete any PDFs or images that are NOT "
                 "referenced by any cards in your active database. This cannot be undone.",
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
             != QMessageBox.Yes
         ):

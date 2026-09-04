@@ -284,6 +284,37 @@ class _DeckTreeWidget(QTreeWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     def keyPressEvent(self, e):
+        from services import shortcut_manager
+        if shortcut_manager.event_matches(e, "home.browse_cards"):
+            sel_deck = getattr(self, "_selected_deck", None)
+            p = self.parent()
+            while p is not None:
+                if not sel_deck:
+                    sel_deck = getattr(p, "_selected_deck", None)
+                if hasattr(p, "main") and hasattr(p.main, "_open_card_browser"):
+                    if not getattr(p.main, "deck", None) and sel_deck:
+                        p.main.load_deck(sel_deck, getattr(p.main, "_data", None) or getattr(p, "_data", None))
+                    p.main._open_card_browser()
+                    e.accept()
+                    return
+                if hasattr(p, "deck_view") and getattr(p, "deck_view", None):
+                    if not getattr(p.deck_view, "deck", None) and sel_deck:
+                        p.deck_view.load_deck(sel_deck, getattr(p, "_data", None) or getattr(p.deck_view, "_data", None))
+                    p.deck_view._open_card_browser()
+                    e.accept()
+                    return
+                if hasattr(p, "_open_card_browser"):
+                    p._open_card_browser()
+                    e.accept()
+                    return
+                p = p.parent()
+            win = self.window()
+            if win and hasattr(win, "centralWidget"):
+                home = win.centralWidget()
+                if home and hasattr(home, "_open_card_browser"):
+                    home._open_card_browser()
+                    e.accept()
+                    return
         if e.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
                        Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape,
                        Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Home, Qt.Key_End,
@@ -860,11 +891,22 @@ class DeckTree(QWidget):
         menu = QMenu(self)
         if item:
             did = self._get_id_from_item(item)
-            menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
-            menu.addAction("＋ Sub-deck", lambda: self._new_deck(did))
-            menu.addAction("📥 Import Cards...", lambda: self._import_cards(did))
-            menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             deck = self._get_deck_from_item(item)
+            menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
+            menu.addAction("🎯 Practice Mode (All Cards)", lambda: self._practice_deck_by_id(did))
+            menu.addAction("＋ Sub-deck", lambda: self._new_deck(did))
+            source_p = (deck.get("source_folder_path") if deck and deck.get("source_folder_path") and os.path.isdir(deck.get("source_folder_path")) else None) or (deck.get("source_file_path") or deck.get("source_folder_path") if deck else None)
+            if source_p and os.path.exists(source_p):
+                src_name = os.path.basename(source_p)
+                action_text = f"🔄 Sync Folder ('{src_name}')" if os.path.isdir(source_p) else f"🔄 Sync Deck ('{src_name}')"
+                menu.addAction(action_text, lambda: self._sync_deck_from_source(did))
+                menu.addAction("📄 Change Linked File (JSON / CSV)...", lambda: self._link_source_file(did))
+                menu.addAction("📁 Change Linked Folder...", lambda: self._link_source_folder(did))
+                menu.addAction("❌ Unlink Source (Clear Link)", lambda: self._unlink_source(did))
+            else:
+                menu.addAction("📄 Link to Source File (JSON / CSV)...", lambda: self._link_source_file(did))
+                menu.addAction("📁 Link to Source Folder...", lambda: self._link_source_folder(did))
+            menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             if deck:
                 bookmarked = deck.get("bookmarked", False)
                 action_text = "🔖 Remove Bookmark" if bookmarked else "🔖 Bookmark (Unmasked)"
@@ -875,6 +917,24 @@ class DeckTree(QWidget):
             menu.addAction("＋ New Top-level Deck", lambda: self._new_deck(None))
             menu.addAction("📥 Import Text / CSV Deck...", lambda: self._import_cards(None))
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _practice_deck_by_id(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        self._select_by_id(deck_id)
+        self.deck_selected.emit(deck)
+        home = self._find_home()
+        if home:
+            active_dv = None
+            if hasattr(home, "_tmnt_layout") and home._tmnt_layout and hasattr(home._tmnt_layout, "main"):
+                active_dv = home._tmnt_layout.main
+            elif hasattr(home, "deck_view") and home.deck_view:
+                active_dv = home.deck_view
+            if active_dv:
+                active_dv.deck = deck
+                active_dv._deck_id = deck_id
+                active_dv._practice_deck()
 
     def _import_cards(self, deck_id=None):
         deck = find_deck_by_id(deck_id, self._data.get("decks", [])) if deck_id is not None else None
@@ -895,12 +955,145 @@ class DeckTree(QWidget):
                 self.refresh()
         dlg.deleteLater()
 
+    def _link_source_file(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        fpath, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Select Flashcard File to Link with '{deck.get('name')}'",
+            "",
+            "Flashcard Files (*.json *.csv *.tsv);;JSON (*.json);;CSV (*.csv);;TSV (*.tsv);;All Files (*.*)"
+        )
+        if not fpath:
+            return
+        norm_p = os.path.normpath(fpath).replace("\\", "/")
+        deck["source_file_path"] = norm_p
+        deck["source_folder_path"] = norm_p
+        store.mark_dirty()
+        store.save_force(async_save=True)
+        reply = QMessageBox.question(
+            self,
+            "File Linked",
+            f"Successfully linked '{deck.get('name')}' to:\n{norm_p}\n\nDo you want to sync this deck now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self._sync_deck_from_source(deck_id)
+
+    def _link_source_folder(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            f"Select Source Folder to Link with '{deck.get('name')}'",
+            "",
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if not folder:
+            return
+        norm_p = os.path.normpath(folder).replace("\\", "/")
+        deck["source_folder_path"] = norm_p
+        deck["source_file_path"] = norm_p
+        store.mark_dirty()
+        store.save_force(async_save=True)
+        reply = QMessageBox.question(
+            self,
+            "Folder Linked",
+            f"Successfully linked '{deck.get('name')}' to folder:\n{norm_p}\n\nDo you want to sync this deck now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self._sync_deck_from_source(deck_id)
+
+    def _unlink_source(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        from PyQt5.QtWidgets import QMessageBox
+        old_path = deck.get("source_file_path") or deck.get("source_folder_path") or ""
+        reply = QMessageBox.question(
+            self,
+            "Unlink Source",
+            f"Are you sure you want to unlink the source from '{deck.get('name')}'?\n\nLinked path:\n{old_path}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            deck["source_file_path"] = ""
+            deck["source_folder_path"] = ""
+            store.mark_dirty()
+            store.save_force(async_save=True)
+            QMessageBox.information(
+                self,
+                "Source Unlinked",
+                f"Deck '{deck.get('name')}' is no longer linked to any file or folder."
+            )
+
+    def _sync_deck_from_source(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+
+        source_p = (deck.get("source_folder_path") if deck.get("source_folder_path") and os.path.isdir(deck.get("source_folder_path")) else None) or deck.get("source_file_path") or deck.get("source_folder_path")
+        if not source_p or not os.path.exists(source_p):
+            self._link_source_file(deck_id)
+            return
+
+        from data_manager import sync_deck_from_source_folder
+        from PyQt5.QtWidgets import QMessageBox
+
+        res = sync_deck_from_source_folder(self._data, deck=deck, custom_folder_path=source_p)
+        if res.get("status") == "error":
+            QMessageBox.warning(self, "Sync Failed", res.get("message", "Unknown error during sync."))
+            return
+
+        new_c = res.get("new_count", 0)
+        upd_c = res.get("updated_count", 0)
+        unch_c = res.get("unchanged_count", 0)
+        total_s = res.get("total_cards_scanned", 0)
+
+        home = self._find_home()
+        if home and hasattr(home, "_clear_home_ram_caches"):
+            home._clear_home_ram_caches()
+        if home:
+            home.refresh()
+        else:
+            self.refresh()
+
+        from perf_utils import invalidate_deck_stats
+        invalidate_deck_stats()
+
+        msg = (
+            f"<b>✅ Sync Complete for '{deck.get('name')}'</b><br><br>"
+            f"• <b>{new_c}</b> new card(s) added<br>"
+            f"• <b>{upd_c}</b> card(s) updated (all SM-2 learning progress preserved)<br>"
+            f"• <b>{unch_c}</b> card(s) unchanged<br>"
+            f"• Total scanned: {total_s} card(s)<br><br>"
+            f"<i>Source: {source_p}</i>"
+        )
+        box = QMessageBox(QMessageBox.Information, "Deck Synchronized", msg, parent=self)
+        box.setTextFormat(Qt.RichText)
+        box.exec_()
+
     def _find_home(self):
         w = self.parent()
         while w is not None:
-            if type(w).__name__ == "HomeScreen":
+            if type(w).__name__ == "HomeScreen" or hasattr(w, "show_review"):
                 return w
             w = w.parent()
+        app = QApplication.instance()
+        if app:
+            for top in app.topLevelWidgets():
+                if hasattr(top, "centralWidget"):
+                    cw = top.centralWidget()
+                    if type(cw).__name__ == "HomeScreen" or hasattr(cw, "show_review"):
+                        return cw
         return None
 
     def _toggle_bookmark_by_id(self, deck_id):
@@ -1077,6 +1270,7 @@ class DeckTree(QWidget):
                 "Delete",
                 f"Delete '{deck['name']}' and ALL its cards / sub-decks?",
                 QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
             != QMessageBox.Yes
         ):

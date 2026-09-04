@@ -895,11 +895,17 @@ class DeckTree(QWidget):
             menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
             menu.addAction("🎯 Practice Mode (All Cards)", lambda: self._practice_deck_by_id(did))
             menu.addAction("＋ Sub-deck", lambda: self._new_deck(did))
-            menu.addAction("📥 Import Cards...", lambda: self._import_cards(did))
-            if deck and (deck.get("source_folder_path") or deck.get("source_file_path")):
-                menu.addAction("🔄 Sync from Source Folder", lambda: self._sync_deck_from_source(did))
+            source_p = (deck.get("source_folder_path") if deck and deck.get("source_folder_path") and os.path.isdir(deck.get("source_folder_path")) else None) or (deck.get("source_file_path") or deck.get("source_folder_path") if deck else None)
+            if source_p and os.path.exists(source_p):
+                src_name = os.path.basename(source_p)
+                action_text = f"🔄 Sync Folder ('{src_name}')" if os.path.isdir(source_p) else f"🔄 Sync Deck ('{src_name}')"
+                menu.addAction(action_text, lambda: self._sync_deck_from_source(did))
+                menu.addAction("📄 Change Linked File (JSON / CSV)...", lambda: self._link_source_file(did))
+                menu.addAction("📁 Change Linked Folder...", lambda: self._link_source_folder(did))
+                menu.addAction("❌ Unlink Source (Clear Link)", lambda: self._unlink_source(did))
             else:
-                menu.addAction("🔄 Sync with Folder...", lambda: self._sync_deck_from_source(did))
+                menu.addAction("📄 Link to Source File (JSON / CSV)...", lambda: self._link_source_file(did))
+                menu.addAction("📁 Link to Source Folder...", lambda: self._link_source_folder(did))
             menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             if deck:
                 bookmarked = deck.get("bookmarked", False)
@@ -949,23 +955,95 @@ class DeckTree(QWidget):
                 self.refresh()
         dlg.deleteLater()
 
+    def _link_source_file(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        fpath, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Select Flashcard File to Link with '{deck.get('name')}'",
+            "",
+            "Flashcard Files (*.json *.csv *.tsv);;JSON (*.json);;CSV (*.csv);;TSV (*.tsv);;All Files (*.*)"
+        )
+        if not fpath:
+            return
+        norm_p = os.path.normpath(fpath).replace("\\", "/")
+        deck["source_file_path"] = norm_p
+        deck["source_folder_path"] = norm_p
+        store.mark_dirty()
+        store.save_force(async_save=True)
+        reply = QMessageBox.question(
+            self,
+            "File Linked",
+            f"Successfully linked '{deck.get('name')}' to:\n{norm_p}\n\nDo you want to sync this deck now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self._sync_deck_from_source(deck_id)
+
+    def _link_source_folder(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            f"Select Source Folder to Link with '{deck.get('name')}'",
+            "",
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if not folder:
+            return
+        norm_p = os.path.normpath(folder).replace("\\", "/")
+        deck["source_folder_path"] = norm_p
+        deck["source_file_path"] = norm_p
+        store.mark_dirty()
+        store.save_force(async_save=True)
+        reply = QMessageBox.question(
+            self,
+            "Folder Linked",
+            f"Successfully linked '{deck.get('name')}' to folder:\n{norm_p}\n\nDo you want to sync this deck now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self._sync_deck_from_source(deck_id)
+
+    def _unlink_source(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        from PyQt5.QtWidgets import QMessageBox
+        old_path = deck.get("source_file_path") or deck.get("source_folder_path") or ""
+        reply = QMessageBox.question(
+            self,
+            "Unlink Source",
+            f"Are you sure you want to unlink the source from '{deck.get('name')}'?\n\nLinked path:\n{old_path}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            deck["source_file_path"] = ""
+            deck["source_folder_path"] = ""
+            store.mark_dirty()
+            store.save_force(async_save=True)
+            QMessageBox.information(
+                self,
+                "Source Unlinked",
+                f"Deck '{deck.get('name')}' is no longer linked to any file or folder."
+            )
+
     def _sync_deck_from_source(self, deck_id):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))
         if not deck:
             return
 
-        source_p = deck.get("source_folder_path") or deck.get("source_file_path")
+        source_p = (deck.get("source_folder_path") if deck.get("source_folder_path") and os.path.isdir(deck.get("source_folder_path")) else None) or deck.get("source_file_path") or deck.get("source_folder_path")
         if not source_p or not os.path.exists(source_p):
-            from PyQt5.QtWidgets import QFileDialog
-            folder = QFileDialog.getExistingDirectory(
-                self,
-                f"Select Source Folder to Sync with '{deck.get('name')}'",
-                "",
-                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
-            )
-            if not folder:
-                return
-            source_p = folder
+            self._link_source_file(deck_id)
+            return
 
         from data_manager import sync_deck_from_source_folder
         from PyQt5.QtWidgets import QMessageBox

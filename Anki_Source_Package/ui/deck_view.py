@@ -366,7 +366,12 @@ class DojoMissionBanner(QFrame):
         self.update_font_scale(1.0)
 
     def set_animation_enabled(self, enabled):
-        enabled = bool(enabled) and _home_animations_enabled()
+        try:
+            from ui.canvas.retro_effects import animations_suspended
+            if animations_suspended():
+                enabled = False
+        except Exception:
+            pass
         if enabled:
             if not self._glow_timer.isActive():
                 self._glow_timer.start()

@@ -57,6 +57,8 @@ ENV/
 # OS generated files
 .DS_Store
 Thumbs.db
+*.db
+*.sqlite
 
 test_anki_occlusion_v14.py
 *_old.py

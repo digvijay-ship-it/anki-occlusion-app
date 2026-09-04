@@ -366,7 +366,12 @@ class DojoMissionBanner(QFrame):
         self.update_font_scale(1.0)
 
     def set_animation_enabled(self, enabled):
-        enabled = bool(enabled) and _home_animations_enabled()
+        try:
+            from ui.canvas.retro_effects import animations_suspended
+            if animations_suspended():
+                enabled = False
+        except Exception:
+            pass
         if enabled:
             if not self._glow_timer.isActive():
                 self._glow_timer.start()
@@ -1315,7 +1320,7 @@ class DeckView(QWidget):
     def _sync_deck(self, *args):
         if not self.deck:
             return
-        source_p = self.deck.get("source_folder_path") or self.deck.get("source_file_path")
+        source_p = (self.deck.get("source_folder_path") if self.deck.get("source_folder_path") and os.path.isdir(self.deck.get("source_folder_path")) else None) or self.deck.get("source_file_path") or self.deck.get("source_folder_path")
         if not source_p or not os.path.exists(source_p):
             from PyQt5.QtWidgets import QFileDialog
             folder = QFileDialog.getExistingDirectory(
