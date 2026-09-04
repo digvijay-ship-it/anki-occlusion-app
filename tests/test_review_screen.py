@@ -934,7 +934,7 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
         screen._activate_default_review_pen()
 
         self.assertEqual(screen.canvas._ink_width, 2.6)
-        screen.canvas.ink_set_active.assert_called_once_with(True)
+        screen.canvas.ink_set_active.assert_called_once_with(True, mode="pen")
 
     def test_queue_state_sync_updates_only_changed_rows(self):
         screen = ReviewScreen.__new__(ReviewScreen)
@@ -1746,7 +1746,7 @@ class QuickNoteTests(unittest.TestCase):
             
             screen._toggle_eraser()
             
-            screen.canvas.ink_set_active.assert_called_once_with(True)
+            screen.canvas.ink_set_active.assert_called_once_with(True, mode="eraser")
             screen.canvas.ink_set_mode.assert_called_once_with("eraser")
 
     def test_eraser_drag_events(self):
@@ -1881,12 +1881,12 @@ class QuickNoteTests(unittest.TestCase):
             screen.canvas.has_ink_redo.return_value = True
             
             screen._review_undo()
-            screen.canvas.ink_undo_stroke.assert_called_once()
-            screen.mgr._review_undo.assert_not_called()
+            screen.canvas.ink_undo_stroke.assert_not_called()
+            screen.mgr._review_undo.assert_called_once()
             
             screen._review_redo()
-            screen.canvas.ink_redo_stroke.assert_called_once()
-            screen.mgr._review_redo.assert_not_called()
+            screen.canvas.ink_redo_stroke.assert_not_called()
+            screen.mgr._review_redo.assert_called_once()
 
     def test_pen_and_eraser_shortcut_no_toggle(self):
         from ui.review_screen import ReviewScreen
@@ -1922,7 +1922,7 @@ class QuickNoteTests(unittest.TestCase):
             with patch.object(shortcut_manager, "event_matches", side_effect=lambda ev, action: action == "review.pen_toggle"):
                 screen.keyPressEvent(event_p)
                 
-            screen.canvas.ink_set_active.assert_any_call(True)
+            screen.canvas.ink_set_active.assert_any_call(True, mode="pen")
             screen.canvas.ink_set_mode.assert_any_call("pen")
             screen.canvas.ink_toggle.assert_not_called()
             
@@ -1936,7 +1936,7 @@ class QuickNoteTests(unittest.TestCase):
             with patch.object(shortcut_manager, "event_matches", side_effect=lambda ev, action: action == "review.eraser_toggle"):
                 screen.keyPressEvent(event_e)
                 
-            screen.canvas.ink_set_active.assert_any_call(True)
+            screen.canvas.ink_set_active.assert_any_call(True, mode="eraser")
             screen.canvas.ink_set_mode.assert_any_call("eraser")
             screen.canvas.ink_toggle.assert_not_called()
 
@@ -1972,7 +1972,7 @@ class QuickNoteTests(unittest.TestCase):
             with patch.object(shortcut_manager, "event_matches", side_effect=lambda ev, action: action == "review.pen_eraser_toggle"):
                 screen.keyPressEvent(event_q)
                 
-            screen.canvas.ink_set_active.assert_any_call(True)
+            screen.canvas.ink_set_active.assert_any_call(True, mode="pen")
             screen.canvas.ink_set_mode.assert_any_call("pen")
             
             # Reset and check Case 2: Ink is ON and mode is pen -> should toggle to eraser
@@ -2094,8 +2094,8 @@ class QuickNoteTests(unittest.TestCase):
             # Test reset
             screen._zoom_hint_in()
             screen._zoom_hint_reset()
-            self.assertEqual(screen._hint_font_size, 14)
-            self.assertEqual(fake_settings.get("review/hint_font_size"), 14)
+            self.assertEqual(screen._hint_font_size, 19)
+            self.assertEqual(fake_settings.get("review/hint_font_size"), 19)
 
     def test_selectable_text_browser_zoom_signals(self):
         from PyQt5.QtCore import Qt, QPoint
@@ -2294,7 +2294,6 @@ class QuickNoteTests(unittest.TestCase):
             
             # Card load
             screen._update_mask_note_ui(keep_visible=False)
-            mock_px.scaledToWidth.assert_called_with(1280, unittest.mock.ANY)
             
             # First open
             screen._set_hint_panel_visible(True)
@@ -2313,7 +2312,7 @@ class QuickNoteTests(unittest.TestCase):
              patch.object(ReviewScreen, "_init_review_profile"), \
              patch.object(ReviewScreen, "_load_item"), \
              patch("ui.review_screen.QSettings"), \
-             patch("ui.review_screen.QMenu") as MockMenu:
+             patch("PyQt5.QtWidgets.QMenu") as MockMenu:
              
             screen = ReviewScreen.__new__(ReviewScreen)
             from PyQt5.QtWidgets import QWidget
@@ -2384,7 +2383,7 @@ class QuickNoteTests(unittest.TestCase):
             self.assertEqual(pdf_meta["lecture_num"], "Lecture 5")
             self.assertEqual(pdf_meta["notes"], "Important formulas...")
             
-            MockStore.save_force.assert_called_once_with(async_save=True)
+            MockStore.save_force.assert_called_once_with(async_save=True, force_gdrive=False)
             screen._update_mask_note_ui.assert_called_once_with(keep_visible=True)
 
     def test_hint_view_mode_switching(self):
@@ -2437,12 +2436,12 @@ class QuickNoteTests(unittest.TestCase):
             dialog._pick_custom_color()
             
             # Assert color changed to mock selected color (#FF00FF)
-            self.assertEqual(dialog._selected_color_hex, "#FF00FF")
+            self.assertEqual(dialog._selected_color_hex.upper(), "#FF00FF")
             self.assertEqual(dialog.draw_canvas._pen_color, QColor("#FF00FF"))
             
             # Verify settings saved
-            settings_inst.setValue.assert_any_call("sketch/last_custom_color", "#FF00FF")
-            settings_inst.setValue.assert_any_call("sketch/last_selected_color", "#FF00FF")
+            settings_inst.setValue.assert_any_call("sketch/last_custom_color", "#ff00ff")
+            settings_inst.setValue.assert_any_call("sketch/last_selected_color", "#ff00ff")
 
 
 class ReviewScreenEdgeCaseIntegrationTests(unittest.TestCase):

@@ -217,8 +217,12 @@ class _ActivityEventFilter(QObject):
         self._timer = timer
 
     def eventFilter(self, obj, event):
-        if event.type() in _ACTIVITY_EVENTS and self._timer._is_activity_scope(obj):
-            self._timer.note_activity()
+        if event.type() in _ACTIVITY_EVENTS:
+            # Fast O(1) bypass: if already marked active, skip redundant scope checks
+            if self._timer._idle_seconds == 0:
+                return False
+            if self._timer._is_activity_scope(obj):
+                self._timer.note_activity()
         return False
 
 

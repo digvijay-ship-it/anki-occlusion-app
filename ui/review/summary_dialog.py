@@ -112,8 +112,13 @@ class ReviewSessionSummaryDialog(QDialog):
                     perfect += 1
 
         total = again + hard + good + easy + perfect
-        if total == 0 and self.rs._done > 0:
-            total = self.rs._done
+        done_cnt = getattr(self.rs, "_done", 0)
+        try:
+            done_cnt = int(done_cnt)
+        except (ValueError, TypeError):
+            done_cnt = 0
+        if total == 0 and done_cnt > 0:
+            total = done_cnt
         retention = round((good + easy + perfect) / total * 100) if total else 0
 
         if is_practice:

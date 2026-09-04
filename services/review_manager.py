@@ -193,10 +193,11 @@ class ReviewSessionManager:
         if not self._review_undo_stack:
             self.rs._undo_handled = False
             self.rs.undo_requested_when_empty.emit()
-            if self.rs is None:
+            if self.rs is None or getattr(self.rs, "mgr", None) is None or getattr(self.rs, "_closed", False):
                 return
             if not getattr(self.rs, "_undo_handled", False):
-                self.rs.canvas._show_toast("⚠ Nothing to undo")
+                if hasattr(self.rs, "canvas") and self.rs.canvas is not None:
+                    self.rs.canvas._show_toast("⚠ Nothing to undo")
             return
 
         snap = self._review_undo_stack.pop()

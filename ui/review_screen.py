@@ -796,13 +796,41 @@ from ui.review.queue_delegate import QueueDelegate
 
 
 class SelectableTextBrowser(QTextBrowser):
+    zoom_in_requested = pyqtSignal()
+    zoom_out_requested = pyqtSignal()
+    zoom_reset_requested = pyqtSignal()
+
     def keyPressEvent(self, event):
         from PyQt5.QtGui import QKeySequence
         if event.matches(QKeySequence.Copy):
             self.copy()
             event.accept()
             return
+        if event.modifiers() & Qt.ControlModifier:
+            if event.key() in (Qt.Key_Plus, Qt.Key_Equal):
+                self.zoom_in_requested.emit()
+                event.accept()
+                return
+            elif event.key() == Qt.Key_Minus:
+                self.zoom_out_requested.emit()
+                event.accept()
+                return
+            elif event.key() == Qt.Key_0:
+                self.zoom_reset_requested.emit()
+                event.accept()
+                return
         super().keyPressEvent(event)
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in_requested.emit()
+            elif delta < 0:
+                self.zoom_out_requested.emit()
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def copy(self):
         from PyQt5.QtGui import QCursor
@@ -877,10 +905,13 @@ class SelectableTextBrowser(QTextBrowser):
             char_format = temp.charFormat()
 
         # 2. Try character format after cursor (if not at end of document)
-        if not char_format.isImageFormat() and cursor.position() < self.document().characterCount():
-            temp = self.textCursor()
-            temp.setPosition(cursor.position() + 1)
-            char_format = temp.charFormat()
+        try:
+            if not char_format.isImageFormat() and cursor.position() < self.document().characterCount():
+                temp = self.textCursor()
+                temp.setPosition(cursor.position() + 1)
+                char_format = temp.charFormat()
+        except Exception:
+            pass
             
         # 3. If there is a selection, check within the selection range
         if not char_format.isImageFormat() and cursor.hasSelection():
@@ -1002,68 +1033,83 @@ class ReviewScreen(QWidget):
 
     @property
     def _items(self):
-        return self.mgr._items
+        return self.mgr._items if getattr(self, "mgr", None) is not None else []
 
     @_items.setter
     def _items(self, val):
-        self.mgr._items = val
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._items = val
 
     @property
     def _idx(self):
-        return self.mgr._idx
+        return self.mgr._idx if getattr(self, "mgr", None) is not None else 0
 
     @_idx.setter
     def _idx(self, val):
-        self.mgr._idx = val
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._idx = val
 
     @property
     def _done(self):
-        return self.mgr._done
+        return self.mgr._done if getattr(self, "mgr", None) is not None else 0
 
     @_done.setter
     def _done(self, val):
-        self.mgr._done = val
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._done = val
 
     @property
     def _queued_ids(self):
-        return self.mgr._queued_ids
+        return self.mgr._queued_ids if getattr(self, "mgr", None) is not None else set()
 
     @_queued_ids.setter
     def _queued_ids(self, val):
-        self.mgr._queued_ids = val
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._queued_ids = val
 
     @property
     def _deleted_ids(self):
-        return self.mgr._deleted_ids
+        return self.mgr._deleted_ids if getattr(self, "mgr", None) is not None else set()
 
     @_deleted_ids.setter
     def _deleted_ids(self, val):
-        self.mgr._deleted_ids = val
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._deleted_ids = val
 
     @property
     def _review_undo_stack(self):
-        return self.mgr._review_undo_stack
+        return self.mgr._review_undo_stack if getattr(self, "mgr", None) is not None else []
 
     @_review_undo_stack.setter
     def _review_undo_stack(self, val):
-        self.mgr._review_undo_stack = val
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._review_undo_stack = val
 
     @property
     def _review_redo_stack(self):
-        return self.mgr._review_redo_stack
+        return self.mgr._review_redo_stack if getattr(self, "mgr", None) is not None else []
 
     @_review_redo_stack.setter
     def _review_redo_stack(self, val):
-        self.mgr._review_redo_stack = val
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._review_redo_stack = val
 
     @property
     def is_practice(self):
-        return getattr(self.mgr, "is_practice", False) if hasattr(self, "mgr") and self.mgr is not None else False
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is None:
+            return False
+        val = getattr(mgr, "is_practice", False)
+        return val if isinstance(val, bool) else False
 
     @is_practice.setter
     def is_practice(self, val):
-        if hasattr(self, "mgr") and self.mgr is not None:
-            self.mgr.is_practice = bool(val)
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is not None:
+            try:
+                mgr.is_practice = bool(val)
+            except Exception:
+                pass
 
     def _rate(self, quality):
         # 1. Play low-latency 8-bit sound effects
@@ -1086,29 +1132,52 @@ class ReviewScreen(QWidget):
             tone = "green" if quality in (4, 5, 6) else ("red" if quality in (1, 3) else "cyan")
             self.burst.spawn_burst(self.rect().center().x(), self.rect().center().y(), tone, count=30)
 
-        self.mgr._rate(quality)
+        if getattr(self, "mgr", None) is not None:
+            self.mgr._rate(quality)
 
     def _review_undo(self):
-        canvas = getattr(self, "canvas", None)
-        if canvas is not None and getattr(canvas, "_ink_active", False) is True:
-            if hasattr(canvas, "ink_undo_stroke") and getattr(canvas, "has_ink_undo")() is True:
-                canvas.ink_undo_stroke()
-                return
-        self.mgr._review_undo()
+        # Card undo - strictly navigate back / undo cards, not ink
+        try:
+            saved_tool = self.get_active_tool()
+        except Exception:
+            saved_tool = None
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is not None:
+            mgr._review_undo()
+        closed = self.__dict__.get("_closed", False)
+        if mgr is None or closed:
+            return
+        if saved_tool:
+            try:
+                self.set_active_tool(saved_tool, show_toast=False)
+            except Exception:
+                pass
 
     def _review_redo(self):
-        canvas = getattr(self, "canvas", None)
-        if canvas is not None and getattr(canvas, "_ink_active", False) is True:
-            if hasattr(canvas, "ink_redo_stroke") and getattr(canvas, "has_ink_redo")() is True:
-                canvas.ink_redo_stroke()
-                return
-        self.mgr._review_redo()
+        # Card redo - strictly navigate forward / redo cards, not ink
+        try:
+            saved_tool = self.get_active_tool()
+        except Exception:
+            saved_tool = None
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is not None:
+            mgr._review_redo()
+        closed = self.__dict__.get("_closed", False)
+        if mgr is None or closed:
+            return
+        if saved_tool:
+            try:
+                self.set_active_tool(saved_tool, show_toast=False)
+            except Exception:
+                pass
 
     def _skip_session(self):
-        self.mgr.skip_session()
+        if getattr(self, "mgr", None) is not None:
+            self.mgr.skip_session()
 
     def _super_skip(self):
-        self.mgr.super_skip()
+        if getattr(self, "mgr", None) is not None:
+            self.mgr.super_skip()
 
     def _close_bg_prefetch_dialog(self):
         self._bg_accept_mode = False
@@ -1403,7 +1472,7 @@ class ReviewScreen(QWidget):
                             if item_key not in seen_item_keys:
                                 seen_item_keys.add(item_key)
                                 _due_result = is_due_today(box)
-                                if _due_result:
+                                if _due_result or getattr(self, "is_practice", False):
                                     self._items.append((card, ("group", gid), box))
                                     self._queued_ids.add(gid)  # O(1) track
                     else:
@@ -1412,18 +1481,21 @@ class ReviewScreen(QWidget):
                         if item_key not in seen_item_keys:
                             seen_item_keys.add(item_key)
                             _due_result = is_due_today(box)
-                            if _due_result:
+                            if _due_result or getattr(self, "is_practice", False):
                                 self._items.append((card, i, box))
                                 self._queued_ids.add(box_id)  # O(1) track
 
             # ── Sequential Chain Ordering ──────────────────────────────────────────
             chain_earliest_due = {}
+            anchor_order_map = {}
             for card, box_idx, sm2_obj in self._items:
-                chain_id = card.get("parent_chain_id")
+                chain_id = card.get("parent_chain_id") or card.get("context_anchor")
                 if chain_id:
                     due = sm2_obj.get("sm2_due", "") or ""
                     if chain_id not in chain_earliest_due or (due and due < chain_earliest_due[chain_id]):
                         chain_earliest_due[chain_id] = due
+                    if chain_id not in anchor_order_map:
+                        anchor_order_map[chain_id] = len(anchor_order_map)
 
             item_order_map = {id(item): idx for idx, item in enumerate(self._items)}
 
@@ -1435,16 +1507,18 @@ class ReviewScreen(QWidget):
                     c_order = 0
                 orig_idx = item_order_map.get(id(item), 0)
 
-                if getattr(self, "is_practice", False):
-                    # In practice mode, follow chain order 1..N strictly
-                    return (c_order if c_order > 0 else 999999, orig_idx)
+                chain_id = card.get("parent_chain_id") or card.get("context_anchor")
+                anc_idx = anchor_order_map.get(chain_id, 999999) if chain_id else 999999
 
-                chain_id = card.get("parent_chain_id")
+                if getattr(self, "is_practice", False):
+                    # In practice mode, follow chain order strictly within each topic cluster
+                    return (anc_idx, c_order if c_order > 0 else 999999, orig_idx)
+
                 if chain_id:
                     c_due = chain_earliest_due.get(chain_id, "")
-                    return (c_due, c_order if c_order > 0 else 999999, orig_idx)
+                    return (c_due, anc_idx, c_order if c_order > 0 else 999999, orig_idx)
                 else:
-                    return (sm2_obj.get("sm2_due", "") or "", c_order if c_order > 0 else 999999, orig_idx)
+                    return (sm2_obj.get("sm2_due", "") or "", anc_idx, c_order if c_order > 0 else 999999, orig_idx)
 
             self._items.sort(key=_review_sort_key)
             self._review_profile_log(
@@ -1487,11 +1561,37 @@ class ReviewScreen(QWidget):
                 w.installEventFilter(self)
             except Exception:
                 pass
+        if hasattr(self, "canvas") and hasattr(self.canvas, "ink_changed"):
+            self.canvas.ink_changed.connect(self._on_ink_active_changed)
         if state_to_restore:
             self._review_undo()
         else:
             self._load_item()
         self._review_profile_log("init_complete", items=len(self._items))
+
+    def _on_ink_active_changed(self):
+        if not hasattr(self, "canvas") or self.canvas is None:
+            return
+        is_ink = getattr(self.canvas, "_ink_active", False)
+        if is_ink:
+            if hasattr(self, "_prog_timer") and self._prog_timer is not None and self._prog_timer.isActive():
+                self._prog_timer.stop()
+            if hasattr(self, "_proximity_timer") and self._proximity_timer is not None and self._proximity_timer.isActive():
+                self._proximity_timer.stop()
+        else:
+            theme = self._data.get("theme", "tokyo_night") if hasattr(self, "_data") and isinstance(self._data, dict) else "tokyo_night"
+            from theme_manager import is_retro_theme
+            if (
+                hasattr(self, "_prog_timer")
+                and self._prog_timer is not None
+                and not self._prog_timer.isActive()
+                and is_retro_theme(theme)
+                and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}
+            ):
+                self._prog_timer.start(40)
+            if hasattr(self, "_proximity_timer") and self._proximity_timer is not None:
+                if not self._proximity_timer.isActive():
+                    self._proximity_timer.start()
 
     def _toggle_cache_panel(self):
         from cache_manager import CacheManagerPanel
@@ -1833,8 +1933,10 @@ class ReviewScreen(QWidget):
                 
             return re.sub(r'<img[^>]+>', replace_src, content, flags=re.IGNORECASE)
 
+        if not hasattr(self, "_hint_scroll_positions"):
+            self._hint_scroll_positions = {}
         curr_key = self._get_current_hint_key()
-        saved_pos = self._hint_scroll_positions.get(curr_key, self._hint_scroll_positions.get(self._idx, 0))
+        saved_pos = self._hint_scroll_positions.get(curr_key, self._hint_scroll_positions.get(getattr(self, "_idx", 0), 0))
         self._restoring_hint_scroll = True
 
         html_body = f"<html><head><style>{css}</style></head><body>{process_html_images(n_html)}</body></html>"
@@ -1865,7 +1967,9 @@ class ReviewScreen(QWidget):
             
         # 1. Determine target visibility
         # The hint button is always visible as long as we have items
-        hint_visible = (0 <= self._idx < len(self._items))
+        items = getattr(self, "_items", [])
+        idx = getattr(self, "_idx", -1)
+        hint_visible = (0 <= idx < len(items))
         
         # Save buttons are visible if pen/eraser is active AND slide hover state is active
         save_visible = False
@@ -2734,6 +2838,7 @@ class ReviewScreen(QWidget):
             except Exception:
                 pass
             self.mgr = None
+        self._closed = True
 
         if self._stimer is not None:
             try:
@@ -2876,8 +2981,11 @@ class ReviewScreen(QWidget):
 
         # Reposition Concept Hub Drawer
         if getattr(self, "_concept_hub_drawer", None) is not None:
-            dw = min(420, max(280, self.width() - 80))
-            self._concept_hub_drawer.setGeometry(self.width() - dw, 0, dw, self.height())
+            if hasattr(self._concept_hub_drawer, "update_geometry"):
+                self._concept_hub_drawer.update_geometry()
+            else:
+                dw = min(420, max(280, self.width() - 80))
+                self._concept_hub_drawer.setGeometry(self.width() - dw, 0, dw, self.height())
             if self._concept_hub_drawer.isVisible():
                 self._concept_hub_drawer.raise_()
 
@@ -3177,9 +3285,14 @@ class ReviewScreen(QWidget):
         card, box_idx, sm2_obj = self._items[self._idx]
         if getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
             self._concept_hub_drawer.open_drawer(card)
-        if hasattr(self.parent(), "save_last_review_session") and self._items and not self.is_practice:
-            self.parent().save_last_review_session([item[0] for item in self._items], self._idx)
-        self._hint_scroll_positions.clear()
+        try:
+            p = self.parent()
+            if p is not None and hasattr(p, "save_last_review_session") and self._items and not self.is_practice:
+                p.save_last_review_session([item[0] for item in self._items], self._idx)
+        except Exception:
+            pass
+        if hasattr(self, "_hint_scroll_positions") and self._hint_scroll_positions is not None:
+            self._hint_scroll_positions.clear()
         self._last_rendered_hint_key = None
         if hasattr(self, "_hint_browser") and self._hint_browser is not None:
             self._restoring_hint_scroll = True
@@ -3250,6 +3363,14 @@ class ReviewScreen(QWidget):
         if is_mcq:
             self._stacked_widget.setCurrentIndex(2)
             self._mcq_review_widget.load_card(card)
+            if hasattr(self._mcq_review_widget, "scratchpad"):
+                curr_tool = self.get_active_tool()
+                active = (curr_tool in ("pen", "eraser"))
+                mode = curr_tool if active else "pen"
+                from PyQt5.QtGui import QColor
+                color = self.canvas._ink_colors[self.canvas._ink_color_idx] if hasattr(self, "canvas") else "#FF4444"
+                self._mcq_review_widget.scratchpad.active_color = QColor(color)
+                self._mcq_review_widget.scratchpad.set_pen_active(active, mode=mode)
             
             # Disable page nav/contrast/jump/annotate but keep pen buttons enabled
             self._btn_prev_page.setEnabled(False)
@@ -3285,12 +3406,13 @@ class ReviewScreen(QWidget):
             if hasattr(self, "_text_review_widget"):
                 self._text_review_widget.load_card(card)
                 if hasattr(self._text_review_widget, "scratchpad"):
+                    curr_tool = self.get_active_tool()
+                    active = (curr_tool in ("pen", "eraser"))
+                    mode = curr_tool if active else "pen"
                     from PyQt5.QtGui import QColor
-                    active = getattr(self.canvas, "_ink_active", False)
-                    mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
-                    color = self.canvas._ink_colors[self.canvas._ink_color_idx]
+                    color = self.canvas._ink_colors[self.canvas._ink_color_idx] if hasattr(self, "canvas") else "#FF4444"
                     self._text_review_widget.scratchpad.active_color = QColor(color)
-                    self._text_review_widget.scratchpad.set_pen_active(active and mode == "pen")
+                    self._text_review_widget.scratchpad.set_pen_active(active, mode=mode)
             
             # Disable page nav/contrast/jump/annotate but keep pen buttons enabled
             self._btn_prev_page.setEnabled(False)
@@ -3404,6 +3526,11 @@ class ReviewScreen(QWidget):
         )
         if same_pdf:
             self._update_mask_note_ui()
+        curr_tool = self.get_active_tool()
+        active = (curr_tool in ("pen", "eraser"))
+        mode = curr_tool if active else "pen"
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.ink_set_active(active, mode=mode)
         self._update_pen_button_states()
 
         self.canvas.setFocus()  # यह पक्का करेगा कि Keyboard Commands सीधे Canvas पकड़ें
@@ -3427,6 +3554,17 @@ class ReviewScreen(QWidget):
                 self._text_review_widget._cycle_width_mode()
                 e.accept()
                 return
+
+        # F5 or Alt+R or Ctrl+Shift+R to Sync and reload deck from source
+        is_sync_shortcut = (
+            key == Qt.Key_F5
+            or ((mods & Qt.AltModifier) and key == Qt.Key_R)
+            or ((mods & Qt.ControlModifier) and (mods & Qt.ShiftModifier) and key == Qt.Key_R)
+        )
+        if is_sync_shortcut and not e.isAutoRepeat():
+            self._sync_current_deck_from_source()
+            e.accept()
+            return
 
         if key == Qt.Key_Escape and getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
             self._concept_hub_drawer.close_drawer()
@@ -3480,6 +3618,18 @@ class ReviewScreen(QWidget):
                 win.showFullScreen()
                 self._set_fullscreen_ui(True)
         elif shortcut_manager.event_matches(e, "review.cancel"):
+            if getattr(self, "_saved_review_state", None) is not None:
+                items, idx, was_practice = self._saved_review_state
+                self._saved_review_state = None
+                self._items = items
+                self._idx = idx
+                self.is_practice = was_practice
+                self._rebuild_queue()
+                self._load_item()
+                if hasattr(self, "canvas") and hasattr(self.canvas, "_show_toast"):
+                    self.canvas._show_toast("✅ Returned to previous review session")
+                e.accept()
+                return
             self.cancelled.emit()
         elif shortcut_manager.event_matches(e, "review.reveal"):
             if self._rating_frame.isVisible():
@@ -3666,11 +3816,6 @@ class ReviewScreen(QWidget):
             self._copy_current_card_text()
             e.accept()
             return
-        elif key == Qt.Key_Control and not e.isAutoRepeat():
-            if getattr(self, "canvas", None) and getattr(self.canvas, "_ink_active", False):
-                self._was_ink_active_before_ctrl = True
-                self.canvas.ink_set_active(False)
-                self._update_ink_hint()
         elif key == Qt.Key_D and not e.isAutoRepeat():
             self._debug_report("D key (manual)")
         else:
@@ -3704,12 +3849,6 @@ class ReviewScreen(QWidget):
                 self.canvas._show_toast(f"📋 Copied: {snippet}")
 
     def keyReleaseEvent(self, e):
-        if e.key() == Qt.Key_Control and not e.isAutoRepeat():
-            if getattr(self, "_was_ink_active_before_ctrl", False):
-                if getattr(self, "canvas", None):
-                    self.canvas.ink_set_active(True)
-                    self._update_ink_hint()
-                self._was_ink_active_before_ctrl = False
         super().keyReleaseEvent(e)
 
     def _rating_quality_for_event(self, event):
@@ -3717,6 +3856,202 @@ class ReviewScreen(QWidget):
             if shortcut_manager.event_matches(event, action_id):
                 return quality
         return None
+
+    def _show_review_toast(self, msg: str):
+        """Displays non-blocking visual feedback for review actions across window and canvas."""
+        try:
+            win = self.window()
+            if win and hasattr(win, "statusBar") and win.statusBar():
+                win.statusBar().showMessage(msg, 4000)
+        except Exception:
+            pass
+
+        if hasattr(self, "canvas") and hasattr(self.canvas, "_show_toast"):
+            try:
+                self.canvas._show_toast(msg)
+            except Exception:
+                pass
+
+        try:
+            if not hasattr(self, "_floating_toast_lbl") or self._floating_toast_lbl is None:
+                self._floating_toast_lbl = QLabel(self)
+                self._floating_toast_lbl.setStyleSheet("""
+                    background-color: #1A1F2C;
+                    color: #50FA7B;
+                    border: 1.5px solid #50FA7B;
+                    border-radius: 8px;
+                    padding: 8px 18px;
+                    font-size: 13px;
+                    font-weight: bold;
+                """)
+                self._floating_toast_lbl.hide()
+            self._floating_toast_lbl.setText(msg)
+            self._floating_toast_lbl.adjustSize()
+            x = (self.width() - self._floating_toast_lbl.width()) // 2
+            self._floating_toast_lbl.move(max(10, x), 45)
+            self._floating_toast_lbl.show()
+            self._floating_toast_lbl.raise_()
+
+            if not hasattr(self, "_floating_toast_timer") or self._floating_toast_timer is None:
+                self._floating_toast_timer = QTimer(self)
+                self._floating_toast_timer.setSingleShot(True)
+                self._floating_toast_timer.timeout.connect(self._floating_toast_lbl.hide)
+            self._floating_toast_timer.stop()
+            self._floating_toast_timer.start(3500)
+        except Exception:
+            pass
+
+    def _sync_current_deck_from_source(self):
+        """Syncs the deck corresponding to the current card from its linked source file/folder,
+        updating cards in-place, preserving SM-2 progress, and reloading the current card instantly."""
+        current_card = None
+        if hasattr(self, "_items") and 0 <= self._idx < len(self._items):
+            current_card, _, _ = self._items[self._idx]
+        elif getattr(self, "card", None):
+            current_card = self.card
+
+        if not current_card:
+            self._show_review_toast("⚠️ No active card to sync.")
+            return
+
+        from data_manager import store, find_card_and_deck_by_id, sync_deck_from_source_folder
+        data = self._data or store.get()
+
+        target_deck = None
+        c_id = current_card.get("_id") or current_card.get("id")
+        if c_id:
+            _, target_deck = find_card_and_deck_by_id(data, c_id)
+
+        if not target_deck:
+            deck_uid = current_card.get("deck_uid")
+            deck_name = current_card.get("deck_name")
+
+            def _find_in_tree(decks):
+                for d in decks:
+                    if deck_uid and d.get("deck_uid") == deck_uid:
+                        return d
+                    if deck_name and d.get("name") == deck_name:
+                        return d
+                    for c in d.get("cards", []):
+                        if c is current_card or (c_id and (c.get("_id") == c_id or c.get("card_uid") == current_card.get("card_uid"))):
+                            return d
+                    found = _find_in_tree(d.get("children", []) or d.get("subdecks", []) or [])
+                    if found:
+                        return found
+                return None
+
+            target_deck = _find_in_tree(data.get("decks", []))
+
+        if not target_deck and data.get("decks"):
+            if len(data["decks"]) == 1:
+                target_deck = data["decks"][0]
+
+        if not target_deck:
+            self._show_review_toast("⚠️ Could not locate deck for current card.")
+            return
+
+        source_p = (
+            (target_deck.get("source_folder_path") if target_deck.get("source_folder_path") and os.path.isdir(target_deck.get("source_folder_path")) else None)
+            or target_deck.get("source_file_path")
+            or target_deck.get("source_folder_path")
+        )
+
+        if not source_p or not os.path.exists(source_p):
+            def _find_parent_source(decks, target):
+                for d in decks:
+                    for child in (d.get("children", []) or d.get("subdecks", []) or []):
+                        if child is target:
+                            sp = d.get("source_folder_path") or d.get("source_file_path")
+                            if sp and os.path.exists(sp):
+                                return sp
+                        sp = _find_parent_source(d.get("children", []) or d.get("subdecks", []) or [], target)
+                        if sp:
+                            return sp
+                return None
+            source_p = _find_parent_source(data.get("decks", []), target_deck)
+
+        # Auto-discovery fallback: search SSC-Copilot flashcards
+        if not source_p or not os.path.exists(source_p):
+            deck_n = target_deck.get("name", "")
+            clean_name = deck_n
+            for pfx in ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.", "10.", "11.", "12.", "13.", "14.", "15.", "16.", "17.", "18.", "19.", "20."]:
+                if clean_name.startswith(pfx):
+                    clean_name = clean_name[len(pfx):].strip()
+            parts = clean_name.split(None, 1)
+            if parts and parts[0].isdigit() and len(parts) > 1:
+                clean_name = parts[1]
+
+            cand_dirs = [
+                r"c:\Users\Digvijay\Downloads\SSC-Copilot\data\generated_flashcards",
+                r"C:\Users\Digvijay\Downloads\SSC-Copilot\data\generated_flashcards",
+                r"E:\GK"
+            ]
+            for c_dir in cand_dirs:
+                if os.path.exists(c_dir):
+                    for root_d, _, files in os.walk(c_dir):
+                        for fn in files:
+                            if fn.endswith(".json") and (clean_name.lower().replace(" ", "_") in fn.lower() or fn.lower().replace("_", " ") in clean_name.lower()):
+                                source_p = os.path.join(root_d, fn).replace("\\", "/")
+                                target_deck["source_file_path"] = source_p
+                                target_deck["source_folder_path"] = source_p
+                                break
+                        if source_p:
+                            break
+                if source_p:
+                    break
+
+        if not source_p or not os.path.exists(source_p):
+            from PyQt5.QtWidgets import QFileDialog
+            fpath, _ = QFileDialog.getOpenFileName(
+                self,
+                f"Select Flashcard File to Link with '{target_deck.get('name')}'",
+                r"c:\Users\Digvijay\Downloads\SSC-Copilot\data\generated_flashcards",
+                "Flashcard Files (*.json *.csv *.tsv);;JSON (*.json);;CSV (*.csv);;All Files (*.*)"
+            )
+            if not fpath:
+                return
+            source_p = os.path.normpath(fpath).replace("\\", "/")
+            target_deck["source_file_path"] = source_p
+            target_deck["source_folder_path"] = source_p
+            store.mark_dirty()
+            store.save_force(async_save=True)
+
+        res = sync_deck_from_source_folder(data, deck=target_deck, custom_folder_path=source_p)
+        if res.get("status") == "error":
+            self._show_review_toast(f"❌ Sync Failed: {res.get('message', 'Error')}")
+            return
+
+        upd_c = res.get("updated_count", 0)
+        new_c = res.get("new_count", 0)
+
+        store.mark_dirty()
+        store.save_force(async_save=True)
+
+        if hasattr(self, "_text_card_cache") and self._text_card_cache is not None:
+            self._text_card_cache.clear()
+
+        from perf_utils import invalidate_deck_stats
+        invalidate_deck_stats()
+
+        was_revealed = (
+            getattr(self, "_rating_frame", None) is not None
+            and self._rating_frame.isVisible()
+        )
+
+        if hasattr(self, "_load_item"):
+            self._load_item()
+
+        if was_revealed and hasattr(self, "_reveal_current"):
+            self._reveal_current()
+
+        if hasattr(self, "_rebuild_queue"):
+            try:
+                self._rebuild_queue()
+            except Exception:
+                pass
+
+        deck_label = target_deck.get("name", "Deck")
+        self._show_review_toast(f"🔄 Synced '{deck_label}': {upd_c} updated, {new_c} added!")
 
     def _reveal_current(self):
         if not (0 <= self._idx < len(self._items)):
@@ -3822,6 +4157,39 @@ class ReviewScreen(QWidget):
             self.canvas.clear_peek_target()
         self._rebuild_queue()
         self._center_on_target()
+
+    def start_isolated_chain_practice(self, target_cards, start_card=None):
+        if not target_cards:
+            return
+
+        # Save current session state if not already in isolated practice
+        if getattr(self, "_saved_review_state", None) is None:
+            self._saved_review_state = (list(self._items), self._idx, self.is_practice)
+
+        cards_list = list(target_cards)
+        if start_card:
+            start_id = start_card.get("_id") or start_card.get("id")
+            for i, c in enumerate(cards_list):
+                if (c.get("_id") or c.get("id")) == start_id:
+                    cards_list.insert(0, cards_list.pop(i))
+                    break
+
+        new_items = []
+        for c in cards_list:
+            boxes = c.get("boxes", [])
+            if boxes:
+                for b in boxes:
+                    new_items.append((c, b.get("id") or b.get("box_id") or 0, b))
+            else:
+                new_items.append((c, -1, c))
+
+        self._items = new_items
+        self._idx = 0
+        self.is_practice = True
+        self._rebuild_queue()
+        self._load_item()
+        if hasattr(self, "canvas") and hasattr(self.canvas, "_show_toast"):
+            self.canvas._show_toast(f"🎯 Isolated Chain Practice ({len(new_items)} cards)")
 
     def _jump_to_queue_index(self, idx, from_peek=False):
         if not (0 <= idx < len(self._items)):
@@ -4434,43 +4802,6 @@ class ReviewScreen(QWidget):
         self._btn_pen_clear.clicked.connect(self._clear_pen_strokes)
         row2.addWidget(self._btn_pen_clear)
 
-        from PyQt5.QtWidgets import QComboBox
-        self._btn_review_pen_perf = QComboBox()
-        self._btn_review_pen_perf.setFocusPolicy(Qt.NoFocus)
-        self._btn_review_pen_perf.addItems([
-            "Classic" if dojo else "Classic Smooth",
-            "Incremental" if dojo else "Incremental Bezier",
-            "Polyline" if dojo else "Raw Polyline",
-            "Filtered" if dojo else "Distance-Filtered"
-        ])
-        self._btn_review_pen_perf.setCursor(Qt.PointingHandCursor)
-        self._btn_review_pen_perf.setToolTip("Change Pen Mode (Beta)")
-        
-        if dojo:
-            self._btn_review_pen_perf.setStyleSheet(
-                f"QComboBox{{background:{card};color:{accent};"
-                f"border:1px solid {border};border-radius:2px;"
-                f"padding:2px 4px;font-family:{font};font-size:9px;font-weight:bold;}}"
-                f"QComboBox QAbstractItemView{{"
-                f"background-color:{card};color:{accent};"
-                f"border:1px solid {border};"
-                f"selection-background-color:{surface};selection-color:{accent};}}"
-            )
-        else:
-            self._btn_review_pen_perf.setStyleSheet(
-                f"QComboBox{{background:{card};color:{text};"
-                f"border:1px solid {border};border-radius:6px;"
-                f"padding:2px 8px;font-size:11px;font-weight:bold;}}"
-                f"QComboBox QAbstractItemView{{"
-                f"background-color:{card};color:{text};"
-                f"border:1px solid {border};"
-                f"selection-background-color:{surface};selection-color:{accent};}}"
-            )
-        
-        _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-        self._btn_review_pen_perf.setCurrentIndex(_impl_to_idx.get(self._review_pen_implementation, 3))
-        self._btn_review_pen_perf.currentIndexChanged.connect(self._on_review_pen_perf_changed)
-        row2.addWidget(self._btn_review_pen_perf)
 
         row2.addStretch()
 
@@ -4493,6 +4824,26 @@ class ReviewScreen(QWidget):
             )
         self.btn_concept_hub.clicked.connect(self._toggle_concept_hub)
         row2.addWidget(self.btn_concept_hub)
+
+        # ── Group 6: Live Sync Deck from Source ────────────────────────────
+        self.btn_sync_deck = QPushButton("🔄 Sync Deck")
+        self.btn_sync_deck.setToolTip("Sync & reload current deck from source file/folder (F5 / Alt+R)")
+        if dojo:
+            self.btn_sync_deck.setStyleSheet(
+                f"QPushButton{{background:rgba(80,250,123,0.18);color:#72FF4F;"
+                f"border:1px solid #72FF4F;border-radius:2px;padding:3px 10px;"
+                f"font-size:9px;font-weight:bold;font-family:{font};}}"
+                f"QPushButton:hover{{background:rgba(80,250,123,0.35);border:1px solid #72FF4F;}}"
+            )
+        else:
+            self.btn_sync_deck.setStyleSheet(
+                f"QPushButton{{background:rgba(80,250,123,0.15);color:#50FA7B;"
+                f"border:1px solid #50FA7B;border-radius:6px;padding:4px 12px;"
+                f"font-size:11px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:rgba(80,250,123,0.30);border:1px solid #69FF94;}}"
+            )
+        self.btn_sync_deck.clicked.connect(self._sync_current_deck_from_source)
+        row2.addWidget(self.btn_sync_deck)
 
         hdr_vbox.addWidget(row2_w)
 
@@ -5418,8 +5769,13 @@ class ReviewScreen(QWidget):
     def _reposition_hint_panel(self):
         if not hasattr(self, "_hint_panel") or self._hint_panel is None:
             return
-        w = self._canvas_stage.width()
-        h = self._canvas_stage.height()
+        stage = getattr(self, "_canvas_stage", None)
+        if stage is not None and hasattr(stage, "width") and hasattr(stage, "height"):
+            w = stage.width()
+            h = stage.height()
+        else:
+            w = self.width() if hasattr(self, "width") else 800
+            h = self.height() if hasattr(self, "height") else 600
         panel_w = getattr(self, "_user_hint_width", 360)
         self._hint_panel.setGeometry(w - panel_w, 0, panel_w, h)
         if hasattr(self, "_resize_handle"):
@@ -5437,8 +5793,9 @@ class ReviewScreen(QWidget):
             canvas._ink_colors = list(self.__dict__["_review_ink_colors"])
         if "_review_ink_color_idx" in self.__dict__:
             canvas._ink_color_idx = int(self.__dict__["_review_ink_color_idx"])
+        self._current_review_tool = "pen"
         if hasattr(canvas, "ink_set_active"):
-            canvas.ink_set_active(True)
+            canvas.ink_set_active(True, mode="pen")
         else:
             canvas._ink_active = True
 
@@ -5678,99 +6035,71 @@ class ReviewScreen(QWidget):
             ultra_enabled = (getattr(self.canvas, "_ultra_focus_mode", False) is True) if getattr(self, "canvas", None) is not None else False
             self._act_ultra_focus.setChecked(ultra_enabled)
 
+    def get_active_tool(self) -> str:
+        """Returns the user's current persistent review tool: 'pen', 'eraser', or 'mouse'."""
+        try:
+            tool = getattr(self, "_current_review_tool", None)
+            if tool in ("pen", "eraser", "mouse"):
+                return tool
+            if hasattr(self, "canvas") and getattr(self.canvas, "_ink_active", False):
+                return self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
+        except (RuntimeError, AttributeError):
+            pass
+        return "mouse"
+
+    def set_active_tool(self, tool_name: str, show_toast: bool = True):
+        """Sets and persists the active review tool ('pen', 'eraser', or 'mouse')."""
+        self._current_review_tool = tool_name
+        active = (tool_name in ("pen", "eraser"))
+        mode = tool_name if active else "pen"
+
+        # 1. Sync canvas (PDF / Image cards)
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.ink_set_active(active, mode=mode)
+            if active:
+                self.canvas.ink_set_mode(mode)
+
+        # 2. Sync text & mcq review scratchpads
+        for rw in (self.__dict__.get("_text_review_widget", None), self.__dict__.get("_mcq_review_widget", None)):
+            if rw is not None and hasattr(rw, "scratchpad"):
+                from PyQt5.QtGui import QColor
+                color = self.canvas._ink_colors[self.canvas._ink_color_idx] if hasattr(self, "canvas") else "#FF4444"
+                rw.scratchpad.active_color = QColor(color)
+                rw.scratchpad.set_pen_active(active, mode=mode)
+
+        self._update_ink_hint()
+        self._update_pen_button_states()
+
+        if show_toast and hasattr(self, "canvas") and hasattr(self.canvas, "_show_toast"):
+            if tool_name == "pen":
+                color = self.canvas._ink_colors[self.canvas._ink_color_idx] if hasattr(self, "canvas") else ""
+                self.canvas._show_toast(f"✏ Pen ON  {color}")
+            elif tool_name == "eraser":
+                self.canvas._show_toast("🧹 Eraser ON")
+            else:
+                self.canvas._show_toast("🖱 Mouse Mode ON")
+
     def _toggle_pen_eraser(self):
         """Toggle specifically between Pen and Eraser mode (keeps ink active)."""
-        active = getattr(self.canvas, "_ink_active", False)
-        current_mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
-        
-        if not active:
-            self.canvas.ink_set_active(True)
-            self.canvas.ink_set_mode("pen")
-            new_mode = "pen"
+        curr = self.get_active_tool()
+        if curr == "pen":
+            self.set_active_tool("eraser")
         else:
-            new_mode = "eraser" if current_mode == "pen" else "pen"
-            self.canvas.ink_set_active(True)
-            self.canvas.ink_set_mode(new_mode)
-            
-        color = self.canvas._ink_colors[self.canvas._ink_color_idx]
-        
-        # Sync with text review scratchpad
-        if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
-            from PyQt5.QtGui import QColor
-            self._text_review_widget.scratchpad.active_color = QColor(color)
-            self._text_review_widget.scratchpad.set_pen_active(True, mode=new_mode)
-            
-        self.canvas._show_toast(
-            f"{'✏ Pen ON' if new_mode == 'pen' else '🧹 Eraser ON'}  {color if new_mode == 'pen' else ''}"
-        )
-        self._update_ink_hint()
-        self._update_pen_button_states()
+            self.set_active_tool("pen")
 
     def _toggle_pen_drawing(self):
-        active = getattr(self.canvas, "_ink_active", False)
-        current_mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
-        
-        if not active:
-            self.canvas.ink_set_active(True)
-            self.canvas.ink_set_mode("pen")
-            new_active = True
-            new_mode = "pen"
+        curr = self.get_active_tool()
+        if curr == "pen":
+            self.set_active_tool("mouse")
         else:
-            if current_mode == "pen":
-                self.canvas.ink_set_active(False)
-                new_active = False
-                new_mode = "pen"
-            else:
-                self.canvas.ink_set_mode("pen")
-                new_active = True
-                new_mode = "pen"
-                
-        color = self.canvas._ink_colors[self.canvas._ink_color_idx]
-        
-        # Sync with text review scratchpad
-        if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
-            from PyQt5.QtGui import QColor
-            self._text_review_widget.scratchpad.active_color = QColor(color)
-            self._text_review_widget.scratchpad.set_pen_active(new_active, mode=new_mode)
-
-        self.canvas._show_toast(
-            f"✏ Pen {'ON' if new_active else 'OFF'}  {color if new_active else ''}"
-        )
-        self._update_ink_hint()
-        self._update_pen_button_states()
+            self.set_active_tool("pen")
 
     def _toggle_eraser(self):
-        active = getattr(self.canvas, "_ink_active", False)
-        current_mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
-        
-        if not active:
-            self.canvas.ink_set_active(True)
-            self.canvas.ink_set_mode("eraser")
-            new_active = True
-            new_mode = "eraser"
+        curr = self.get_active_tool()
+        if curr == "eraser":
+            self.set_active_tool("mouse")
         else:
-            if current_mode == "eraser":
-                self.canvas.ink_set_mode("pen")
-                new_active = True
-                new_mode = "pen"
-            else:
-                self.canvas.ink_set_mode("eraser")
-                new_active = True
-                new_mode = "eraser"
-                
-        color = self.canvas._ink_colors[self.canvas._ink_color_idx]
-        
-        # Sync with text review scratchpad
-        if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
-            from PyQt5.QtGui import QColor
-            self._text_review_widget.scratchpad.active_color = QColor(color)
-            self._text_review_widget.scratchpad.set_pen_active(new_active, mode=new_mode)
-
-        self.canvas._show_toast(
-            f"{'🧹 Eraser ON' if new_mode == 'eraser' else '✏ Pen ON'}"
-        )
-        self._update_ink_hint()
-        self._update_pen_button_states()
+            self.set_active_tool("eraser")
 
     def _choose_pen_color_picker(self):
         from PyQt5.QtWidgets import QColorDialog
@@ -5787,41 +6116,30 @@ class ReviewScreen(QWidget):
             self._review_ink_colors = list(self.canvas._ink_colors)
             self._review_ink_color_idx = int(self.canvas._ink_color_idx)
             self._save_review_ink_color()
-            if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
-                self._text_review_widget.scratchpad.active_color = chosen
+            for rw in (getattr(self, "_text_review_widget", None), getattr(self, "_mcq_review_widget", None)):
+                if rw is not None and hasattr(rw, "scratchpad"):
+                    rw.scratchpad.active_color = chosen
             self.canvas._show_toast(f"✏ Ink Color: {chosen_hex}")
             self._update_pen_button_states()
 
     def _clear_pen_strokes(self):
         self.canvas.ink_clear()
-        if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
-            self._text_review_widget.scratchpad.clear()
+        for rw in (getattr(self, "_text_review_widget", None), getattr(self, "_mcq_review_widget", None)):
+            if rw is not None and hasattr(rw, "scratchpad"):
+                rw.scratchpad.clear()
 
-    def _on_review_pen_perf_changed(self, idx):
-        _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
-        impl = _idx_to_impl.get(idx, "classic")
-        self._review_pen_implementation = impl
-        self.canvas._ink_implementation = impl
-        
-        from PyQt5.QtCore import QSettings
-        QSettings("AnkiOcclusion", "App").setValue("review/pen_implementation", impl)
-        
-        _names = {
-            "classic": "Classic Smooth",
-            "incremental": "Incremental Bezier",
-            "polyline": "Raw Polyline",
-            "filtered": "Distance-Filtered"
-        }
-        name = _names.get(impl, "Classic Smooth")
-        self.canvas._show_toast(f"🖊 Pen: {name}")
+    def _on_review_pen_perf_changed(self, idx=0):
+        self._review_pen_implementation = "filtered"
+        self.canvas._ink_implementation = "filtered"
 
     def _update_pen_button_states(self):
         if not hasattr(self, "_btn_toggle_pen") or self._btn_toggle_pen is None:
             return
         if not hasattr(self, "canvas") or self.canvas is None:
             return
-        active = getattr(self.canvas, "_ink_active", False)
-        mode = self.canvas.ink_get_mode() if hasattr(self.canvas, "ink_get_mode") else "pen"
+        curr_tool = self.get_active_tool()
+        active = (curr_tool in ("pen", "eraser"))
+        mode = curr_tool if active else "pen"
         color = self.canvas._ink_colors[self.canvas._ink_color_idx]
         dojo = _is_dojo()
         
@@ -6191,6 +6509,7 @@ class ReviewScreen(QWidget):
         self.mgr._queue_needs_full_rebuild = True
         self._rebuild_queue()
         self._load_item()
+        self.set_active_tool(self.get_active_tool(), show_toast=False)
         dlg.deleteLater()
 
     def _finish_edit_current_card(self, dlg, card, before_ids, result):
@@ -6199,6 +6518,7 @@ class ReviewScreen(QWidget):
         if result != QDialog.Accepted:
             self._user_zoom_scale = None
             self._reload_current_canvas()
+            self.set_active_tool(self.get_active_tool(), show_toast=False)
             dlg.deleteLater()
             return
 
@@ -6264,7 +6584,7 @@ class ReviewScreen(QWidget):
                 continue
 
             sm2_init(box)
-            if is_due_today(box):
+            if is_due_today(box) or getattr(self, "is_practice", False):
                 self._queued_ids.add(track_id)
                 if gid:
                     seen_new_groups.add(gid)
@@ -6281,15 +6601,17 @@ class ReviewScreen(QWidget):
         # After sort, finished items (future due) are at the end.
         # Find the first item that is still due today (active).
         new_idx = 0
-        for i, (_, _, sm2) in enumerate(self._items):
-            if is_due_today(sm2):
-                new_idx = i
-                break
+        if not getattr(self, "is_practice", False):
+            for i, (_, _, sm2) in enumerate(self._items):
+                if is_due_today(sm2):
+                    new_idx = i
+                    break
         self._idx = new_idx
 
         self._user_zoom_scale = None
         self._rebuild_queue()
         self._reload_current_canvas()
+        self.set_active_tool(self.get_active_tool(), show_toast=False)
         dlg.deleteLater()
 
     def _delete_current_card(self):
@@ -6620,6 +6942,7 @@ class ReviewScreen(QWidget):
             if base_url.isLocalFile():
                 base_path = base_url.toLocalFile()
                 
+            img_dims = {}
             for src in sources:
                 abs_path = src
                 if not os.path.isabs(src):
@@ -6635,21 +6958,21 @@ class ReviewScreen(QWidget):
                 if os.path.exists(abs_path):
                     pixmap = QPixmap(abs_path)
                     if not pixmap.isNull():
-                        w = pixmap.width()
-                        if w > 0:
-                            # Scale pixmap smoothly to width 860
-                            scaled_pixmap = pixmap.scaledToWidth(860, Qt.SmoothTransformation)
+                        orig_w = pixmap.width()
+                        if orig_w > 0:
+                            scaled_w = min(orig_w, 860)
+                            img_dims[src] = scaled_w
+                            scaled_pixmap = pixmap.scaledToWidth(scaled_w, Qt.SmoothTransformation)
                             doc.addResource(QTextDocument.ImageResource, QUrl(src), scaled_pixmap)
                             doc.addResource(QTextDocument.ImageResource, QUrl.fromLocalFile(abs_path), scaled_pixmap)
             
             # Clean and resize img tags
             def clean_and_resize_img_tags(match):
                 tag = match.group(0)
-                tag = re.sub(r'width\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
-                tag = re.sub(r'height\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
-                tag = re.sub(r'style\s*=\s*["\'][^"\']*["\']', '', tag, flags=re.IGNORECASE)
-                tag = tag[:-1] + ' width="860">'
-                return tag
+                src_m = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+                src_val = src_m.group(1) if src_m else ""
+                w_val = img_dims.get(src_val, 860)
+                return f'<img src="{src_val}" width="{w_val}" style="max-width: 100%; border-radius: 8px; margin: 8px 0;" />'
                 
             cleaned = _RE_IMG.sub(clean_and_resize_img_tags, html_content)
             # Clean inline font-size to allow default css style scaling
@@ -7460,6 +7783,15 @@ class ReviewScreen(QWidget):
             if getattr(self, "_ondemand_kind", None) == "background":
                 return
 
+        # Defer background fill while review pen is active to eliminate GIL / CPU contention
+        if hasattr(self, "canvas") and self.canvas is not None and getattr(self.canvas, "_ink_active", False) is True:
+            self._background_fill_state = (
+                path,
+                list(already_rendered),
+                total_pages,
+            )
+            return
+
         # ?? FIX 1 guard: if card switched, abort ?????????????????????????????
         if getattr(self, "_canvas_pdf_path", None) != path:
             return
@@ -7543,8 +7875,8 @@ class ReviewScreen(QWidget):
                 rendered, p, ar, tp, thread
             )
         )
-        self._ondemand_thread.error.connect(lambda err: None)
-        self._ondemand_thread.start()
+        from PyQt5.QtCore import QThread
+        self._ondemand_thread.start(QThread.IdlePriority)
 
     def _on_background_fill_batch_done(
         self, rendered, path, already_rendered, total_pages, thread=None
@@ -7958,7 +8290,12 @@ class ReviewScreen(QWidget):
             canvas_wh=canvas_wh,
         )
 
-        if getattr(self, "_ondemand_kind", None) == "background":
+        is_in_stroke = (
+            hasattr(self, "canvas")
+            and isinstance(getattr(self.canvas, "_ink_current", None), list)
+            and len(self.canvas._ink_current) >= 2
+        )
+        if getattr(self, "_ondemand_kind", None) == "background" or is_in_stroke:
             self._bg_pending_inserts[page_num] = cache_px
             self._debug_review_page_injection(
                 page_num=page_num,
@@ -8201,6 +8538,11 @@ class ReviewScreen(QWidget):
 
         QTimer.singleShot(0, _apply_zoom_and_center_img)
         self._update_mask_note_ui()
+        curr_tool = self.get_active_tool()
+        active = (curr_tool in ("pen", "eraser"))
+        mode = curr_tool if active else "pen"
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.ink_set_active(active, mode=mode)
         self._update_pen_button_states()
 
     def _apply_canvas_pages(self, card, box_idx, pages):
@@ -8278,6 +8620,11 @@ class ReviewScreen(QWidget):
         QTimer.singleShot(50, self._rebuild_queue)
         QTimer.singleShot(120, self._canvas_scroll._emit_visible_pages)
         self._update_mask_note_ui()
+        curr_tool = self.get_active_tool()
+        active = (curr_tool in ("pen", "eraser"))
+        mode = curr_tool if active else "pen"
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.ink_set_active(active, mode=mode)
         self._update_pen_button_states()
 
     def _start_review_pdf_thread(self, card, box_idx):
@@ -8370,6 +8717,18 @@ class ReviewScreen(QWidget):
         self.canvas._show_toast(f"✅ PDF loaded — {len(pages)} pages")
 
     def _finish(self):
+        if getattr(self, "_saved_review_state", None) is not None:
+            items, idx, was_practice = self._saved_review_state
+            self._saved_review_state = None
+            self._items = items
+            self._idx = idx
+            self.is_practice = was_practice
+            self._rebuild_queue()
+            self._load_item()
+            if hasattr(self, "canvas") and hasattr(self.canvas, "_show_toast"):
+                self.canvas._show_toast("✅ Returned to previous review session")
+            return
+
         # [BUG 1 FIX] Check if any learning/relearn items are still pending
         # (e.g. m1 got Again → due in 1min, but m2/m3 finished early)
         # If yes, wait and re-check instead of ending the session.
@@ -8406,9 +8765,17 @@ class ReviewScreen(QWidget):
 
     def _show_session_summary(self):
         """Session khatam — stats dialog dikhao."""
-        if hasattr(self.parent(), "clear_last_review_session") and not self.is_practice:
-            self.parent().clear_last_review_session()
-        has_pdf = any(bool(card.get("pdf_path")) for card, _, _ in self._items) if self._items else False
+        try:
+            p = self.parent()
+            if p is not None and hasattr(p, "clear_last_review_session") and not self.is_practice:
+                p.clear_last_review_session()
+        except Exception:
+            pass
+        items = getattr(self, "_items", None)
+        if items is None and getattr(self, "mgr", None) is not None:
+            items = getattr(self.mgr, "_items", [])
+        items = items or []
+        has_pdf = any(bool(card.get("pdf_path")) for card, _, _ in items) if items else False
         show_popup = self.is_practice or (has_pdf and self.__dict__.get("_show_summary_popup", True))
         if show_popup:
             from ui.review.summary_dialog import ReviewSessionSummaryDialog

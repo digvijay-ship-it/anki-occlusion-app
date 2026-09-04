@@ -41,7 +41,8 @@ def _is_dojo() -> bool:
 
 class ReviewSessionSummaryDialog(QDialog):
     def __init__(self, rs, parent=None):
-        super().__init__(parent or rs)
+        dlg_parent = parent if isinstance(parent, QWidget) else (rs if isinstance(rs, QWidget) else None)
+        super().__init__(dlg_parent)
         self.rs = rs
         self._setup_ui()
 
@@ -79,24 +80,51 @@ class ReviewSessionSummaryDialog(QDialog):
         hover_color = q_hover.name()
         pressed_color = q_pressed.name()
 
+        is_practice = getattr(self.rs, "is_practice", False) or getattr(getattr(self.rs, "mgr", None), "is_practice", False)
+        session_ratings = getattr(getattr(self.rs, "mgr", None), "_session_ratings", [])
+
         again = hard = good = easy = perfect = 0
-        for _, _, sm2_obj in self.rs._items:
-            q = sm2_obj.get("sm2_last_quality", -1)
-            if q == 1:
-                again += 1
-            elif q == 3:
-                hard += 1
-            elif q == 4:
-                good += 1
-            elif q == 5:
-                easy += 1
-            elif q == 6:
-                perfect += 1
+        if session_ratings:
+            for entry in session_ratings:
+                q = entry.get("quality", -1)
+                if q == 1:
+                    again += 1
+                elif q == 3:
+                    hard += 1
+                elif q == 4:
+                    good += 1
+                elif q == 5:
+                    easy += 1
+                elif q == 6:
+                    perfect += 1
+        else:
+            for _, _, sm2_obj in self.rs._items:
+                q = sm2_obj.get("sm2_last_quality", -1)
+                if q == 1:
+                    again += 1
+                elif q == 3:
+                    hard += 1
+                elif q == 4:
+                    good += 1
+                elif q == 5:
+                    easy += 1
+                elif q == 6:
+                    perfect += 1
 
         total = again + hard + good + easy + perfect
+        done_cnt = getattr(self.rs, "_done", 0)
+        try:
+            done_cnt = int(done_cnt)
+        except (ValueError, TypeError):
+            done_cnt = 0
+        if total == 0 and done_cnt > 0:
+            total = done_cnt
         retention = round((good + easy + perfect) / total * 100) if total else 0
 
-        self.setWindowTitle("Mission Complete" if dojo else "Session Complete")
+        if is_practice:
+            self.setWindowTitle("🎯 Practice Mode — Performance Report Card")
+        else:
+            self.setWindowTitle("Mission Complete" if dojo else "Session Complete")
         
         import os
         from session_timer import normalize_pdf_path
@@ -128,16 +156,31 @@ class ReviewSessionSummaryDialog(QDialog):
         L.setSpacing(18)
 
         # Title
-        if dojo:
-            if theme_mode == "manhattan":
-                title_text = "🐢  STAGE CLEAR"
-            elif theme_mode == "arcanum":
-                title_text = "🔮  RITUAL COMPLETE"
-            elif theme_mode == "tmnt":
-                title_text = "🐢  MISSION COMPLETE"
+        if is_practice:
+            if dojo:
+                if theme_mode == "arcanum":
+                    title_text = "🔮  PRACTICE RITUAL REPORT"
+                elif theme_mode in ("tmnt", "manhattan"):
+                    title_text = "🐢  PRACTICE COMBAT REPORT"
+                else:
+                    title_text = "🎯  PRACTICE PERFORMANCE REPORT"
             else:
-                title_text = "🥷  MISSION COMPLETE"
-            title = QLabel(title_text)
+                title_text = "🎯  Practice Report Card"
+        else:
+            if dojo:
+                if theme_mode == "manhattan":
+                    title_text = "🐢  STAGE CLEAR"
+                elif theme_mode == "arcanum":
+                    title_text = "🔮  RITUAL COMPLETE"
+                elif theme_mode == "tmnt":
+                    title_text = "🐢  MISSION COMPLETE"
+                else:
+                    title_text = "🥷  MISSION COMPLETE"
+            else:
+                title_text = "🎉  Session Complete"
+
+        title = QLabel(title_text)
+        if dojo:
             font_weight = QFont.Normal if theme_mode == "manhattan" else QFont.Bold
             title.setFont(QFont(font, 18, font_weight))
             title.setAlignment(Qt.AlignCenter)
@@ -147,7 +190,6 @@ class ReviewSessionSummaryDialog(QDialog):
                 f"border-bottom:1px solid {border};padding-bottom:10px;"
             )
         else:
-            title = QLabel("🎉  Session Complete")
             title.setFont(QFont(font, 20, QFont.Bold))
             title.setAlignment(Qt.AlignCenter)
             title.setStyleSheet(f"color:{accent};background:transparent;font-family:{font};")
