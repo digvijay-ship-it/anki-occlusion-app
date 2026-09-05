@@ -2266,3 +2266,212 @@ def sync_deck_from_source_folder(
     }
 
 
+def write_back_card_to_source(card: dict, deck: dict = None) -> dict:
+    """
+    Writes back a single modified card to its linked source JSON file on disk immediately.
+    Ensures user edits in Anki (mnemonics, notes, formatting) override and persist to disk JSON.
+    """
+    if not isinstance(card, dict):
+        return {"status": "error", "message": "Invalid card"}
+
+    # 1. Resolve source file path
+    source_p = None
+    if deck and isinstance(deck, dict):
+        source_p = deck.get("source_file_path") or deck.get("source_folder_path")
+    if not source_p and card.get("source_file"):
+        source_p = card.get("source_file")
+
+    # If deck didn't have it or not found, try finding via deck_uid / deck_name or card_uid
+    if not source_p or not os.path.isfile(source_p):
+        data = store.get()
+        c_uid = card.get("card_uid") or card.get("_id")
+        _, found_deck = find_card_and_deck_by_id(data, c_uid) if c_uid else (None, None)
+        if found_deck:
+            source_p = found_deck.get("source_file_path") or found_deck.get("source_folder_path")
+
+    # Fallback to searching in data/generated_flashcards
+    if not source_p or not os.path.isfile(source_p):
+        deck_name = (deck.get("name") if deck else None) or card.get("deck_name", "")
+        clean_name = deck_name
+        for pfx in [f"{i}." for i in range(1, 30)] + [f"{i:02d}." for i in range(1, 30)]:
+            if clean_name.startswith(pfx):
+                clean_name = clean_name[len(pfx):].strip()
+        parts = clean_name.split(None, 1)
+        if parts and parts[0].isdigit() and len(parts) > 1:
+            clean_name = parts[1]
+
+        cand_dirs = [
+            r"c:\Users\Digvijay\Downloads\SSC-Copilot\data\generated_flashcards",
+            r"C:\Users\Digvijay\Downloads\SSC-Copilot\data\generated_flashcards",
+            r"E:\GK"
+        ]
+        for c_dir in cand_dirs:
+            if os.path.exists(c_dir):
+                for root_d, _, files in os.walk(c_dir):
+                    for fn in files:
+                        if fn.endswith(".json") and clean_name and (clean_name.lower().replace(" ", "_") in fn.lower() or fn.lower().replace("_", " ") in clean_name.lower()):
+                            source_p = os.path.join(root_d, fn).replace("\\", "/")
+                            break
+                    if source_p and os.path.isfile(source_p):
+                        break
+            if source_p and os.path.isfile(source_p):
+                break
+
+    if not source_p or not os.path.isfile(source_p):
+        return {"status": "error", "message": "Could not find linked JSON file for deck/card."}
+
+    # 2. Read existing JSON file
+    try:
+        with open(source_p, "r", encoding="utf-8") as f:
+            disk_cards = json.load(f)
+    except Exception as e:
+        return {"status": "error", "message": f"Failed reading source file: {e}"}
+
+    if not isinstance(disk_cards, list):
+        return {"status": "error", "message": "Source JSON is not a card list"}
+
+    # 3. Locate card in disk list by card_uid or question
+    c_uid = str(card.get("card_uid") or card.get("_id") or "").strip()
+    norm_q = (card.get("question") or card.get("title") or "").strip().lower()
+
+    target_idx = None
+    for idx, dc in enumerate(disk_cards):
+        dc_uid = str(dc.get("card_uid") or dc.get("_id") or "").strip()
+        if c_uid and dc_uid and c_uid == dc_uid:
+            target_idx = idx
+            break
+        dc_q = (dc.get("question") or dc.get("title") or "").strip().lower()
+        if norm_q and dc_q and norm_q == dc_q:
+            target_idx = idx
+            break
+
+    fields_to_sync = [
+        "question", "answer", "title", "notes", "trap_note",
+        "tags", "related_concepts", "context_anchor", "is_mcq",
+        "options", "correct_option", "is_formula"
+    ]
+
+    import datetime
+    now_iso = datetime.datetime.now().isoformat()
+
+    if target_idx is not None:
+        target_disk_card = disk_cards[target_idx]
+        for f in fields_to_sync:
+            if f in card:
+                target_disk_card[f] = card[f]
+        target_disk_card["user_modified"] = True
+        target_disk_card["last_user_edit"] = now_iso
+    else:
+        new_disk_entry = dict(card)
+        new_disk_entry["user_modified"] = True
+        new_disk_entry["last_user_edit"] = now_iso
+        disk_cards.append(new_disk_entry)
+
+    # 4. Atomic write back to disk
+    try:
+        tmp_p = source_p + ".tmp"
+        with open(tmp_p, "w", encoding="utf-8") as f:
+            json.dump(disk_cards, f, ensure_ascii=False, indent=2)
+        if os.path.exists(source_p):
+            os.replace(tmp_p, source_p)
+        else:
+            os.rename(tmp_p, source_p)
+    except Exception as e:
+        return {"status": "error", "message": f"Failed writing to source file: {e}"}
+
+    return {"status": "ok", "source_file": source_p, "card_uid": c_uid}
+
+
+def export_deck_to_source_file(data: dict, deck: dict = None, deck_id: int = None, custom_file_path: str = None) -> dict:
+    """
+    Pushes all cards from a deck to its linked source JSON file on disk.
+    Preserves existing entries while updating modified questions, answers, and notes.
+    """
+    target_deck = deck
+    if target_deck is None and deck_id is not None:
+        target_deck = find_deck_by_id(deck_id, data.get("decks", []))
+    if target_deck is None:
+        if data.get("decks"):
+            target_deck = data["decks"][0]
+        else:
+            return {"status": "error", "message": "No deck found."}
+
+    source_p = custom_file_path or target_deck.get("source_file_path") or target_deck.get("source_folder_path")
+    if not source_p or not os.path.isfile(source_p) or not source_p.endswith(".json"):
+        return {"status": "error", "message": f"Source file '{source_p}' is not a valid JSON file."}
+
+    # Collect all cards in target deck and subdecks
+    deck_cards = []
+    def _collect(d):
+        for c in d.get("cards", []):
+            deck_cards.append(c)
+        for child in d.get("children", []) or []:
+            _collect(child)
+    _collect(target_deck)
+
+    try:
+        with open(source_p, "r", encoding="utf-8") as f:
+            disk_cards = json.load(f)
+    except Exception:
+        disk_cards = []
+
+    disk_uid_map = {}
+    disk_q_map = {}
+    for idx, dc in enumerate(disk_cards):
+        uid = str(dc.get("card_uid") or dc.get("_id") or "").strip()
+        if uid:
+            disk_uid_map[uid] = idx
+        q = (dc.get("question") or dc.get("title") or "").strip().lower()
+        if q:
+            disk_q_map[q] = idx
+
+    fields_to_sync = [
+        "question", "answer", "title", "notes", "trap_note",
+        "tags", "related_concepts", "context_anchor", "is_mcq",
+        "options", "correct_option", "is_formula"
+    ]
+
+    import datetime
+    now_iso = datetime.datetime.now().isoformat()
+    updated_count = 0
+    added_count = 0
+
+    for c in deck_cards:
+        uid = str(c.get("card_uid") or c.get("_id") or "").strip()
+        norm_q = (c.get("question") or c.get("title") or "").strip().lower()
+        target_idx = None
+        if uid and uid in disk_uid_map:
+            target_idx = disk_uid_map[uid]
+        elif norm_q and norm_q in disk_q_map:
+            target_idx = disk_q_map[norm_q]
+
+        if target_idx is not None:
+            dc = disk_cards[target_idx]
+            for f in fields_to_sync:
+                if f in c:
+                    dc[f] = c[f]
+            dc["user_modified"] = True
+            dc["last_user_edit"] = now_iso
+            updated_count += 1
+        else:
+            new_entry = dict(c)
+            new_entry["user_modified"] = True
+            new_entry["last_user_edit"] = now_iso
+            disk_cards.append(new_entry)
+            added_count += 1
+
+    tmp_p = source_p + ".tmp"
+    with open(tmp_p, "w", encoding="utf-8") as f:
+        json.dump(disk_cards, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_p, source_p)
+
+    return {
+        "status": "ok",
+        "source_file": source_p,
+        "updated_count": updated_count,
+        "added_count": added_count,
+        "total_cards": len(disk_cards)
+    }
+
+
+

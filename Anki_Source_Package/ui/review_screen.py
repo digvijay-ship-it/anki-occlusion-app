@@ -3578,7 +3578,7 @@ class ReviewScreen(QWidget):
 
         # F5 or Alt+R or Ctrl+Shift+R to Sync and reload deck from source
         is_sync_shortcut = (
-            key == Qt.Key_F5
+            (key == Qt.Key_F5 and not (mods & Qt.ShiftModifier))
             or ((mods & Qt.AltModifier) and key == Qt.Key_R)
             or ((mods & Qt.ControlModifier) and (mods & Qt.ShiftModifier) and key == Qt.Key_R)
         )
@@ -3586,6 +3586,32 @@ class ReviewScreen(QWidget):
             self._sync_current_deck_from_source()
             e.accept()
             return
+
+        # Shift+F5 or Ctrl+Shift+S to Push deck changes to source JSON
+        is_push_shortcut = (
+            (key == Qt.Key_F5 and (mods & Qt.ShiftModifier))
+            or ((mods & Qt.ControlModifier) and (mods & Qt.ShiftModifier) and key == Qt.Key_S)
+        )
+        if is_push_shortcut and not e.isAutoRepeat():
+            self._push_current_deck_to_source()
+            e.accept()
+            return
+
+        # 'E' or Ctrl+E to edit current text card
+        is_edit_shortcut = (
+            ((mods & Qt.ControlModifier) and key == Qt.Key_E)
+            or (key == Qt.Key_E and not (mods & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier)))
+        )
+        if is_edit_shortcut and not e.isAutoRepeat():
+            current_card = None
+            if hasattr(self, "_items") and 0 <= self._idx < len(self._items):
+                current_card, _, _ = self._items[self._idx]
+            elif getattr(self, "card", None):
+                current_card = self.card
+            if current_card and current_card.get("card_type") in ("text", "mcq", "testbook_mcq"):
+                self._edit_current_text_card()
+                e.accept()
+                return
 
         if key == Qt.Key_Escape and getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
             self._concept_hub_drawer.close_drawer()
@@ -4073,6 +4099,90 @@ class ReviewScreen(QWidget):
 
         deck_label = target_deck.get("name", "Deck")
         self._show_review_toast(f"🔄 Synced '{deck_label}': {upd_c} updated, {new_c} added!")
+
+    def _push_current_deck_to_source(self):
+        """Pushes current deck's cards back to its linked source JSON file on disk,
+        preserving user customizations, mnemonics, and notes."""
+        current_card = None
+        if hasattr(self, "_items") and 0 <= self._idx < len(self._items):
+            current_card, _, _ = self._items[self._idx]
+        elif getattr(self, "card", None):
+            current_card = self.card
+
+        if not current_card:
+            self._show_review_toast("⚠️ No active deck to push.")
+            return
+
+        from data_manager import store, find_card_and_deck_by_id, export_deck_to_source_file
+        data = self._data or store.get()
+
+        target_deck = None
+        c_id = current_card.get("_id") or current_card.get("id")
+        if c_id:
+            _, target_deck = find_card_and_deck_by_id(data, c_id)
+
+        if not target_deck:
+            self._show_review_toast("⚠️ Could not locate deck for current card.")
+            return
+
+        source_p = (
+            target_deck.get("source_file_path")
+            or (target_deck.get("source_folder_path") if target_deck.get("source_folder_path") and os.path.isfile(target_deck.get("source_folder_path")) else None)
+        )
+
+        if not source_p or not os.path.exists(source_p):
+            self._sync_current_deck_from_source()
+            source_p = target_deck.get("source_file_path")
+
+        if not source_p or not os.path.exists(source_p):
+            self._show_review_toast("⚠️ No linked source JSON file found to push changes.")
+            return
+
+        res = export_deck_to_source_file(data, deck=target_deck, custom_file_path=source_p)
+        if res.get("status") == "ok":
+            self._show_review_toast(f"💾 Pushed {res.get('updated_count', 0)} card(s) to source JSON!")
+        else:
+            self._show_review_toast(f"❌ Push Failed: {res.get('message', 'Error')}")
+
+    def _edit_current_text_card(self):
+        """Opens TextCardEditorDialog for the currently reviewed card."""
+        current_card = None
+        if hasattr(self, "_items") and 0 <= self._idx < len(self._items):
+            current_card, _, _ = self._items[self._idx]
+        elif getattr(self, "card", None):
+            current_card = self.card
+
+        if not current_card:
+            self._show_review_toast("⚠️ No active card to edit.")
+            return
+
+        from data_manager import store, find_card_and_deck_by_id
+        data = self._data or store.get()
+        c_id = current_card.get("_id") or current_card.get("id")
+        _, target_deck = find_card_and_deck_by_id(data, c_id) if c_id else (None, None)
+
+        from PyQt5.QtWidgets import QDialog
+        from ui.text_card_editor_dialog import TextCardEditorDialog
+
+        dlg = TextCardEditorDialog(self, card=dict(current_card), data=data, deck=target_deck)
+        if dlg.exec_() == QDialog.Accepted:
+            edited = dlg.get_card()
+            current_card.update(edited)
+            store.mark_dirty()
+            try:
+                store.save_force(async_save=True)
+            except Exception:
+                pass
+
+            if hasattr(self, "_text_card_cache") and self._text_card_cache is not None:
+                card_id = current_card.get("_id")
+                self._text_card_cache.pop((card_id, True), None)
+                self._text_card_cache.pop((card_id, False), None)
+
+            if hasattr(self, "_load_item"):
+                self._load_item()
+
+            self._show_review_toast("✏️ Card saved & synced to source JSON!")
 
     def _reveal_current(self):
         if not (0 <= self._idx < len(self._items)):

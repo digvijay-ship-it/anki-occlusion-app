@@ -3823,6 +3823,140 @@ class TMNTTopBar(QFrame):
         volume_layout.addWidget(btn_inc)
         panel_l.addWidget(volume_box)
 
+        scroll_lbl = QLabel("SCROLL SPEED")
+        scroll_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(scroll_lbl)
+
+        scroll_box = QFrame()
+        scroll_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        scroll_layout = QHBoxLayout(scroll_box)
+        scroll_layout.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        scroll_layout.setSpacing(_px(6, self._scale))
+        scroll_txt_lbl = QLabel("SENSITIVITY")
+        scroll_txt_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        scroll_layout.addWidget(scroll_txt_lbl)
+        
+        current_scroll = int(self._data.get("_scroll_speed", 35))
+        self._scroll_val_lbl = QLabel(f"{current_scroll}%")
+        self._scroll_val_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold;",
+                self._scale,
+            )
+        )
+        scroll_layout.addWidget(self._scroll_val_lbl)
+        scroll_layout.addStretch()
+
+        self._scroll_slider = QSlider(Qt.Horizontal)
+        self._scroll_slider.setRange(10, 100)
+        self._scroll_slider.setSingleStep(5)
+        self._scroll_slider.setValue(current_scroll)
+        self._scroll_slider.setFixedWidth(_px(80, self._scale))
+        self._scroll_slider.setFixedHeight(_px(16, self._scale))
+        self._scroll_slider.setCursor(Qt.PointingHandCursor)
+        self._scroll_slider.setStyleSheet(_scale_ss(
+            f"""
+            QSlider {{
+                background: transparent;
+            }}
+            QSlider::groove:horizontal {{
+                border: none;
+                height: 3px;
+                background: rgba(102, 252, 241, 0.2);
+                border-radius: 1.5px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {T_NEON};
+                border-radius: 1.5px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {T_NEON};
+                width: 8px;
+                height: 8px;
+                margin-top: -2.5px;
+                margin-bottom: -2.5px;
+                border-radius: 4px;
+            }}
+            """,
+            self._scale
+        ))
+        self._scroll_slider.valueChanged.connect(self._on_tmnt_scroll_slider_changed)
+
+        btn_scroll_dec = QPushButton("−")
+        btn_scroll_dec.setCursor(Qt.PointingHandCursor)
+        btn_scroll_dec.setFixedSize(_px(20, self._scale), _px(20, self._scale))
+        btn_scroll_dec.setStyleSheet(_scale_ss(
+            f"""
+            QPushButton {{
+                background: {T_BG};
+                color: {T_NEON};
+                border: 1px solid {T_BORDER};
+                border-radius: 4px;
+                font-family: {T_MONO};
+                font-size: 10px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background: rgba(102,252,241,0.12);
+                border-color: {T_NEON};
+                color: #FFFFFF;
+            }}
+            """,
+            self._scale
+        ))
+        btn_scroll_dec.clicked.connect(self._dec_scroll_speed)
+
+        btn_scroll_inc = QPushButton("＋")
+        btn_scroll_inc.setCursor(Qt.PointingHandCursor)
+        btn_scroll_inc.setFixedSize(_px(20, self._scale), _px(20, self._scale))
+        btn_scroll_inc.setStyleSheet(_scale_ss(
+            f"""
+            QPushButton {{
+                background: {T_BG};
+                color: {T_NEON};
+                border: 1px solid {T_BORDER};
+                border-radius: 4px;
+                font-family: {T_MONO};
+                font-size: 10px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background: rgba(102,252,241,0.12);
+                border-color: {T_NEON};
+                color: #FFFFFF;
+            }}
+            """,
+            self._scale
+        ))
+        btn_scroll_inc.clicked.connect(self._inc_scroll_speed)
+
+        scroll_layout.addWidget(btn_scroll_dec)
+        scroll_layout.addWidget(self._scroll_slider)
+        scroll_layout.addWidget(btn_scroll_inc)
+        panel_l.addWidget(scroll_box)
+
         contrast_lbl = QLabel("PDF CONTRAST")
         contrast_lbl.setStyleSheet(
             _scale_ss(
@@ -4523,6 +4657,13 @@ class TMNTTopBar(QFrame):
                 self._volume_slider.blockSignals(True)
                 self._volume_slider.setValue(self._data.get("_volume", 40))
                 self._volume_slider.blockSignals(False)
+            if hasattr(self, "_scroll_slider") and self._scroll_slider:
+                self._scroll_slider.blockSignals(True)
+                s_val = int(self._data.get("_scroll_speed", 35))
+                self._scroll_slider.setValue(s_val)
+                if hasattr(self, "_scroll_val_lbl") and self._scroll_val_lbl:
+                    self._scroll_val_lbl.setText(f"{s_val}%")
+                self._scroll_slider.blockSignals(False)
             if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
                 self._btn_pen_perf.blockSignals(True)
                 from PyQt5.QtCore import QSettings
@@ -4717,6 +4858,21 @@ class TMNTTopBar(QFrame):
     def _inc_volume(self):
         val = min(100, self._data.get("_volume", 40) + 10)
         self._volume_slider.setValue(val)
+
+    def _on_tmnt_scroll_slider_changed(self, value):
+        self._data["_scroll_speed"] = value
+        if hasattr(self, "_scroll_val_lbl") and self._scroll_val_lbl:
+            self._scroll_val_lbl.setText(f"{value}%")
+        from data_manager import store
+        store.mark_dirty()
+
+    def _dec_scroll_speed(self):
+        val = max(10, self._data.get("_scroll_speed", 35) - 5)
+        self._scroll_slider.setValue(val)
+
+    def _inc_scroll_speed(self):
+        val = min(100, self._data.get("_scroll_speed", 35) + 5)
+        self._scroll_slider.setValue(val)
 
     def _find_home(self):
         from ui.home_screen import HomeScreen

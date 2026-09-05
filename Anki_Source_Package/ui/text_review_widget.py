@@ -17,6 +17,28 @@ def get_base_url():
         return QUrl.fromLocalFile(os.path.abspath(root) + "/")
     return QUrl()
 
+def get_scroll_damping_factor():
+    """
+    Returns the scroll sensitivity factor based on user setting (10% to 100%).
+    Defaults to 35% (0.35x), which provides smooth and comfortable card scrolling.
+    """
+    try:
+        from data_manager import store
+        speed = store.get().get("_scroll_speed")
+        if speed is not None:
+            return max(10, min(100, int(speed))) / 100.0
+    except Exception:
+        pass
+    try:
+        from PyQt5.QtCore import QSettings
+        from storage_paths import is_running_tests
+        org = "AnkiOcclusionTest" if is_running_tests() else "AnkiOcclusion"
+        app = "AppTest" if is_running_tests() else "App"
+        val = QSettings(org, app).value("settings/_scroll_speed", 35)
+        return max(10, min(100, int(val))) / 100.0
+    except Exception:
+        return 0.35
+
 class ZoomableTextBrowser(QTextBrowser):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,7 +64,12 @@ class ZoomableTextBrowser(QTextBrowser):
             if p:
                 sa = p if isinstance(p, QScrollArea) else getattr(p, "scroll_area", None)
                 if sa and sa.verticalScrollBar():
-                    sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.angleDelta().y())
+                    factor = get_scroll_damping_factor()
+                    raw_delta = e.angleDelta().y()
+                    delta = int(raw_delta * factor)
+                    if delta == 0 and raw_delta != 0:
+                        delta = 1 if raw_delta > 0 else -1
+                    sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - delta)
                     e.accept()
                     return
             super().wheelEvent(e)
@@ -128,10 +155,20 @@ class ZoomableTextBrowser(QTextBrowser):
 
             menu.addSeparator()
 
+            # Edit Card
+            act_edit = QAction("✏️ Edit Card  (E / Ctrl+E)", menu)
+            act_edit.triggered.connect(lambda: p._edit_current_text_card() if hasattr(p, "_edit_current_text_card") else None)
+            menu.addAction(act_edit)
+
             # Sync Deck from Source
             act_sync = QAction("🔄 Sync & Reload Deck from Source  (F5)", menu)
             act_sync.triggered.connect(lambda: p._sync_current_deck_from_source() if hasattr(p, "_sync_current_deck_from_source") else None)
             menu.addAction(act_sync)
+
+            # Push Deck Changes to Source JSON
+            act_push = QAction("💾 Push Deck Changes to Source JSON  (Shift+F5)", menu)
+            act_push.triggered.connect(lambda: p._push_current_deck_to_source() if hasattr(p, "_push_current_deck_to_source") else None)
+            menu.addAction(act_push)
 
             # Mind Map Hub
             act_mindmap = QAction("🧠 Open Mind-Map Concept Hub  (Alt+M)", menu)
@@ -549,6 +586,28 @@ class TextReviewWidget(QWidget):
         self.btn_mindmap.clicked.connect(lambda: self._on_open_mindmap())
         self.hdr_layout.addWidget(self.btn_mindmap)
 
+        self.btn_edit = QPushButton("✏️ Edit (E)")
+        self.btn_edit.setCursor(Qt.PointingHandCursor)
+        self.btn_edit.setToolTip("Edit this card & write back to source JSON (E / Ctrl+E)")
+        self.btn_edit.setStyleSheet("""
+            QPushButton {
+                color: #FFB86C;
+                background: rgba(255, 184, 108, 0.15);
+                border: 1px solid #FFB86C;
+                border-radius: 6px;
+                padding: 3px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(255, 184, 108, 0.35);
+                border: 1px solid #FFD199;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_edit.clicked.connect(lambda: self._on_edit_card())
+        self.hdr_layout.addWidget(self.btn_edit)
+
         self.btn_sync_deck = QPushButton("🔄 Sync Deck (F5)")
         self.btn_sync_deck.setCursor(Qt.PointingHandCursor)
         self.btn_sync_deck.setToolTip("Sync and refresh deck directly from linked source file (F5 / Alt+R)")
@@ -721,6 +780,20 @@ class TextReviewWidget(QWidget):
             p = p.parent()
         if p and hasattr(p, "_open_concept_hub"):
             p._open_concept_hub(tag=tag if isinstance(tag, str) else None)
+
+    def _on_edit_card(self):
+        p = self.parent()
+        while p and not hasattr(p, "_edit_current_text_card"):
+            p = p.parent()
+        if p and hasattr(p, "_edit_current_text_card"):
+            p._edit_current_text_card()
+
+    def _on_push_deck(self):
+        p = self.parent()
+        while p and not hasattr(p, "_push_current_deck_to_source"):
+            p = p.parent()
+        if p and hasattr(p, "_push_current_deck_to_source"):
+            p._push_current_deck_to_source()
 
     def _on_sync_deck(self):
         p = self.parent()
@@ -1272,8 +1345,13 @@ class TextReviewWidget(QWidget):
             e.accept()
         else:
             if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.verticalScrollBar():
+                factor = get_scroll_damping_factor()
+                raw_delta = e.angleDelta().y()
+                delta = int(raw_delta * factor)
+                if delta == 0 and raw_delta != 0:
+                    delta = 1 if raw_delta > 0 else -1
                 self.scroll_area.verticalScrollBar().setValue(
-                    self.scroll_area.verticalScrollBar().value() - e.angleDelta().y()
+                    self.scroll_area.verticalScrollBar().value() - delta
                 )
                 e.accept()
                 return
@@ -1413,7 +1491,12 @@ class ScratchpadOverlay(QWidget):
             p = p.parent()
 
         if sa and sa.verticalScrollBar():
-            sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.angleDelta().y())
+            factor = get_scroll_damping_factor()
+            raw_delta = e.angleDelta().y()
+            delta = int(raw_delta * factor)
+            if delta == 0 and raw_delta != 0:
+                delta = 1 if raw_delta > 0 else -1
+            sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - delta)
             e.accept()
             return
         e.ignore()

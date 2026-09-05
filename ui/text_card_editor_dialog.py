@@ -642,6 +642,16 @@ class TextCardEditorDialog(QDialog):
         })
         
         sm2_init(self.card)
+
+        # Two-Way Write-Back: write back to canonical source JSON file on disk immediately
+        try:
+            from data_manager import write_back_card_to_source
+            wb_res = write_back_card_to_source(self.card, self._deck)
+            if wb_res.get("status") == "ok":
+                print(f"[Two-Way Sync] Card {self.card.get('card_uid')} written back to {wb_res.get('source_file')}")
+        except Exception as ex:
+            print(f"[Two-Way Sync] Warning: Could not write-back card to source JSON: {ex}")
+
         self.accept()
         
     def get_card(self):

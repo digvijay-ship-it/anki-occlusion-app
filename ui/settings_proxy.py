@@ -1,3 +1,9 @@
+TRACKED_KEYS = [
+    "_font_size", "_theme", "_keep_fullscreen", 
+    "_volume", "_onboarding_done", "_invert_pdf", 
+    "_home_animations", "_auto_reveal", "_scroll_speed"
+]
+
 class SettingsProxyDict(dict):
     """
     A dictionary wrapper that transparently routes global preference keys
@@ -14,12 +20,7 @@ class SettingsProxyDict(dict):
         app = "AppTest" if is_running_tests() else "App"
         settings = QSettings(org, app)
         
-        keys = [
-            "_font_size", "_theme", "_keep_fullscreen", 
-            "_volume", "_onboarding_done", "_invert_pdf", 
-            "_home_animations", "_auto_reveal"
-        ]
-        for k in keys:
+        for k in TRACKED_KEYS:
             val = settings.value(f"settings/{k}")
             if val is not None:
                 # Normalize types because QSettings might save them as strings/variants
@@ -28,7 +29,7 @@ class SettingsProxyDict(dict):
                         val = (val.lower() == "true")
                     else:
                         val = bool(val)
-                elif k in ["_font_size", "_volume"]:
+                elif k in ["_font_size", "_volume", "_scroll_speed"]:
                     try:
                         val = int(val)
                     except (ValueError, TypeError):
@@ -40,11 +41,7 @@ class SettingsProxyDict(dict):
 
     def __setitem__(self, key, value):
         super().__setitem__(key, value)
-        if key in [
-            "_font_size", "_theme", "_keep_fullscreen", 
-            "_volume", "_onboarding_done", "_invert_pdf", 
-            "_home_animations", "_auto_reveal"
-        ]:
+        if key in TRACKED_KEYS:
             from PyQt5.QtCore import QSettings
             from storage_paths import is_running_tests
             org = "AnkiOcclusionTest" if is_running_tests() else "AnkiOcclusion"
@@ -54,11 +51,7 @@ class SettingsProxyDict(dict):
 
     def __delitem__(self, key):
         super().__delitem__(key)
-        if key in [
-            "_font_size", "_theme", "_keep_fullscreen", 
-            "_volume", "_onboarding_done", "_invert_pdf", 
-            "_home_animations", "_auto_reveal"
-        ]:
+        if key in TRACKED_KEYS:
             from PyQt5.QtCore import QSettings
             from storage_paths import is_running_tests
             org = "AnkiOcclusionTest" if is_running_tests() else "AnkiOcclusion"
@@ -68,11 +61,7 @@ class SettingsProxyDict(dict):
 
     def pop(self, key, *args):
         val = super().pop(key, *args)
-        if key in [
-            "_font_size", "_theme", "_keep_fullscreen", 
-            "_volume", "_onboarding_done", "_invert_pdf", 
-            "_home_animations", "_auto_reveal"
-        ]:
+        if key in TRACKED_KEYS:
             from PyQt5.QtCore import QSettings
             from storage_paths import is_running_tests
             org = "AnkiOcclusionTest" if is_running_tests() else "AnkiOcclusion"
@@ -88,11 +77,6 @@ class SettingsProxyDict(dict):
         org = "AnkiOcclusionTest" if is_running_tests() else "AnkiOcclusion"
         app = "AppTest" if is_running_tests() else "App"
         settings = QSettings(org, app)
-        keys = [
-            "_font_size", "_theme", "_keep_fullscreen", 
-            "_volume", "_onboarding_done", "_invert_pdf", 
-            "_home_animations", "_auto_reveal"
-        ]
-        for k in keys:
+        for k in TRACKED_KEYS:
             if k in self:
                 settings.setValue(f"settings/{k}", self[k])
