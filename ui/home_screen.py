@@ -1530,11 +1530,11 @@ class HomeScreen(QWidget):
         if win is not None and hasattr(win, "statusBar") and win.statusBar():
             win.statusBar().showMessage(f"🧹 RAM cache cleared — {before} pages freed in {elapsed:.1f}ms", 3000)
 
-    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None, is_practice=False):
+    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None, is_practice=False, initial_idx: int = 0):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
 
-        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore, is_practice=is_practice)
+        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore, is_practice=is_practice, initial_idx=initial_idx)
         self._active_review = rev
 
         def _schedule_review_save():
@@ -1739,6 +1739,9 @@ class HomeScreen(QWidget):
         return None
 
     def save_last_review_session(self, cards, current_idx=0):
+        if not cards or current_idx >= len(cards):
+            self.clear_last_review_session()
+            return
         try:
             import json
             session_data = {
@@ -1760,6 +1763,13 @@ class HomeScreen(QWidget):
             session_file = os.path.join(app_dir, "last_review_session.json")
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(session_data, f, indent=2)
+            if hasattr(self, "_btn_resume") and self._btn_resume:
+                self._btn_resume.setEnabled(True)
+                from theme_manager import get_palette
+                p = get_palette(self._current_theme)
+                self._btn_resume.setStyleSheet(f"QPushButton {{ color: {p.get('C_ORANGE', '#FFB86C')}; font-weight: bold; }}")
+            if hasattr(self, "_tmnt_layout") and self._tmnt_layout:
+                self._tmnt_layout.set_resume_enabled(True)
         except Exception as e:
             print("[DEBUG] Failed to save last review session:", e)
 
@@ -1851,12 +1861,14 @@ class HomeScreen(QWidget):
             QMessageBox.information(self, "Resume Failed", "Could not find the cards of the last session in the database.")
             return
             
-        self.show_review(resolved_cards, self._data)
+        self.show_review(resolved_cards, self._data, initial_idx=idx)
         
         if hasattr(self, "_active_review") and self._active_review:
             if self._active_review._items:
-                self._active_review._idx = max(0, min(idx, len(self._active_review._items) - 1))
-                self._active_review._load_item()
+                target_idx = max(0, min(idx, len(self._active_review._items) - 1))
+                if self._active_review._idx != target_idx:
+                    self._active_review._idx = target_idx
+                    self._active_review._load_item()
             else:
                 self._active_review._idx = 0
                 self._active_review._finish()
@@ -2347,6 +2359,78 @@ class HomeScreen(QWidget):
         audio_layout.addWidget(btn_inc)
         layout.addWidget(audio_box)
 
+        scroll_title = QLabel("SCROLL SPEED")
+        scroll_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(scroll_title)
+
+        scroll_box = QFrame()
+        scroll_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        scroll_layout = QHBoxLayout(scroll_box)
+        scroll_layout.setContentsMargins(10, 8, 10, 8)
+        scroll_layout.setSpacing(8)
+        
+        scroll_label = QLabel("Mouse Sensitivity")
+        scroll_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        scroll_layout.addWidget(scroll_label)
+
+        current_scroll = int(self._data.get("_scroll_speed", 35))
+        self._classic_scroll_val_lbl = QLabel(f"{current_scroll}%")
+        self._classic_scroll_val_lbl.setStyleSheet(f"color:{C_ACCENT};font-size:12px;font-weight:bold;")
+        scroll_layout.addWidget(self._classic_scroll_val_lbl)
+        scroll_layout.addStretch()
+
+        self._classic_scroll_slider = QSlider(Qt.Horizontal)
+        self._classic_scroll_slider.setRange(10, 100)
+        self._classic_scroll_slider.setSingleStep(5)
+        self._classic_scroll_slider.setValue(current_scroll)
+        self._classic_scroll_slider.setFixedWidth(80)
+        self._classic_scroll_slider.setCursor(Qt.PointingHandCursor)
+        self._classic_scroll_slider.setStyleSheet(f"""
+            QSlider {{
+                background: transparent;
+            }}
+            QSlider::groove:horizontal {{
+                border: none;
+                height: 4px;
+                background: rgba(124, 106, 247, 0.2);
+                border-radius: 2px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {C_ACCENT};
+                border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                background: #BD93F9;
+                width: 10px;
+                height: 10px;
+                margin-top: -3px;
+                margin-bottom: -3px;
+                border-radius: 5px;
+            }}
+        """)
+        self._classic_scroll_slider.valueChanged.connect(self._on_classic_scroll_speed_changed)
+
+        btn_scroll_dec = QPushButton("−")
+        btn_scroll_dec.setFixedWidth(24)
+        btn_scroll_dec.setFixedHeight(24)
+        btn_scroll_dec.setCursor(Qt.PointingHandCursor)
+        btn_scroll_dec.clicked.connect(self._dec_classic_scroll_speed)
+
+        btn_scroll_inc = QPushButton("＋")
+        btn_scroll_inc.setFixedWidth(24)
+        btn_scroll_inc.setFixedHeight(24)
+        btn_scroll_inc.setCursor(Qt.PointingHandCursor)
+        btn_scroll_inc.clicked.connect(self._inc_classic_scroll_speed)
+
+        scroll_layout.addWidget(btn_scroll_dec)
+        scroll_layout.addWidget(self._classic_scroll_slider)
+        scroll_layout.addWidget(btn_scroll_inc)
+        layout.addWidget(scroll_box)
+
         scale_title = QLabel("VISUAL SCALE")
         scale_title.setStyleSheet(
             f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
@@ -2711,6 +2795,13 @@ class HomeScreen(QWidget):
             self._classic_volume_slider.blockSignals(True)
             self._classic_volume_slider.setValue(self._data.get("_volume", 40))
             self._classic_volume_slider.blockSignals(False)
+        if hasattr(self, "_classic_scroll_slider") and self._classic_scroll_slider:
+            self._classic_scroll_slider.blockSignals(True)
+            s_val = int(self._data.get("_scroll_speed", 35))
+            self._classic_scroll_slider.setValue(s_val)
+            if hasattr(self, "_classic_scroll_val_lbl") and self._classic_scroll_val_lbl:
+                self._classic_scroll_val_lbl.setText(f"{s_val}%")
+            self._classic_scroll_slider.blockSignals(False)
         if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
             self._btn_pen_perf.blockSignals(True)
             from PyQt5.QtCore import QSettings
@@ -2750,6 +2841,21 @@ class HomeScreen(QWidget):
     def _inc_classic_volume(self):
         val = min(100, self._data.get("_volume", 40) + 10)
         self._classic_volume_slider.setValue(val)
+
+    def _on_classic_scroll_speed_changed(self, value):
+        self._data["_scroll_speed"] = value
+        if hasattr(self, "_classic_scroll_val_lbl") and self._classic_scroll_val_lbl:
+            self._classic_scroll_val_lbl.setText(f"{value}%")
+        from data_manager import store
+        store.mark_dirty()
+
+    def _dec_classic_scroll_speed(self):
+        val = max(10, self._data.get("_scroll_speed", 35) - 5)
+        self._classic_scroll_slider.setValue(val)
+
+    def _inc_classic_scroll_speed(self):
+        val = min(100, self._data.get("_scroll_speed", 35) + 5)
+        self._classic_scroll_slider.setValue(val)
 
     def _choose_classic_mission_archive(self):
         if self._classic_settings_panel is not None:

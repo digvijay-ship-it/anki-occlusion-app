@@ -581,7 +581,7 @@ class HomeScreenResumeSessionTests(unittest.TestCase):
         home.resume_last_review()
         
         # Verify show_review is called with the resolved card dictionaries in order
-        home.show_review.assert_called_once_with([card2, card1], home._data)
+        home.show_review.assert_called_once_with([card2, card1], home._data, initial_idx=1)
         self.assertEqual(home._active_review._idx, 1)
         home._active_review._load_item.assert_called_once()
 
@@ -602,6 +602,50 @@ class HomeScreenResumeSessionTests(unittest.TestCase):
         self.assertTrue(hasattr(home, "_resume_review_shortcut"))
         self.assertIsInstance(home._resume_review_shortcut, QShortcut)
         self.assertEqual(home._resume_review_shortcut.context(), Qt.WindowShortcut)
+
+    def test_save_last_review_session_clears_when_exhausted(self):
+        home = HomeScreen({"decks": [], "_theme": "classic"})
+        self.addCleanup(home.close)
+        home._btn_resume = MagicMock()
+        
+        cards = [{"question": "Q1", "card_type": "text"}]
+        # Save active session at 0
+        home.save_last_review_session(cards, 0)
+        self.assertIsNotNone(home.load_last_review_session())
+        
+        # When current_idx >= len(cards), session must be cleared
+        home.save_last_review_session(cards, 1)
+        self.assertIsNone(home.load_last_review_session())
+
+    def test_review_screen_find_home_in_stacked_widget(self):
+        from ui.review_screen import ReviewScreen
+        from PyQt5.QtWidgets import QStackedWidget
+        
+        home = HomeScreen({"decks": [], "_theme": "classic"})
+        self.addCleanup(home.close)
+        
+        stack = QStackedWidget(home)
+        card = {"_id": 999, "question": "Test Q", "answer": "Test A", "boxes": []}
+        rs = ReviewScreen([card], data={"decks": []}, parent=home)
+        stack.addWidget(rs)
+        
+        # Despite reparenting by QStackedWidget, _find_home resolves home
+        self.assertEqual(rs._find_home(), home)
+
+    def test_text_cards_due_filter_in_review_screen(self):
+        from ui.review_screen import ReviewScreen
+        
+        due_card = {"_id": 101, "question": "Due Q", "answer": "A", "boxes": [], "sm2_due": "2020-01-01", "sched_state": "review"}
+        future_card = {"_id": 102, "question": "Future Q", "answer": "A", "boxes": [], "sm2_due": "2099-01-01", "sched_state": "review"}
+        
+        # Normal review: only due cards queued
+        rs_normal = ReviewScreen([due_card, future_card], data={"decks": []}, is_practice=False)
+        self.assertEqual(len(rs_normal._items), 1)
+        self.assertEqual(rs_normal._items[0][0]["_id"], 101)
+        
+        # Practice mode: all cards queued
+        rs_practice = ReviewScreen([due_card, future_card], data={"decks": []}, is_practice=True)
+        self.assertEqual(len(rs_practice._items), 2)
 
 
 if __name__ == "__main__":

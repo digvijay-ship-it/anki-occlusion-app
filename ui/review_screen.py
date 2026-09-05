@@ -1273,13 +1273,14 @@ class ReviewScreen(QWidget):
         from ui.review.profiler import review_profile_count
         return review_profile_count(self, name, amount)
 
-    def __init__(self, cards, data=None, parent=None, state_to_restore=None, is_practice=False):
+    def __init__(self, cards, data=None, parent=None, state_to_restore=None, is_practice=False, initial_idx: int = 0):
         super().__init__(parent)
         self._init_review_profile(cards)
         from services.review_manager import ReviewSessionManager
 
         self.mgr = ReviewSessionManager(self)
         self.mgr.is_practice = bool(is_practice)
+        self._initial_idx = int(initial_idx or 0)
         self._data = data
         
         # Load low-latency retro sounds
@@ -1456,7 +1457,9 @@ class ReviewScreen(QWidget):
                     if item_key not in seen_item_keys:
                         seen_item_keys.add(item_key)
                         sm2_init(card)
-                        self._items.append((card, None, card))
+                        _due_result = is_due_today(card)
+                        if _due_result or getattr(self, "is_practice", False):
+                            self._items.append((card, None, card))
                     continue
 
                 seen_groups = set()
@@ -1529,7 +1532,8 @@ class ReviewScreen(QWidget):
                 due_items=len(self._items),
                 queued_ids=len(self._queued_ids),
             )
-            self._idx = 0
+            init_idx = getattr(self, "_initial_idx", 0)
+            self._idx = max(0, min(init_idx, len(self._items) - 1)) if self._items else 0
             self._done = 0
             self._review_undo_stack = []  # list of state snapshots
             self._review_redo_stack = []  # cleared on new rating, filled on undo
@@ -3264,6 +3268,23 @@ class ReviewScreen(QWidget):
         from ui.review.queue_panel import hide_queue_drawer_after_delay
         hide_queue_drawer_after_delay(self)
 
+    def _find_home(self):
+        w = self.parent()
+        while w is not None:
+            if hasattr(w, "save_last_review_session"):
+                return w
+            w = w.parent()
+        app = QApplication.instance()
+        if app:
+            for top in app.topLevelWidgets():
+                if hasattr(top, "centralWidget"):
+                    cw = top.centralWidget()
+                    if hasattr(cw, "save_last_review_session"):
+                        return cw
+                if hasattr(top, "save_last_review_session"):
+                    return top
+        return None
+
     def _load_item(self):
         load_t0 = time.perf_counter()
         if self._idx < 0 or self._idx >= len(self._items):
@@ -3286,9 +3307,9 @@ class ReviewScreen(QWidget):
         if getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
             self._concept_hub_drawer.open_drawer(card)
         try:
-            p = self.parent()
-            if p is not None and hasattr(p, "save_last_review_session") and self._items and not self.is_practice:
-                p.save_last_review_session([item[0] for item in self._items], self._idx)
+            home = self._find_home()
+            if home is not None and hasattr(home, "save_last_review_session") and self._items and not self.is_practice:
+                home.save_last_review_session([item[0] for item in self._items], self._idx)
         except Exception:
             pass
         if hasattr(self, "_hint_scroll_positions") and self._hint_scroll_positions is not None:
@@ -8766,9 +8787,9 @@ class ReviewScreen(QWidget):
     def _show_session_summary(self):
         """Session khatam — stats dialog dikhao."""
         try:
-            p = self.parent()
-            if p is not None and hasattr(p, "clear_last_review_session") and not self.is_practice:
-                p.clear_last_review_session()
+            home = self._find_home()
+            if home is not None and hasattr(home, "clear_last_review_session") and not self.is_practice:
+                home.clear_last_review_session()
         except Exception:
             pass
         items = getattr(self, "_items", None)
