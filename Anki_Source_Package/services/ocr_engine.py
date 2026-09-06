@@ -54,34 +54,114 @@ def is_ready() -> bool:
     with _net_lock:
         return _net is not None
 
-def preprocess_digit_image(pil_img) -> np.ndarray | None:
+def preprocess_digit_image(pil_img):
     """
-    Extracts, pads, and resizes individual digit contours from a PIL image
-    into a batch of normalized 28x28x1 float32 numpy arrays.
+    Extracts, merges, pads, and resizes individual digit contours from a PIL image
+    into a batch of normalized 28x28x1 float32 numpy arrays with center-of-mass alignment,
+    along with structural metadata (loop detection) for disambiguation.
     """
     img_gray = np.array(ImageOps.invert(pil_img.convert("L")))
     _, thresh = cv2.threshold(img_gray, 50, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[0])
 
-    batch = []
+    boxes = []
     for c in contours:
         x, y, w, h = cv2.boundingRect(c)
-        if w * h < 25:
+        if w * h < 25 or w < 3 or h < 6:
             continue
+        # Drop flat horizontal strike-through noise lines
+        if w / max(1, h) > 4.5 and h < 8:
+            continue
+        boxes.append([x, y, w, h])
+
+    if not boxes:
+        return None
+
+    # Sort boxes left to right
+    boxes.sort(key=lambda b: b[0])
+
+    # Merge horizontally overlapping contours (e.g. top bar of 5 over belly, crossbar of 4)
+    # NEVER merge side-by-side digits with a horizontal gap!
+    merged = []
+    for b in boxes:
+        if not merged:
+            merged.append(b)
+            continue
+        prev_x, prev_y, prev_w, prev_h = merged[-1]
+        overlap_x = min(prev_x + prev_w, b[0] + b[2]) - max(prev_x, b[0])
+        min_w = min(prev_w, b[2])
+        if overlap_x > 0 and (overlap_x / float(min_w) > 0.35):
+            nx = min(prev_x, b[0])
+            ny = min(prev_y, b[1])
+            nw = max(prev_x + prev_w, b[0] + b[2]) - nx
+            nh = max(prev_y + prev_h, b[1] + b[3]) - ny
+            merged[-1] = [nx, ny, nw, nh]
+        else:
+            merged.append(b)
+
+    batch = []
+    meta = []
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+    for b in merged:
+        x, y, w, h = b
         digit = thresh[y : y + h, x : x + w]
-        side = max(w, h)
-        pad_x, pad_y = (side - w) // 2, (side - h) // 2
-        square = np.pad(
-            digit, ((pad_y, side - h - pad_y), (pad_x, side - w - pad_x)), "constant"
-        )
-        resized = cv2.resize(square, (20, 20), interpolation=cv2.INTER_AREA)
-        final = np.pad(resized, ((4, 4), (4, 4)), "constant").astype("float32") / 255.0
-        batch.append(final.reshape(28, 28, 1))
+
+        # 1. Morphological dilation: restores stroke body to match MNIST distribution
+        dilated = cv2.dilate(digit, kernel, iterations=1)
+
+        # 2. Topological loop / hole check in upper half
+        upper = dilated[: int(h * 0.65), :]
+        u_cnts, u_hier = cv2.findContours(upper, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        has_loop = False
+        if u_hier is not None:
+            for i, hi in enumerate(u_hier[0]):
+                if hi[3] != -1 and cv2.contourArea(u_cnts[i]) >= 2:
+                    has_loop = True
+                    break
+
+        # 3. Geometric mass distribution (upper half vs lower half)
+        h_half = max(1, h // 2)
+        upper_pixels = int(cv2.countNonZero(dilated[:h_half, :]))
+        lower_pixels = int(cv2.countNonZero(dilated[h_half:, :]))
+        total_pixels = max(1, upper_pixels + lower_pixels)
+        upper_ratio = upper_pixels / float(total_pixels)
+        meta.append({"has_loop": has_loop, "upper_ratio": upper_ratio, "w": w, "h": h})
+
+        # 4. Aspect-ratio preserved resize to 20x20
+        if h > w:
+            nh = 20
+            nw = max(1, int(round(w * 20.0 / h)))
+        else:
+            nw = 20
+            nh = max(1, int(round(h * 20.0 / w)))
+        resized = cv2.resize(dilated, (nw, nh), interpolation=cv2.INTER_AREA)
+
+        # 5. Pad to 28x28
+        pt = (28 - nh) // 2
+        pb = 28 - nh - pt
+        pl = (28 - nw) // 2
+        pr = 28 - nw - pl
+        padded = np.pad(resized, ((pt, pb), (pl, pr)), "constant")
+
+        # 6. Center of mass alignment (Yann LeCun MNIST standard)
+        M = cv2.moments(padded)
+        if M["m00"] > 0:
+            cx = M["m10"] / M["m00"]
+            cy = M["m01"] / M["m00"]
+            sx = int(round(13.5 - cx))
+            sy = int(round(13.5 - cy))
+            sx = max(-4, min(4, sx))
+            sy = max(-4, min(4, sy))
+            M_s = np.float32([[1, 0, sx], [0, 1, sy]])
+            padded = cv2.warpAffine(padded, M_s, (28, 28))
+
+        final = padded.astype("float32").reshape(28, 28, 1) / 255.0
+        batch.append(final)
 
     if not batch:
         return None
-    return np.array(batch, dtype=np.float32)
+    return np.array(batch, dtype=np.float32), meta
 
 def ocr_number(pil_img, _retried=False) -> str:
     global _net, _warmup_done
@@ -95,17 +175,42 @@ def ocr_number(pil_img, _retried=False) -> str:
             return ""
 
     try:
-        batch_arr = preprocess_digit_image(pil_img)
-        if batch_arr is None:
+        prep = preprocess_digit_image(pil_img)
+        if prep is None:
             return ""
+        batch_arr, meta = prep
         
         with _net_lock:
             _net.setInput(batch_arr)
             out = _net.forward()
         
         out = out.reshape(-1, 10)
-        preds = np.argmax(out, axis=1)
-        res = "".join(str(p) for p in preds)
+        
+        result = []
+        for i in range(len(batch_arr)):
+            probs = out[i]
+            top1 = int(np.argmax(probs))
+            top2 = int(np.argsort(probs)[::-1][1])
+            has_loop = meta[i]["has_loop"]
+            upper_ratio = meta[i].get("upper_ratio", 0.5)
+            
+            pred = top1
+            # 1. Disambiguate 3 vs 9 using topological loop invariant
+            if top1 == 3 and has_loop and (probs[9] > 0.05 or top2 == 9):
+                pred = 9
+            elif top1 == 9 and not has_loop and probs[3] > 0.35 and probs[9] < 0.65:
+                pred = 3
+            # 2. Disambiguate 5 vs 9 using vertical mass distribution:
+            # 9 has its loop/mass concentrated in the upper half (> 0.58).
+            # 5 has its belly in the lower half (< 0.45).
+            elif top1 == 5 and upper_ratio > 0.58 and (probs[9] > 0.05 or top2 == 9):
+                pred = 9
+            elif top1 == 9 and upper_ratio < 0.40 and (probs[5] > 0.10 or top2 == 5):
+                pred = 5
+                
+            result.append(str(pred))
+            
+        res = "".join(result)
         print(f"[ocr_engine] OpenCV DNN predicted: '{res}'")
         return res
     except Exception as e:
