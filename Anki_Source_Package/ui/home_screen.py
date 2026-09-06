@@ -1530,11 +1530,42 @@ class HomeScreen(QWidget):
         if win is not None and hasattr(win, "statusBar") and win.statusBar():
             win.statusBar().showMessage(f"🧹 RAM cache cleared — {before} pages freed in {elapsed:.1f}ms", 3000)
 
-    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None, is_practice=False, initial_idx: int = 0, order_mode: str = "default"):
+    def show_review(
+        self,
+        cards,
+        data,
+        _on_batch_done=None,
+        state_to_restore=None,
+        is_practice=False,
+        initial_idx: int = 0,
+        order_mode: str = "default",
+        initial_session_done=None,
+        initial_silenced=False,
+        default_daily_target=None,
+        default_session_target=None,
+        auto_exit_session=None,
+        deck_id=None,
+        deck_name=None,
+    ):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
 
-        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore, is_practice=is_practice, initial_idx=initial_idx, order_mode=order_mode)
+        rev = _load_review_screen()(
+            cards,
+            data=data,
+            parent=self,
+            state_to_restore=state_to_restore,
+            is_practice=is_practice,
+            initial_idx=initial_idx,
+            order_mode=order_mode,
+            initial_session_done=initial_session_done,
+            initial_silenced=initial_silenced,
+            default_daily_target=default_daily_target,
+            default_session_target=default_session_target,
+            auto_exit_session=auto_exit_session,
+            deck_id=deck_id,
+            deck_name=deck_name,
+        )
         self._active_review = rev
 
         def _schedule_review_save():
@@ -1545,6 +1576,10 @@ class HomeScreen(QWidget):
             if not _save_done[0]:
                 _save_done[0] = True
                 _schedule_review_save()
+
+            # Preserve sequential session target progress and silence status
+            self._sequential_session_done = getattr(rev, "_session_target_done", 0)
+            self._sequential_alerts_silenced = getattr(rev, "_session_alerts_silenced", False)
 
             # Save the session state for sequential review undo if active
             if getattr(self, "_current_sequential_group", None) is not None:
@@ -1558,6 +1593,8 @@ class HomeScreen(QWidget):
                     "deleted_ids": set(rev._deleted_ids),
                     "order_mode": getattr(rev, "_order_mode", "default"),
                     "batch": self._current_sequential_group,
+                    "session_target_done": self._sequential_session_done,
+                    "session_alerts_silenced": self._sequential_alerts_silenced,
                 }
                 self._past_sequential_sessions.append(state)
 
@@ -1572,6 +1609,10 @@ class HomeScreen(QWidget):
             self._current_sequential_group = None
             self._sequential_groups = []
             self._past_sequential_sessions = []
+            self._sequential_session_done = None
+            self._sequential_alerts_silenced = False
+            self._sequential_deck_id = None
+            self._sequential_deck_name = None
             self.hide_review()
 
         rev.finished.connect(_on_finished)
@@ -1600,7 +1641,18 @@ class HomeScreen(QWidget):
         rev.show()
         QTimer.singleShot(0, rev.canvas.setFocus)
 
-    def show_review_sequential(self, groups, data, is_practice=False, order_mode: str = "default"):
+    def show_review_sequential(
+        self,
+        groups,
+        data,
+        is_practice=False,
+        order_mode: str = "default",
+        default_daily_target=None,
+        default_session_target=None,
+        auto_exit_session=None,
+        deck_id=None,
+        deck_name=None,
+    ):
         """Review card groups one PDF at a time.
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
         self._sequential_groups = list(groups)
@@ -1609,6 +1661,13 @@ class HomeScreen(QWidget):
         self._sequential_data = data
         self._sequential_is_practice = bool(is_practice)
         self._sequential_order_mode = str(order_mode or "default")
+        self._sequential_session_done = None
+        self._sequential_alerts_silenced = False
+        self._sequential_default_daily_target = default_daily_target
+        self._sequential_default_session_target = default_session_target
+        self._sequential_auto_exit_session = auto_exit_session
+        self._sequential_deck_id = deck_id
+        self._sequential_deck_name = deck_name
 
         def _clear_ram():
             from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
@@ -1624,13 +1683,40 @@ class HomeScreen(QWidget):
             else:
                 self._current_sequential_group = None
                 self._past_sequential_sessions = []
+                self._sequential_session_done = None
+                self._sequential_alerts_silenced = False
+                try:
+                    from PyQt5.QtCore import QSettings
+                    deck_tag = str(getattr(self, "_sequential_deck_id", "") or getattr(self, "_sequential_deck_name", "") or "global").replace(" ", "_")
+                    settings = QSettings("AnkiApp", "AnkiStudyApp")
+                    settings.remove("session_target_done")
+                    settings2 = QSettings("AnkiOcclusion", "App")
+                    settings2.remove("review/session_target_done")
+                    settings2.remove(f"review/session_target_done_{deck_tag}")
+                except Exception:
+                    pass
+                self._sequential_deck_id = None
+                self._sequential_deck_name = None
 
         def _launch_next():
             if not self._sequential_groups:
                 return
             batch = self._sequential_groups.pop(0)
             self._current_sequential_group = batch
-            self.show_review(batch, data, _on_batch_done=_on_done, is_practice=self._sequential_is_practice, order_mode=self._sequential_order_mode)
+            self.show_review(
+                batch,
+                data,
+                _on_batch_done=_on_done,
+                is_practice=self._sequential_is_practice,
+                order_mode=self._sequential_order_mode,
+                initial_session_done=getattr(self, "_sequential_session_done", None),
+                initial_silenced=getattr(self, "_sequential_alerts_silenced", False),
+                default_daily_target=getattr(self, "_sequential_default_daily_target", None),
+                default_session_target=getattr(self, "_sequential_default_session_target", None),
+                auto_exit_session=getattr(self, "_sequential_auto_exit_session", None),
+                deck_id=getattr(self, "_sequential_deck_id", None),
+                deck_name=getattr(self, "_sequential_deck_name", None),
+            )
 
         self._sequential_on_done = _on_done
         _launch_next()
@@ -1644,6 +1730,8 @@ class HomeScreen(QWidget):
             current_rev._undo_handled = True
 
         prev_state = self._past_sequential_sessions.pop()
+        self._sequential_session_done = prev_state.get("session_target_done", getattr(self, "_sequential_session_done", None))
+        self._sequential_alerts_silenced = prev_state.get("session_alerts_silenced", getattr(self, "_sequential_alerts_silenced", False))
 
         # Put the current group back to the remaining groups list
         if getattr(self, "_current_sequential_group", None) is not None:
@@ -1662,6 +1750,13 @@ class HomeScreen(QWidget):
             _on_batch_done=self._sequential_on_done,
             state_to_restore=prev_state,
             is_practice=prev_state.get("is_practice", getattr(self, "_sequential_is_practice", False)),
+            initial_session_done=self._sequential_session_done,
+            initial_silenced=self._sequential_alerts_silenced,
+            default_daily_target=getattr(self, "_sequential_default_daily_target", None),
+            default_session_target=getattr(self, "_sequential_default_session_target", None),
+            auto_exit_session=getattr(self, "_sequential_auto_exit_session", None),
+            deck_id=getattr(self, "_sequential_deck_id", None),
+            deck_name=getattr(self, "_sequential_deck_name", None),
         )
 
     def hide_review(self):

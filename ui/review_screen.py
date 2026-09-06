@@ -1116,135 +1116,395 @@ class SelectableTextBrowser(QTextBrowser):
 
 class TargetToastBanner(QFrame):
     """
-    Compact Sticky Toast Notification Banner for Session Target or Daily Limit.
+    Prominent Sticky Toast Notification Banner for Session Target or Daily Limit.
     Sticks safely to the top of the screen until dismissed with the '✕' button.
-    Compact, non-intrusive, eye-ergonomic styling.
+    Displays clear, high-contrast, beautiful styling with dynamic exceeded limit counts.
     """
     closed = pyqtSignal()
+    silenced = pyqtSignal()
 
-    def __init__(self, parent=None, target=50, duration_sec=None, is_daily=False):
+    def __init__(self, parent=None, target=50, done=0, duration_sec=None, is_daily=False):
         super().__init__(parent)
         self.target = target
+        self.done = done
         self.is_daily = is_daily
         self.remaining_sec = None
+        self.setMinimumWidth(520)
+        self.setMaximumWidth(780)
+        self.setMinimumHeight(64)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self._setup_ui()
 
     def _setup_ui(self):
         self.setObjectName("TargetToastBanner")
-        if self.is_daily:
-            self.setStyleSheet("""
-                QFrame#TargetToastBanner {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2b1f14, stop:1 #282a36);
-                    border: 1.5px solid #ffb86c;
-                    border-radius: 8px;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                QFrame#TargetToastBanner {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #14231b, stop:1 #1e2922);
-                    border: 1.5px solid #50fa7b;
-                    border-radius: 8px;
-                }
-            """)
-
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 8, 14, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
 
         # Icon
-        icon_char = "🛑" if self.is_daily else "🎯"
-        lbl_icon = QLabel(icon_char)
-        lbl_icon.setStyleSheet("font-size: 22px; background: transparent;")
-        layout.addWidget(lbl_icon)
+        self.lbl_icon = QLabel("🛑")
+        self.lbl_icon.setFixedSize(32, 32)
+        self.lbl_icon.setAlignment(Qt.AlignCenter)
+        self.lbl_icon.setStyleSheet("font-size: 24px; background: transparent;")
+        layout.addWidget(self.lbl_icon)
 
         # Text Section
         vbox = QVBoxLayout()
-        vbox.setSpacing(2)
+        vbox.setSpacing(3)
 
-        if self.is_daily:
-            lbl_title = QLabel(f"🛑 आज का डेली टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
-            lbl_title.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 13px; background: transparent;")
-            vbox.addWidget(lbl_title)
+        self.lbl_title = QLabel("")
+        self.lbl_title.setStyleSheet("background: transparent;")
+        vbox.addWidget(self.lbl_title)
 
-            lbl_msg = QLabel(
-                "आज का पूरा डेली कोटा समाप्त! ओवर-बर्नआउट से बचने के लिए थोड़ा आराम करें या ✕ दबाकर पढ़ाई जारी रखें।"
-            )
-            lbl_msg.setStyleSheet("color: #f8f8f2; font-size: 11px; background: transparent;")
-            lbl_msg.setWordWrap(True)
-            vbox.addWidget(lbl_msg)
-        else:
-            lbl_title = QLabel(f"🎯 सेशन टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
-            lbl_title.setStyleSheet("color: #50fa7b; font-weight: bold; font-size: 13px; background: transparent;")
-            vbox.addWidget(lbl_title)
-
-            lbl_msg = QLabel(
-                "इस सेशन का लक्ष्य पूरा हो गया। थोड़ा ब्रेक लें या ✕ दबाकर कभी भी पढ़ाई जारी रख सकते हैं।"
-            )
-            lbl_msg.setStyleSheet("color: #f8f8f2; font-size: 11px; background: transparent;")
-            lbl_msg.setWordWrap(True)
-            vbox.addWidget(lbl_msg)
+        self.lbl_msg = QLabel("")
+        self.lbl_msg.setStyleSheet("color: #f8f8f2; font-size: 11.5px; background: transparent;")
+        self.lbl_msg.setWordWrap(True)
+        vbox.addWidget(self.lbl_msg)
 
         layout.addLayout(vbox, stretch=1)
 
         # Sticky Badge
-        if self.is_daily:
-            self.lbl_countdown = QLabel("📌 DAILY CAP")
-            self.lbl_countdown.setToolTip("Click ✕ to dismiss")
-            self.lbl_countdown.setStyleSheet("""
-                background: rgba(255, 184, 108, 0.18);
-                color: #ffb86c;
-                font-weight: bold;
-                font-size: 10px;
-                padding: 3px 8px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 184, 108, 0.5);
-            """)
-        else:
-            self.lbl_countdown = QLabel("📌 SESSION CAP")
-            self.lbl_countdown.setToolTip("Click ✕ to dismiss")
-            self.lbl_countdown.setStyleSheet("""
-                background: rgba(80, 250, 123, 0.15);
-                color: #50fa7b;
-                font-weight: bold;
-                font-size: 10px;
-                padding: 3px 8px;
-                border-radius: 4px;
-                border: 1px solid rgba(80, 250, 123, 0.45);
-            """)
+        self.lbl_countdown = QLabel("")
+        self.lbl_countdown.setToolTip("Click ✕ to dismiss")
+        self.lbl_countdown.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_countdown)
 
-        # Close / Dismiss Button
-        btn_close = QPushButton("✕")
-        btn_close.setToolTip("Dismiss notification")
-        btn_close.setCursor(Qt.PointingHandCursor)
-        btn_close.setFixedSize(24, 24)
-        close_border = "rgba(255, 184, 108, 0.5)" if self.is_daily else "rgba(80, 250, 123, 0.4)"
-        btn_close.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(255, 255, 255, 0.08);
-                color: {'#ffb86c' if self.is_daily else '#50fa7b'};
+        # Silence / Mute Alert Button
+        self.btn_silence = QPushButton("🔕 Silence (म्यूट)")
+        self.btn_silence.setToolTip("Mute limit alerts for this session so you can continue reviewing peacefully (इस सेशन के लिए अलर्ट म्यूट करें)")
+        self.btn_silence.setCursor(Qt.PointingHandCursor)
+        self.btn_silence.setFixedHeight(28)
+        self.btn_silence.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.12);
+                color: #F8F8F2;
                 font-weight: bold;
-                font-size: 13px;
-                border-radius: 12px;
-                border: 1px solid {close_border};
-            }}
-            QPushButton:hover {{
-                background: #ff5555;
-                color: white;
-                border: 1px solid #ff5555;
-            }}
+                font-size: 11px;
+                border-radius: 4px;
+                border: 1px solid rgba(255, 255, 255, 0.25);
+                padding: 4px 10px;
+            }
+            QPushButton:hover {
+                background: rgba(80, 250, 123, 0.25);
+                border-color: #50FA7B;
+                color: #50FA7B;
+            }
         """)
-        btn_close.clicked.connect(self.dismiss)
-        layout.addWidget(btn_close)
+        self.btn_silence.clicked.connect(self.silence)
+        layout.addWidget(self.btn_silence)
+
+        # Close / Dismiss Button
+        self.btn_close = QPushButton("✕")
+        self.btn_close.setToolTip("Dismiss notification")
+        self.btn_close.setCursor(Qt.PointingHandCursor)
+        self.btn_close.setFixedSize(28, 28)
+        self.btn_close.clicked.connect(self.dismiss)
+        layout.addWidget(self.btn_close)
+
+        self._apply_styling_and_content()
+
+    def update_data(self, target=50, done=0, is_daily=False):
+        self.target = target
+        self.done = done
+        self.is_daily = is_daily
+        self._apply_styling_and_content()
+        self.adjustSize()
+
+    def _apply_styling_and_content(self):
+        is_exceeded = (self.done > self.target) if self.target > 0 else False
+        diff = max(0, self.done - self.target)
+
+        if self.is_daily:
+            if is_exceeded:
+                self.setStyleSheet("""
+                    QFrame#TargetToastBanner {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #381519, stop:0.5 #28181f, stop:1 #1e1e28);
+                        border: 2px solid #ff5555;
+                        border-radius: 10px;
+                    }
+                """)
+                self.lbl_icon.setText("🛑")
+                self.lbl_title.setText(f"🛑 डेली लिमिट पार हो गई है! ({self.done}/{self.target} कार्ड्स)")
+                self.lbl_title.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 13.5px; background: transparent;")
+                self.lbl_msg.setText(
+                    "आपने आज की निर्धारित डेली लिमिट पार कर ली है! ओवर-बर्नआउट से बचने के लिए थोड़ा ब्रेक लें, या ✕ दबाकर पढ़ाई जारी रखें।"
+                )
+                self.lbl_countdown.setText(f"⚠️ LIMIT EXCEEDED (+{diff})")
+                self.lbl_countdown.setStyleSheet("""
+                    background: rgba(255, 85, 85, 0.22);
+                    color: #ff5555;
+                    font-weight: bold;
+                    font-size: 10px;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    border: 1px solid rgba(255, 85, 85, 0.65);
+                """)
+                self.btn_close.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255, 255, 255, 0.08);
+                        color: #ff5555;
+                        font-weight: bold;
+                        font-size: 14px;
+                        border-radius: 14px;
+                        border: 1px solid rgba(255, 85, 85, 0.5);
+                    }
+                    QPushButton:hover {
+                        background: #ff5555;
+                        color: white;
+                        border: 1px solid #ff5555;
+                    }
+                """)
+            else:
+                self.setStyleSheet("""
+                    QFrame#TargetToastBanner {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2f2015, stop:0.5 #261e1b, stop:1 #1e1e28);
+                        border: 2px solid #ffb86c;
+                        border-radius: 10px;
+                    }
+                """)
+                self.lbl_icon.setText("🛑")
+                self.lbl_title.setText(f"🛑 आज का डेली टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
+                self.lbl_title.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 13.5px; background: transparent;")
+                self.lbl_msg.setText(
+                    "आज का पूरा डेली कोटा समाप्त! ओवर-बर्नआउट से बचने के लिए थोड़ा आराम करें या ✕ दबाकर पढ़ाई जारी रखें।"
+                )
+                self.lbl_countdown.setText("📌 DAILY CAP REACHED")
+                self.lbl_countdown.setStyleSheet("""
+                    background: rgba(255, 184, 108, 0.2);
+                    color: #ffb86c;
+                    font-weight: bold;
+                    font-size: 10px;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    border: 1px solid rgba(255, 184, 108, 0.6);
+                """)
+                self.btn_close.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255, 255, 255, 0.08);
+                        color: #ffb86c;
+                        font-weight: bold;
+                        font-size: 14px;
+                        border-radius: 14px;
+                        border: 1px solid rgba(255, 184, 108, 0.5);
+                    }
+                    QPushButton:hover {
+                        background: #ff5555;
+                        color: white;
+                        border: 1px solid #ff5555;
+                    }
+                """)
+        else:
+            if is_exceeded:
+                self.setStyleSheet("""
+                    QFrame#TargetToastBanner {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a2c20, stop:0.5 #1a221f, stop:1 #1e1e28);
+                        border: 2px solid #50fa7b;
+                        border-radius: 10px;
+                    }
+                """)
+                self.lbl_icon.setText("🎯")
+                self.lbl_title.setText(f"🎯 सेशन लिमिट पार! ({self.done}/{self.target} कार्ड्स)")
+                self.lbl_title.setStyleSheet("color: #50fa7b; font-weight: bold; font-size: 13.5px; background: transparent;")
+                self.lbl_msg.setText(
+                    "इस सेशन का लक्ष्य पूरा हो गया है। थोड़ा ब्रेक लें या ✕ दबाकर कभी भी पढ़ाई जारी रख सकते हैं।"
+                )
+                self.lbl_countdown.setText(f"🎯 SESSION (+{diff})")
+                self.lbl_countdown.setStyleSheet("""
+                    background: rgba(80, 250, 123, 0.2);
+                    color: #50fa7b;
+                    font-weight: bold;
+                    font-size: 10px;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    border: 1px solid rgba(80, 250, 123, 0.6);
+                """)
+                self.btn_close.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255, 255, 255, 0.08);
+                        color: #50fa7b;
+                        font-weight: bold;
+                        font-size: 14px;
+                        border-radius: 14px;
+                        border: 1px solid rgba(80, 250, 123, 0.5);
+                    }
+                    QPushButton:hover {
+                        background: #ff5555;
+                        color: white;
+                        border: 1px solid #ff5555;
+                    }
+                """)
+            else:
+                self.setStyleSheet("""
+                    QFrame#TargetToastBanner {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #14231b, stop:0.5 #1e2922, stop:1 #1e1e28);
+                        border: 2px solid #50fa7b;
+                        border-radius: 10px;
+                    }
+                """)
+                self.lbl_icon.setText("🎯")
+                self.lbl_title.setText(f"🎯 सेशन टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
+                self.lbl_title.setStyleSheet("color: #50fa7b; font-weight: bold; font-size: 13.5px; background: transparent;")
+                self.lbl_msg.setText(
+                    "इस सेशन का लक्ष्य पूरा हो गया। थोड़ा ब्रेक लें या ✕ दबाकर कभी भी पढ़ाई जारी रख सकते हैं।"
+                )
+                self.lbl_countdown.setText("📌 SESSION CAP")
+                self.lbl_countdown.setStyleSheet("""
+                    background: rgba(80, 250, 123, 0.18);
+                    color: #50fa7b;
+                    font-weight: bold;
+                    font-size: 10px;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    border: 1px solid rgba(80, 250, 123, 0.5);
+                """)
+                self.btn_close.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255, 255, 255, 0.08);
+                        color: #50fa7b;
+                        font-weight: bold;
+                        font-size: 14px;
+                        border-radius: 14px;
+                        border: 1px solid rgba(80, 250, 123, 0.4);
+                    }
+                    QPushButton:hover {
+                        background: #ff5555;
+                        color: white;
+                        border: 1px solid #ff5555;
+                    }
+                """)
 
     def _on_tick(self):
         pass
+
+    def silence(self):
+        self.silenced.emit()
+        self.dismiss()
 
     def dismiss(self):
         self.closed.emit()
         self.hide()
         self.deleteLater()
+
+
+class SessionBreakDialog(QDialog):
+    """
+    Session Target Completion & Break Dialog
+    Allows taking a break and returning to Home Screen to switch subjects,
+    or continuing the current study session.
+    Complies with Generous Typography (+10px, 20-24px readable fonts).
+    """
+    def __init__(self, parent=None, done=25, goal=25, deck_name=None):
+        super().__init__(parent)
+        self.setWindowTitle("🎉 Session Target Achieved! / सेशन पूरा हुआ")
+        self.setModal(True)
+        self.setMinimumWidth(620)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #151821;
+                color: #F8F8F2;
+                border: 2px solid #50FA7B;
+                border-radius: 12px;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QLabel {
+                color: #F8F8F2;
+                background: transparent;
+            }
+        """)
+        self.action = "exit"  # "exit" or "continue"
+        self._setup_ui(done, goal, deck_name)
+
+    def _setup_ui(self, done, goal, deck_name):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(36, 32, 36, 32)
+        layout.setSpacing(20)
+
+        # Header Icon + Title
+        hdr = QHBoxLayout()
+        hdr.setSpacing(16)
+        lbl_icon = QLabel("🏆")
+        lbl_icon.setStyleSheet("font-size: 48px; background: transparent;")
+        hdr.addWidget(lbl_icon)
+
+        title_l = QVBoxLayout()
+        title_l.setSpacing(4)
+        lbl_title = QLabel(f"🎉 {done} / {goal} Cards Completed!")
+        lbl_title.setStyleSheet("font-size: 26px; font-weight: 900; color: #50FA7B;")
+        
+        dname_str = f" in {deck_name.upper()}" if deck_name else ""
+        lbl_sub = QLabel(f"SESSION TARGET REACHED{dname_str} ❖ शानदार काम!")
+        lbl_sub.setStyleSheet("font-size: 14px; font-weight: bold; color: #BD93F9; letter-spacing: 1px;")
+        title_l.addWidget(lbl_title)
+        title_l.addWidget(lbl_sub)
+        hdr.addLayout(title_l)
+        hdr.addStretch()
+        layout.addLayout(hdr)
+
+        # Message Body
+        body = QLabel(
+            "आपने इस सेशन का टारगेट सफलतापूर्वक पूरा कर लिया है!\n\n"
+            "दिमाग को ताज़ा रखने के लिए थोड़ा ब्रेक लें या दूसरे विषय (Subject) पर स्विच करें।"
+        )
+        body.setStyleSheet("font-size: 19px; color: #E2E8F0; line-height: 1.5; margin-top: 8px;")
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        layout.addSpacing(14)
+
+        # Action Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(16)
+
+        self.btn_exit = QPushButton("🏠 TAKE BREAK / SWITCH SUBJECT (बाहर आएं)")
+        self.btn_exit.setCursor(Qt.PointingHandCursor)
+        self.btn_exit.setDefault(True)
+        self.btn_exit.setStyleSheet("""
+            QPushButton {
+                background-color: #50FA7B;
+                color: #0D1117;
+                font-size: 18px;
+                font-weight: 900;
+                border: none;
+                border-radius: 8px;
+                padding: 14px 26px;
+            }
+            QPushButton:hover {
+                background-color: #69FF91;
+            }
+        """)
+        self.btn_exit.clicked.connect(self._on_exit)
+        btn_layout.addWidget(self.btn_exit)
+
+        self.btn_cont = QPushButton("▶ Keep Studying (पढ़ाई जारी रखें)")
+        self.btn_cont.setCursor(Qt.PointingHandCursor)
+        self.btn_cont.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #AAB1C4;
+                font-size: 16px;
+                font-weight: 700;
+                border: 1px solid #3D4457;
+                border-radius: 8px;
+                padding: 14px 20px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.05);
+                color: #FFFFFF;
+                border-color: #6272A4;
+            }
+        """)
+        self.btn_cont.clicked.connect(self._on_continue)
+        btn_layout.addWidget(self.btn_cont)
+
+        layout.addLayout(btn_layout)
+
+    def _on_exit(self):
+        self.action = "exit"
+        self.accept()
+
+    def _on_continue(self):
+        self.action = "continue"
+        self.accept()
 
 
 class ReviewScreen(QWidget):
@@ -1430,61 +1690,113 @@ class ReviewScreen(QWidget):
         self._daily_reviews_done += 1
         try:
             settings = QSettings("AnkiOcclusion", "App")
-            settings.setValue("review/daily_study_date", today_iso)
-            settings.setValue("review/daily_study_count", self._daily_reviews_done)
+            deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+            settings.setValue(f"review/daily_study_date_{deck_tag}", today_iso)
+            settings.setValue(f"review/daily_study_count_{deck_tag}", self._daily_reviews_done)
+            settings.setValue(f"review/session_target_done_{deck_tag}", self._session_target_done)
+            settings.setValue("review/session_target_done", self._session_target_done)
+            curr_global = int(settings.value("review/daily_study_count", 0) or 0)
+            settings.setValue("review/daily_study_count", curr_global + 1)
         except Exception:
             pass
 
         self._update_target_progress_ui()
 
-        # Priority check: Daily limit is a major milestone and permanent notice
-        if (
-            self._daily_target_goal > 0
-            and self._daily_reviews_done >= self._daily_target_goal
-            and not self._daily_target_notified
-        ):
-            self._daily_target_notified = True
-            try:
-                QSettings("AnkiOcclusion", "App").setValue("review/daily_target_notified", True)
-            except Exception:
-                pass
-            self._show_target_achieved_toast(is_daily=True)
-        elif (
-            self._session_target_goal > 0
-            and self._session_target_done >= self._session_target_goal
-            and not self._session_target_notified
-        ):
-            self._session_target_notified = True
-            self._show_target_achieved_toast(is_daily=False)
+        # Session target auto-break / completion check
+        if self._session_target_goal > 0 and self._session_target_done >= self._session_target_goal:
+            if not getattr(self, "_session_break_prompted", False):
+                self._session_break_prompted = True
+                if getattr(self, "_auto_exit_on_session_target", True):
+                    if getattr(self, "mgr", None) is not None:
+                        self.mgr._rate(quality)
+                    QTimer.singleShot(150, self._prompt_session_break)
+                    return
+
+        # Priority check: Daily limit is a major milestone
+        if self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal:
+            if not self._daily_target_notified:
+                self._daily_target_notified = True
+                try:
+                    deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+                    QSettings("AnkiOcclusion", "App").setValue(f"review/daily_target_notified_{deck_tag}", True)
+                except Exception:
+                    pass
+            if not getattr(self, "_daily_alerts_silenced", False):
+                self._show_target_achieved_toast(is_daily=True)
+        elif self._session_target_goal > 0 and self._session_target_done >= self._session_target_goal:
+            if not self._session_target_notified:
+                self._session_target_notified = True
+            if not getattr(self, "_session_alerts_silenced", False):
+                self._show_target_achieved_toast(is_daily=False)
         elif getattr(self, "_target_toast_banner", None) and self._target_toast_banner.isVisible():
             self._target_toast_banner.raise_()
 
         if getattr(self, "mgr", None) is not None:
             self.mgr._rate(quality)
 
+    def _prompt_session_break(self):
+        dlg = SessionBreakDialog(
+            self,
+            done=self._session_target_done,
+            goal=self._session_target_goal,
+            deck_name=self._deck_name,
+        )
+        if dlg.exec_() == QDialog.Accepted and dlg.action == "exit":
+            try:
+                from PyQt5.QtCore import QSettings
+                deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+                settings = QSettings("AnkiOcclusion", "App")
+                settings.remove(f"review/session_target_done_{deck_tag}")
+                settings.remove("review/session_target_done")
+                settings2 = QSettings("AnkiApp", "AnkiStudyApp")
+                settings2.remove("session_target_done")
+            except Exception:
+                pass
+            self.cancelled.emit()
+        else:
+            self._session_alerts_silenced = True
+            if hasattr(self, "_btn_silence_alerts"):
+                self._btn_silence_alerts.setText("🔔")
+                self._btn_silence_alerts.setStyleSheet(
+                    "color: #FFB86C; font-weight: bold; background: rgba(255, 184, 108, 0.15); border: 1px solid #FFB86C; border-radius: 4px; padding: 2px 8px;"
+                )
+
     def _review_undo(self):
         # Card undo - strictly navigate back / undo cards, not ink
         try:
             today_iso = self._ensure_daily_stats_current()
+            deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
             if self.__dict__.get("_session_target_done", 0) > 0:
                 self._session_target_done = max(0, self._session_target_done - 1)
                 if self._session_target_done < self.__dict__.get("_session_target_goal", 0):
                     self._session_target_notified = False
+                    self._session_break_prompted = False
+                try:
+                    settings = QSettings("AnkiOcclusion", "App")
+                    settings.setValue(f"review/session_target_done_{deck_tag}", self._session_target_done)
+                    settings.setValue("review/session_target_done", self._session_target_done)
+                except Exception:
+                    pass
 
             if self.__dict__.get("_daily_reviews_done", 0) > 0:
                 self._daily_reviews_done = max(0, self._daily_reviews_done - 1)
                 try:
                     settings = QSettings("AnkiOcclusion", "App")
-                    settings.setValue("review/daily_study_date", today_iso)
-                    settings.setValue("review/daily_study_count", self._daily_reviews_done)
+                    settings.setValue(f"review/daily_study_date_{deck_tag}", today_iso)
+                    settings.setValue(f"review/daily_study_count_{deck_tag}", self._daily_reviews_done)
                 except Exception:
                     pass
                 if self._daily_reviews_done < self.__dict__.get("_daily_target_goal", 0):
                     self._daily_target_notified = False
                     try:
-                        QSettings("AnkiOcclusion", "App").setValue("review/daily_target_notified", False)
+                        deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+                        QSettings("AnkiOcclusion", "App").setValue(f"review/daily_target_notified_{deck_tag}", False)
                     except Exception:
                         pass
+                    if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.is_daily:
+                        self._target_toast_banner.dismiss()
+                elif getattr(self, "_target_toast_banner", None) and self._target_toast_banner.is_daily:
+                    self._show_target_achieved_toast(is_daily=True)
 
             self._update_target_progress_ui()
         except Exception:
@@ -1625,7 +1937,23 @@ class ReviewScreen(QWidget):
         from ui.review.profiler import review_profile_count
         return review_profile_count(self, name, amount)
 
-    def __init__(self, cards, data=None, parent=None, state_to_restore=None, is_practice=False, initial_idx: int = 0, order_mode: str = "default"):
+    def __init__(
+        self,
+        cards,
+        data=None,
+        parent=None,
+        state_to_restore=None,
+        is_practice=False,
+        initial_idx: int = 0,
+        order_mode: str = "default",
+        initial_session_done: int = None,
+        initial_silenced: bool = False,
+        default_daily_target: int = None,
+        default_session_target: int = None,
+        auto_exit_session: bool = None,
+        deck_id: str = None,
+        deck_name: str = None,
+    ):
         super().__init__(parent)
         self._init_review_profile(cards)
         from services.review_manager import ReviewSessionManager
@@ -1635,6 +1963,12 @@ class ReviewScreen(QWidget):
         self._initial_idx = int(initial_idx or 0)
         self._data = data
         self._order_mode = str(order_mode or "default")
+        self._deck_id = deck_id
+        self._deck_name = deck_name
+        if not self._deck_id and not self._deck_name and cards and isinstance(cards, list) and len(cards) > 0:
+            first_c = cards[0]
+            if isinstance(first_c, dict):
+                self._deck_id = first_c.get("deck_id") or first_c.get("deck")
         
         # Load low-latency retro sounds
         import os
@@ -1671,17 +2005,52 @@ class ReviewScreen(QWidget):
 
         # Session & Daily Target Tracking state
         settings = QSettings("AnkiOcclusion", "App")
-        saved_sess = str(settings.value("review/session_target_goal", "") or "").strip()
-        self._session_target_goal = int(saved_sess) if (saved_sess and saved_sess.isdigit()) else 0
-        self._session_target_done = 0
-        self._session_target_notified = False
+        if default_session_target is not None and int(default_session_target) > 0:
+            self._session_target_goal = int(default_session_target)
+        else:
+            saved_sess = str(settings.value("review/session_target_goal", "") or "").strip()
+            self._session_target_goal = int(saved_sess) if (saved_sess and saved_sess.isdigit()) else 25
 
-        saved_daily = str(settings.value("review/daily_target_goal", "") or "").strip()
-        self._daily_target_goal = int(saved_daily) if (saved_daily and saved_daily.isdigit()) else 0
+        self._auto_exit_on_session_target = bool(auto_exit_session) if auto_exit_session is not None else True
+        self._session_break_prompted = False
+        
+        deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+        if initial_session_done is not None:
+            self._session_target_done = max(0, int(initial_session_done))
+        else:
+            saved_done = settings.value(f"review/session_target_done_{deck_tag}", None)
+            if saved_done is None and not (self._deck_id or self._deck_name):
+                saved_done = settings.value("review/session_target_done", 0)
+            try:
+                saved_done_int = int(saved_done or 0)
+                if self._session_target_goal > 0 and 0 < saved_done_int < self._session_target_goal:
+                    self._session_target_done = saved_done_int
+                else:
+                    self._session_target_done = 0
+            except Exception:
+                self._session_target_done = 0
+
+        self._session_target_notified = (
+            self._session_target_goal > 0 and self._session_target_done >= self._session_target_goal
+        )
+
+        if default_daily_target is not None:
+            self._daily_target_goal = max(0, int(default_daily_target))
+        elif self._deck_id or self._deck_name:
+            saved_daily = str(settings.value(f"review/daily_target_goal_{deck_tag}", "") or "").strip()
+            self._daily_target_goal = int(saved_daily) if (saved_daily and saved_daily.isdigit()) else 0
+        else:
+            saved_daily = str(settings.value("review/daily_target_goal", "") or "").strip()
+            self._daily_target_goal = int(saved_daily) if (saved_daily and saved_daily.isdigit()) else 0
+
         self._daily_reviews_done = 0
         self._daily_target_notified = False
         self._daily_synced_with_db = False
         self._ensure_daily_stats_current(force_sync=True)
+
+        # Silence flags for the active session (manual per-session, never permanent)
+        self._session_alerts_silenced = bool(initial_silenced)
+        self._daily_alerts_silenced = bool(initial_silenced)
 
         self._target_toast_banner = None
         from services.pdf_watcher import PdfWatcher
@@ -3349,12 +3718,18 @@ class ReviewScreen(QWidget):
         today_iso = datetime.date.today().isoformat()
         try:
             settings = QSettings("AnkiOcclusion", "App")
-            # Always reload persistent daily limit goal so it is never forgotten
-            saved_goal = str(settings.value("review/daily_target_goal", "") or "").strip()
-            if saved_goal and saved_goal.isdigit():
-                self._daily_target_goal = int(saved_goal)
+            deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+            date_key = f"review/daily_study_date_{deck_tag}"
+            count_key = f"review/daily_study_count_{deck_tag}"
+            notified_key = f"review/daily_target_notified_{deck_tag}"
 
-            saved_date = str(settings.value("review/daily_study_date", "") or "")
+            # Only fallback to global saved daily goal if this review doesn't already have one AND has no deck assigned (cross-deck global review)
+            if not getattr(self, "_daily_target_goal", 0) and not (self._deck_id or self._deck_name):
+                saved_goal = str(settings.value("review/daily_target_goal", "") or "").strip()
+                if saved_goal and saved_goal.isdigit():
+                    self._daily_target_goal = int(saved_goal)
+
+            saved_date = str(settings.value(date_key, "") or "")
             is_new_day = (saved_date != today_iso)
 
             need_db_sync = force_sync or is_new_day or not getattr(self, "_daily_synced_with_db", False)
@@ -3362,12 +3737,15 @@ class ReviewScreen(QWidget):
             db_today_count = 0
             if need_db_sync:
                 try:
-                    from services.activity_stats import get_daily_activity_stats
+                    from services.activity_stats import get_deck_today_review_count, get_daily_activity_stats
                     data_src = getattr(self, "_data", None)
                     if data_src is None and getattr(self, "mgr", None) is not None:
                         data_src = getattr(self.mgr, "data", None)
-                    stats = get_daily_activity_stats(today_iso, data=data_src)
-                    db_today_count = int(stats.get("total", 0) or 0)
+                    if self._deck_id or self._deck_name:
+                        db_today_count = get_deck_today_review_count(self._deck_id or self._deck_name, today_iso, data=data_src)
+                    else:
+                        stats = get_daily_activity_stats(today_iso, data=data_src)
+                        db_today_count = int(stats.get("total", 0) or 0)
                 except Exception:
                     db_today_count = 0
 
@@ -3376,21 +3754,21 @@ class ReviewScreen(QWidget):
                 self._daily_target_notified = (
                     self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal
                 )
-                settings.setValue("review/daily_study_date", today_iso)
-                settings.setValue("review/daily_study_count", self._daily_reviews_done)
-                settings.setValue("review/daily_target_notified", self._daily_target_notified)
+                settings.setValue(date_key, today_iso)
+                settings.setValue(count_key, self._daily_reviews_done)
+                settings.setValue(notified_key, self._daily_target_notified)
                 settings.sync()
                 self._daily_synced_with_db = True
             else:
-                saved_count = int(settings.value("review/daily_study_count", 0) or 0)
+                saved_count = int(settings.value(count_key, 0) or 0)
                 if need_db_sync:
                     self._daily_reviews_done = max(db_today_count, saved_count)
-                    settings.setValue("review/daily_study_count", self._daily_reviews_done)
+                    settings.setValue(count_key, self._daily_reviews_done)
                     self._daily_synced_with_db = True
                 else:
                     self._daily_reviews_done = saved_count
 
-                raw_notified = settings.value("review/daily_target_notified", False)
+                raw_notified = settings.value(notified_key, False)
                 if isinstance(raw_notified, str):
                     self._daily_target_notified = raw_notified.lower() in ("true", "1")
                 else:
@@ -3398,7 +3776,7 @@ class ReviewScreen(QWidget):
 
                 if self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal:
                     self._daily_target_notified = True
-                    settings.setValue("review/daily_target_notified", True)
+                    settings.setValue(notified_key, True)
         except Exception:
             pass
         return today_iso
@@ -3412,20 +3790,29 @@ class ReviewScreen(QWidget):
         self._session_target_goal = max(0, val)
         if self._session_target_done < self._session_target_goal:
             self._session_target_notified = False
+            self._session_break_prompted = False
         try:
             settings = QSettings("AnkiOcclusion", "App")
             settings.setValue("review/session_target_goal", text)
             settings.sync()
+            if getattr(self, "_deck_id", None) and getattr(self, "_data", None):
+                from data_manager import find_deck_by_id, store
+                d = find_deck_by_id(self._deck_id, self._data.get("decks", []))
+                if d:
+                    d["session_limit"] = self._session_target_goal
+                    store.save_force(async_save=True)
         except Exception:
             pass
         self._update_target_progress_ui()
         if (
             self._session_target_goal > 0
             and self._session_target_done >= self._session_target_goal
-            and not self._session_target_notified
         ):
             self._session_target_notified = True
             self._show_target_achieved_toast(is_daily=False)
+        elif self._session_target_goal == 0 or self._session_target_done < self._session_target_goal:
+            if getattr(self, "_target_toast_banner", None) and not self._target_toast_banner.is_daily:
+                self._target_toast_banner.dismiss()
 
     def _on_daily_target_input_changed(self, text):
         text = text.strip()
@@ -3437,20 +3824,30 @@ class ReviewScreen(QWidget):
         if self._daily_reviews_done < self._daily_target_goal:
             self._daily_target_notified = False
             try:
+                deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+                QSettings("AnkiOcclusion", "App").setValue(f"review/daily_target_notified_{deck_tag}", False)
                 QSettings("AnkiOcclusion", "App").setValue("review/daily_target_notified", False)
             except Exception:
                 pass
         try:
             settings = QSettings("AnkiOcclusion", "App")
-            settings.setValue("review/daily_target_goal", text)
+            deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+            settings.setValue(f"review/daily_target_goal_{deck_tag}", text)
+            if not (self._deck_id or self._deck_name):
+                settings.setValue("review/daily_target_goal", text)
             settings.sync()
+            if getattr(self, "_deck_id", None) and getattr(self, "_data", None):
+                from data_manager import find_deck_by_id, store
+                d = find_deck_by_id(self._deck_id, self._data.get("decks", []))
+                if d:
+                    d["daily_limit"] = self._daily_target_goal
+                    store.save_force(async_save=True)
         except Exception:
             pass
         self._update_target_progress_ui()
         if (
             self._daily_target_goal > 0
             and self._daily_reviews_done >= self._daily_target_goal
-            and not self._daily_target_notified
         ):
             self._daily_target_notified = True
             try:
@@ -3458,6 +3855,9 @@ class ReviewScreen(QWidget):
             except Exception:
                 pass
             self._show_target_achieved_toast(is_daily=True)
+        elif self._daily_target_goal == 0 or self._daily_reviews_done < self._daily_target_goal:
+            if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.is_daily:
+                self._target_toast_banner.dismiss()
 
     def _update_target_progress_ui(self):
         # 1. Update Session Target Progress
@@ -3507,6 +3907,32 @@ class ReviewScreen(QWidget):
                 else:
                     self._lbl_daily_target_progress.setText("")
                     self._lbl_daily_target_progress.setVisible(False)
+
+        self._update_silence_button_ui()
+
+    def _toggle_alerts_silenced(self):
+        new_state = not getattr(self, "_session_alerts_silenced", False)
+        self._session_alerts_silenced = new_state
+        self._daily_alerts_silenced = new_state
+        self._update_silence_button_ui()
+        if new_state and getattr(self, "_target_toast_banner", None):
+            self._target_toast_banner.dismiss()
+
+    def _update_silence_button_ui(self):
+        if hasattr(self, "_btn_silence_alerts") and self._btn_silence_alerts:
+            if getattr(self, "_session_alerts_silenced", False):
+                self._btn_silence_alerts.setText("🔕")
+                self._btn_silence_alerts.setToolTip("Target Alerts Silenced for this session — Click to unmute (अलर्ट साइलेंट हैं - अनम्यूट करें)")
+                self._btn_silence_alerts.setStyleSheet(
+                    "QPushButton{background:rgba(255,184,108,0.22);color:#ffb86c;font-size:12px;border:1.5px solid #ffb86c;border-radius:4px;margin-left:4px;}"
+                )
+            else:
+                self._btn_silence_alerts.setText("🔔")
+                self._btn_silence_alerts.setToolTip("Target Alerts Active — Click to silence/mute for this session (अलर्ट साइलेंट करें)")
+                self._btn_silence_alerts.setStyleSheet(
+                    "QPushButton{background:transparent;color:#f8f8f2;font-size:12px;border:1px solid #3d4457;border-radius:4px;margin-left:4px;}"
+                    "QPushButton:hover{background:rgba(255,255,255,0.1);border-color:#50fa7b;}"
+                )
 
     def _update_order_mode_ui(self):
         if not hasattr(self, "_btn_order_mode") or self._btn_order_mode is None:
@@ -3577,43 +4003,72 @@ class ReviewScreen(QWidget):
             self.mgr._rebuild_queue()
 
     def _show_target_achieved_toast(self, is_daily: bool = False):
+        target_val = self._daily_target_goal if is_daily else self._session_target_goal
+        done_val = self._daily_reviews_done if is_daily else self._session_target_done
+
         if getattr(self, "_target_toast_banner", None) is not None:
             try:
-                self._target_toast_banner.dismiss()
+                self._target_toast_banner.update_data(target=target_val, done=done_val, is_daily=is_daily)
+                self._reposition_target_toast()
+                self._target_toast_banner.show()
+                self._target_toast_banner.raise_()
+                return
             except Exception:
-                pass
-            self._target_toast_banner = None
+                try:
+                    self._target_toast_banner.dismiss()
+                except Exception:
+                    pass
+                self._target_toast_banner = None
 
-        target_val = self._daily_target_goal if is_daily else self._session_target_goal
         self._target_toast_banner = TargetToastBanner(
             parent=self,
             target=target_val,
+            done=done_val,
             is_daily=is_daily,
         )
         self._target_toast_banner.closed.connect(self._on_target_toast_closed)
-        self._reposition_target_toast()
+        self._target_toast_banner.silenced.connect(self._on_target_toast_silenced)
         self._target_toast_banner.show()
+        self._reposition_target_toast()
         self._target_toast_banner.raise_()
 
-        # Low latency celebration sound if available
-        try:
-            if hasattr(self, "_snd_power"):
-                self._snd_power.play()
-        except Exception:
-            pass
+        # Low latency celebration sound on exact target reached
+        if done_val == target_val and target_val > 0:
+            try:
+                if hasattr(self, "_snd_power"):
+                    self._snd_power.play()
+            except Exception:
+                pass
 
     def _on_target_toast_closed(self):
         self._target_toast_banner = None
 
+    def _on_target_toast_silenced(self):
+        self._session_alerts_silenced = True
+        self._daily_alerts_silenced = True
+        self._update_silence_button_ui()
+        self._target_toast_banner = None
+
     def _reposition_target_toast(self):
-        if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.isVisible():
-            banner_width = min(540, max(340, self.width() - 60))
-            self._target_toast_banner.setFixedWidth(banner_width)
-            self._target_toast_banner.adjustSize()
-            x = (self.width() - self._target_toast_banner.width()) // 2
-            y = 78
-            self._target_toast_banner.move(x, y)
-            self._target_toast_banner.raise_()
+        banner = getattr(self, "_target_toast_banner", None)
+        if banner is None:
+            return
+        banner_width = min(680, max(500, self.width() - 80))
+        banner.setFixedWidth(banner_width)
+        banner.adjustSize()
+        x = (self.width() - banner.width()) // 2
+        y = 78
+        banner.move(x, y)
+        banner.raise_()
+
+    def _check_and_show_target_toast_reminder(self):
+        """Checks if daily limit or session target is reached/exceeded and shows or refreshes the reminder banner."""
+        if self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal:
+            if not getattr(self, "_daily_alerts_silenced", False):
+                self._show_target_achieved_toast(is_daily=True)
+        elif self._session_target_goal > 0 and self._session_target_done >= self._session_target_goal:
+            if not getattr(self, "_session_alerts_silenced", False):
+                self._show_target_achieved_toast(is_daily=False)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -4006,6 +4461,7 @@ class ReviewScreen(QWidget):
         self.prog.setMaximum(len(self._items))
         self.prog.setValue(self._idx)
         self.lbl_prog.setText(f"Card {self._idx + 1}/{len(self._items)}")
+        self._check_and_show_target_toast_reminder()
         if self.is_practice:
             self.lbl_sm2.setText("🎯 Practice Mode")
         else:
@@ -4051,6 +4507,8 @@ class ReviewScreen(QWidget):
             # Disable page nav/contrast/jump/annotate but keep pen buttons enabled
             self._btn_prev_page.setEnabled(False)
             self._btn_next_page.setEnabled(False)
+            self._btn_prev_page.setToolTip("PDF page navigation (Not applicable for MCQ cards)")
+            self._btn_next_page.setToolTip("PDF page navigation (Not applicable for MCQ cards)")
             self._page_jump.setEnabled(False)
             self._btn_invert_pdf.setEnabled(False)
             if hasattr(self, "_btn_annot") and self._btn_annot is not None:
@@ -4066,6 +4524,9 @@ class ReviewScreen(QWidget):
             
             self._update_mask_note_ui()
             self._update_pen_button_states()
+            if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.isVisible():
+                self._reposition_target_toast()
+                self._target_toast_banner.raise_()
             
             self._review_profile_log(
                 "item_loaded",
@@ -4093,6 +4554,8 @@ class ReviewScreen(QWidget):
             # Disable page nav/contrast/jump/annotate but keep pen buttons enabled
             self._btn_prev_page.setEnabled(False)
             self._btn_next_page.setEnabled(False)
+            self._btn_prev_page.setToolTip("PDF page navigation (Not applicable for text cards)")
+            self._btn_next_page.setToolTip("PDF page navigation (Not applicable for text cards)")
             self._page_jump.setEnabled(False)
             self._btn_invert_pdf.setEnabled(False)
             if hasattr(self, "_btn_annot") and self._btn_annot is not None:
@@ -4110,6 +4573,9 @@ class ReviewScreen(QWidget):
             
             self._update_mask_note_ui()
             self._update_pen_button_states()
+            if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.isVisible():
+                self._reposition_target_toast()
+                self._target_toast_banner.raise_()
             
             self._review_profile_log(
                 "item_loaded",
@@ -4124,6 +4590,8 @@ class ReviewScreen(QWidget):
             self._stacked_widget.setCurrentIndex(0)
             self._btn_prev_page.setEnabled(True)
             self._btn_next_page.setEnabled(True)
+            self._btn_prev_page.setToolTip("Previous PDF page  PgUp")
+            self._btn_next_page.setToolTip("Next PDF page  PgDn")
             self._page_jump.setEnabled(True)
             self._btn_invert_pdf.setEnabled(True)
             if hasattr(self, "_btn_annot") and self._btn_annot is not None:
@@ -4213,6 +4681,9 @@ class ReviewScreen(QWidget):
         self._rating_frame.hide()  # ← rating frame explicitly hide karo
         QTimer.singleShot(50, lambda: self._show_overlay(self._reveal_bar))
         self._maybe_auto_reveal()
+        if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.isVisible():
+            self._reposition_target_toast()
+            self._target_toast_banner.raise_()
 
     def keyPressEvent(self, e):
         key = e.key()
@@ -5528,14 +5999,35 @@ class ReviewScreen(QWidget):
         self._lbl_daily_target_progress.setVisible(False)
         row2.addWidget(self._lbl_daily_target_progress)
 
-        # Restore saved target preferences
-        saved_target = str(QSettings("AnkiOcclusion", "App").value("review/session_target_goal", "") or "").strip()
-        if saved_target and saved_target.isdigit() and int(saved_target) > 0:
-            self._inp_target.setText(saved_target)
+        self._btn_silence_alerts = QPushButton("🔔")
+        self._btn_silence_alerts.setFixedHeight(24 if dojo else 26)
+        self._btn_silence_alerts.setFixedWidth(28)
+        self._btn_silence_alerts.setCursor(Qt.PointingHandCursor)
+        self._btn_silence_alerts.clicked.connect(self._toggle_alerts_silenced)
+        row2.addWidget(self._btn_silence_alerts)
 
-        saved_daily = str(QSettings("AnkiOcclusion", "App").value("review/daily_target_goal", "") or "").strip()
-        if saved_daily and saved_daily.isdigit() and int(saved_daily) > 0:
-            self._inp_daily_target.setText(saved_daily)
+        # Restore saved target preferences
+        self._inp_target.blockSignals(True)
+        self._inp_daily_target.blockSignals(True)
+        if getattr(self, "_session_target_goal", 0) > 0:
+            self._inp_target.setText(str(self._session_target_goal))
+        elif not (self._deck_id or self._deck_name):
+            saved_target = str(QSettings("AnkiOcclusion", "App").value("review/session_target_goal", "") or "").strip()
+            if saved_target and saved_target.isdigit() and int(saved_target) > 0:
+                self._inp_target.setText(saved_target)
+        else:
+            self._inp_target.setText("")
+
+        if getattr(self, "_daily_target_goal", 0) > 0:
+            self._inp_daily_target.setText(str(self._daily_target_goal))
+        elif not (self._deck_id or self._deck_name):
+            saved_daily = str(QSettings("AnkiOcclusion", "App").value("review/daily_target_goal", "") or "").strip()
+            if saved_daily and saved_daily.isdigit() and int(saved_daily) > 0:
+                self._inp_daily_target.setText(saved_daily)
+        else:
+            self._inp_daily_target.setText("")
+        self._inp_target.blockSignals(False)
+        self._inp_daily_target.blockSignals(False)
 
         self._update_target_progress_ui()
 
