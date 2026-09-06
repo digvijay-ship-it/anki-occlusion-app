@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QUrl, QEvent
 from PyQt5.QtGui import QFont, QColor, QPalette, QKeySequence, QPixmap, QTextDocument
 from theme_manager import get_palette
-from ui.text_review_widget import ZoomableTextBrowser, ScratchpadOverlay, get_base_url
+from ui.text_review_widget import ZoomableTextBrowser, ScratchpadOverlay, get_base_url, ResizableCardFrame
 
 
 class AutoFitTextBrowser(ZoomableTextBrowser):
@@ -53,12 +53,22 @@ class OptionButton(QPushButton):
         self.is_correct = False
         self.is_selected = False
         self.stat_text = ""
+        self._font_size = 15
+        self._badge_size = 28
+        self._is_faded = False
+        self._revealed = False
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.setMinimumHeight(42)
+        self.setMinimumHeight(44)
         self.setFocusPolicy(Qt.NoFocus)
 
         self._setup_ui()
+
+    def set_font_size(self, font_size: int, badge_size: int):
+        self._font_size = max(13, font_size)
+        self._badge_size = max(24, badge_size)
+        self.setMinimumHeight(max(40, int(font_size * 2.4)))
+        self._refresh_badge_and_text_styles()
 
     def _setup_ui(self):
         self.layout = QHBoxLayout(self)
@@ -68,29 +78,19 @@ class OptionButton(QPushButton):
         # 1. Option Letter Badge (e.g. [ A ])
         self.lbl_badge = QLabel(f"{self.option_label}")
         self.lbl_badge.setAlignment(Qt.AlignCenter)
-        self.lbl_badge.setFixedSize(26, 26)
-        self.lbl_badge.setStyleSheet("""
-            background: rgba(255, 255, 255, 0.08);
-            color: #FFFFFF;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 13px;
-            font-weight: bold;
-            font-size: 12px;
-        """)
+        self.lbl_badge.setFixedSize(self._badge_size, self._badge_size)
         self.layout.addWidget(self.lbl_badge)
 
         # 2. Option Text
         self.lbl_text = QLabel(self.option_text)
         self.lbl_text.setWordWrap(True)
         self.lbl_text.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.lbl_text.setStyleSheet("color: #E2E8F0; font-size: 14px; font-weight: 500; background: transparent; border: none;")
         self.layout.addWidget(self.lbl_text, stretch=1)
 
         # 3. Status Pill / Icon (Hidden initially, shown after selection/reveal)
         self.lbl_status = QLabel("")
         self.lbl_status.setAlignment(Qt.AlignCenter)
         self.lbl_status.setFixedHeight(22)
-        self.lbl_status.setStyleSheet("font-size: 11px; font-weight: bold; padding: 2px 7px; border-radius: 4px; background: transparent;")
         self.lbl_status.hide()
         self.layout.addWidget(self.lbl_status)
         self.apply_idle_style()
@@ -107,7 +107,56 @@ class OptionButton(QPushButton):
     def status_pill(self):
         return self.lbl_status
 
+    def _refresh_badge_and_text_styles(self):
+        bs = getattr(self, "_badge_size", 28)
+        fs = getattr(self, "_font_size", 15)
+        badge_font_size = max(11, int(fs * 0.72))
+        self.lbl_badge.setFixedSize(bs, bs)
+
+        if getattr(self, "_is_faded", False):
+            self.lbl_text.setStyleSheet(f"color: #718096; font-size: {fs}px; font-weight: 400; background: transparent; border: none;")
+            self.lbl_badge.setStyleSheet(f"""
+                background: rgba(255, 255, 255, 0.04);
+                color: #718096;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: {bs // 2}px;
+                font-weight: bold;
+                font-size: {badge_font_size}px;
+            """)
+        elif self.is_correct and (self.is_selected or getattr(self, "_revealed", False)):
+            self.lbl_text.setStyleSheet(f"color: #FFFFFF; font-size: {fs}px; font-weight: 600; background: transparent; border: none;")
+            self.lbl_badge.setStyleSheet(f"""
+                background: #2ECC71;
+                color: #0F172A;
+                border: 1px solid #2ECC71;
+                border-radius: {bs // 2}px;
+                font-weight: bold;
+                font-size: {badge_font_size}px;
+            """)
+        elif self.is_selected and not self.is_correct:
+            self.lbl_text.setStyleSheet(f"color: #FFFFFF; font-size: {fs}px; font-weight: 600; background: transparent; border: none;")
+            self.lbl_badge.setStyleSheet(f"""
+                background: #EF4444;
+                color: #FFFFFF;
+                border: 1px solid #EF4444;
+                border-radius: {bs // 2}px;
+                font-weight: bold;
+                font-size: {badge_font_size}px;
+            """)
+        else:
+            self.lbl_text.setStyleSheet(f"color: #E2E8F0; font-size: {fs}px; font-weight: 500; background: transparent; border: none;")
+            self.lbl_badge.setStyleSheet(f"""
+                background: rgba(255, 255, 255, 0.08);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: {bs // 2}px;
+                font-weight: bold;
+                font-size: {badge_font_size}px;
+            """)
+
     def apply_idle_style(self, theme="classic"):
+        self._is_faded = False
+        self._revealed = False
         p = get_palette(theme)
         accent = p.get("C_ACCENT", "#5C7CFA")
         card_bg = p.get("C_SURFACE", "#1E2333")
@@ -126,17 +175,12 @@ class OptionButton(QPushButton):
                 border-color: {accent};
             }}
         """)
-        self.lbl_badge.setStyleSheet("""
-            background: rgba(255, 255, 255, 0.08);
-            color: #FFFFFF;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 13px;
-            font-weight: bold;
-            font-size: 12px;
-        """)
+        self._refresh_badge_and_text_styles()
         self.lbl_status.hide()
 
     def apply_correct_style(self, stat_text=""):
+        self._is_faded = False
+        self._revealed = True
         self.setStyleSheet("""
             QPushButton {
                 background-color: rgba(46, 204, 113, 0.18);
@@ -146,23 +190,17 @@ class OptionButton(QPushButton):
                 padding: 0;
             }
         """)
-        self.lbl_badge.setStyleSheet("""
-            background: #2ECC71;
-            color: #0F172A;
-            border: 1px solid #2ECC71;
-            border-radius: 13px;
-            font-weight: bold;
-            font-size: 12px;
-        """)
+        self._refresh_badge_and_text_styles()
+        status_fs = max(11, int(self._font_size * 0.72))
         if stat_text:
             self.lbl_status.setText(f"✓ {stat_text}")
         else:
             self.lbl_status.setText("✓ Correct Answer")
-        self.lbl_status.setStyleSheet("""
+        self.lbl_status.setStyleSheet(f"""
             background: rgba(46, 204, 113, 0.25);
             color: #2ECC71;
             border: 1px solid #2ECC71;
-            font-size: 11px;
+            font-size: {status_fs}px;
             font-weight: bold;
             padding: 2px 7px;
             border-radius: 4px;
@@ -170,6 +208,7 @@ class OptionButton(QPushButton):
         self.lbl_status.show()
 
     def apply_incorrect_style(self):
+        self._is_faded = False
         self.setStyleSheet("""
             QPushButton {
                 background-color: rgba(239, 68, 68, 0.18);
@@ -179,20 +218,14 @@ class OptionButton(QPushButton):
                 padding: 0;
             }
         """)
-        self.lbl_badge.setStyleSheet("""
-            background: #EF4444;
-            color: #FFFFFF;
-            border: 1px solid #EF4444;
-            border-radius: 13px;
-            font-weight: bold;
-            font-size: 12px;
-        """)
+        self._refresh_badge_and_text_styles()
+        status_fs = max(11, int(self._font_size * 0.72))
         self.lbl_status.setText("✕ Your Attempt")
-        self.lbl_status.setStyleSheet("""
+        self.lbl_status.setStyleSheet(f"""
             background: rgba(239, 68, 68, 0.25);
             color: #EF4444;
             border: 1px solid #EF4444;
-            font-size: 11px;
+            font-size: {status_fs}px;
             font-weight: bold;
             padding: 2px 7px;
             border-radius: 4px;
@@ -200,6 +233,7 @@ class OptionButton(QPushButton):
         self.lbl_status.show()
 
     def apply_faded_style(self):
+        self._is_faded = True
         self.setStyleSheet("""
             QPushButton {
                 background-color: rgba(255, 255, 255, 0.02);
@@ -209,15 +243,7 @@ class OptionButton(QPushButton):
                 padding: 0;
             }
         """)
-        self.lbl_text.setStyleSheet("color: #718096; font-size: 14px; font-weight: 400; background: transparent; border: none;")
-        self.lbl_badge.setStyleSheet("""
-            background: rgba(255, 255, 255, 0.04);
-            color: #718096;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 13px;
-            font-weight: bold;
-            font-size: 12px;
-        """)
+        self._refresh_badge_and_text_styles()
         self.lbl_status.hide()
 
 
@@ -235,12 +261,37 @@ class MCQReviewWidget(QWidget):
     option_selected = pyqtSignal(str, bool)  # (selected_label, is_correct)
     _stored_zoom_factor = 1.0
 
+    @classmethod
+    def get_saved_zoom_factor(cls) -> float:
+        """Retrieves universally persisted zoom factor for MCQ cards across app restarts."""
+        try:
+            from storage_paths import _settings
+            val = _settings().value("mcq_card_zoom_factor", None)
+            if val is not None:
+                f_val = float(val)
+                if 0.5 <= f_val <= 3.0:
+                    cls._stored_zoom_factor = f_val
+                    return f_val
+        except Exception:
+            pass
+        return getattr(cls, "_stored_zoom_factor", 1.0)
+
+    @classmethod
+    def save_zoom_factor(cls, factor: float):
+        """Universally persists zoom factor so all MCQ cards and future app sessions retain it."""
+        try:
+            cls._stored_zoom_factor = float(round(factor, 2))
+            from storage_paths import _settings
+            _settings().setValue("mcq_card_zoom_factor", cls._stored_zoom_factor)
+        except Exception:
+            pass
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.card = None
         self.is_revealed = False
         self.selected_label = None
-        self._zoom_factor = getattr(MCQReviewWidget, "_stored_zoom_factor", 1.0)
+        self._zoom_factor = MCQReviewWidget.get_saved_zoom_factor()
         self._option_buttons = []
 
         self._setup_ui()
@@ -273,19 +324,17 @@ class MCQReviewWidget(QWidget):
         self.scroll_content = QWidget()
         self.scroll_content.setStyleSheet("background: transparent;")
         content_l = QVBoxLayout(self.scroll_content)
-        content_l.setContentsMargins(20, 10, 20, 20)
+        content_l.setContentsMargins(20, 10, 20, 140)
         content_l.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
 
-        # Centered Container Card
-        self.card_frame = QFrame()
-        self.card_frame.setObjectName("mcq_card_frame")
-        self.card_frame.setMaximumWidth(980)
-        self.card_frame.setMinimumWidth(360)
-        self.card_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-
+        # Centered Container Card (Symmetric Edge Resizable)
         accent = p.get("C_ACCENT", "#5C7CFA")
         surface = p.get("C_SURFACE", "#1E2333")
         border = p.get("C_BORDER", "#374158")
+
+        self.card_frame = ResizableCardFrame(self.scroll_content, accent_color=accent, settings_key="review_card_custom_width")
+        self.card_frame.setObjectName("mcq_card_frame")
+        self.card_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
         self.card_frame.setStyleSheet(f"""
             QFrame#mcq_card_frame {{
@@ -294,9 +343,11 @@ class MCQReviewWidget(QWidget):
                 border-radius: 12px;
             }}
         """)
+        self.card_frame.width_changed.connect(self._on_card_width_changed)
+        self.card_frame.apply_saved_or_default_width()
 
         card_inner_l = QVBoxLayout(self.card_frame)
-        card_inner_l.setContentsMargins(18, 14, 18, 18)
+        card_inner_l.setContentsMargins(24, 14, 24, 18)
         card_inner_l.setSpacing(10)
         card_inner_l.setAlignment(Qt.AlignTop)
 
@@ -398,6 +449,29 @@ class MCQReviewWidget(QWidget):
         self.lbl_accuracy_stat.hide()
         self.hdr_layout.addWidget(self.lbl_accuracy_stat)
 
+        # 🧠 Mind-Map Hub button
+        self.btn_mindmap = QPushButton("🧠 Mind-Map (Alt+M)")
+        self.btn_mindmap.setCursor(Qt.PointingHandCursor)
+        self.btn_mindmap.setToolTip("Open Mind-Map Concept Hub & Story Chain (Alt+M)")
+        self.btn_mindmap.setStyleSheet("""
+            QPushButton {
+                color: #70A5FD;
+                background: rgba(92, 124, 250, 0.15);
+                border: 1px solid #5C7CFA;
+                border-radius: 4px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(92, 124, 250, 0.35);
+                border: 1px solid #91A7FF;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_mindmap.clicked.connect(lambda: self._on_open_mindmap())
+        self.hdr_layout.addWidget(self.btn_mindmap)
+
         # Font Size Controls Toolbar (A- / 100% / A+)
         self.font_controls = QWidget()
         self.font_controls.setFixedHeight(24)
@@ -476,6 +550,86 @@ class MCQReviewWidget(QWidget):
 
         self.hdr_layout.addWidget(self.font_controls)
 
+        # Card Width Controls Toolbar (↔- / ↔ 1130px / ↔+)
+        self.width_controls = QWidget()
+        self.width_controls.setFixedHeight(24)
+        wc_layout = QHBoxLayout(self.width_controls)
+        wc_layout.setContentsMargins(0, 0, 0, 0)
+        wc_layout.setSpacing(2)
+
+        self.btn_width_dec = QPushButton("↔-")
+        self.btn_width_dec.setToolTip("Narrow Card Width by 50px (Ctrl+Shift+Left / Alt+Left)")
+        self.btn_width_dec.setFixedSize(28, 24)
+        self.btn_width_dec.setCursor(Qt.PointingHandCursor)
+        self.btn_width_dec.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.08);
+                color: #E2E8F0;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background: rgba(92, 124, 250, 0.25);
+                border-color: {accent};
+                color: #FFFFFF;
+            }}
+        """)
+        self.btn_width_dec.clicked.connect(lambda: self._decrease_card_width(50))
+        wc_layout.addWidget(self.btn_width_dec)
+
+        init_w = self.card_frame.get_saved_width() if hasattr(self, "card_frame") else 1500
+        self.btn_width_val = QPushButton(f"↔ {init_w}px")
+        self.btn_width_val.setToolTip("Click to cycle card width presets (Standard 980 → Wide 1200 → Generous 1500 → Max Width) | Alt+W")
+        self.btn_width_val.setFixedHeight(24)
+        self.btn_width_val.setMinimumWidth(68)
+        self.btn_width_val.setCursor(Qt.PointingHandCursor)
+        self.btn_width_val.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(92, 124, 250, 0.15);
+                color: #91A7FF;
+                border: 1px solid #5C7CFA;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 6px;
+            }}
+            QPushButton:hover {{
+                background: rgba(92, 124, 250, 0.35);
+                color: #FFFFFF;
+            }}
+        """)
+        self.btn_width_val.clicked.connect(self._cycle_card_width)
+        wc_layout.addWidget(self.btn_width_val)
+        self.btn_card_width = self.btn_width_val  # backward compatibility reference
+
+        self.btn_width_inc = QPushButton("↔+")
+        self.btn_width_inc.setToolTip("Widen Card Width by 50px (Ctrl+Shift+Right / Alt+Right)")
+        self.btn_width_inc.setFixedSize(28, 24)
+        self.btn_width_inc.setCursor(Qt.PointingHandCursor)
+        self.btn_width_inc.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.08);
+                color: #E2E8F0;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background: rgba(92, 124, 250, 0.25);
+                border-color: {accent};
+                color: #FFFFFF;
+            }}
+        """)
+        self.btn_width_inc.clicked.connect(lambda: self._increase_card_width(50))
+        wc_layout.addWidget(self.btn_width_inc)
+
+        self.hdr_layout.addWidget(self.width_controls)
+
         card_inner_l.addWidget(self.hdr_bar)
 
         # ── 2. Question Browser (High-contrast, auto-fit height) ──
@@ -537,10 +691,71 @@ class MCQReviewWidget(QWidget):
         self.scroll_area.setWidget(self.scroll_content)
         main_l.addWidget(self.scroll_area)
 
+    def _on_card_width_changed(self, new_width: int):
+        if hasattr(self, "btn_width_val"):
+            self.btn_width_val.setText(f"↔ {new_width}px")
+        if hasattr(self, "q_browser"):
+            self.q_browser._adjust_height()
+        if hasattr(self, "sol_browser"):
+            self.sol_browser._adjust_height()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
+
+    def _increase_card_width(self, delta: int = 50):
+        cur_w = self.card_frame.width()
+        vw = self.card_frame._get_viewport_width()
+        max_w = max(cur_w + delta, max(640, vw - 40))
+        target_w = min(max_w, cur_w + delta)
+        self.card_frame.setFixedWidth(target_w)
+        self.card_frame._save_width(target_w)
+        self._on_card_width_changed(target_w)
+
+    def _decrease_card_width(self, delta: int = 50):
+        cur_w = self.card_frame.width()
+        min_w = 640
+        target_w = max(min_w, cur_w - delta)
+        self.card_frame.setFixedWidth(target_w)
+        self.card_frame._save_width(target_w)
+        self._on_card_width_changed(target_w)
+
+    def _cycle_card_width(self):
+        vw = self.card_frame._get_viewport_width()
+        max_w = max(640, vw - 40)
+        presets = [980, 1200, 1500, 1700, max_w]
+        presets = sorted(list(set([p for p in presets if p <= max_w] + [max_w])))
+        cur_w = self.card_frame.width()
+        next_w = presets[0]
+        for p_w in presets:
+            if p_w > cur_w + 20:
+                next_w = p_w
+                break
+        self.card_frame.setFixedWidth(next_w)
+        self.card_frame._save_width(next_w)
+        self._on_card_width_changed(next_w)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if hasattr(self, "card_frame") and isinstance(self.card_frame, ResizableCardFrame):
+            self.card_frame.apply_saved_or_default_width()
+            if hasattr(self, "btn_width_val"):
+                self.btn_width_val.setText(f"↔ {self.card_frame.width()}px")
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
+        if hasattr(self, "q_browser"):
+            self.q_browser._adjust_height()
+        if hasattr(self, "sol_browser"):
+            self.sol_browser._adjust_height()
+
     def load_card(self, card: dict):
         self.card = card
         self.is_revealed = False
         self.selected_label = None
+        self._zoom_factor = MCQReviewWidget.get_saved_zoom_factor()
+
+        if hasattr(self, "card_frame") and isinstance(self.card_frame, ResizableCardFrame):
+            self.card_frame.apply_saved_or_default_width()
+            if hasattr(self, "btn_width_val"):
+                self.btn_width_val.setText(f"↔ {self.card_frame.width()}px")
 
         if hasattr(self, "scratchpad"):
             self.scratchpad.clear()
@@ -690,6 +905,30 @@ class MCQReviewWidget(QWidget):
             self.scratchpad.sync_geometry_with_parent()
             self.scratchpad.raise_()
 
+    def hide_answer(self):
+        """Hide solution and reset options to idle unrevealed state."""
+        if not self.is_revealed:
+            return
+        self.is_revealed = False
+        self.selected_label = None
+
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        for btn in self._option_buttons:
+            btn.is_selected = False
+            btn.apply_idle_style(theme)
+
+        self.solution_container.hide()
+        self.sol_browser.clear()
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
+
+    def _on_open_mindmap(self, tag=None):
+        p = self.parent()
+        while p and not hasattr(p, "_toggle_concept_hub") and not hasattr(p, "_open_concept_hub"):
+            p = p.parent()
+        if p and hasattr(p, "_open_concept_hub"):
+            p._open_concept_hub(tag=tag if isinstance(tag, str) else None)
+
     def keyPressEvent(self, e):
         # 1. Font Zoom shortcuts: Ctrl + Plus, Ctrl + Minus, Ctrl + 0
         if e.modifiers() & Qt.ControlModifier:
@@ -706,7 +945,23 @@ class MCQReviewWidget(QWidget):
                 e.accept()
                 return
 
-        # 2. Keyboard Option shortcuts: A, B, C, D or 1, 2, 3, 4
+        # 2. Card Width shortcuts: Alt+W (cycle), Ctrl+Shift+Right / Alt+Right (widen), Ctrl+Shift+Left / Alt+Left (narrow)
+        if e.modifiers() & Qt.AltModifier and e.key() == Qt.Key_W:
+            self._cycle_card_width()
+            e.accept()
+            return
+
+        if ((e.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)) == (Qt.ControlModifier | Qt.ShiftModifier)) or (e.modifiers() & Qt.AltModifier):
+            if e.key() == Qt.Key_Right:
+                self._increase_card_width(50)
+                e.accept()
+                return
+            elif e.key() == Qt.Key_Left:
+                self._decrease_card_width(50)
+                e.accept()
+                return
+
+        # 3. Keyboard Option shortcuts: A, B, C, D or 1, 2, 3, 4
         if not self.is_revealed:
             key_map = {
                 Qt.Key_A: "A",
@@ -746,14 +1001,17 @@ class MCQReviewWidget(QWidget):
             self._dim_cache = {}
         dim_cache = self._dim_cache
 
-        viewport_w = (
-            self.scroll_area.viewport().width()
-            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
-            else self.width()
-        )
-        if viewport_w <= 100:
-            viewport_w = 900
-        avail_w = max(200, viewport_w - 100)
+        if hasattr(self, "card_frame") and self.card_frame.width() > 100:
+            avail_w = max(200, self.card_frame.width() - 48)
+        else:
+            viewport_w = (
+                self.scroll_area.viewport().width()
+                if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+                else self.width()
+            )
+            if viewport_w <= 100:
+                viewport_w = 900
+            avail_w = max(200, viewport_w - 100)
 
         def repl_img(match):
             full_tag = match.group(0)
@@ -828,7 +1086,7 @@ class MCQReviewWidget(QWidget):
         text_color = p.get("C_TEXT", "#FFFFFF")
         subtext_color = p.get("C_SUBTEXT", "#A0AEC0")
         accent = p.get("C_ACCENT", "#5C7CFA")
-        sol_font_size = int(14 * self._zoom_factor)
+        sol_font_size = max(15, int(17 * self._zoom_factor))
 
         sol_data = self.card.get("solution_data", {}) or {}
         sol_html_raw = sol_data.get("html") or self.card.get("detailed_solution") or self.card.get("explanation") or ""
@@ -853,10 +1111,12 @@ class MCQReviewWidget(QWidget):
 
         # 1. Statement Banner
         if statement:
+            s_stmt = str(statement)
+            stmt_html = s_stmt if ("<span" in s_stmt or "<b" in s_stmt) else html.escape(s_stmt)
             html_blocks.append(f"""
                 <div style="background-color: rgba(46, 204, 113, 0.14); border-left: 4px solid #2ECC71; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px;">
-                    <div style="color: #2ECC71 !important; font-size: {sol_font_size + 1}px; font-weight: bold; line-height: 1.4;">
-                        {html.escape(statement)}
+                    <div style="font-size: {sol_font_size + 1}px; font-weight: bold; line-height: 1.4;">
+                        {stmt_html}
                     </div>
                 </div>
             """)
@@ -888,13 +1148,22 @@ class MCQReviewWidget(QWidget):
 
         # 3. Key Points Section
         if key_points:
-            kp_items = "".join([f"<li style='margin-bottom: 6px; line-height: 1.45; color: {text_color} !important;'>{html.escape(str(pt))}</li>" for pt in key_points])
+            formatted_pts = []
+            for pt in key_points:
+                s_pt = str(pt)
+                if "<span" in s_pt or "<b" in s_pt or "<mark" in s_pt:
+                    formatted_pts.append(f"<li style='margin-bottom: 6px; line-height: 1.45;'>{s_pt}</li>")
+                else:
+                    if "**" in s_pt:
+                        s_pt = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', s_pt)
+                    formatted_pts.append(f"<li style='margin-bottom: 6px; line-height: 1.45;'>{s_pt}</li>")
+            kp_items = "".join(formatted_pts)
             html_blocks.append(f"""
                 <div style="background-color: rgba(92, 124, 250, 0.08); border-left: 4px solid #5C7CFA; border-radius: 6px; padding: 12px 16px; margin-bottom: 10px;">
                     <div style="color: #5C7CFA !important; font-size: {sol_font_size}px; font-weight: bold; margin-bottom: 6px;">
                         🔑 Key Points
                     </div>
-                    <ul style="color: {text_color} !important; font-size: {sol_font_size}px; margin: 0; padding-left: 18px;">
+                    <ul style="font-size: {sol_font_size}px; margin: 0; padding-left: 18px;">
                         {kp_items}
                     </ul>
                 </div>
@@ -902,7 +1171,7 @@ class MCQReviewWidget(QWidget):
 
         # 4. Additional Information Section
         if additional_info:
-            ai_items = "".join([f"<li style='margin-bottom: 5px; line-height: 1.4; color: {subtext_color} !important;'>{html.escape(str(info))}</li>" for info in additional_info])
+            ai_items = "".join([f"<li style='margin-bottom: 5px; line-height: 1.4; color: {subtext_color};'>{str(info) if ('<span' in str(info) or '<b' in str(info)) else html.escape(str(info))}</li>" for info in additional_info])
             html_blocks.append(f"""
                 <div style="background-color: rgba(139, 233, 253, 0.08); border-left: 4px solid #8BE9FD; border-radius: 6px; padding: 12px 16px; margin-bottom: 10px;">
                     <div style="color: #8BE9FD !important; font-size: {sol_font_size}px; font-weight: bold; margin-bottom: 6px;">
@@ -916,20 +1185,20 @@ class MCQReviewWidget(QWidget):
 
         # 5. Important Points / Chronology Section
         if important_points:
-            ip_items = "".join([f"<li style='margin-bottom: 5px; line-height: 1.4; color: {text_color} !important;'>{html.escape(str(ip))}</li>" for ip in important_points])
+            ip_items = "".join([f"<li style='margin-bottom: 5px; line-height: 1.4;'>{str(ip) if ('<span' in str(ip) or '<b' in str(ip)) else html.escape(str(ip))}</li>" for ip in important_points])
             html_blocks.append(f"""
                 <div style="background-color: rgba(255, 184, 108, 0.08); border-left: 4px solid #FFB86C; border-radius: 6px; padding: 12px 16px; margin-bottom: 10px;">
                     <div style="color: #FFB86C !important; font-size: {sol_font_size}px; font-weight: bold; margin-bottom: 6px;">
                         📌 Important Points
                     </div>
-                    <ul style="color: {text_color} !important; font-size: {sol_font_size}px; margin: 0; padding-left: 18px;">
+                    <ul style="font-size: {sol_font_size}px; margin: 0; padding-left: 18px;">
                         {ip_items}
                     </ul>
                 </div>
             """)
 
         full_sol_html = f"""
-            <div style="color: {text_color} !important; font-family: {self._font_family}; font-size: {sol_font_size}px; line-height: 1.55;">
+            <div style="color: {text_color}; font-family: {self._font_family}; font-size: {sol_font_size}px; line-height: 1.55;">
                 {"".join(html_blocks)}
             </div>
         """
@@ -937,7 +1206,7 @@ class MCQReviewWidget(QWidget):
         doc_css = f"""
             p, div {{ margin: 4px 0; padding: 0; line-height: 1.45; }}
             img {{ max-width: 100%; height: auto; border-radius: 6px; margin: 4px 0; }}
-            p, div, span, li, td, th, label, font, b, strong {{ color: {text_color} !important; }}
+            p, div, li, td, th, label {{ color: {text_color} !important; }}
             table {{ border-collapse: collapse; margin: 6px 0; }}
             th, td {{ border: 1px solid #4A5568; padding: 4px 8px; color: {text_color} !important; }}
         """
@@ -956,6 +1225,14 @@ class MCQReviewWidget(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        if hasattr(self, "card_frame") and isinstance(self.card_frame, ResizableCardFrame):
+            vw = e.size().width() if e.size().width() > 300 else self.card_frame._get_viewport_width()
+            if vw > 300:
+                max_w = max(480, vw - 40)
+                saved_w = self.card_frame.get_saved_width()
+                target_w = min(saved_w, max_w)
+                if self.card_frame.width() != target_w:
+                    self.card_frame.setFixedWidth(target_w)
         if hasattr(self, "scratchpad"):
             self.scratchpad.sync_geometry_with_parent()
         if hasattr(self, "q_browser"):
@@ -987,7 +1264,7 @@ class MCQReviewWidget(QWidget):
         self._apply_zoom()
 
     def _apply_zoom(self):
-        MCQReviewWidget._stored_zoom_factor = self._zoom_factor
+        MCQReviewWidget.save_zoom_factor(self._zoom_factor)
         if hasattr(self, "btn_font_reset"):
             self.btn_font_reset.setText(f"{int(round(self._zoom_factor * 100))}%")
         self._render_question_html()
@@ -996,19 +1273,7 @@ class MCQReviewWidget(QWidget):
             self._render_solution_html()
 
     def _update_options_font(self):
-        opt_font_size = max(11, int(14 * self._zoom_factor))
-        badge_size = max(22, int(26 * self._zoom_factor))
+        opt_font_size = max(15, int(17 * self._zoom_factor))
+        badge_size = max(26, int(30 * self._zoom_factor))
         for btn in self._option_buttons:
-            if hasattr(btn, "lbl_text"):
-                btn.lbl_text.setStyleSheet(f"color: #E2E8F0; font-size: {opt_font_size}px; font-weight: 500; background: transparent; border: none;")
-            if hasattr(btn, "lbl_badge"):
-                btn.lbl_badge.setFixedSize(badge_size, badge_size)
-                btn.lbl_badge.setStyleSheet(f"""
-                    background: rgba(255, 255, 255, 0.08);
-                    color: #FFFFFF;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
-                    border-radius: {badge_size // 2}px;
-                    font-weight: bold;
-                    font-size: {max(10, int(12 * self._zoom_factor))}px;
-                """)
-            btn.setMinimumHeight(max(36, int(42 * self._zoom_factor)))
+            btn.set_font_size(opt_font_size, badge_size)

@@ -251,6 +251,232 @@ class ZoomableTextBrowser(QTextBrowser):
         else:
             super().keyPressEvent(e)
 
+class ResizeGripHandle(QWidget):
+    """
+    Vertical drag handle placed along the left or right edge of a centered card frame.
+    Allows symmetrical resizing by dragging either edge inward or outward.
+    """
+    def __init__(self, parent=None, edge="right", accent_color="#5C7CFA"):
+        super().__init__(parent)
+        self.edge = edge  # "left" or "right"
+        self._accent_color = accent_color
+        self._hovered = False
+        self._dragging = False
+        self._center_global_x = 0
+        self.setCursor(Qt.SizeHorCursor)
+        self.setMouseTracking(True)
+        self.setToolTip("↔ Drag edge to resize card symmetrically\nDouble-click to toggle full width")
+        self.setStyleSheet("background: transparent;")
+
+    def set_accent_color(self, color: str):
+        self._accent_color = color
+        self.update()
+
+    def enterEvent(self, e):
+        self._hovered = True
+        self.setCursor(Qt.SizeHorCursor)
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._dragging = True
+            p = self.parent()
+            if p:
+                center_pt = p.mapToGlobal(p.rect().center())
+                self._center_global_x = center_pt.x()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._dragging:
+            cur_global_x = e.globalPos().x()
+            dist = abs(cur_global_x - self._center_global_x)
+            target_w = int(dist * 2)
+            p = self.parent()
+            if p and hasattr(p, "on_handle_drag"):
+                p.on_handle_drag(target_w)
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self._dragging:
+            self._dragging = False
+            self.update()
+            p = self.parent()
+            if p and hasattr(p, "on_handle_drag_finished"):
+                p.on_handle_drag_finished()
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            p = self.parent()
+            if p and hasattr(p, "on_handle_double_click"):
+                p.on_handle_double_click()
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        accent = getattr(self, "_accent_color", "#5C7CFA")
+        col = QColor(accent)
+        if self._dragging:
+            col.setAlpha(255)
+            bar_w = 6
+        elif self._hovered:
+            col.setAlpha(220)
+            bar_w = 5
+        else:
+            col.setAlpha(95)
+            bar_w = 4
+        painter.setBrush(col)
+        painter.setPen(Qt.NoPen)
+        w = self.width()
+        h = self.height()
+        bar_h = min(72, max(42, h // 4))
+        x = (w - bar_w) // 2
+        y = (h - bar_h) // 2
+        painter.drawRoundedRect(x, y, bar_w, bar_h, 2, 2)
+
+
+class ResizableCardFrame(QFrame):
+    """
+    Card container frame supporting symmetric edge dragging from left or right edge.
+    Maintains equal margins on both sides by expanding symmetrically around screen center.
+    """
+    width_changed = pyqtSignal(int)
+
+    def __init__(self, parent=None, accent_color="#5C7CFA", settings_key="review_card_custom_width"):
+        super().__init__(parent)
+        self._accent_color = accent_color
+        self._settings_key = settings_key
+        self._handle_width = 20
+
+        self.left_handle = ResizeGripHandle(self, edge="left", accent_color=accent_color)
+        self.right_handle = ResizeGripHandle(self, edge="right", accent_color=accent_color)
+        self.setMouseTracking(True)
+
+    def set_accent_color(self, color: str):
+        self._accent_color = color
+        self.left_handle.set_accent_color(color)
+        self.right_handle.set_accent_color(color)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        h = self.height()
+        w = self.width()
+        hw = self._handle_width
+        self.left_handle.setGeometry(0, 0, hw, h)
+        self.right_handle.setGeometry(max(0, w - hw), 0, hw, h)
+        self.left_handle.raise_()
+        self.right_handle.raise_()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if hasattr(self, "left_handle"):
+            self.left_handle.raise_()
+        if hasattr(self, "right_handle"):
+            self.right_handle.raise_()
+
+    def _get_viewport_width(self) -> int:
+        vw = 0
+        p = self.parent()
+        while p:
+            if hasattr(p, "scroll_area") and getattr(p, "scroll_area") and getattr(p, "scroll_area").viewport():
+                w = p.scroll_area.viewport().width()
+                if w > 200:
+                    vw = max(vw, w)
+            if isinstance(p, QScrollArea) and p.viewport():
+                w = p.viewport().width()
+                if w > 200:
+                    vw = max(vw, w)
+            if hasattr(p, "width") and p.width() > 200:
+                vw = max(vw, p.width())
+            p = p.parent()
+        top = self.window()
+        if top and top.width() > 200:
+            vw = max(vw, top.width())
+        try:
+            from PyQt5.QtWidgets import QApplication
+            screen = QApplication.primaryScreen()
+            if screen:
+                sw = screen.geometry().width()
+                if sw >= 1024:
+                    vw = max(vw, sw)
+        except Exception:
+            pass
+        return vw if vw >= 1024 else 1920
+
+    def on_handle_drag(self, target_w: int):
+        vw = self._get_viewport_width()
+        min_w = 640
+        max_w = max(min_w, vw - 40)
+        clamped_w = max(min_w, min(target_w, max_w))
+        self.setFixedWidth(clamped_w)
+        self.width_changed.emit(clamped_w)
+
+    def on_handle_drag_finished(self):
+        w = self.width()
+        if w >= 640:
+            self._save_width(w)
+        self.width_changed.emit(w)
+
+    def on_handle_double_click(self):
+        vw = self._get_viewport_width()
+        min_w = 640
+        max_w = max(min_w, vw - 40)
+        default_w = min(1500, max_w)
+        cur_w = self.width()
+        if cur_w >= int(max_w * 0.88):
+            target_w = default_w
+        else:
+            target_w = max_w
+        self.setFixedWidth(target_w)
+        self._save_width(target_w)
+        self.width_changed.emit(target_w)
+
+    def _save_width(self, w: int):
+        try:
+            if int(w) >= 640:
+                from storage_paths import _settings
+                _settings().setValue(self._settings_key, int(w))
+        except Exception:
+            pass
+
+    def get_saved_width(self) -> int:
+        try:
+            from storage_paths import _settings
+            val = _settings().value(self._settings_key, None)
+            if val is not None:
+                i_val = int(val)
+                if i_val >= 700:
+                    return i_val
+        except Exception:
+            pass
+        return 1500
+
+    def apply_saved_or_default_width(self):
+        saved_w = self.get_saved_width()
+        vw = self._get_viewport_width()
+        min_w = 640
+        max_w = max(min_w, vw - 40)
+        clamped_w = max(min_w, min(saved_w, max_w))
+        self.setFixedWidth(clamped_w)
+        self.width_changed.emit(clamped_w)
+
+
 class TextReviewWidget(QWidget):
     answer_submitted = pyqtSignal()  # Emitted if needed for compatibility/actions
     _universal_zoom_factor = None
@@ -352,7 +578,7 @@ class TextReviewWidget(QWidget):
         return int(content_w)
 
     def _apply_width_mode(self):
-        mode = self.get_saved_width_mode()
+        saved_w = self.card_frame.get_saved_width() if hasattr(self, "card_frame") and hasattr(self.card_frame, "get_saved_width") else None
         viewport_w = (
             self.scroll_area.viewport().width()
             if hasattr(self, "scroll_area") and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
@@ -361,13 +587,18 @@ class TextReviewWidget(QWidget):
         if viewport_w <= 100:
             viewport_w = 900
         avail_frame_w = max(340, viewport_w - 40)
-        if mode == "standard":
-            self.card_frame.setMaximumWidth(min(avail_frame_w, 960))
-        elif mode == "max":
-            w = max(1100, int(viewport_w * 0.96)) if viewport_w > 500 else 1650
-            self.card_frame.setMaximumWidth(min(avail_frame_w, w))
-        else:  # "wide" (default)
-            self.card_frame.setMaximumWidth(min(avail_frame_w, 1380))
+        if saved_w and saved_w >= 400:
+            target_w = min(avail_frame_w, saved_w)
+        else:
+            mode = self.get_saved_width_mode()
+            if mode == "standard":
+                target_w = min(avail_frame_w, 960)
+            elif mode == "max":
+                w = max(1100, int(viewport_w * 0.96)) if viewport_w > 500 else 1650
+                target_w = min(avail_frame_w, w)
+            else:  # "wide" (default)
+                target_w = min(avail_frame_w, 1380)
+        self.card_frame.setFixedWidth(target_w)
 
     def _cycle_width_mode(self):
         modes = ["wide", "max", "standard"]
@@ -375,9 +606,43 @@ class TextReviewWidget(QWidget):
         idx = modes.index(curr) if curr in modes else 0
         next_mode = modes[(idx + 1) % len(modes)]
         self.save_width_mode(next_mode)
-        self._apply_width_mode()
+        viewport_w = (
+            self.scroll_area.viewport().width()
+            if hasattr(self, "scroll_area") and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+            else self.width()
+        )
+        if viewport_w <= 100:
+            viewport_w = 900
+        avail_frame_w = max(340, viewport_w - 40)
+        if next_mode == "standard":
+            target_w = min(avail_frame_w, 960)
+        elif next_mode == "max":
+            w = max(1100, int(viewport_w * 0.96)) if viewport_w > 500 else 1650
+            target_w = min(avail_frame_w, w)
+        else:
+            target_w = min(avail_frame_w, 1380)
+        self.card_frame.setFixedWidth(target_w)
+        if hasattr(self.card_frame, "_save_width"):
+            self.card_frame._save_width(target_w)
         if hasattr(self, "btn_width_mode"):
             self.btn_width_mode.setText(self._get_width_button_text())
+        self._update_scaled_html()
+
+    def _increase_card_width(self, delta: int = 50):
+        cur_w = self.card_frame.width()
+        vw = self.card_frame._get_viewport_width()
+        max_w = max(cur_w + delta, max(640, vw - 40))
+        target_w = min(max_w, cur_w + delta)
+        self.card_frame.setFixedWidth(target_w)
+        self.card_frame._save_width(target_w)
+        self._update_scaled_html()
+
+    def _decrease_card_width(self, delta: int = 50):
+        cur_w = self.card_frame.width()
+        min_w = 640
+        target_w = max(min_w, cur_w - delta)
+        self.card_frame.setFixedWidth(target_w)
+        self.card_frame._save_width(target_w)
         self._update_scaled_html()
         
     def _setup_ui(self):
@@ -460,12 +725,11 @@ class TextReviewWidget(QWidget):
         content_layout.setContentsMargins(20, 16, 20, 180)
         content_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
 
-        # Centered Card Frame
-        self.card_frame = QFrame()
+        # Centered Card Frame (Symmetric Edge Resizable)
+        self.card_frame = ResizableCardFrame(self.scroll_content, accent_color=self.badge_color, settings_key="review_card_custom_width")
         self.card_frame.setObjectName("card_frame")
         self.card_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        self.card_frame.setMaximumWidth(960)
-        self.card_frame.setMinimumWidth(340)
+        self.card_frame.width_changed.connect(lambda w: self._update_scaled_html())
         self.card_frame.setStyleSheet(f"""
             QFrame#card_frame {{
                 background-color: {card_bg};
@@ -762,6 +1026,23 @@ class TextReviewWidget(QWidget):
                     vb.setValue(vb.minimum())
                 elif k == Qt.Key_End:
                     vb.setValue(vb.maximum())
+                e.accept()
+                return
+
+        # Alt+W toggle card width mode
+        if e.modifiers() & Qt.AltModifier and e.key() == Qt.Key_W:
+            self._cycle_width_mode()
+            e.accept()
+            return
+
+        # Width increase/decrease shortcuts (Ctrl+Shift+Right/Left or Alt+Right/Left)
+        if ((e.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)) == (Qt.ControlModifier | Qt.ShiftModifier)) or (e.modifiers() & Qt.AltModifier):
+            if e.key() == Qt.Key_Right:
+                self._increase_card_width(50)
+                e.accept()
+                return
+            elif e.key() == Qt.Key_Left:
+                self._decrease_card_width(50)
                 e.accept()
                 return
 
@@ -1381,6 +1662,19 @@ class TextReviewWidget(QWidget):
         self._zoom_factor = 1.0
         TextReviewWidget.save_zoom_factor(self._zoom_factor)
         self._update_scaled_html()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "card_frame") and isinstance(self.card_frame, ResizableCardFrame):
+            vw = self.scroll_area.viewport().width() if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() else self.width()
+            if vw > 100:
+                max_w = max(460, vw - 40)
+                saved_w = self.card_frame.get_saved_width()
+                target_w = min(saved_w, max_w)
+                if self.card_frame.width() != target_w:
+                    self.card_frame.setFixedWidth(target_w)
+        if hasattr(self, "scratchpad"):
+            self.scratchpad.sync_geometry_with_parent()
 
 class ScratchpadOverlay(QWidget):
     def __init__(self, parent=None):

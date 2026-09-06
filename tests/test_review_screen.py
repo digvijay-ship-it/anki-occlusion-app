@@ -2184,6 +2184,40 @@ class QuickNoteTests(unittest.TestCase):
         self.assertIn("<img src=\"https://latex.codecogs.com/png.image?", rendered_complex)
         self.assertIn("color[HTML]{CDD6F4}", rendered_complex)
 
+    def test_format_hint_content_rich_features(self):
+        from ui.review_screen import format_hint_content
+        
+        # 1. Test 3-Ink Color badges and Markdown elements
+        note = (
+            "### 🗂️ Options Breakdown\n"
+            "• **(A) <span style=\"color: #FF79C6; font-weight: bold;\">Arsonphobia</span>**: "
+            "<span style=\"color: #67E8F9;\">आग से डर</span> — (==Extreme fear of fire==)\n"
+            "• **(B) <span style=\"color: #FF79C6;\">Pyrophobia</span>**: "
+            "<span style=\"color: #67E8F9;\">आग का डर</span>"
+        )
+        rendered = format_hint_content(note, text_color="#CDD6F4", accent_color="#7C6AF7")
+        
+        # Must preserve authentic 3-ink spans without escaping to &lt;span
+        self.assertIn('<span style="color: #FF79C6; font-weight: bold;">Arsonphobia</span>', rendered)
+        self.assertNotIn('&lt;span', rendered)
+        self.assertNotIn('###', rendered)
+        self.assertIn('🗂️ Options Breakdown', rendered)
+        self.assertIn('<b>(A) ', rendered)
+        self.assertIn('Extreme fear of fire', rendered)
+        
+        # 2. Test ASCII diagrams inside code blocks
+        diagram_note = "Flow:\n```\n[A] ──> [B] ──> [C]\n```"
+        rendered_diag = format_hint_content(diagram_note)
+        self.assertIn("<pre", rendered_diag)
+        self.assertIn("[A] ──&gt; [B] ──&gt; [C]", rendered_diag)
+        
+        # 3. Test lone angle brackets don't swallow text
+        bracket_note = "If x < 5 and y > 10, check result."
+        rendered_bracket = format_hint_content(bracket_note)
+        self.assertIn("x &lt; 5", rendered_bracket)
+        self.assertIn("y &gt; 10", rendered_bracket)
+
+
     def test_hint_panel_width_persistence(self):
         from PyQt5.QtCore import QSettings
         from ui.review_screen import ReviewScreen
@@ -2811,6 +2845,68 @@ class QuestionTimerIntegrationTests(unittest.TestCase):
         ReviewScreen.keyPressEvent(screen, event)
 
         screen._reset_current_card_timer.assert_called_once()
+
+
+class ReviewCardSymmetricResizeTests(unittest.TestCase):
+    def test_resizable_card_frame_handles_and_symmetrical_drag(self):
+        from ui.text_review_widget import ResizableCardFrame, ResizeGripHandle
+        parent = QWidget()
+        parent.resize(1200, 800)
+        frame = ResizableCardFrame(parent, settings_key="test_custom_card_width")
+        frame.resize(800, 400)
+
+        self.assertIsInstance(frame.left_handle, ResizeGripHandle)
+        self.assertIsInstance(frame.right_handle, ResizeGripHandle)
+        self.assertEqual(frame.left_handle.edge, "left")
+        self.assertEqual(frame.right_handle.edge, "right")
+
+        frame.on_handle_drag(1100)
+        self.assertEqual(frame.width(), 1100)
+
+        frame.on_handle_double_click()
+        self.assertTrue(frame.width() >= 980)
+
+    def test_option_button_preserves_zoomed_font_sizes_across_states(self):
+        from ui.mcq_review_widget import OptionButton
+        btn = OptionButton("A", "Abattoir", 0)
+        btn.set_font_size(28, 48)
+
+        self.assertEqual(btn._font_size, 28)
+        self.assertEqual(btn._badge_size, 48)
+
+        btn.apply_faded_style()
+        self.assertTrue(btn._is_faded)
+        self.assertIn("font-size: 28px", btn.lbl_text.styleSheet())
+        self.assertIn("border-radius: 24px", btn.lbl_badge.styleSheet())
+
+        btn.apply_correct_style("Correct")
+        self.assertIn("font-size: 28px", btn.lbl_text.styleSheet())
+
+        btn.apply_idle_style()
+        self.assertIn("font-size: 28px", btn.lbl_text.styleSheet())
+
+    def test_mcq_card_width_toolbar_controls_and_shortcuts(self):
+        from ui.mcq_review_widget import MCQReviewWidget
+        widget = MCQReviewWidget()
+        self.assertTrue(hasattr(widget, "btn_width_dec"))
+        self.assertTrue(hasattr(widget, "btn_width_val"))
+        self.assertTrue(hasattr(widget, "btn_width_inc"))
+
+        orig_w = widget.card_frame.width()
+        widget._increase_card_width(50)
+        self.assertEqual(widget.card_frame.width(), orig_w + 50)
+        self.assertIn(f"{orig_w + 50}px", widget.btn_width_val.text())
+
+        widget._decrease_card_width(50)
+        self.assertEqual(widget.card_frame.width(), orig_w)
+        self.assertIn(f"{orig_w}px", widget.btn_width_val.text())
+
+    def test_resizable_card_frame_ignores_tiny_corrupted_width(self):
+        from ui.text_review_widget import ResizableCardFrame
+        from storage_paths import _settings
+        _settings().setValue("test_tiny_width", 416)
+        frame = ResizableCardFrame(settings_key="test_tiny_width")
+        self.assertEqual(frame.get_saved_width(), 1500)
 
 
 if __name__ == "__main__":

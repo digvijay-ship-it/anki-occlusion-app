@@ -197,6 +197,7 @@ from PyQt5.QtGui import (
     QKeySequence,
     QTextDocument,
     QImage,
+    QIntValidator,
 )
 
 _RE_IMG_SRC = re.compile(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
@@ -414,6 +415,164 @@ def translate_formula(formula, text_color, is_display=False):
         
     font_style = "font-size: 1.15em;" if is_display else ""
     return f'<span style="white-space: nowrap; font-family: \'Cambria Math\', \'Times New Roman\', serif; font-style: italic; {font_style}">{translated}</span>'
+
+
+_VALID_HINT_HTML_TAGS = {
+    "p", "div", "span", "b", "i", "u", "s", "em", "strong", "mark", "sub", "sup",
+    "font", "a", "img", "br", "hr", "table", "thead", "tbody", "tfoot", "tr", "td",
+    "th", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "code", "blockquote"
+}
+
+def escape_non_html_brackets(text):
+    import re
+    tag_regex = re.compile(r'<(/?)([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>')
+    
+    parts = []
+    last_end = 0
+    for match in tag_regex.finditer(text):
+        tag_name = match.group(2).lower()
+        start, end = match.span()
+        before = text[last_end:start]
+        before = re.sub(r'&(?!(?:[a-zA-Z0-9]+|#[0-9]+|#x[0-9a-fA-F]+);)', '&amp;', before)
+        before = before.replace("<", "&lt;").replace(">", "&gt;")
+        parts.append(before)
+        
+        if tag_name in _VALID_HINT_HTML_TAGS:
+            parts.append(match.group(0))
+        else:
+            escaped_tag = match.group(0).replace("<", "&lt;").replace(">", "&gt;")
+            parts.append(escaped_tag)
+        last_end = end
+        
+    after = text[last_end:]
+    after = re.sub(r'&(?!(?:[a-zA-Z0-9]+|#[0-9]+|#x[0-9a-fA-F]+);)', '&amp;', after)
+    after = after.replace("<", "&lt;").replace(">", "&gt;")
+    parts.append(after)
+    return "".join(parts)
+
+
+def format_hint_content(text, text_color="#CDD6F4", accent_color="#7C6AF7", border_color="#313244", font_size=16):
+    """
+    Renders note/hint content supporting Markdown, HTML, 3-Ink Color badges,
+    tables, ASCII flowcharts (code blocks), ==highlights==, LaTeX math, and images.
+    """
+    if not text:
+        return ""
+    
+    import re
+    import html
+    
+    raw = str(text).strip()
+    
+    # 1. Extract body content if wrapped in full HTML document (from rich text editor)
+    body_match = re.search(r'<body[^>]*>(.*?)</body>', raw, flags=re.DOTALL | re.IGNORECASE)
+    if body_match:
+        raw = body_match.group(1).strip()
+    else:
+        raw = re.sub(r'<!DOCTYPE[^>]*>', '', raw, flags=re.IGNORECASE)
+        raw = re.sub(r'</?(?:html|head|meta)[^>]*>', '', raw, flags=re.IGNORECASE)
+        raw = re.sub(r'<head>.*?</head>', '', raw, flags=re.DOTALL | re.IGNORECASE)
+        if raw.lower().startswith('<body') and raw.lower().endswith('</body>'):
+            raw = re.sub(r'</?body[^>]*>', '', raw, flags=re.IGNORECASE).strip()
+
+    # 2. Extract and protect code blocks (```...```) so diagrams & code preserve spacing & symbols
+    code_blocks = []
+    def save_code_block(match):
+        code_text = match.group(1)
+        escaped_code = html.escape(code_text.strip('\n'))
+        block_html = (
+            f'<pre style="background: rgba(0, 0, 0, 0.35); border: 1px solid {border_color}; '
+            f'border-radius: 6px; padding: 8px 12px; font-family: \'Consolas\', \'Courier New\', monospace; '
+            f'font-size: {max(11, font_size - 2)}px; line-height: 1.4; white-space: pre; margin: 6px 0;">'
+            f'{escaped_code}</pre>'
+        )
+        idx = len(code_blocks)
+        code_blocks.append(block_html)
+        return f"__CODE_BLOCK_{idx}__"
+
+    processed = re.sub(r'```(?:[a-zA-Z0-9_-]*\n)?(.*?)```', save_code_block, raw, flags=re.DOTALL)
+
+    # 3. Parse Markdown tables if present
+    if "|" in processed and re.search(r'\|[^\n]+\|\s*\n\s*\|[\s:-|-]+\|', processed):
+        processed = parse_markdown_tables(processed)
+
+    # 4. Convert Markdown images ![alt](src) to <img>
+    processed = re.sub(r'!\[[^\]]*\]\(([^)]+)\)', r'<img src="\1" />', processed)
+
+    # 5. Convert ==highlight== syntax to glowing golden amber badge
+    mark_style = (
+        "background-color: rgba(255, 214, 10, 0.25); "
+        "color: #FFE600; "
+        "font-weight: bold; "
+        "padding: 1px 6px; "
+        "border-radius: 4px; "
+        "border: 1px solid rgba(255, 214, 10, 0.50);"
+    )
+    processed = re.sub(r'==([^=\n]+)==', f'<span style="{mark_style}">\\1</span>', processed)
+
+    # 6. Convert Markdown bold **text** to <b> tags
+    processed = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', processed)
+
+    # 7. Convert Markdown italic *text* (when not a bullet or bold)
+    processed = re.sub(r'(?<!\*)\*([^\s*\n][^*\n]*[^\s*\n]|[^\s*\n])\*(?!\*)', r'<i>\1</i>', processed)
+
+    # 8. Escape non-HTML brackets (< and > that are not legitimate HTML tags, e.g. < 5 or arrows)
+    processed = escape_non_html_brackets(processed)
+
+    # 9. Structure line breaks and headings if not already block HTML
+    lines = processed.split("\n")
+    formatted_lines = []
+    
+    for l in lines:
+        l_stripped = l.strip()
+        if not l_stripped:
+            formatted_lines.append("<br>")
+            continue
+            
+        # Markdown Headings (e.g. # Title, ## Section, ### Subtitle)
+        h_match = re.match(r'^(#{1,4})\s+(.+)$', l_stripped)
+        if h_match:
+            level = len(h_match.group(1))
+            h_text = h_match.group(2)
+            h_sizes = {1: font_size + 4, 2: font_size + 3, 3: font_size + 2, 4: font_size + 1}
+            h_size = h_sizes.get(level, font_size + 2)
+            formatted_lines.append(
+                f'<div style="font-size: {h_size}px; font-weight: bold; color: {accent_color}; '
+                f'margin-top: 8px; margin-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 2px;">'
+                f'{h_text}</div>'
+            )
+            continue
+            
+        # Already a block HTML element or placeholder
+        if re.match(r'^\s*<(?:table|thead|tbody|tfoot|tr|td|th|div|p|ul|ol|li|h[1-6]|hr|pre)\b', l_stripped, re.IGNORECASE) or \
+           re.match(r'^\s*</(?:table|thead|tbody|tfoot|tr|td|th|div|p|ul|ol|li|h[1-6]|pre)>', l_stripped, re.IGNORECASE) or \
+           l_stripped.startswith("__CODE_BLOCK_"):
+            formatted_lines.append(l)
+            continue
+            
+        # Bullets (•, -, *)
+        if l_stripped.startswith("•") or l_stripped.startswith("- ") or l_stripped.startswith("* "):
+            bullet_body = l_stripped[1:].strip() if l_stripped.startswith("•") else l_stripped[2:].strip()
+            formatted_lines.append(
+                f'<div style="margin: 3px 0 3px 4px; line-height: 1.5; display: block;">'
+                f'<span style="color: {accent_color}; font-weight: bold; margin-right: 4px;">•</span>'
+                f'{bullet_body}</div>'
+            )
+            continue
+            
+        # Standard paragraph line
+        formatted_lines.append(f'<div style="margin: 2px 0; line-height: 1.5;">{l_stripped}</div>')
+
+    processed = "".join(formatted_lines)
+
+    # 10. Restore code blocks
+    for idx, block in enumerate(code_blocks):
+        processed = processed.replace(f"__CODE_BLOCK_{idx}__", block)
+
+    # 11. Parse LaTeX math
+    processed = parse_latex_math(processed, text_color)
+
+    return processed
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  THEME
@@ -955,6 +1114,139 @@ class SelectableTextBrowser(QTextBrowser):
         return False
 
 
+class TargetToastBanner(QFrame):
+    """
+    Compact Sticky Toast Notification Banner for Session Target or Daily Limit.
+    Sticks safely to the top of the screen until dismissed with the '✕' button.
+    Compact, non-intrusive, eye-ergonomic styling.
+    """
+    closed = pyqtSignal()
+
+    def __init__(self, parent=None, target=50, duration_sec=None, is_daily=False):
+        super().__init__(parent)
+        self.target = target
+        self.is_daily = is_daily
+        self.remaining_sec = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setObjectName("TargetToastBanner")
+        if self.is_daily:
+            self.setStyleSheet("""
+                QFrame#TargetToastBanner {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2b1f14, stop:1 #282a36);
+                    border: 1.5px solid #ffb86c;
+                    border-radius: 8px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame#TargetToastBanner {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #14231b, stop:1 #1e2922);
+                    border: 1.5px solid #50fa7b;
+                    border-radius: 8px;
+                }
+            """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(10)
+
+        # Icon
+        icon_char = "🛑" if self.is_daily else "🎯"
+        lbl_icon = QLabel(icon_char)
+        lbl_icon.setStyleSheet("font-size: 22px; background: transparent;")
+        layout.addWidget(lbl_icon)
+
+        # Text Section
+        vbox = QVBoxLayout()
+        vbox.setSpacing(2)
+
+        if self.is_daily:
+            lbl_title = QLabel(f"🛑 आज का डेली टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
+            lbl_title.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 13px; background: transparent;")
+            vbox.addWidget(lbl_title)
+
+            lbl_msg = QLabel(
+                "आज का पूरा डेली कोटा समाप्त! ओवर-बर्नआउट से बचने के लिए थोड़ा आराम करें या ✕ दबाकर पढ़ाई जारी रखें।"
+            )
+            lbl_msg.setStyleSheet("color: #f8f8f2; font-size: 11px; background: transparent;")
+            lbl_msg.setWordWrap(True)
+            vbox.addWidget(lbl_msg)
+        else:
+            lbl_title = QLabel(f"🎯 सेशन टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
+            lbl_title.setStyleSheet("color: #50fa7b; font-weight: bold; font-size: 13px; background: transparent;")
+            vbox.addWidget(lbl_title)
+
+            lbl_msg = QLabel(
+                "इस सेशन का लक्ष्य पूरा हो गया। थोड़ा ब्रेक लें या ✕ दबाकर कभी भी पढ़ाई जारी रख सकते हैं।"
+            )
+            lbl_msg.setStyleSheet("color: #f8f8f2; font-size: 11px; background: transparent;")
+            lbl_msg.setWordWrap(True)
+            vbox.addWidget(lbl_msg)
+
+        layout.addLayout(vbox, stretch=1)
+
+        # Sticky Badge
+        if self.is_daily:
+            self.lbl_countdown = QLabel("📌 DAILY CAP")
+            self.lbl_countdown.setToolTip("Click ✕ to dismiss")
+            self.lbl_countdown.setStyleSheet("""
+                background: rgba(255, 184, 108, 0.18);
+                color: #ffb86c;
+                font-weight: bold;
+                font-size: 10px;
+                padding: 3px 8px;
+                border-radius: 4px;
+                border: 1px solid rgba(255, 184, 108, 0.5);
+            """)
+        else:
+            self.lbl_countdown = QLabel("📌 SESSION CAP")
+            self.lbl_countdown.setToolTip("Click ✕ to dismiss")
+            self.lbl_countdown.setStyleSheet("""
+                background: rgba(80, 250, 123, 0.15);
+                color: #50fa7b;
+                font-weight: bold;
+                font-size: 10px;
+                padding: 3px 8px;
+                border-radius: 4px;
+                border: 1px solid rgba(80, 250, 123, 0.45);
+            """)
+        layout.addWidget(self.lbl_countdown)
+
+        # Close / Dismiss Button
+        btn_close = QPushButton("✕")
+        btn_close.setToolTip("Dismiss notification")
+        btn_close.setCursor(Qt.PointingHandCursor)
+        btn_close.setFixedSize(24, 24)
+        close_border = "rgba(255, 184, 108, 0.5)" if self.is_daily else "rgba(80, 250, 123, 0.4)"
+        btn_close.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.08);
+                color: {'#ffb86c' if self.is_daily else '#50fa7b'};
+                font-weight: bold;
+                font-size: 13px;
+                border-radius: 12px;
+                border: 1px solid {close_border};
+            }}
+            QPushButton:hover {{
+                background: #ff5555;
+                color: white;
+                border: 1px solid #ff5555;
+            }}
+        """)
+        btn_close.clicked.connect(self.dismiss)
+        layout.addWidget(btn_close)
+
+    def _on_tick(self):
+        pass
+
+    def dismiss(self):
+        self.closed.emit()
+        self.hide()
+        self.deleteLater()
+
+
 class ReviewScreen(QWidget):
     finished = pyqtSignal()
     cancelled = pyqtSignal()
@@ -1132,11 +1424,71 @@ class ReviewScreen(QWidget):
             tone = "green" if quality in (4, 5, 6) else ("red" if quality in (1, 3) else "cyan")
             self.burst.spawn_burst(self.rect().center().x(), self.rect().center().y(), tone, count=30)
 
+        # 3. Session & Daily Target Tracking
+        self._session_target_done += 1
+        today_iso = self._ensure_daily_stats_current()
+        self._daily_reviews_done += 1
+        try:
+            settings = QSettings("AnkiOcclusion", "App")
+            settings.setValue("review/daily_study_date", today_iso)
+            settings.setValue("review/daily_study_count", self._daily_reviews_done)
+        except Exception:
+            pass
+
+        self._update_target_progress_ui()
+
+        # Priority check: Daily limit is a major milestone and permanent notice
+        if (
+            self._daily_target_goal > 0
+            and self._daily_reviews_done >= self._daily_target_goal
+            and not self._daily_target_notified
+        ):
+            self._daily_target_notified = True
+            try:
+                QSettings("AnkiOcclusion", "App").setValue("review/daily_target_notified", True)
+            except Exception:
+                pass
+            self._show_target_achieved_toast(is_daily=True)
+        elif (
+            self._session_target_goal > 0
+            and self._session_target_done >= self._session_target_goal
+            and not self._session_target_notified
+        ):
+            self._session_target_notified = True
+            self._show_target_achieved_toast(is_daily=False)
+        elif getattr(self, "_target_toast_banner", None) and self._target_toast_banner.isVisible():
+            self._target_toast_banner.raise_()
+
         if getattr(self, "mgr", None) is not None:
             self.mgr._rate(quality)
 
     def _review_undo(self):
         # Card undo - strictly navigate back / undo cards, not ink
+        try:
+            today_iso = self._ensure_daily_stats_current()
+            if self.__dict__.get("_session_target_done", 0) > 0:
+                self._session_target_done = max(0, self._session_target_done - 1)
+                if self._session_target_done < self.__dict__.get("_session_target_goal", 0):
+                    self._session_target_notified = False
+
+            if self.__dict__.get("_daily_reviews_done", 0) > 0:
+                self._daily_reviews_done = max(0, self._daily_reviews_done - 1)
+                try:
+                    settings = QSettings("AnkiOcclusion", "App")
+                    settings.setValue("review/daily_study_date", today_iso)
+                    settings.setValue("review/daily_study_count", self._daily_reviews_done)
+                except Exception:
+                    pass
+                if self._daily_reviews_done < self.__dict__.get("_daily_target_goal", 0):
+                    self._daily_target_notified = False
+                    try:
+                        QSettings("AnkiOcclusion", "App").setValue("review/daily_target_notified", False)
+                    except Exception:
+                        pass
+
+            self._update_target_progress_ui()
+        except Exception:
+            pass
         try:
             saved_tool = self.get_active_tool()
         except Exception:
@@ -1273,7 +1625,7 @@ class ReviewScreen(QWidget):
         from ui.review.profiler import review_profile_count
         return review_profile_count(self, name, amount)
 
-    def __init__(self, cards, data=None, parent=None, state_to_restore=None, is_practice=False, initial_idx: int = 0):
+    def __init__(self, cards, data=None, parent=None, state_to_restore=None, is_practice=False, initial_idx: int = 0, order_mode: str = "default"):
         super().__init__(parent)
         self._init_review_profile(cards)
         from services.review_manager import ReviewSessionManager
@@ -1282,6 +1634,7 @@ class ReviewScreen(QWidget):
         self.mgr.is_practice = bool(is_practice)
         self._initial_idx = int(initial_idx or 0)
         self._data = data
+        self._order_mode = str(order_mode or "default")
         
         # Load low-latency retro sounds
         import os
@@ -1315,6 +1668,22 @@ class ReviewScreen(QWidget):
         from collections import OrderedDict
         self._text_card_cache = OrderedDict()
         self._current_pixmap = None
+
+        # Session & Daily Target Tracking state
+        settings = QSettings("AnkiOcclusion", "App")
+        saved_sess = str(settings.value("review/session_target_goal", "") or "").strip()
+        self._session_target_goal = int(saved_sess) if (saved_sess and saved_sess.isdigit()) else 0
+        self._session_target_done = 0
+        self._session_target_notified = False
+
+        saved_daily = str(settings.value("review/daily_target_goal", "") or "").strip()
+        self._daily_target_goal = int(saved_daily) if (saved_daily and saved_daily.isdigit()) else 0
+        self._daily_reviews_done = 0
+        self._daily_target_notified = False
+        self._daily_synced_with_db = False
+        self._ensure_daily_stats_current(force_sync=True)
+
+        self._target_toast_banner = None
         from services.pdf_watcher import PdfWatcher
 
         self._pdf_watcher = PdfWatcher(self)
@@ -1436,6 +1805,8 @@ class ReviewScreen(QWidget):
             self._review_redo_stack = state_to_restore["redo_stack"]
             self._queued_ids = state_to_restore["queued_ids"]
             self._deleted_ids = state_to_restore["deleted_ids"]
+            if "order_mode" in state_to_restore:
+                self._order_mode = state_to_restore["order_mode"]
         else:
             self._items = []
             self._queued_ids = set()
@@ -1502,6 +1873,8 @@ class ReviewScreen(QWidget):
 
             item_order_map = {id(item): idx for idx, item in enumerate(self._items)}
 
+            from sm2_engine import get_card_maturity_score
+
             def _review_sort_key(item):
                 card, box_idx, sm2_obj = item
                 try:
@@ -1509,6 +1882,10 @@ class ReviewScreen(QWidget):
                 except (ValueError, TypeError):
                     c_order = 0
                 orig_idx = item_order_map.get(id(item), 0)
+
+                if getattr(self, "_order_mode", "default") == "least_mature":
+                    mat = get_card_maturity_score(sm2_obj)
+                    return (mat, c_order if c_order > 0 else 999999, orig_idx)
 
                 chain_id = card.get("parent_chain_id") or card.get("context_anchor")
                 anc_idx = anchor_order_map.get(chain_id, 999999) if chain_id else 999999
@@ -1806,17 +2183,14 @@ class ReviewScreen(QWidget):
         def format_field(text):
             if not text:
                 return ""
-            
-            is_html = ("<p>" in text or "<div>" in text or "<span>" in text or "<br" in text or "<table" in text or "<img" in text or "<html>" in text)
-            
-            processed = text
-            if not is_html:
-                import html
-                processed = html.escape(text)
-                processed = parse_markdown_tables(processed)
-            
-            processed = parse_latex_math(processed, text_color)
-            return processed
+            return format_hint_content(
+                text,
+                text_color=text_color,
+                accent_color=accent_color,
+                border_color=border_color,
+                font_size=self._hint_font_size,
+            )
+
 
         # Fetch PDF metadata if available
         pdf_path = card.get("pdf_path")
@@ -2867,6 +3241,13 @@ class ReviewScreen(QWidget):
                 pass
             self._pdf_viewer = None
 
+        if getattr(self, "_target_toast_banner", None) is not None:
+            try:
+                self._target_toast_banner.dismiss()
+            except Exception:
+                pass
+            self._target_toast_banner = None
+
         super().closeEvent(e)
 
     def eventFilter(self, obj, event):
@@ -2963,6 +3344,277 @@ class ReviewScreen(QWidget):
         overlay.show()
         overlay.raise_()
 
+    def _ensure_daily_stats_current(self, force_sync: bool = False) -> str:
+        import datetime
+        today_iso = datetime.date.today().isoformat()
+        try:
+            settings = QSettings("AnkiOcclusion", "App")
+            # Always reload persistent daily limit goal so it is never forgotten
+            saved_goal = str(settings.value("review/daily_target_goal", "") or "").strip()
+            if saved_goal and saved_goal.isdigit():
+                self._daily_target_goal = int(saved_goal)
+
+            saved_date = str(settings.value("review/daily_study_date", "") or "")
+            is_new_day = (saved_date != today_iso)
+
+            need_db_sync = force_sync or is_new_day or not getattr(self, "_daily_synced_with_db", False)
+
+            db_today_count = 0
+            if need_db_sync:
+                try:
+                    from services.activity_stats import get_daily_activity_stats
+                    data_src = getattr(self, "_data", None)
+                    if data_src is None and getattr(self, "mgr", None) is not None:
+                        data_src = getattr(self.mgr, "data", None)
+                    stats = get_daily_activity_stats(today_iso, data=data_src)
+                    db_today_count = int(stats.get("total", 0) or 0)
+                except Exception:
+                    db_today_count = 0
+
+            if is_new_day:
+                self._daily_reviews_done = db_today_count
+                self._daily_target_notified = (
+                    self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal
+                )
+                settings.setValue("review/daily_study_date", today_iso)
+                settings.setValue("review/daily_study_count", self._daily_reviews_done)
+                settings.setValue("review/daily_target_notified", self._daily_target_notified)
+                settings.sync()
+                self._daily_synced_with_db = True
+            else:
+                saved_count = int(settings.value("review/daily_study_count", 0) or 0)
+                if need_db_sync:
+                    self._daily_reviews_done = max(db_today_count, saved_count)
+                    settings.setValue("review/daily_study_count", self._daily_reviews_done)
+                    self._daily_synced_with_db = True
+                else:
+                    self._daily_reviews_done = saved_count
+
+                raw_notified = settings.value("review/daily_target_notified", False)
+                if isinstance(raw_notified, str):
+                    self._daily_target_notified = raw_notified.lower() in ("true", "1")
+                else:
+                    self._daily_target_notified = bool(raw_notified)
+
+                if self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal:
+                    self._daily_target_notified = True
+                    settings.setValue("review/daily_target_notified", True)
+        except Exception:
+            pass
+        return today_iso
+
+    def _on_target_input_changed(self, text):
+        text = text.strip()
+        try:
+            val = int(text) if text else 0
+        except ValueError:
+            val = 0
+        self._session_target_goal = max(0, val)
+        if self._session_target_done < self._session_target_goal:
+            self._session_target_notified = False
+        try:
+            settings = QSettings("AnkiOcclusion", "App")
+            settings.setValue("review/session_target_goal", text)
+            settings.sync()
+        except Exception:
+            pass
+        self._update_target_progress_ui()
+        if (
+            self._session_target_goal > 0
+            and self._session_target_done >= self._session_target_goal
+            and not self._session_target_notified
+        ):
+            self._session_target_notified = True
+            self._show_target_achieved_toast(is_daily=False)
+
+    def _on_daily_target_input_changed(self, text):
+        text = text.strip()
+        try:
+            val = int(text) if text else 0
+        except ValueError:
+            val = 0
+        self._daily_target_goal = max(0, val)
+        if self._daily_reviews_done < self._daily_target_goal:
+            self._daily_target_notified = False
+            try:
+                QSettings("AnkiOcclusion", "App").setValue("review/daily_target_notified", False)
+            except Exception:
+                pass
+        try:
+            settings = QSettings("AnkiOcclusion", "App")
+            settings.setValue("review/daily_target_goal", text)
+            settings.sync()
+        except Exception:
+            pass
+        self._update_target_progress_ui()
+        if (
+            self._daily_target_goal > 0
+            and self._daily_reviews_done >= self._daily_target_goal
+            and not self._daily_target_notified
+        ):
+            self._daily_target_notified = True
+            try:
+                QSettings("AnkiOcclusion", "App").setValue("review/daily_target_notified", True)
+            except Exception:
+                pass
+            self._show_target_achieved_toast(is_daily=True)
+
+    def _update_target_progress_ui(self):
+        # 1. Update Session Target Progress
+        if hasattr(self, "_lbl_target_progress"):
+            if self._session_target_goal > 0:
+                self._lbl_target_progress.setText(f"({self._session_target_done}/{self._session_target_goal})")
+                if self._session_target_done >= self._session_target_goal:
+                    self._lbl_target_progress.setStyleSheet(
+                        "color: #50fa7b; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                    )
+                else:
+                    self._lbl_target_progress.setStyleSheet(
+                        "color: #bd93f9; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                    )
+                self._lbl_target_progress.setVisible(True)
+            else:
+                if self._session_target_done > 0:
+                    self._lbl_target_progress.setText(f"({self._session_target_done})")
+                    self._lbl_target_progress.setStyleSheet(
+                        "color: #6272a4; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                    )
+                    self._lbl_target_progress.setVisible(True)
+                else:
+                    self._lbl_target_progress.setText("")
+                    self._lbl_target_progress.setVisible(False)
+
+        # 2. Update Daily Target Progress
+        if hasattr(self, "_lbl_daily_target_progress"):
+            if self._daily_target_goal > 0:
+                self._lbl_daily_target_progress.setText(f"({self._daily_reviews_done}/{self._daily_target_goal})")
+                if self._daily_reviews_done >= self._daily_target_goal:
+                    self._lbl_daily_target_progress.setStyleSheet(
+                        "color: #ffb86c; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                    )
+                else:
+                    self._lbl_daily_target_progress.setStyleSheet(
+                        "color: #f1fa8c; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                    )
+                self._lbl_daily_target_progress.setVisible(True)
+            else:
+                if self._daily_reviews_done > 0:
+                    self._lbl_daily_target_progress.setText(f"({self._daily_reviews_done})")
+                    self._lbl_daily_target_progress.setStyleSheet(
+                        "color: #6272a4; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                    )
+                    self._lbl_daily_target_progress.setVisible(True)
+                else:
+                    self._lbl_daily_target_progress.setText("")
+                    self._lbl_daily_target_progress.setVisible(False)
+
+    def _update_order_mode_ui(self):
+        if not hasattr(self, "_btn_order_mode") or self._btn_order_mode is None:
+            return
+        is_least = (getattr(self, "_order_mode", "default") == "least_mature")
+        text = "🌱 Least Mature" if is_least else "📅 Due Order"
+        dojo = _is_dojo()
+        font = "Orbitron" if dojo else "Segoe UI"
+        if is_least:
+            self._btn_order_mode.setText(text)
+            self._btn_order_mode.setStyleSheet(
+                f"QPushButton{{background:rgba(80,250,123,0.15);color:#50fa7b;font-weight:bold;"
+                f"border:1.5px solid #50fa7b;border-radius:4px;font-size:11px;padding:0 6px;"
+                + (f"font-family:{font};" if dojo else "") + "}"
+                f"QPushButton:hover{{background:rgba(80,250,123,0.3);}}"
+            )
+        else:
+            self._btn_order_mode.setText(text)
+            self._btn_order_mode.setStyleSheet(
+                f"QPushButton{{background:transparent;color:#6272a4;font-weight:bold;"
+                f"border:1.5px solid #6272a4;border-radius:4px;font-size:11px;padding:0 6px;"
+                + (f"font-family:{font};" if dojo else "") + "}"
+                f"QPushButton:hover{{background:rgba(98,114,164,0.2);color:#f8f8f2;}}"
+            )
+
+    def _toggle_queue_order_mode(self):
+        if getattr(self, "_order_mode", "default") == "least_mature":
+            self._order_mode = "default"
+        else:
+            self._order_mode = "least_mature"
+        self._update_order_mode_ui()
+        self._resort_queue_by_order_mode()
+
+    def _resort_queue_by_order_mode(self):
+        if not hasattr(self, "_items") or not self._items:
+            return
+        from sm2_engine import get_card_maturity_score
+        is_least = (getattr(self, "_order_mode", "default") == "least_mature")
+        item_order_map = {id(item): idx for idx, item in enumerate(self._items)}
+
+        def _sort_key(item):
+            card, box_idx, sm2_obj = item
+            try:
+                c_order = int(card.get("chain_order", 0) or 0)
+            except (ValueError, TypeError):
+                c_order = 0
+            orig_idx = item_order_map.get(id(item), 0)
+            if is_least:
+                mat = get_card_maturity_score(sm2_obj)
+                return (mat, c_order if c_order > 0 else 999999, orig_idx)
+            else:
+                due = sm2_obj.get("sm2_due", "") or ""
+                return (due, c_order if c_order > 0 else 999999, orig_idx)
+
+        # If review hasn't begun, sort all items and reload current item
+        if getattr(self, "_idx", 0) == 0 and getattr(self, "_done", 0) == 0:
+            self._items.sort(key=_sort_key)
+            self._load_item()
+        else:
+            # Re-sort upcoming items
+            past = self._items[:self._idx + 1]
+            upcoming = self._items[self._idx + 1:]
+            upcoming.sort(key=_sort_key)
+            self._items = past + upcoming
+
+        if hasattr(self, "mgr") and self.mgr:
+            self.mgr._items = self._items
+            self.mgr._rebuild_queue()
+
+    def _show_target_achieved_toast(self, is_daily: bool = False):
+        if getattr(self, "_target_toast_banner", None) is not None:
+            try:
+                self._target_toast_banner.dismiss()
+            except Exception:
+                pass
+            self._target_toast_banner = None
+
+        target_val = self._daily_target_goal if is_daily else self._session_target_goal
+        self._target_toast_banner = TargetToastBanner(
+            parent=self,
+            target=target_val,
+            is_daily=is_daily,
+        )
+        self._target_toast_banner.closed.connect(self._on_target_toast_closed)
+        self._reposition_target_toast()
+        self._target_toast_banner.show()
+        self._target_toast_banner.raise_()
+
+        # Low latency celebration sound if available
+        try:
+            if hasattr(self, "_snd_power"):
+                self._snd_power.play()
+        except Exception:
+            pass
+
+    def _on_target_toast_closed(self):
+        self._target_toast_banner = None
+
+    def _reposition_target_toast(self):
+        if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.isVisible():
+            banner_width = min(540, max(340, self.width() - 60))
+            self._target_toast_banner.setFixedWidth(banner_width)
+            self._target_toast_banner.adjustSize()
+            x = (self.width() - self._target_toast_banner.width()) // 2
+            y = 78
+            self._target_toast_banner.move(x, y)
+            self._target_toast_banner.raise_()
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._reposition_overlays()
@@ -2970,6 +3622,7 @@ class ReviewScreen(QWidget):
         self._reposition_queue_overlay()
         self._reposition_floating_timer()
         self._reposition_hint_panel()
+        self._reposition_target_toast()
         if getattr(self, "_floating_hint_button", None) is not None:
             self._floating_hint_button.raise_()
         
@@ -2992,6 +3645,8 @@ class ReviewScreen(QWidget):
                 self._concept_hub_drawer.setGeometry(self.width() - dw, 0, dw, self.height())
             if self._concept_hub_drawer.isVisible():
                 self._concept_hub_drawer.raise_()
+
+        self._reposition_target_toast()
 
     def _reposition_overlays(self):
         """Pin overlays to bottom-center of canvas stage area."""
@@ -3571,10 +4226,35 @@ class ReviewScreen(QWidget):
 
         # Alt+W toggle card width mode
         if (mods & Qt.AltModifier) and key == Qt.Key_W:
-            if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "_cycle_width_mode"):
+            sw = getattr(self, "_stacked_widget", None)
+            if sw is not None and sw.currentWidget() == getattr(self, "_mcq_review_widget", None):
+                self._mcq_review_widget._cycle_card_width()
+                e.accept()
+                return
+            elif hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "_cycle_width_mode"):
                 self._text_review_widget._cycle_width_mode()
                 e.accept()
                 return
+
+        # Width increase/decrease shortcuts (Ctrl+Shift+Right/Left or Alt+Right/Left)
+        is_width_mod = ((mods & (Qt.ControlModifier | Qt.ShiftModifier)) == (Qt.ControlModifier | Qt.ShiftModifier)) or (mods & Qt.AltModifier)
+        if is_width_mod and key in (Qt.Key_Right, Qt.Key_Left):
+            sw = getattr(self, "_stacked_widget", None)
+            active_widget = None
+            if sw is not None:
+                if sw.currentWidget() == getattr(self, "_mcq_review_widget", None):
+                    active_widget = self._mcq_review_widget
+                elif sw.currentWidget() == getattr(self, "_text_review_widget", None):
+                    active_widget = self._text_review_widget
+            if active_widget is not None:
+                if key == Qt.Key_Right and hasattr(active_widget, "_increase_card_width"):
+                    active_widget._increase_card_width(50)
+                    e.accept()
+                    return
+                elif key == Qt.Key_Left and hasattr(active_widget, "_decrease_card_width"):
+                    active_widget._decrease_card_width(50)
+                    e.accept()
+                    return
 
         # F5 or Alt+R or Ctrl+Shift+R to Sync and reload deck from source
         is_sync_shortcut = (
@@ -4070,6 +4750,7 @@ class ReviewScreen(QWidget):
 
         upd_c = res.get("updated_count", 0)
         new_c = res.get("new_count", 0)
+        rem_c = res.get("removed_count", 0)
 
         store.mark_dirty()
         store.save_force(async_save=True)
@@ -4098,7 +4779,10 @@ class ReviewScreen(QWidget):
                 pass
 
         deck_label = target_deck.get("name", "Deck")
-        self._show_review_toast(f"🔄 Synced '{deck_label}': {upd_c} updated, {new_c} added!")
+        msg = f"🔄 Synced '{deck_label}': {upd_c} updated, {new_c} added"
+        if rem_c > 0:
+            msg += f", {rem_c} removed"
+        self._show_review_toast(msg + "!")
 
     def _push_current_deck_to_source(self):
         """Pushes current deck's cards back to its linked source JSON file on disk,
@@ -4757,6 +5441,112 @@ class ReviewScreen(QWidget):
                 f"QProgressBar::chunk{{background:{accent};border-radius:4px;}}"
             )
         row2.addWidget(self.prog, stretch=1)
+
+        # ── Group: Session Target Setter ──────────────────────────────────
+        _lbl_target_icon = QLabel("🎯 SESS")
+        _lbl_target_icon.setToolTip("Set card target for this session (e.g. 25, 30)")
+        _lbl_target_icon.setStyleSheet(
+            f"color:#50fa7b;background:transparent;"
+            f"font-size:{'7px' if dojo else '9px'};"
+            f"font-weight:bold;letter-spacing:1px;margin-left:3px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        row2.addWidget(_lbl_target_icon)
+
+        self._inp_target = QLineEdit()
+        self._inp_target.setPlaceholderText("Sess")
+        self._inp_target.setToolTip("Set card target for this session (e.g. 25). Enter 0 or leave empty to disable.")
+        self._inp_target.setFixedWidth(46)
+        self._inp_target.setFixedHeight(24 if dojo else 26)
+        self._inp_target.setAlignment(Qt.AlignCenter)
+        self._inp_target.setValidator(QIntValidator(0, 9999, self))
+        if dojo:
+            self._inp_target.setStyleSheet(
+                f"QLineEdit{{background:{card};color:#50fa7b;font-weight:bold;"
+                f"border:1.5px solid #50fa7b;border-radius:3px;"
+                f"font-size:11px;font-family:{font};padding:0 2px;}}"
+                f"QLineEdit:focus{{border:2px solid #50fa7b;background:#1e1f29;}}"
+            )
+        else:
+            self._inp_target.setStyleSheet(
+                f"QLineEdit{{background:{card};color:#50fa7b;font-weight:bold;"
+                f"border:1.5px solid #50fa7b;border-radius:4px;"
+                f"font-size:11px;padding:0 2px;}}"
+                f"QLineEdit:focus{{border:2px solid #50fa7b;background:#1e1f29;}}"
+            )
+        self._inp_target.textChanged.connect(self._on_target_input_changed)
+        row2.addWidget(self._inp_target)
+
+        self._lbl_target_progress = QLabel("")
+        self._lbl_target_progress.setStyleSheet(
+            f"color:#50fa7b;font-size:{'9px' if dojo else '11px'};font-weight:bold;padding:0 2px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        self._lbl_target_progress.setVisible(False)
+        row2.addWidget(self._lbl_target_progress)
+
+        # ── Group: Daily Target Setter ────────────────────────────────────
+        _lbl_daily_icon = QLabel("📅 DAILY")
+        _lbl_daily_icon.setToolTip("Set total daily card limit for today across all decks (e.g. 100)")
+        _lbl_daily_icon.setStyleSheet(
+            f"color:#ffb86c;background:transparent;"
+            f"font-size:{'7px' if dojo else '9px'};"
+            f"font-weight:bold;letter-spacing:1px;margin-left:4px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        row2.addWidget(_lbl_daily_icon)
+
+        self._inp_daily_target = QLineEdit()
+        self._inp_daily_target.setPlaceholderText("Daily")
+        self._inp_daily_target.setToolTip("Set total daily card limit for today (e.g. 100). Enter 0 or leave empty to disable.")
+        self._inp_daily_target.setFixedWidth(50)
+        self._inp_daily_target.setFixedHeight(24 if dojo else 26)
+        self._inp_daily_target.setAlignment(Qt.AlignCenter)
+        self._inp_daily_target.setValidator(QIntValidator(0, 9999, self))
+        if dojo:
+            self._inp_daily_target.setStyleSheet(
+                f"QLineEdit{{background:{card};color:#ffb86c;font-weight:bold;"
+                f"border:1.5px solid #ffb86c;border-radius:3px;"
+                f"font-size:11px;font-family:{font};padding:0 2px;}}"
+                f"QLineEdit:focus{{border:2px solid #ffb86c;background:#1e1f29;}}"
+            )
+        else:
+            self._inp_daily_target.setStyleSheet(
+                f"QLineEdit{{background:{card};color:#ffb86c;font-weight:bold;"
+                f"border:1.5px solid #ffb86c;border-radius:4px;"
+                f"font-size:11px;padding:0 2px;}}"
+                f"QLineEdit:focus{{border:2px solid #ffb86c;background:#1e1f29;}}"
+            )
+        self._inp_daily_target.textChanged.connect(self._on_daily_target_input_changed)
+        row2.addWidget(self._inp_daily_target)
+
+        self._lbl_daily_target_progress = QLabel("")
+        self._lbl_daily_target_progress.setStyleSheet(
+            f"color:#ffb86c;font-size:{'9px' if dojo else '11px'};font-weight:bold;padding:0 2px;"
+            + (f"font-family:{font};" if dojo else "")
+        )
+        self._lbl_daily_target_progress.setVisible(False)
+        row2.addWidget(self._lbl_daily_target_progress)
+
+        # Restore saved target preferences
+        saved_target = str(QSettings("AnkiOcclusion", "App").value("review/session_target_goal", "") or "").strip()
+        if saved_target and saved_target.isdigit() and int(saved_target) > 0:
+            self._inp_target.setText(saved_target)
+
+        saved_daily = str(QSettings("AnkiOcclusion", "App").value("review/daily_target_goal", "") or "").strip()
+        if saved_daily and saved_daily.isdigit() and int(saved_daily) > 0:
+            self._inp_daily_target.setText(saved_daily)
+
+        self._update_target_progress_ui()
+
+        # ── Group: Review Queue Order Toggle ──────────────────────────────
+        self._btn_order_mode = QPushButton()
+        self._btn_order_mode.setFixedHeight(24 if dojo else 26)
+        self._btn_order_mode.setCursor(Qt.PointingHandCursor)
+        self._btn_order_mode.setToolTip("Click to toggle review order: [🌱 Least Mature First] vs [📅 Due Date Order]")
+        self._btn_order_mode.clicked.connect(self._toggle_queue_order_mode)
+        self._update_order_mode_ui()
+        row2.addWidget(self._btn_order_mode)
 
         row2.addWidget(_vsep())
 
