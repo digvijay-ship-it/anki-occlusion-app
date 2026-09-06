@@ -206,11 +206,17 @@ def get_daily_activity_stats(date_str: str, data: Optional[Dict[str, Any]] = Non
                 elif q == 6:
                     ratings["perfect"] += 1
 
+            seen_box_groups = set()
             for box in card.get("boxes", []) or []:
                 if not isinstance(box, dict):
                     continue
                 brat = box.get("reviewed_at")
                 if brat and str(brat).startswith(date_str):
+                    gid = box.get("group_id", "")
+                    if gid:
+                        if gid in seen_box_groups:
+                            continue
+                        seen_box_groups.add(gid)
                     total += 1
                     self_count += 1
                     q = box.get("last_quality", -1)
@@ -293,11 +299,17 @@ def get_daily_activity_stats(date_str: str, data: Optional[Dict[str, Any]] = Non
                 elif q == 5: self_ratings["easy"] += 1
                 elif q == 6: self_ratings["perfect"] += 1
 
+            seen_box_groups = set()
             for box in card.get("boxes", []) or []:
                 if not isinstance(box, dict):
                     continue
                 brat = box.get("reviewed_at")
                 if brat and str(brat).startswith(date_str):
+                    gid = box.get("group_id", "")
+                    if gid:
+                        if gid in seen_box_groups:
+                            continue
+                        seen_box_groups.add(gid)
                     q = box.get("last_quality", -1)
                     if q == 1: self_ratings["again"] += 1
                     elif q == 3: self_ratings["hard"] += 1
@@ -387,6 +399,79 @@ def get_daily_activity_stats(date_str: str, data: Optional[Dict[str, Any]] = Non
         "tree": tree_nodes,
         "decks": deck_flat,
     }
+
+
+def get_deck_today_review_count(deck_identifier: Any, date_str: str, data: Optional[Dict[str, Any]] = None) -> int:
+    """
+    Counts total cards/boxes reviewed on date_str (YYYY-MM-DD) in the specified deck
+    and all of its child subdecks.
+    deck_identifier can be a deck dict, deck _id (str), or deck name (str).
+    """
+    if data is None:
+        try:
+            from data_manager import store
+            data = store.get()
+        except Exception:
+            data = {}
+
+    target_deck = None
+    if isinstance(deck_identifier, dict):
+        target_deck = deck_identifier
+    else:
+        ident = str(deck_identifier or "").strip().lower()
+        if not ident:
+            return 0
+
+        def _find(d):
+            did = str(d.get("_id") or "").strip().lower()
+            dname = str(d.get("name") or "").strip().lower()
+            if did == ident or dname == ident:
+                return d
+            for c in d.get("children", []) or d.get("subdecks", []) or []:
+                if isinstance(c, dict):
+                    res = _find(c)
+                    if res:
+                        return res
+            return None
+
+        for root in data.get("decks", []) or []:
+            if isinstance(root, dict):
+                target_deck = _find(root)
+                if target_deck:
+                    break
+
+    if not target_deck:
+        return 0
+
+    total_reviews = 0
+
+    def _count(d):
+        nonlocal total_reviews
+        for card in d.get("cards", []) or []:
+            if not isinstance(card, dict):
+                continue
+            rat = card.get("reviewed_at")
+            if rat and str(rat).startswith(date_str):
+                total_reviews += 1
+            seen_grps = set()
+            for box in card.get("boxes", []) or []:
+                if not isinstance(box, dict):
+                    continue
+                brat = box.get("reviewed_at")
+                if brat and str(brat).startswith(date_str):
+                    gid = box.get("group_id", "")
+                    if gid:
+                        if gid in seen_grps:
+                            continue
+                        seen_grps.add(gid)
+                    total_reviews += 1
+
+        for child in d.get("children", []) or d.get("subdecks", []) or []:
+            if isinstance(child, dict):
+                _count(child)
+
+    _count(target_deck)
+    return total_reviews
 
 
 def get_daily_focus_seconds(date_str: str) -> int:

@@ -239,25 +239,23 @@ def build_deck_rollups(decks):
             due_unit_count = 0
             is_paused = bool(deck.get("is_paused", False))
 
-            if not is_paused:
-                for card in deck.get("cards", []):
-                    if card_has_due_today(card):
-                        due_card_count += 1
-                    due_unit_count += count_due_units_in_card(card)
+            for card in deck.get("cards", []):
+                if card_has_due_today(card):
+                    due_card_count += 1
+                due_unit_count += count_due_units_in_card(card)
 
             for child in deck.get("children", []):
                 child_cards, child_due_cards, child_due_units = _walk(child)
                 card_count += child_cards
-                if not is_paused:
-                    due_card_count += child_due_cards
-                    due_unit_count += child_due_units
+                due_card_count += child_due_cards
+                due_unit_count += child_due_units
 
             if deck_id is not None:
                 total_cards[deck_id] = card_count
-                due_cards[deck_id] = 0 if is_paused else due_card_count
-                due_units[deck_id] = 0 if is_paused else due_unit_count
+                due_cards[deck_id] = due_card_count
+                due_units[deck_id] = due_unit_count
 
-            return card_count, (0 if is_paused else due_card_count), (0 if is_paused else due_unit_count)
+            return card_count, due_card_count, due_unit_count
 
         for deck in decks:
             _walk(deck)

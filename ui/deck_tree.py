@@ -108,6 +108,8 @@ from PyQt5.QtWidgets import (
     QStyle,
     QHeaderView,
     QShortcut,
+    QCheckBox,
+    QComboBox,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -511,6 +513,304 @@ class DeckItemDelegate(QStyledItemDelegate):
         return QSize(w + 100, 48)
 
 
+
+class DeckSettingsDialog(QDialog):
+    """
+    Deck Settings Dialog
+    Allows configuring per-deck daily review limits, pause state, and review priority order.
+    Complies with Generous Typography rules (large readable fonts and inputs).
+    """
+    def __init__(self, parent=None, deck=None):
+        super().__init__(parent)
+        self.deck = deck or {}
+        deck_title = str(self.deck.get("name", "Deck"))
+        self.setWindowTitle(f"⚙️ Deck Settings — {deck_title}")
+        self.setModal(True)
+        self.setMinimumWidth(640)
+        self.setMinimumHeight(640)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #151821;
+                color: #F8F8F2;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QLabel {
+                color: #F8F8F2;
+                background: transparent;
+            }
+            QFrame#cardFrame {
+                background-color: #1E222D;
+                border: 1px solid #2D3342;
+                border-radius: 8px;
+                padding: 16px;
+            }
+            QLineEdit {
+                background-color: #12141A;
+                color: #50FA7B;
+                border: 2px solid #3D4457;
+                border-radius: 6px;
+                font-size: 22px;
+                font-weight: bold;
+                padding: 8px 14px;
+            }
+            QLineEdit:focus {
+                border-color: #50FA7B;
+                background-color: #171A22;
+            }
+            QComboBox {
+                background-color: #12141A;
+                color: #F8F8F2;
+                border: 2px solid #3D4457;
+                border-radius: 6px;
+                font-size: 18px;
+                font-weight: 600;
+                padding: 8px 14px;
+            }
+            QComboBox:focus {
+                border-color: #BD93F9;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #1E222D;
+                color: #F8F8F2;
+                selection-background-color: #BD93F9;
+                selection-color: #151821;
+                font-size: 18px;
+                padding: 6px;
+            }
+            QCheckBox {
+                color: #F8F8F2;
+                font-size: 19px;
+                font-weight: 600;
+                spacing: 12px;
+            }
+            QCheckBox::indicator {
+                width: 24px;
+                height: 24px;
+                border-radius: 4px;
+                border: 2px solid #3D4457;
+                background-color: #12141A;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #FFB86C;
+                border-color: #FFB86C;
+            }
+            QPushButton#btnSave {
+                background-color: #50FA7B;
+                color: #0D1117;
+                font-size: 20px;
+                font-weight: 900;
+                border: none;
+                border-radius: 6px;
+                padding: 12px 28px;
+                min-width: 140px;
+            }
+            QPushButton#btnSave:hover {
+                background-color: #69FF91;
+            }
+            QPushButton#btnCancel {
+                background-color: transparent;
+                color: #AAB1C4;
+                font-size: 18px;
+                font-weight: 700;
+                border: 1px solid #3D4457;
+                border-radius: 6px;
+                padding: 12px 24px;
+            }
+            QPushButton#btnCancel:hover {
+                background-color: rgba(255, 255, 255, 0.05);
+                color: #FFFFFF;
+                border-color: #6272A4;
+            }
+        """)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        from PyQt5.QtGui import QIntValidator
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(28, 28, 28, 28)
+        main_layout.setSpacing(18)
+
+        # Header
+        header_layout = QHBoxLayout()
+        icon_lbl = QLabel("🏯")
+        icon_lbl.setStyleSheet("font-size: 32px;")
+        header_layout.addWidget(icon_lbl)
+
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(2)
+        deck_name = str(self.deck.get("name", "Deck"))
+        lbl_title = QLabel(deck_name.upper())
+        lbl_title.setStyleSheet("font-size: 24px; font-weight: 900; color: #50FA7B; letter-spacing: 1px;")
+        lbl_sub = QLabel("DECK CONFIGURATION & STUDY LIMITS / डेक सेटिंग्स")
+        lbl_sub.setStyleSheet("font-size: 13px; font-weight: bold; color: #8F9BB3; letter-spacing: 1px;")
+        title_layout.addWidget(lbl_title)
+        title_layout.addWidget(lbl_sub)
+
+        header_layout.addLayout(title_layout)
+        header_layout.addStretch()
+        main_layout.addLayout(header_layout)
+
+        # Card: Daily Review Limit
+        card_limit = QFrame()
+        card_limit.setObjectName("cardFrame")
+        cl_layout = QVBoxLayout(card_limit)
+        cl_layout.setSpacing(10)
+
+        lbl_limit_title = QLabel("📅 Daily Review Target (डेली रिव्यू लिमिट):")
+        lbl_limit_title.setStyleSheet("font-size: 20px; font-weight: 800; color: #F8F8F2;")
+        cl_layout.addWidget(lbl_limit_title)
+
+        input_row = QHBoxLayout()
+        input_row.setSpacing(12)
+
+        self.inp_daily_limit = QLineEdit()
+        self.inp_daily_limit.setValidator(QIntValidator(0, 9999, self))
+        self.inp_daily_limit.setFixedWidth(140)
+        self.inp_daily_limit.setAlignment(Qt.AlignCenter)
+        current_limit = self.deck.get("daily_limit", 0)
+        self.inp_daily_limit.setText(str(current_limit) if current_limit > 0 else "")
+        self.inp_daily_limit.setPlaceholderText("0")
+        input_row.addWidget(self.inp_daily_limit)
+
+        lbl_unit = QLabel("cards / day (कार्ड्स प्रतिदिन)")
+        lbl_unit.setStyleSheet("font-size: 18px; font-weight: 600; color: #50FA7B;")
+        input_row.addWidget(lbl_unit)
+        input_row.addStretch()
+        cl_layout.addLayout(input_row)
+
+        lbl_limit_desc = QLabel(
+            "इस डेक से प्रतिदिन कितने कार्ड्स रिव्यू करने हैं। 0 या खाली रखने पर Unlimited रहेगा। "
+            "अगर लिमिट पूरी हो जाती है, तो भी आप अलर्ट साइलेंट करके पढ़ाई जारी रख सकते हैं।"
+        )
+        lbl_limit_desc.setStyleSheet("font-size: 14px; color: #AAB1C4; line-height: 1.4;")
+        lbl_limit_desc.setWordWrap(True)
+        cl_layout.addWidget(lbl_limit_desc)
+
+        # Divider
+        div_line = QFrame()
+        div_line.setFrameShape(QFrame.HLine)
+        div_line.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 6px 0px;")
+        cl_layout.addWidget(div_line)
+
+        # Session Target
+        lbl_sess_title = QLabel("🎯 Session Review Target (प्रति सेशन टारगेट):")
+        lbl_sess_title.setStyleSheet("font-size: 20px; font-weight: 800; color: #F8F8F2;")
+        cl_layout.addWidget(lbl_sess_title)
+
+        sess_row = QHBoxLayout()
+        sess_row.setSpacing(12)
+
+        self.inp_session_limit = QLineEdit()
+        self.inp_session_limit.setValidator(QIntValidator(1, 9999, self))
+        self.inp_session_limit.setFixedWidth(140)
+        self.inp_session_limit.setAlignment(Qt.AlignCenter)
+        current_sess = self.deck.get("session_limit", 25)
+        self.inp_session_limit.setText(str(current_sess) if current_sess > 0 else "25")
+        self.inp_session_limit.setPlaceholderText("25")
+        sess_row.addWidget(self.inp_session_limit)
+
+        lbl_sess_unit = QLabel("cards / session (कार्ड्स प्रति सेशन)")
+        lbl_sess_unit.setStyleSheet("font-size: 18px; font-weight: 600; color: #BD93F9;")
+        sess_row.addWidget(lbl_sess_unit)
+        sess_row.addStretch()
+        cl_layout.addLayout(sess_row)
+
+        self.chk_auto_exit = QCheckBox("⏸️ Take Break on Target (टारगेट पूरा होने पर ब्रेक लें और बाहर आएं)")
+        self.chk_auto_exit.setChecked(bool(self.deck.get("auto_exit_session", True)))
+        cl_layout.addWidget(self.chk_auto_exit)
+
+        lbl_auto_exit_desc = QLabel(
+            "जैसे ही 25 (या तय किए गए) कार्ड्स पूरे होंगे, ऐप आपको ब्रेक लेने का विकल्प देगा और रिव्यू स्क्रीन से बाहर ले आएगा ताकि आप दूसरा विषय पढ़ सकें।"
+        )
+        lbl_auto_exit_desc.setStyleSheet("font-size: 14px; color: #8F9BB3; margin-left: 36px; line-height: 1.3;")
+        lbl_auto_exit_desc.setWordWrap(True)
+        cl_layout.addWidget(lbl_auto_exit_desc)
+
+        main_layout.addWidget(card_limit)
+
+        # Card: Pause Status & Review Order
+        card_opts = QFrame()
+        card_opts.setObjectName("cardFrame")
+        co_layout = QVBoxLayout(card_opts)
+        co_layout.setSpacing(14)
+
+        self.chk_pause = QCheckBox("⏸️ Pause Deck (डेक पॉज / फ्रीज करें)")
+        self.chk_pause.setChecked(bool(self.deck.get("is_paused", False)))
+        co_layout.addWidget(self.chk_pause)
+
+        lbl_pause_desc = QLabel(
+            "पॉज करने पर नए अनदेखे कार्ड्स आना रुक जाएंगे। जो कार्ड्स पहले से Due हैं, "
+            "उन्हें आप 'Start Training' से कभी भी पढ़ सकते हैं।"
+        )
+        lbl_pause_desc.setStyleSheet("font-size: 14px; color: #FFB86C; margin-left: 36px; line-height: 1.3;")
+        lbl_pause_desc.setWordWrap(True)
+        co_layout.addWidget(lbl_pause_desc)
+
+        lbl_order = QLabel("🔀 Review Order (प्राथमिकता क्रम):")
+        lbl_order.setStyleSheet("font-size: 19px; font-weight: 700; color: #F8F8F2; margin-top: 4px;")
+        co_layout.addWidget(lbl_order)
+
+        self.combo_order = QComboBox()
+        self.combo_order.addItem("📅 Due Date (Standard / नियत तारीख)", "default")
+        self.combo_order.addItem("🌱 Least Mature First (कम याद वाले कार्ड्स पहले)", "least_mature")
+
+        curr_order = self.deck.get("review_order", "default")
+        idx = self.combo_order.findData(curr_order)
+        if idx >= 0:
+            self.combo_order.setCurrentIndex(idx)
+        co_layout.addWidget(self.combo_order)
+
+        main_layout.addWidget(card_opts)
+        main_layout.addStretch()
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(14)
+        btn_row.addStretch()
+
+        self.btn_cancel = QPushButton("✕ CANCEL")
+        self.btn_cancel.setObjectName("btnCancel")
+        self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self.btn_cancel)
+
+        self.btn_save = QPushButton("💾 SAVE SETTINGS")
+        self.btn_save.setObjectName("btnSave")
+        self.btn_save.setCursor(Qt.PointingHandCursor)
+        self.btn_save.clicked.connect(self._save_settings)
+        btn_row.addWidget(self.btn_save)
+
+        main_layout.addLayout(btn_row)
+
+    def _save_settings(self):
+        text = self.inp_daily_limit.text().strip()
+        try:
+            val = int(text) if text else 0
+        except ValueError:
+            val = 0
+        limit_val = max(0, val)
+
+        sess_text = self.inp_session_limit.text().strip()
+        try:
+            sess_val = int(sess_text) if sess_text else 25
+        except ValueError:
+            sess_val = 25
+        session_val = max(1, sess_val)
+
+        is_paused_val = self.chk_pause.isChecked()
+        auto_exit_val = self.chk_auto_exit.isChecked()
+        order_val = self.combo_order.currentData() or "default"
+
+        self.deck["daily_limit"] = limit_val
+        self.deck["session_limit"] = session_val
+        self.deck["auto_exit_session"] = auto_exit_val
+        self.deck["is_paused"] = is_paused_val
+        self.deck["review_order"] = order_val
+
+        store.save_force(async_save=True)
+        self.accept()
+
+
 class DeckTree(QWidget):
     deck_selected = pyqtSignal(object)
 
@@ -853,8 +1153,8 @@ class DeckTree(QWidget):
 
     def _make_item(self, deck, depth=0):
         is_paused = bool(deck.get("is_paused", False))
-        due = 0 if is_paused else getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
-        badge = "⏸️ PAUSED" if is_paused else (f"🔴{due}" if due else "✅")
+        due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
+        badge = (f"⏸️ PAUSED ({due})" if due else "⏸️ PAUSED") if is_paused else (f"🔴{due}" if due else "✅")
         theme = getattr(self, "_theme", "classic")
         bookmarked = deck.get("bookmarked", False)
         bookmark_str = " 🔖" if bookmarked else ""
@@ -865,7 +1165,7 @@ class DeckTree(QWidget):
             else ""
         )
         item = QTreeWidgetItem([text])
-        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - Reviews Frozen)" if is_paused else deck.get("name", ""))
+        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - {due} Due Cards)" if is_paused else deck.get("name", ""))
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
@@ -928,6 +1228,7 @@ class DeckTree(QWidget):
             did = self._get_id_from_item(item)
             deck = self._get_deck_from_item(item)
             menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
+            menu.addAction("⚙️ Deck Settings / डेक सेटिंग्स...", lambda: self._open_deck_settings(did))
             menu.addAction("🎯 Practice Mode (All Cards)", lambda: self._practice_deck_by_id(did))
             menu.addAction("✨ Practice only the new card, not the due one", lambda: self._practice_new_cards_by_id(did))
             menu.addAction("🌱 Review: Least Mature First", lambda checked=False, d_id=did: self._review_least_mature_by_id(d_id))
@@ -970,6 +1271,26 @@ class DeckTree(QWidget):
             menu.addAction("＋ New Top-level Deck", lambda: self._new_deck(None))
             menu.addAction("📥 Import Text / CSV Deck...", lambda: self._import_cards(None))
         menu.exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _open_deck_settings(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        dlg = DeckSettingsDialog(self, deck=deck)
+        if dlg.exec_() == QDialog.Accepted:
+            self.refresh()
+            home = self._find_home()
+            if home:
+                if hasattr(home, "_clear_home_ram_caches"):
+                    home._clear_home_ram_caches()
+                active_dv = None
+                if hasattr(home, "_tmnt_layout") and home._tmnt_layout and hasattr(home._tmnt_layout, "main"):
+                    active_dv = home._tmnt_layout.main
+                elif hasattr(home, "deck_view") and home.deck_view:
+                    active_dv = home.deck_view
+                if active_dv and getattr(active_dv, "_deck_id", None) == deck_id:
+                    active_dv.deck = deck
+                    active_dv._refresh()
 
     def _practice_deck_by_id(self, deck_id):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))

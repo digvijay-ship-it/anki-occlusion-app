@@ -1107,12 +1107,8 @@ class DeckView(QWidget):
         is_paused = bool(deck.get("is_paused", False))
         if is_paused:
             self.lbl_deck.setText(f"⏸️ {deck.get('name', '?')} (PAUSED)")
-            self.lbl_deck_sub.setText("⏸️ DECK IS FROZEN — DUE CARDS EXCLUDED FROM DAILY REVIEWS")
-            self.lbl_deck_sub.setStyleSheet("color: #FFB86C; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
-            self.lbl_deck_sub.show()
         else:
             self.lbl_deck.setText(deck.get("name", "?"))
-            self.lbl_deck_sub.hide()
         self._refresh()
         self._update_order_mode_ui()
         if same_deck and 0 <= selected_row < self.card_list.count():
@@ -1137,12 +1133,8 @@ class DeckView(QWidget):
         is_paused = bool(self.deck.get("is_paused", False))
         if is_paused:
             self.lbl_deck.setText(f"⏸️ {self.deck.get('name', '?')} (PAUSED)")
-            self.lbl_deck_sub.setText("⏸️ DECK IS FROZEN — DUE CARDS EXCLUDED FROM DAILY REVIEWS")
-            self.lbl_deck_sub.setStyleSheet("color: #FFB86C; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
-            self.lbl_deck_sub.show()
         else:
             self.lbl_deck.setText(self.deck.get("name", "?"))
-            self.lbl_deck_sub.hide()
         if hasattr(self, "btn_formulas"):
             self.btn_formulas.show()
             theme = getattr(self, "_theme", "classic")
@@ -1307,7 +1299,14 @@ class DeckView(QWidget):
             f"Cards:{len(all_cards)}  🔴Due:{due_c}  Reviews:{total_rev}"
         )
 
-        self.lbl_deck_sub.setText(f"SCROLLS: {len(all_cards)} ❖ DUE: {due_c}")
+        is_paused = bool(self.deck.get("is_paused", False)) if self.deck else False
+        if is_paused:
+            self.lbl_deck_sub.setText(f"SCROLLS: {len(all_cards)} ❖ DUE: {due_c} (⏸️ PAUSED)")
+            self.lbl_deck_sub.setStyleSheet("color: #FFB86C; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
+        else:
+            self.lbl_deck_sub.setText(f"SCROLLS: {len(all_cards)} ❖ DUE: {due_c}")
+            self.lbl_deck_sub.setStyleSheet("")
+        self.lbl_deck_sub.show()
         self.stat_missions.set_value(due_c)
         self.stat_scrolls.set_value(untouched_c)
         self.stat_battles.set_value(total_rev)
@@ -1666,8 +1665,6 @@ class DeckView(QWidget):
         groups = OrderedDict()
 
         def _walk(d):
-            if d.get("is_paused", False):
-                return
             did = d.get("_id")
             for card in d.get("cards", []):
                 if self._card_has_due_today(card):
@@ -1725,11 +1722,6 @@ class DeckView(QWidget):
     def _review_due(self, *args, order_mode=None):
         if not self.deck:
             return
-        if self.deck.get("is_paused", False):
-            QMessageBox.information(
-                self, "⏸️ Deck Paused", "This deck is currently paused (frozen).\nUnpause the deck to resume scheduled reviews, or use 'Practice' mode to study anytime!"
-            )
-            return
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
@@ -1742,7 +1734,21 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                home.show_review_sequential(groups, self._data, order_mode=order_mode)
+                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
+                session_limit = int(self.deck.get("session_limit", 25) or 25)
+                auto_exit = bool(self.deck.get("auto_exit_session", True))
+                deck_id = self.deck.get("_id")
+                deck_name = self.deck.get("name")
+                home.show_review_sequential(
+                    groups,
+                    self._data,
+                    order_mode=order_mode,
+                    default_daily_target=daily_limit,
+                    default_session_target=session_limit,
+                    auto_exit_session=auto_exit,
+                    deck_id=deck_id,
+                    deck_name=deck_name,
+                )
         else:
             due = [c for c in self.deck.get("cards", []) if self._card_has_due_today(c)]
             if not due:
@@ -1782,7 +1788,22 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                home.show_review_sequential(groups, self._data, is_practice=True, order_mode=order_mode)
+                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
+                session_limit = int(self.deck.get("session_limit", 25) or 25)
+                auto_exit = bool(self.deck.get("auto_exit_session", True))
+                deck_id = self.deck.get("_id")
+                deck_name = self.deck.get("name")
+                home.show_review_sequential(
+                    groups,
+                    self._data,
+                    is_practice=True,
+                    order_mode=order_mode,
+                    default_daily_target=daily_limit,
+                    default_session_target=session_limit,
+                    auto_exit_session=auto_exit,
+                    deck_id=deck_id,
+                    deck_name=deck_name,
+                )
         else:
             cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False)]
             if not cards:
@@ -1847,7 +1868,22 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                home.show_review_sequential(groups, self._data, is_practice=True, order_mode=order_mode)
+                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
+                session_limit = int(self.deck.get("session_limit", 25) or 25)
+                auto_exit = bool(self.deck.get("auto_exit_session", True))
+                deck_id = self.deck.get("_id")
+                deck_name = self.deck.get("name")
+                home.show_review_sequential(
+                    groups,
+                    self._data,
+                    is_practice=True,
+                    order_mode=order_mode,
+                    default_daily_target=daily_limit,
+                    default_session_target=session_limit,
+                    auto_exit_session=auto_exit,
+                    deck_id=deck_id,
+                    deck_name=deck_name,
+                )
         else:
             cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False) and self._card_is_new(c)]
             if not cards:
@@ -1873,7 +1909,22 @@ class DeckView(QWidget):
         if home:
             if order_mode is None:
                 order_mode = self.deck.get("review_order", "default") if self.deck else "default"
-            home.show_review(cards, self._data, is_practice=is_practice, order_mode=order_mode)
+            daily_limit = int(self.deck.get("daily_limit", 0) or 0) if self.deck else 0
+            session_limit = int(self.deck.get("session_limit", 25) or 25) if self.deck else 25
+            auto_exit = bool(self.deck.get("auto_exit_session", True)) if self.deck else True
+            deck_id = self.deck.get("_id") if self.deck else None
+            deck_name = self.deck.get("name") if self.deck else None
+            home.show_review(
+                cards,
+                self._data,
+                is_practice=is_practice,
+                order_mode=order_mode,
+                default_daily_target=daily_limit,
+                default_session_target=session_limit,
+                auto_exit_session=auto_exit,
+                deck_id=deck_id,
+                deck_name=deck_name,
+            )
 
     def _open_formulas(self, *args):
         if not self.deck:
