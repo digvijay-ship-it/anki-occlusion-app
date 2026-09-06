@@ -560,14 +560,15 @@ class TextReviewWidget(QWidget):
     def _get_max_content_width(self) -> int:
         viewport_w = (
             self.scroll_area.viewport().width()
-            if hasattr(self, "scroll_area") and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
-            else self.width()
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+            else (self.width() if self.width() > 100 else (self.card_frame._get_viewport_width() if hasattr(self, "card_frame") else 1920))
         )
-        if viewport_w <= 100:
-            viewport_w = 900
         mode = self.get_saved_width_mode()
         avail_frame_w = max(300, viewport_w - 40)
-        if mode == "standard":
+        saved_w = self.card_frame.get_saved_width() if hasattr(self, "card_frame") and hasattr(self.card_frame, "get_saved_width") else None
+        if saved_w and saved_w >= 400:
+            frame_w = min(avail_frame_w, saved_w)
+        elif mode == "standard":
             frame_w = min(avail_frame_w, 960)
         elif mode == "max":
             w = max(1100, int(viewport_w * 0.96)) if viewport_w > 500 else 1650
@@ -581,11 +582,9 @@ class TextReviewWidget(QWidget):
         saved_w = self.card_frame.get_saved_width() if hasattr(self, "card_frame") and hasattr(self.card_frame, "get_saved_width") else None
         viewport_w = (
             self.scroll_area.viewport().width()
-            if hasattr(self, "scroll_area") and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
-            else self.width()
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+            else (self.width() if self.width() > 100 else (self.card_frame._get_viewport_width() if hasattr(self, "card_frame") else 1920))
         )
-        if viewport_w <= 100:
-            viewport_w = 900
         avail_frame_w = max(340, viewport_w - 40)
         if saved_w and saved_w >= 400:
             target_w = min(avail_frame_w, saved_w)
@@ -608,11 +607,9 @@ class TextReviewWidget(QWidget):
         self.save_width_mode(next_mode)
         viewport_w = (
             self.scroll_area.viewport().width()
-            if hasattr(self, "scroll_area") and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
-            else self.width()
+            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() and self.scroll_area.viewport().width() > 100
+            else (self.width() if self.width() > 100 else (self.card_frame._get_viewport_width() if hasattr(self, "card_frame") else 1920))
         )
-        if viewport_w <= 100:
-            viewport_w = 900
         avail_frame_w = max(340, viewport_w - 40)
         if next_mode == "standard":
             target_w = min(avail_frame_w, 960)
@@ -1233,6 +1230,7 @@ class TextReviewWidget(QWidget):
         if hasattr(self, "scroll_area") and self.scroll_area.verticalScrollBar() is not None:
             self.scroll_area.verticalScrollBar().setValue(0)
 
+        self._apply_width_mode()
         self._update_scaled_html()
         
         # Clear/Hide answer container
@@ -1270,6 +1268,12 @@ class TextReviewWidget(QWidget):
         self._adjust_browser_heights()
         if hasattr(self, "scratchpad"):
             self.scratchpad.sync_geometry_with_parent()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._apply_width_mode()
+        self._adjust_browser_heights()
+        QTimer.singleShot(0, self._apply_width_mode)
         
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1663,16 +1667,16 @@ class TextReviewWidget(QWidget):
         TextReviewWidget.save_zoom_factor(self._zoom_factor)
         self._update_scaled_html()
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._apply_width_mode()
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._apply_width_mode)
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if hasattr(self, "card_frame") and isinstance(self.card_frame, ResizableCardFrame):
-            vw = self.scroll_area.viewport().width() if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.viewport() else self.width()
-            if vw > 100:
-                max_w = max(460, vw - 40)
-                saved_w = self.card_frame.get_saved_width()
-                target_w = min(saved_w, max_w)
-                if self.card_frame.width() != target_w:
-                    self.card_frame.setFixedWidth(target_w)
+            self._apply_width_mode()
         if hasattr(self, "scratchpad"):
             self.scratchpad.sync_geometry_with_parent()
 
