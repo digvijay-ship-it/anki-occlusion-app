@@ -425,7 +425,11 @@ class DeckItemDelegate(QStyledItemDelegate):
 
         # Draw Text — use depth-based color
         depth = index.data(Qt.UserRole + 4) or 0
-        painter.setPen(QColor("#A86CFF" if is_selected else depth_color(depth, "dojo")))
+        is_paused = bool(index.data(Qt.UserRole + 6))
+        if is_paused:
+            painter.setPen(QColor("#FFB86C" if not is_selected else "#FFFFFF"))
+        else:
+            painter.setPen(QColor("#A86CFF" if is_selected else depth_color(depth, "dojo")))
         font = QFont(DECK_TREE_DISPLAY_FONT, 9, QFont.Bold)
         painter.setFont(font)
         text_rect = QRect(
@@ -438,19 +442,36 @@ class DeckItemDelegate(QStyledItemDelegate):
         display_name = name.upper()
         if bookmarked:
             display_name = "🔖 " + display_name
+        if is_paused:
+            display_name = "⏸️ " + display_name
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, display_name)
 
         # Draw Badge
-        badge_w = 24
-        badge_h = 20
-        badge_rect = QRect(
-            rect.right() - badge_w - 12,
-            rect.top() + (rect.height() - badge_h) // 2,
-            badge_w,
-            badge_h,
-        )
-
-        if due > 0:
+        if is_paused:
+            p_badge_w = 52
+            p_badge_h = 20
+            p_badge_rect = QRect(
+                rect.right() - p_badge_w - 12,
+                rect.top() + (rect.height() - p_badge_h) // 2,
+                p_badge_w,
+                p_badge_h,
+            )
+            painter.setPen(QPen(QColor("#FFB86C"), 1))
+            painter.setBrush(QColor(40, 42, 54, 220))
+            painter.drawRoundedRect(p_badge_rect, 4, 4)
+            badge_font = QFont(DECK_TREE_DISPLAY_FONT, 7, QFont.Bold)
+            painter.setFont(badge_font)
+            painter.setPen(QColor("#FFB86C"))
+            painter.drawText(p_badge_rect, Qt.AlignCenter, "PAUSED")
+        elif due > 0:
+            badge_w = 24
+            badge_h = 20
+            badge_rect = QRect(
+                rect.right() - badge_w - 12,
+                rect.top() + (rect.height() - badge_h) // 2,
+                badge_w,
+                badge_h,
+            )
             painter.setBrush(QColor("#FF5555"))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(badge_rect, 4, 4)
@@ -459,6 +480,14 @@ class DeckItemDelegate(QStyledItemDelegate):
             painter.setFont(font)
             painter.drawText(badge_rect, Qt.AlignCenter, str(due))
         else:
+            badge_w = 24
+            badge_h = 20
+            badge_rect = QRect(
+                rect.right() - badge_w - 12,
+                rect.top() + (rect.height() - badge_h) // 2,
+                badge_w,
+                badge_h,
+            )
             painter.setPen(QColor("#50FA7B"))
             font = QFont("Segoe UI", 12, QFont.Bold)
             painter.setFont(font)
@@ -823,26 +852,32 @@ class DeckTree(QWidget):
             self._select_by_id(sel_id)
 
     def _make_item(self, deck, depth=0):
-        due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
-        badge = f"🔴{due}" if due else "✅"
+        is_paused = bool(deck.get("is_paused", False))
+        due = 0 if is_paused else getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
+        badge = "⏸️ PAUSED" if is_paused else (f"🔴{due}" if due else "✅")
         theme = getattr(self, "_theme", "classic")
         bookmarked = deck.get("bookmarked", False)
         bookmark_str = " 🔖" if bookmarked else ""
+        pause_str = " ⏸️" if is_paused else ""
         text = (
-            f"  📂  {deck['name']}{bookmark_str}  {badge}"
+            f"  📂{pause_str}  {deck['name']}{bookmark_str}  [{badge}]"
             if theme == "classic"
             else ""
         )
         item = QTreeWidgetItem([text])
-        item.setToolTip(0, deck.get("name", ""))
+        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - Reviews Frozen)" if is_paused else deck.get("name", ""))
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
         item.setData(0, Qt.UserRole + 4, depth)
         item.setData(0, Qt.UserRole + 5, bookmarked)
+        item.setData(0, Qt.UserRole + 6, is_paused)
         # Apply depth-based text color for classic theme
         if theme == "classic":
-            item.setForeground(0, QBrush(QColor(depth_color(depth, "classic"))))
+            if is_paused:
+                item.setForeground(0, QBrush(QColor("#FFB86C")))
+            else:
+                item.setForeground(0, QBrush(QColor(depth_color(depth, "classic"))))
         for child in deck.get("children", []):
             item.addChild(self._make_item(child, depth + 1))
         return item
@@ -894,6 +929,21 @@ class DeckTree(QWidget):
             deck = self._get_deck_from_item(item)
             menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
             menu.addAction("🎯 Practice Mode (All Cards)", lambda: self._practice_deck_by_id(did))
+            menu.addAction("✨ Practice only the new card, not the due one", lambda: self._practice_new_cards_by_id(did))
+            menu.addAction("🌱 Review: Least Mature First", lambda checked=False, d_id=did: self._review_least_mature_by_id(d_id))
+            menu.addAction("🎯 Practice: Least Mature First", lambda checked=False, d_id=did: self._practice_least_mature_by_id(d_id))
+
+            order_menu = menu.addMenu("🔀 Review Order / प्राथमिकता क्रम")
+            current_order = (deck.get("review_order") or "default") if deck else "default"
+            act_due = order_menu.addAction("📅 Due Date (Standard / नियत तारीख)")
+            act_due.setCheckable(True)
+            act_due.setChecked(current_order == "default")
+            act_due.triggered.connect(lambda checked=False, d_id=did: self._set_deck_order_mode(d_id, "default"))
+            act_mature = order_menu.addAction("🌱 Least Mature First (इमैच्योर कार्ड्स पहले)")
+            act_mature.setCheckable(True)
+            act_mature.setChecked(current_order == "least_mature")
+            act_mature.triggered.connect(lambda checked=False, d_id=did: self._set_deck_order_mode(d_id, "least_mature"))
+
             menu.addAction("＋ Sub-deck", lambda: self._new_deck(did))
             source_p = (deck.get("source_folder_path") if deck and deck.get("source_folder_path") and os.path.isdir(deck.get("source_folder_path")) else None) or (deck.get("source_file_path") or deck.get("source_folder_path") if deck else None)
             if source_p and os.path.exists(source_p):
@@ -908,6 +958,9 @@ class DeckTree(QWidget):
                 menu.addAction("📁 Link to Source Folder...", lambda: self._link_source_folder(did))
             menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             if deck:
+                is_paused = bool(deck.get("is_paused", False))
+                pause_text = "▶️ Unpause Deck (Resume Reviews)" if is_paused else "⏸️ Pause Deck (Freeze Reviews)"
+                menu.addAction(pause_text, lambda: self._toggle_pause_deck_by_id(did))
                 bookmarked = deck.get("bookmarked", False)
                 action_text = "🔖 Remove Bookmark" if bookmarked else "🔖 Bookmark (Unmasked)"
                 menu.addAction(action_text, lambda: self._toggle_bookmark_by_id(did))
@@ -935,6 +988,85 @@ class DeckTree(QWidget):
                 active_dv.deck = deck
                 active_dv._deck_id = deck_id
                 active_dv._practice_deck()
+
+    def _practice_new_cards_by_id(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        self._select_by_id(deck_id)
+        self.deck_selected.emit(deck)
+        home = self._find_home()
+        if home:
+            active_dv = None
+            if hasattr(home, "_tmnt_layout") and home._tmnt_layout and hasattr(home._tmnt_layout, "main"):
+                active_dv = home._tmnt_layout.main
+            elif hasattr(home, "deck_view") and home.deck_view:
+                active_dv = home.deck_view
+            if active_dv:
+                active_dv.deck = deck
+                active_dv._deck_id = deck_id
+                if hasattr(active_dv, "_practice_new_cards"):
+                    active_dv._practice_new_cards()
+
+    def _review_least_mature_by_id(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        self._select_by_id(deck_id)
+        self.deck_selected.emit(deck)
+        home = self._find_home()
+        if home:
+            active_dv = None
+            if hasattr(home, "_tmnt_layout") and home._tmnt_layout and hasattr(home._tmnt_layout, "main"):
+                active_dv = home._tmnt_layout.main
+            elif hasattr(home, "deck_view") and home.deck_view:
+                active_dv = home.deck_view
+            if active_dv:
+                active_dv.deck = deck
+                active_dv._deck_id = deck_id
+                if hasattr(active_dv, "_review_due_least_mature"):
+                    active_dv._review_due_least_mature()
+                else:
+                    active_dv._start_review(order_mode="least_mature")
+
+    def _practice_least_mature_by_id(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        self._select_by_id(deck_id)
+        self.deck_selected.emit(deck)
+        home = self._find_home()
+        if home:
+            active_dv = None
+            if hasattr(home, "_tmnt_layout") and home._tmnt_layout and hasattr(home._tmnt_layout, "main"):
+                active_dv = home._tmnt_layout.main
+            elif hasattr(home, "deck_view") and home.deck_view:
+                active_dv = home.deck_view
+            if active_dv:
+                active_dv.deck = deck
+                active_dv._deck_id = deck_id
+                if hasattr(active_dv, "_practice_deck_least_mature"):
+                    active_dv._practice_deck_least_mature()
+                else:
+                    active_dv._practice_deck(order_mode="least_mature")
+
+    def _set_deck_order_mode(self, deck_id, mode):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        deck_history.push(self._data)
+        deck["review_order"] = mode
+        store.mark_dirty()
+        store.save_soon(min_interval=3.0)
+        home = self._find_home()
+        if home:
+            active_dv = getattr(home, "deck_view", None)
+            if active_dv is None and hasattr(home, "_tmnt_layout") and hasattr(home._tmnt_layout, "main"):
+                active_dv = home._tmnt_layout.main
+            if active_dv and getattr(active_dv, "_deck_id", None) == deck_id:
+                active_dv.deck = deck
+                if hasattr(active_dv, "_update_order_mode_ui"):
+                    active_dv._update_order_mode_ui()
 
     def _import_cards(self, deck_id=None):
         deck = find_deck_by_id(deck_id, self._data.get("decks", [])) if deck_id is not None else None
@@ -1107,6 +1239,30 @@ class DeckTree(QWidget):
         home = self._find_home()
         if home:
             home.refresh()
+        else:
+            self.refresh()
+
+    def _toggle_pause_deck_by_id(self, deck_id):
+        deck = find_deck_by_id(deck_id, self._data.get("decks", []))
+        if not deck:
+            return
+        deck_history.push(self._data)  # undo snapshot
+        is_paused = not deck.get("is_paused", False)
+        deck["is_paused"] = is_paused
+        store.mark_dirty()
+        store.save_soon(min_interval=3.0)
+        from perf_utils import invalidate_deck_stats
+        invalidate_deck_stats()
+        home = self._find_home()
+        if home:
+            if hasattr(home, "_clear_home_ram_caches"):
+                home._clear_home_ram_caches()
+            home.refresh()
+            active_dv = getattr(home, "deck_view", None)
+            if active_dv is None and hasattr(home, "_tmnt_layout") and hasattr(home._tmnt_layout, "main"):
+                active_dv = home._tmnt_layout.main
+            if active_dv and getattr(active_dv, "_deck_id", None) == deck_id:
+                active_dv.load_deck(deck, self._data)
         else:
             self.refresh()
 

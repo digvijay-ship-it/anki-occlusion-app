@@ -603,6 +603,13 @@ class DeckView(QWidget):
         self.btn_bookmark.hide()
         hdr.addWidget(self.btn_bookmark)
 
+        self.btn_pause = QPushButton("⏸️ Pause")
+        self.btn_pause.setObjectName("pause_btn")
+        self.btn_pause.setCursor(Qt.PointingHandCursor)
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_pause.hide()
+        hdr.addWidget(self.btn_pause)
+
         hdr.addStretch()
         self.btn_add = QPushButton("＋ Add Card")
         self.btn_add.clicked.connect(self._add_card)
@@ -623,11 +630,18 @@ class DeckView(QWidget):
         self.btn_practice = QPushButton("🎯 Practice")
         self.btn_practice.setToolTip("Practice all cards without affecting SM-2 schedule")
         self.btn_practice.clicked.connect(self._practice_deck)
+        self.btn_practice_new = QPushButton("✨ Practice New")
+        self.btn_practice_new.setToolTip("Practice only brand-new cards (skipping due / previously reviewed cards)")
+        self.btn_practice_new.clicked.connect(self._practice_new_cards)
         self.btn_formulas = QPushButton("📐 Formulas")
         self.btn_formulas.setObjectName("formulas_btn")
         self.btn_formulas.setCursor(Qt.PointingHandCursor)
         self.btn_formulas.clicked.connect(self._open_formulas)
         self.btn_formulas.hide()
+        self.btn_order_mode = QPushButton("📅 Due Order")
+        self.btn_order_mode.setToolTip("Deck Review Order: Click to toggle between [🌱 Least Mature First] and [📅 Standard Due Order]")
+        self.btn_order_mode.setCursor(Qt.PointingHandCursor)
+        self.btn_order_mode.clicked.connect(self._toggle_deck_order_mode)
         hdr.addWidget(self.btn_add)
         hdr.addWidget(self.btn_add_text)
         hdr.addWidget(self.btn_import)
@@ -635,6 +649,8 @@ class DeckView(QWidget):
         hdr.addWidget(self.btn_due)
         hdr.addWidget(self.btn_all)
         hdr.addWidget(self.btn_practice)
+        hdr.addWidget(self.btn_practice_new)
+        hdr.addWidget(self.btn_order_mode)
         hdr.addWidget(self.btn_formulas)
         L.addWidget(self.hdr_w)
 
@@ -780,6 +796,80 @@ class DeckView(QWidget):
             home.refresh()
         else:
             self._refresh()
+
+    def _update_pause_button(self):
+        if not hasattr(self, "btn_pause"):
+            return
+        if not self.deck:
+            self.btn_pause.hide()
+            return
+        self.btn_pause.show()
+        is_paused = bool(self.deck.get("is_paused", False))
+        theme = getattr(self, "_theme", "classic")
+        scale = getattr(self, "_font_size_val", 11) / 11.0
+
+        if is_paused:
+            self.btn_pause.setText("▶️ Unpause")
+            self.btn_pause.setToolTip("Unpause this deck to resume scheduled reviews")
+            self.btn_pause.setStyleSheet(f"""
+                QPushButton#pause_btn {{
+                    background: rgba(255, 184, 108, 0.15);
+                    color: #FFB86C;
+                    border: 1.5px solid #FFB86C;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-weight: bold;
+                    font-size: {max(9, int(11 * scale))}px;
+                }}
+                QPushButton#pause_btn:hover {{
+                    background: #FFB86C;
+                    color: #1A1D2E;
+                }}
+            """)
+        else:
+            self.btn_pause.setText("⏸️ Pause")
+            self.btn_pause.setToolTip("Pause (freeze) this deck to stop its cards from appearing in daily reviews")
+            self.btn_pause.setStyleSheet(f"""
+                QPushButton#pause_btn {{
+                    background: #1E2333;
+                    color: #A5ADCB;
+                    border: 1px solid #363A4F;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-weight: bold;
+                    font-size: {max(9, int(11 * scale))}px;
+                }}
+                QPushButton#pause_btn:hover {{
+                    background: rgba(255, 184, 108, 0.12);
+                    border-color: #FFB86C;
+                    color: #FFB86C;
+                }}
+            """)
+
+    def _toggle_pause(self):
+        if not self.deck:
+            return
+        deck_history.push(self._data)
+        is_paused = not self.deck.get("is_paused", False)
+        self.deck["is_paused"] = is_paused
+        store.mark_dirty()
+        store.save_soon(min_interval=3.0)
+        from perf_utils import invalidate_deck_stats
+        invalidate_deck_stats()
+        self._update_pause_button()
+        home = self._find_home()
+        if home:
+            if hasattr(home, "_clear_home_ram_caches"):
+                home._clear_home_ram_caches()
+            home.refresh()
+        self._refresh()
+
+        status_text = "PAUSED (frozen).\nIts questions are now muted and will NOT appear in your daily reviews!" if is_paused else "UNPAUSED.\nScheduled daily reviews have been resumed."
+        QMessageBox.information(
+            self,
+            "⏸️ Deck Paused" if is_paused else "▶️ Deck Resumed",
+            f"Deck '{self.deck.get('name', '')}' is now {status_text}"
+        )
 
     def update_font_size(self, size: int):
         self._font_size_val = size
@@ -975,6 +1065,33 @@ class DeckView(QWidget):
         drag.setMimeData(mime)
         drag.exec_(Qt.MoveAction)
 
+    def _update_order_mode_ui(self):
+        if not hasattr(self, "btn_order_mode") or self.btn_order_mode is None:
+            return
+        is_least = bool(self.deck and self.deck.get("review_order") == "least_mature")
+        if is_least:
+            self.btn_order_mode.setText("🌱 Least Mature")
+            self.btn_order_mode.setStyleSheet(
+                "QPushButton { background: rgba(80, 250, 123, 0.18); color: #50fa7b; border: 1.5px solid #50fa7b; font-weight: bold; border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
+                "QPushButton:hover { background: rgba(80, 250, 123, 0.35); }"
+            )
+        else:
+            self.btn_order_mode.setText("📅 Due Order")
+            self.btn_order_mode.setStyleSheet(
+                "QPushButton { background: transparent; color: #6272a4; border: 1.5px solid #6272a4; font-weight: bold; border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
+                "QPushButton:hover { background: rgba(98, 114, 164, 0.2); color: #f8f8f2; }"
+            )
+
+    def _toggle_deck_order_mode(self):
+        if not self.deck:
+            return
+        curr = self.deck.get("review_order", "default")
+        new_mode = "least_mature" if curr != "least_mature" else "default"
+        self.deck["review_order"] = new_mode
+        store.mark_dirty()
+        store.save_soon(min_interval=3.0)
+        self._update_order_mode_ui()
+
     @trace_perf
     def load_deck(self, deck, data):
         self._data = data
@@ -987,8 +1104,17 @@ class DeckView(QWidget):
             self._undo_stack.clear()
         self._deck_id = new_id
         self.deck = deck
-        self.lbl_deck.setText(deck.get("name", "?"))
+        is_paused = bool(deck.get("is_paused", False))
+        if is_paused:
+            self.lbl_deck.setText(f"⏸️ {deck.get('name', '?')} (PAUSED)")
+            self.lbl_deck_sub.setText("⏸️ DECK IS FROZEN — DUE CARDS EXCLUDED FROM DAILY REVIEWS")
+            self.lbl_deck_sub.setStyleSheet("color: #FFB86C; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
+            self.lbl_deck_sub.show()
+        else:
+            self.lbl_deck.setText(deck.get("name", "?"))
+            self.lbl_deck_sub.hide()
         self._refresh()
+        self._update_order_mode_ui()
         if same_deck and 0 <= selected_row < self.card_list.count():
             self.card_list.setCurrentRow(selected_row)
 
@@ -1001,10 +1127,22 @@ class DeckView(QWidget):
         if not self.deck:
             if hasattr(self, "btn_bookmark"):
                 self.btn_bookmark.hide()
+            if hasattr(self, "btn_pause"):
+                self.btn_pause.hide()
             if hasattr(self, "btn_formulas"):
                 self.btn_formulas.hide()
             return
         self._update_bookmark_button()
+        self._update_pause_button()
+        is_paused = bool(self.deck.get("is_paused", False))
+        if is_paused:
+            self.lbl_deck.setText(f"⏸️ {self.deck.get('name', '?')} (PAUSED)")
+            self.lbl_deck_sub.setText("⏸️ DECK IS FROZEN — DUE CARDS EXCLUDED FROM DAILY REVIEWS")
+            self.lbl_deck_sub.setStyleSheet("color: #FFB86C; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
+            self.lbl_deck_sub.show()
+        else:
+            self.lbl_deck.setText(self.deck.get("name", "?"))
+            self.lbl_deck_sub.hide()
         if hasattr(self, "btn_formulas"):
             self.btn_formulas.show()
             theme = getattr(self, "_theme", "classic")
@@ -1528,6 +1666,8 @@ class DeckView(QWidget):
         groups = OrderedDict()
 
         def _walk(d):
+            if d.get("is_paused", False):
+                return
             did = d.get("_id")
             for card in d.get("cards", []):
                 if self._card_has_due_today(card):
@@ -1582,9 +1722,16 @@ class DeckView(QWidget):
         return cards
 
     @trace_perf
-    def _review_due(self, *args):
+    def _review_due(self, *args, order_mode=None):
         if not self.deck:
             return
+        if self.deck.get("is_paused", False):
+            QMessageBox.information(
+                self, "⏸️ Deck Paused", "This deck is currently paused (frozen).\nUnpause the deck to resume scheduled reviews, or use 'Practice' mode to study anytime!"
+            )
+            return
+        if order_mode is None:
+            order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
             # Parent deck: group due cards by PDF and review sequentially
             groups = self._collect_due_by_pdf(self.deck)
@@ -1595,7 +1742,7 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                home.show_review_sequential(groups, self._data)
+                home.show_review_sequential(groups, self._data, order_mode=order_mode)
         else:
             due = [c for c in self.deck.get("cards", []) if self._card_has_due_today(c)]
             if not due:
@@ -1605,25 +1752,29 @@ class DeckView(QWidget):
                 return
             filtered_due = self._prompt_selective_cards(due, is_due=True)
             if filtered_due is not None and len(filtered_due) > 0:
-                self._start_review(filtered_due)
+                self._start_review(filtered_due, order_mode=order_mode)
 
     @trace_perf
-    def _review_all(self, *args):
+    def _review_all(self, *args, order_mode=None):
         if not self.deck:
             return
+        if order_mode is None:
+            order_mode = self.deck.get("review_order", "default")
         cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False)]
         if not cards:
             QMessageBox.information(self, "Empty", "Add some cards first!")
             return
         filtered_cards = self._prompt_selective_cards(cards, is_due=False)
         if filtered_cards is not None and len(filtered_cards) > 0:
-            self._start_review(filtered_cards)
+            self._start_review(filtered_cards, order_mode=order_mode)
 
     @trace_perf
-    def _practice_deck(self, *args):
+    def _practice_deck(self, *args, order_mode=None):
         """Review cards in practice mode (self-assessment ratings without altering SM-2 schedule)."""
         if not self.deck:
             return
+        if order_mode is None:
+            order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
             groups = self._collect_all_by_pdf(self.deck)
             if not groups:
@@ -1631,7 +1782,7 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                home.show_review_sequential(groups, self._data, is_practice=True)
+                home.show_review_sequential(groups, self._data, is_practice=True, order_mode=order_mode)
         else:
             cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False)]
             if not cards:
@@ -1639,13 +1790,90 @@ class DeckView(QWidget):
                 return
             filtered_cards = self._prompt_selective_cards(cards, is_due=False)
             if filtered_cards is not None and len(filtered_cards) > 0:
-                self._start_review(filtered_cards, is_practice=True)
+                self._start_review(filtered_cards, is_practice=True, order_mode=order_mode)
+
+    def _card_is_new(self, card):
+        if card.get("is_formula", False) or card.get("is_paused", False) or card.get("suspended", False):
+            return False
+        boxes = card.get("boxes", [])
+        if not boxes:
+            return (
+                card.get("reviews", 0) == 0
+                and card.get("sm2_repetitions", 0) == 0
+                and card.get("sched_state", "new") == "new"
+            )
+        for box in boxes:
+            if box.get("reviews", 0) == 0 and box.get("sched_state", "new") == "new":
+                return True
+        return False
+
+    def _collect_new_by_pdf(self, deck):
+        """Recursively collect only brand new (unreviewed) cards from deck+children in DFS tree order."""
+        from collections import OrderedDict
+        groups = OrderedDict()
+
+        def _walk(d):
+            if d.get("is_paused", False):
+                return
+            did = d.get("_id")
+            for card in d.get("cards", []):
+                if not card.get("is_formula", False) and self._card_is_new(card):
+                    asset = (
+                        card.get("pdf_path") or card.get("image_path") or "__text__"
+                    )
+                    key = (did, asset)
+                    groups.setdefault(key, []).append(card)
+            for child in d.get("children", []):
+                _walk(child)
+
+        _walk(deck)
+        return list(groups.values())
 
     @trace_perf
-    def _start_review(self, cards, is_practice=False):
+    def _practice_new_cards(self, *args, order_mode=None):
+        """Review ONLY new (unreviewed) cards in practice mode, skipping previously studied due cards."""
+        if not self.deck:
+            return
+        if order_mode is None:
+            order_mode = self.deck.get("review_order", "default")
+        if self.deck.get("children"):
+            groups = self._collect_new_by_pdf(self.deck)
+            if not groups:
+                QMessageBox.information(
+                    self,
+                    "No New Cards",
+                    "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।\nपूरे डेक का अभ्यास करने के लिए 'Practice' चुनें।"
+                )
+                return
+            home = self._find_home()
+            if home:
+                home.show_review_sequential(groups, self._data, is_practice=True, order_mode=order_mode)
+        else:
+            cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False) and self._card_is_new(c)]
+            if not cards:
+                QMessageBox.information(
+                    self,
+                    "No New Cards",
+                    "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।\nपूरे डेक का अभ्यास करने के लिए 'Practice' चुनें।"
+                )
+                return
+            filtered_cards = self._prompt_selective_cards(cards, is_due=False)
+            if filtered_cards is not None and len(filtered_cards) > 0:
+                self._start_review(filtered_cards, is_practice=True, order_mode=order_mode)
+
+    def _review_due_least_mature(self):
+        self._review_due(order_mode="least_mature")
+
+    def _practice_deck_least_mature(self):
+        self._practice_deck(order_mode="least_mature")
+
+    @trace_perf
+    def _start_review(self, cards, is_practice=False, order_mode=None):
         home = self._find_home()
         if home:
-            home.show_review(cards, self._data, is_practice=is_practice)
+            if order_mode is None:
+                order_mode = self.deck.get("review_order", "default") if self.deck else "default"
+            home.show_review(cards, self._data, is_practice=is_practice, order_mode=order_mode)
 
     def _open_formulas(self, *args):
         if not self.deck:

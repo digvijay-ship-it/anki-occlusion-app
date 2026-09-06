@@ -1530,11 +1530,11 @@ class HomeScreen(QWidget):
         if win is not None and hasattr(win, "statusBar") and win.statusBar():
             win.statusBar().showMessage(f"🧹 RAM cache cleared — {before} pages freed in {elapsed:.1f}ms", 3000)
 
-    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None, is_practice=False, initial_idx: int = 0):
+    def show_review(self, cards, data, _on_batch_done=None, state_to_restore=None, is_practice=False, initial_idx: int = 0, order_mode: str = "default"):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
 
-        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore, is_practice=is_practice, initial_idx=initial_idx)
+        rev = _load_review_screen()(cards, data=data, parent=self, state_to_restore=state_to_restore, is_practice=is_practice, initial_idx=initial_idx, order_mode=order_mode)
         self._active_review = rev
 
         def _schedule_review_save():
@@ -1556,6 +1556,7 @@ class HomeScreen(QWidget):
                     "redo_stack": list(rev._review_redo_stack),
                     "queued_ids": set(rev._queued_ids),
                     "deleted_ids": set(rev._deleted_ids),
+                    "order_mode": getattr(rev, "_order_mode", "default"),
                     "batch": self._current_sequential_group,
                 }
                 self._past_sequential_sessions.append(state)
@@ -1599,7 +1600,7 @@ class HomeScreen(QWidget):
         rev.show()
         QTimer.singleShot(0, rev.canvas.setFocus)
 
-    def show_review_sequential(self, groups, data, is_practice=False):
+    def show_review_sequential(self, groups, data, is_practice=False, order_mode: str = "default"):
         """Review card groups one PDF at a time.
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
         self._sequential_groups = list(groups)
@@ -1607,6 +1608,7 @@ class HomeScreen(QWidget):
         self._current_sequential_group = None
         self._sequential_data = data
         self._sequential_is_practice = bool(is_practice)
+        self._sequential_order_mode = str(order_mode or "default")
 
         def _clear_ram():
             from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
@@ -1628,7 +1630,7 @@ class HomeScreen(QWidget):
                 return
             batch = self._sequential_groups.pop(0)
             self._current_sequential_group = batch
-            self.show_review(batch, data, _on_batch_done=_on_done, is_practice=self._sequential_is_practice)
+            self.show_review(batch, data, _on_batch_done=_on_done, is_practice=self._sequential_is_practice, order_mode=self._sequential_order_mode)
 
         self._sequential_on_done = _on_done
         _launch_next()

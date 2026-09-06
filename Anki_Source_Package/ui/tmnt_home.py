@@ -303,22 +303,28 @@ class TMNTDeckItemDelegate(QStyledItemDelegate):
             index.data(Qt.UserRole + 2) or index.data(Qt.DisplayRole) or "?"
         ).upper()
         bookmarked = index.data(Qt.UserRole + 5)
+        is_paused = bool(index.data(Qt.UserRole + 6))
         if bookmarked:
             name = "🔖 " + name
+        if is_paused:
+            name = "⏸️ " + name
         due_str = index.data(Qt.UserRole + 1)
         total_cards = int(index.data(Qt.UserRole + 3) or 0)
-        due = int(due_str) if due_str else 0
+        due = 0 if is_paused else (int(due_str) if due_str else 0)
         is_complete = due == 0 and total_cards > 0
 
         depth = index.data(Qt.UserRole + 4) or 0
-        text_color = QColor(T_PURPLE if is_selected else depth_color(depth, "tmnt"))
+        if is_paused:
+            text_color = QColor("#FFB86C" if not is_selected else "#FFFFFF")
+        else:
+            text_color = QColor(T_PURPLE if is_selected else depth_color(depth, "tmnt"))
         font = QFont("Press Start 2P")
         font.setPixelSize(_px(10, self._scale))
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(text_color)
 
-        badge_w = _px(26, self._scale)
+        badge_w = _px(48 if is_paused else 26, self._scale)
         badge_h = _px(20, self._scale)
         right_pad = _px(10, self._scale)
         text_rect = QRect(
@@ -339,7 +345,19 @@ class TMNTDeckItemDelegate(QStyledItemDelegate):
             badge_h,
         )
 
-        if due > 0:
+        if is_paused:
+            painter.setPen(QPen(QColor("#FFB86C"), 1))
+            painter.setBrush(QColor(40, 42, 54, 220))
+            painter.drawRoundedRect(
+                badge_rect, _px(3, self._scale), _px(3, self._scale)
+            )
+            badge_font = QFont("Roboto Mono")
+            badge_font.setPixelSize(_px(8, self._scale))
+            badge_font.setBold(True)
+            painter.setFont(badge_font)
+            painter.setPen(QColor("#FFB86C"))
+            painter.drawText(badge_rect, Qt.AlignCenter, "PAUSED")
+        elif due > 0:
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(T_RED))
             painter.drawRoundedRect(
@@ -1773,9 +1791,10 @@ class TMNTDeckEngine(DeckTree):
         super().keyPressEvent(event)
 
     def _make_item(self, deck, depth=0):
-        due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
+        is_paused = bool(deck.get("is_paused", False))
+        due = 0 if is_paused else getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         item = QTreeWidgetItem([deck["name"].upper()])
-        item.setToolTip(0, deck.get("name", ""))
+        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - Reviews Frozen)" if is_paused else deck.get("name", ""))
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
@@ -1786,6 +1805,7 @@ class TMNTDeckEngine(DeckTree):
         )
         item.setData(0, Qt.UserRole + 4, depth)
         item.setData(0, Qt.UserRole + 5, deck.get("bookmarked", False))
+        item.setData(0, Qt.UserRole + 6, is_paused)
         for child in deck.get("children", []):
             item.addChild(self._make_item(child, depth + 1))
         return item
