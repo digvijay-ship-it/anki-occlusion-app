@@ -977,9 +977,19 @@ class DeckTree(QWidget):
         L.setSpacing(6)
 
         # --- Classic Header ---
+        self._classic_hdr_w = QWidget()
+        chl = QHBoxLayout(self._classic_hdr_w)
+        chl.setContentsMargins(0, 0, 0, 0)
         self._classic_hdr = QLabel("📚  Decks")
         self._classic_hdr.setFont(QFont("Segoe UI", 13, QFont.Bold))
-        L.addWidget(self._classic_hdr)
+        chl.addWidget(self._classic_hdr)
+        chl.addStretch()
+        self.btn_classic_lock = QPushButton()
+        self.btn_classic_lock.setFixedSize(28, 28)
+        self.btn_classic_lock.setCursor(Qt.PointingHandCursor)
+        self.btn_classic_lock.clicked.connect(self._toggle_structure_lock)
+        chl.addWidget(self.btn_classic_lock)
+        L.addWidget(self._classic_hdr_w)
 
         # --- Dojo Header ---
         self._dojo_hdr_w = QWidget()
@@ -1037,7 +1047,18 @@ class DeckTree(QWidget):
             f"color:{C_SUBTEXT};background:rgba(255,255,255,0.05);border-radius:3px;padding:2px 4px;font-size:9px;border:none;"
         )
         sh_l.addWidget(shortcut_badge)
-        dhl.addWidget(search_box)
+
+        search_row = QHBoxLayout()
+        search_row.setSpacing(6)
+        search_row.addWidget(search_box, stretch=1)
+
+        self.btn_lock_structure = QPushButton()
+        self.btn_lock_structure.setFixedSize(32, 32)
+        self.btn_lock_structure.setCursor(Qt.PointingHandCursor)
+        self.btn_lock_structure.clicked.connect(self._toggle_structure_lock)
+        search_row.addWidget(self.btn_lock_structure)
+
+        dhl.addLayout(search_row)
         dhl.addSpacing(6)
         
         # Shortcut to focus search
@@ -1140,6 +1161,72 @@ class DeckTree(QWidget):
         L.addWidget(self._drop_hint)
 
         self.set_theme(getattr(self, "_theme", "classic"))
+        self._structure_locked = self._is_structure_locked_saved()
+        self.set_structure_locked(self._structure_locked)
+
+    def _is_structure_locked_saved(self) -> bool:
+        from PyQt5.QtCore import QSettings
+        return bool(QSettings("AnkiOcclusion", "App").value("deck_structure_locked", False, type=bool))
+
+    def _save_structure_locked(self, locked: bool):
+        from PyQt5.QtCore import QSettings
+        QSettings("AnkiOcclusion", "App").setValue("deck_structure_locked", bool(locked))
+
+    def _update_lock_button_ui(self):
+        is_locked = getattr(self, "_structure_locked", False)
+        lock_icon = "🔒" if is_locked else "🔓"
+        lock_tip = (
+            "🔒 Deck Structure Locked (डेक लॉक है)\nDrag & drop moving and reordering is disabled.\nClick to unlock."
+            if is_locked
+            else "🔓 Deck Structure Unlocked (डेक अनलॉक है)\nDrag & drop moving and reordering is enabled.\nClick to lock."
+        )
+        lock_style = (
+            f"QPushButton {{ background: rgba(255, 184, 108, 0.2); color: #FFB86C; border: 1.5px solid #FFB86C; border-radius: 4px; font-size: 16px; }}"
+            f"QPushButton:hover {{ background: rgba(255, 184, 108, 0.35); }}"
+            if is_locked
+            else f"QPushButton {{ background: transparent; border: 1px solid {C_BORDER}; border-radius: 4px; font-size: 16px; color: {C_SUBTEXT}; }}"
+            f"QPushButton:hover {{ background: rgba(255, 255, 255, 0.08); border-color: {C_TEXT}; }}"
+        )
+        if hasattr(self, "btn_lock_structure") and self.btn_lock_structure:
+            self.btn_lock_structure.setText(lock_icon)
+            self.btn_lock_structure.setToolTip(lock_tip)
+            self.btn_lock_structure.setStyleSheet(lock_style)
+        if hasattr(self, "btn_classic_lock") and self.btn_classic_lock:
+            self.btn_classic_lock.setText(lock_icon)
+            self.btn_classic_lock.setToolTip(lock_tip)
+            self.btn_classic_lock.setStyleSheet(lock_style)
+
+    def _toggle_structure_lock(self):
+        new_state = not getattr(self, "_structure_locked", False)
+        self._save_structure_locked(new_state)
+        self.set_structure_locked(new_state)
+
+        home = self._find_home()
+        if home:
+            if hasattr(home, "_tmnt_layout") and home._tmnt_layout:
+                if hasattr(home._tmnt_layout, "set_structure_locked"):
+                    home._tmnt_layout.set_structure_locked(new_state)
+                elif hasattr(home._tmnt_layout, "sidebar") and hasattr(home._tmnt_layout.sidebar, "set_structure_locked"):
+                    home._tmnt_layout.sidebar.set_structure_locked(new_state)
+                elif hasattr(home._tmnt_layout, "main") and hasattr(home._tmnt_layout.main, "set_structure_locked"):
+                    home._tmnt_layout.main.set_structure_locked(new_state)
+            if hasattr(home, "deck_view") and home.deck_view and hasattr(home.deck_view, "set_structure_locked"):
+                home.deck_view.set_structure_locked(new_state)
+
+    def set_structure_locked(self, locked: bool):
+        self._structure_locked = bool(locked)
+        self._update_lock_button_ui()
+        if hasattr(self, "tree") and self.tree:
+            if self._structure_locked:
+                self.tree.setDragEnabled(False)
+                self.tree.setAcceptDrops(False)
+                self.tree.viewport().setAcceptDrops(False)
+                self.tree.setDragDropMode(QAbstractItemView.NoDragDrop)
+            else:
+                self.tree.setDragEnabled(True)
+                self.tree.setAcceptDrops(True)
+                self.tree.viewport().setAcceptDrops(True)
+                self.tree.setDragDropMode(QAbstractItemView.InternalMove)
 
     def refresh(self):
         sel_id = self._get_selected_id()
@@ -1148,6 +1235,7 @@ class DeckTree(QWidget):
         self.tree.clear()
         for deck in self._data.get("decks", []):
             self.tree.addTopLevelItem(self._make_item(deck))
+        self.set_structure_locked(getattr(self, "_structure_locked", False))
         if sel_id is not None:
             self._select_by_id(sel_id)
 
@@ -1768,6 +1856,9 @@ class DeckTree(QWidget):
         return False
 
     def _on_drag_enter(self, event):
+        if getattr(self, "_structure_locked", False):
+            event.ignore()
+            return
         if event.mimeData().hasFormat(CARD_DRAG_MIME) or event.mimeData().hasFormat(
             "application/x-qabstractitemmodeldatalist"
         ):
@@ -1776,6 +1867,9 @@ class DeckTree(QWidget):
             event.ignore()
 
     def _on_drag_move(self, event):
+        if getattr(self, "_structure_locked", False):
+            event.ignore()
+            return
         if event.mimeData().hasFormat(CARD_DRAG_MIME) or event.mimeData().hasFormat(
             "application/x-qabstractitemmodeldatalist"
         ):
@@ -1823,6 +1917,9 @@ class DeckTree(QWidget):
         self.tree.clear_drop_line()
 
     def _on_tree_drop(self, event):
+        if getattr(self, "_structure_locked", False):
+            event.ignore()
+            return
         # ── Card dropped from DeckView onto a deck ────────────────────────────
         if event.mimeData().hasFormat(CARD_DRAG_MIME):
             target_item = self.tree.itemAt(event.pos())

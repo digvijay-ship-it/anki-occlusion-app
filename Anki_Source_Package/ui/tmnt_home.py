@@ -1749,6 +1749,8 @@ class TMNTDeckEngine(DeckTree):
             )
         )
         L.addWidget(self._drop_hint)
+        self._structure_locked = self._is_structure_locked_saved()
+        self.set_structure_locked(self._structure_locked)
 
     def set_theme(self, theme):
         self._theme = "tmnt"
@@ -2001,7 +2003,18 @@ class TMNTSidebar(QFrame):
         sl.addWidget(search_icon)
         sl.addWidget(self.search_in, stretch=1)
         sl.addWidget(kb_badge)
-        hl.addWidget(search_frame)
+
+        search_row = QHBoxLayout()
+        search_row.setSpacing(_px(6, self._scale))
+        search_row.addWidget(search_frame, stretch=1)
+
+        self.btn_lock_structure = QPushButton()
+        self.btn_lock_structure.setFixedSize(_px(32, self._scale), _px(32, self._scale))
+        self.btn_lock_structure.setCursor(Qt.PointingHandCursor)
+        self.btn_lock_structure.clicked.connect(self._toggle_deck_structure_lock)
+        search_row.addWidget(self.btn_lock_structure)
+
+        hl.addLayout(search_row)
         L.addWidget(hdr)
 
         # Global shortcuts for search focus
@@ -2120,6 +2133,82 @@ class TMNTSidebar(QFrame):
         fl.addWidget(btn_sub, stretch=1)
         fl.addWidget(btn_open)
         L.addWidget(foot)
+        self._deck_structure_locked = self._is_deck_structure_locked_saved()
+        self.set_structure_locked(self._deck_structure_locked)
+
+    def _is_deck_structure_locked_saved(self) -> bool:
+        from PyQt5.QtCore import QSettings
+        return bool(QSettings("AnkiOcclusion", "App").value("deck_structure_locked", False, type=bool))
+
+    def _save_deck_structure_locked(self, locked: bool):
+        from PyQt5.QtCore import QSettings
+        QSettings("AnkiOcclusion", "App").setValue("deck_structure_locked", bool(locked))
+
+    def _sync_deck_structure_lock_button(self):
+        if not hasattr(self, "btn_lock_structure") or not self.btn_lock_structure:
+            return
+        is_locked = getattr(self, "_deck_structure_locked", False)
+        lock_icon = "🔒" if is_locked else "🔓"
+        lock_tip = (
+            "🔒 Deck Structure Locked (डेक लॉक है)\nDrag & drop moving and reordering is disabled.\nClick to unlock."
+            if is_locked
+            else "🔓 Deck Structure Unlocked (डेक अनलॉक है)\nDrag & drop moving and reordering is enabled.\nClick to lock and prevent accidental shifts."
+        )
+        lock_style = (
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: rgba(255, 184, 108, 0.2);
+                    color: #FFB86C;
+                    border: 1.5px solid #FFB86C;
+                    border-radius: 3px;
+                    font-size: 15px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(255, 184, 108, 0.35);
+                }}
+                """,
+                self._scale,
+            )
+            if is_locked
+            else _scale_ss(
+                f"""
+                QPushButton {{
+                    background: {T_BG};
+                    color: {T_SUBTEXT};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 3px;
+                    font-size: 15px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(255, 255, 255, 0.08);
+                    border-color: {T_TEXT};
+                }}
+                """,
+                self._scale,
+            )
+        )
+        self.btn_lock_structure.setText(lock_icon)
+        self.btn_lock_structure.setToolTip(lock_tip)
+        self.btn_lock_structure.setStyleSheet(lock_style)
+
+    def _toggle_deck_structure_lock(self):
+        new_state = not getattr(self, "_deck_structure_locked", False)
+        self._save_deck_structure_locked(new_state)
+        self.set_structure_locked(new_state)
+
+    def set_structure_locked(self, locked: bool):
+        self._deck_structure_locked = bool(locked)
+        self._sync_deck_structure_lock_button()
+        if hasattr(self, "_engine") and self._engine and hasattr(self._engine, "set_structure_locked"):
+            self._engine.set_structure_locked(locked)
+        p = self.parent()
+        while p:
+            if hasattr(p, "main") and p.main and hasattr(p.main, "set_structure_locked"):
+                p.main.set_structure_locked(locked)
+            if hasattr(p, "deck_view") and p.deck_view and hasattr(p.deck_view, "set_structure_locked"):
+                p.deck_view.set_structure_locked(locked)
+            p = p.parent()
 
     @property
     def tree(self):
@@ -2188,6 +2277,7 @@ class TMNTSidebar(QFrame):
             self._selected_deck = find_deck_by_id(selected_id, decks)
         self._engine._data = self._data
         self._engine.refresh()
+        self._sync_deck_structure_lock_button()
         if selected_id:
             self._engine._select_by_id(selected_id)
 
@@ -5033,6 +5123,11 @@ class TMNTHomeLayout(QWidget):
         body.addWidget(self.sidebar, stretch=self.SIDEBAR_STRETCH)
         body.addWidget(self.main, stretch=self.MAIN_STRETCH)
 
+        from PyQt5.QtCore import QSettings
+        init_locked = bool(QSettings("AnkiOcclusion", "App").value("deck_structure_locked", False, type=bool))
+        self.sidebar.set_structure_locked(init_locked)
+        self.main.set_structure_locked(init_locked)
+
         # Sidebar hover-expand state
         self._sidebar_expanded = False
         self._body_w = body_w  # store reference for coordinate mapping
@@ -5410,4 +5505,10 @@ class TMNTHomeLayout(QWidget):
     def set_resume_enabled(self, enabled):
         if hasattr(self, "main") and hasattr(self.main, "banner") and self.main.banner:
             self.main.banner.set_resume_enabled(enabled)
+
+    def set_structure_locked(self, locked: bool):
+        if hasattr(self, "sidebar") and self.sidebar and hasattr(self.sidebar, "set_structure_locked"):
+            self.sidebar.set_structure_locked(locked)
+        if hasattr(self, "main") and self.main and hasattr(self.main, "set_structure_locked"):
+            self.main.set_structure_locked(locked)
 

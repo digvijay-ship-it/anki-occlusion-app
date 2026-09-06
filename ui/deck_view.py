@@ -565,6 +565,9 @@ class DeckView(QWidget):
 
         self._undo_stack = _deque(maxlen=50)
         self._setup_ui()
+        from PyQt5.QtCore import QSettings
+        self._structure_locked = bool(QSettings("AnkiOcclusion", "App").value("deck_structure_locked", False, type=bool))
+        self.set_structure_locked(self._structure_locked)
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
@@ -1053,7 +1056,19 @@ class DeckView(QWidget):
                 self.lbl_deck.setText("← Select a deck")
         store.mark_dirty()
 
+    def set_structure_locked(self, locked: bool):
+        self._structure_locked = bool(locked)
+        if hasattr(self, "card_list") and self.card_list is not None:
+            if self._structure_locked:
+                self.card_list.setDragEnabled(False)
+                self.card_list.setDragDropMode(QAbstractItemView.NoDragDrop)
+            else:
+                self.card_list.setDragEnabled(True)
+                self.card_list.setDragDropMode(QAbstractItemView.DragOnly)
+
     def _start_card_drag(self, _actions):
+        if getattr(self, "_structure_locked", False):
+            return
         row = self.card_list.currentRow()
         if row < 0 or not self.deck:
             return
