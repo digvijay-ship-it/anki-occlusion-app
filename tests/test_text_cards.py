@@ -235,6 +235,29 @@ class TestTextCards(unittest.TestCase):
         finally:
             dlg.close()
 
+    def test_notes_html_span_renders_cleanly_without_raw_code(self):
+        import sys
+        from PyQt5.QtWidgets import QApplication
+        from ui.text_card_editor_dialog import TextCardEditorDialog
+
+        app = QApplication.instance() or QApplication(sys.argv)
+        card = {
+            "card_type": "text",
+            "title": "Appertain Test",
+            "question": "Belong as a proper part",
+            "answer": "Appertain",
+            "notes": "### 🗂️ Options Breakdown\n• **(A) <span style=\"color: #FF79C6;\">Appertain</span>**: <span style=\"color: #67E8F9;\">सम्बन्ध रखना</span> — <span style=\"color: #F1FA8C;\">Be appropriate</span>"
+        }
+        dlg = TextCardEditorDialog(card=card)
+        try:
+            visible_text = dlg.inp_notes.toPlainText()
+            # Must NOT display raw HTML tags in visible text
+            self.assertNotIn("<span", visible_text)
+            self.assertIn("Appertain", visible_text)
+            self.assertIn("सम्बन्ध रखना", visible_text)
+        finally:
+            dlg.close()
+
 
 if __name__ == "__main__":
     unittest.main()

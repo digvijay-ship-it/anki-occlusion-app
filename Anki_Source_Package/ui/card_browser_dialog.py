@@ -439,7 +439,11 @@ class CardBrowserDialog(QDialog):
             self.table.insertRow(row_idx)
             
             # Status display
-            if card_has_due_today(card):
+            card_is_paused = bool(card.get("is_paused", False) or card.get("suspended", False))
+            deck_is_paused = bool(deck.get("is_paused", False))
+            if card_is_paused or deck_is_paused:
+                status_display = "⏸️ Paused"
+            elif card_has_due_today(card):
                 status_display = "🔴 Due"
             elif card.get("reviews", 0) == 0:
                 status_display = "⭐ New"
@@ -470,7 +474,9 @@ class CardBrowserDialog(QDialog):
             
             it_status = QTableWidgetItem(status_display)
             it_status.setTextAlignment(Qt.AlignCenter)
-            if "Due" in status_display:
+            if "Paused" in status_display:
+                it_status.setForeground(QColor("#FFB86C"))
+            elif "Due" in status_display:
                 it_status.setForeground(QColor("#EF4444"))
             elif "New" in status_display:
                 it_status.setForeground(QColor("#BD93F9"))
@@ -563,7 +569,7 @@ class CardBrowserDialog(QDialog):
             "Delete Cards Confirmation",
             f"Are you sure you want to permanently delete {count} selected card{'s' if count != 1 else ''}?\n\nThis action cannot be undone.",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.Yes
         )
         
         if confirm != QMessageBox.Yes:
@@ -700,6 +706,9 @@ class CardBrowserDialog(QDialog):
         
         menu.addSeparator()
         selected_rows = set(index.row() for index in self.table.selectedIndexes())
+        if len(selected_rows) > 0:
+            act_pause = menu.addAction("⏸️ Toggle Suspend / Pause (Freeze)")
+            act_pause.triggered.connect(self._toggle_suspend_selected_cards)
         if len(selected_rows) == 1:
             act_edit = menu.addAction("✏ Edit Card")
             act_edit.triggered.connect(self._edit_selected_card)
@@ -708,6 +717,40 @@ class CardBrowserDialog(QDialog):
             act_del.triggered.connect(self._delete_selected_cards)
             
         menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def _toggle_suspend_selected_cards(self):
+        selected_rows = sorted(list(set(index.row() for index in self.table.selectedIndexes())))
+        if not selected_rows:
+            return
+
+        toggled_count = 0
+        any_paused = False
+        for r in selected_rows:
+            if 0 <= r < len(self._filtered_indices):
+                orig_idx = self._filtered_indices[r]
+                card, deck = self._all_cards_data[orig_idx]
+                curr = bool(card.get("is_paused", False) or card.get("suspended", False))
+                new_state = not curr
+                if new_state:
+                    card["is_paused"] = True
+                    any_paused = True
+                else:
+                    card.pop("is_paused", None)
+                    card.pop("suspended", None)
+                toggled_count += 1
+
+        if toggled_count > 0:
+            store.mark_dirty()
+            try:
+                store.save_force(async_save=True)
+            except Exception:
+                pass
+            from perf_utils import invalidate_deck_stats
+            invalidate_deck_stats()
+            self._collect_cards()
+            self._populate_table()
+            action_label = "Paused (frozen)" if any_paused else "Unpaused (active)"
+            self._show_toast(f"⏸️ {toggled_count} card{'s' if toggled_count != 1 else ''} marked as {action_label}!")
 
     def keyPressEvent(self, e):
         key = e.key()

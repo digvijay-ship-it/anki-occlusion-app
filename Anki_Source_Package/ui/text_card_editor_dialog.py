@@ -486,11 +486,11 @@ class TextCardEditorDialog(QDialog):
         self.inp_trap.setMaximumHeight(140)
         form_layout.addRow("⚠️ Trap / Pitfall Note:", self.inp_trap)
 
-        self.inp_notes = QTextEdit()
+        self.inp_notes = RichTextEdit(font_size=23)
         self.inp_notes.setFont(QFont("Segoe UI", 23))
         self.inp_notes.setPlaceholderText("Optional hints, mnemonics or study notes...")
-        self.inp_notes.setMinimumHeight(100)
-        self.inp_notes.setMaximumHeight(140)
+        self.inp_notes.setMinimumHeight(140)
+        self.inp_notes.setMaximumHeight(220)
         form_layout.addRow("Notes / Hints:", self.inp_notes)
         
         self.inp_tags = QLineEdit()
@@ -562,10 +562,30 @@ class TextCardEditorDialog(QDialog):
         if not text:
             editor.clear()
         elif "<" in text and ">" in text:
-            editor.setHtml(text)
+            rendered_html = text
+            # If text has mixed markdown and HTML (e.g. ###, **, \n with <span), convert structure so Qt HTML renderer displays cleanly without raw tags
+            if "\n" in rendered_html and "<p" not in rendered_html and "<div" not in rendered_html:
+                lines = rendered_html.split("\n")
+                formatted_lines = []
+                for l in lines:
+                    l_str = l.strip()
+                    if l_str.startswith("###"):
+                        title = l_str.lstrip("#").strip()
+                        formatted_lines.append(f"<h3 style='color: #5C7CFA; margin: 6px 0 3px 0;'>{title}</h3>")
+                    elif l_str.startswith("•") or l_str.startswith("*"):
+                        formatted_lines.append(f"<p style='margin: 3px 0; line-height: 1.45;'>{l_str}</p>")
+                    elif l_str:
+                        formatted_lines.append(f"<p style='margin: 3px 0; line-height: 1.45;'>{l_str}</p>")
+                    else:
+                        formatted_lines.append("<br>")
+                rendered_html = "".join(formatted_lines)
+            if "**" in rendered_html:
+                import re
+                rendered_html = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', rendered_html)
+            editor.setHtml(rendered_html)
         else:
             editor.setPlainText(text)
-        font = QFont("Segoe UI", 26 if editor == self.inp_question else 25)
+        font = QFont("Segoe UI", 26 if editor == self.inp_question else (25 if editor == self.inp_answer else 23))
         editor.setFont(font)
         
     def _load_card_data(self):
@@ -574,7 +594,7 @@ class TextCardEditorDialog(QDialog):
             self._set_editor_content(self.inp_question, self.card.get("question", ""))
             self._set_editor_content(self.inp_answer, self.card.get("answer", ""))
             self.inp_trap.setText(self.card.get("trap_note", "") or "")
-            self.inp_notes.setText(self.card.get("notes", "") or "")
+            self._set_editor_content(self.inp_notes, self.card.get("notes", "") or "")
             self.inp_tags.setText(", ".join(self.card.get("tags", [])))
             self.chk_formula.setChecked(self.card.get("is_formula", False))
             
@@ -623,7 +643,7 @@ class TextCardEditorDialog(QDialog):
             
         tags = [t.strip() for t in self.inp_tags.text().split(",") if t.strip()]
         trap_note = self.inp_trap.toPlainText().strip()
-        notes = self.inp_notes.toPlainText().strip()
+        notes = self._get_field_content(self.inp_notes)
         
         self.card.update({
             "card_type": "text",
