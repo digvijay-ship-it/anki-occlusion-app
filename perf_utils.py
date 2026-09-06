@@ -272,6 +272,16 @@ def build_deck_rollups(decks):
 
 
 def get_pdf_page_count(path):
+    if not path:
+        return 0
+
+    abs_path = os.path.abspath(path)
+    # Fast-path: Return cached count immediately if available during session
+    with _pdf_page_count_lock:
+        cached = _pdf_page_count_cache.get(abs_path)
+        if cached is not None:
+            return cached[2] if isinstance(cached, tuple) else cached
+
     global fitz, _FITZ_IMPORT_ATTEMPTED
     if not _FITZ_IMPORT_ATTEMPTED:
         _FITZ_IMPORT_ATTEMPTED = True
@@ -282,20 +292,14 @@ def get_pdf_page_count(path):
         except ImportError:  # pragma: no cover - optional dependency
             fitz = None
 
-    if not path or fitz is None or not os.path.exists(path):
+    if fitz is None or not os.path.exists(abs_path):
         return 0
 
-    abs_path = os.path.abspath(path)
     try:
         stat = os.stat(abs_path)
         cache_key = (stat.st_mtime_ns, stat.st_size)
     except OSError:
         return 0
-
-    with _pdf_page_count_lock:
-        cached = _pdf_page_count_cache.get(abs_path)
-        if cached and cached[:2] == cache_key:
-            return cached[2]
 
     try:
         doc = fitz.open(abs_path)

@@ -89,9 +89,42 @@ from datetime import datetime, date, timedelta
 
 CardEditorDialog = None
 
+_PDF_SUPPORT_AVAILABLE = None
+
 
 def _pdf_support_available():
-    return importlib.util.find_spec("fitz") is not None
+    global _PDF_SUPPORT_AVAILABLE
+    if _PDF_SUPPORT_AVAILABLE is None:
+        _PDF_SUPPORT_AVAILABLE = importlib.util.find_spec("fitz") is not None
+    return _PDF_SUPPORT_AVAILABLE
+
+
+_GLOBAL_THUMB_CACHE = {}
+_MAX_GLOBAL_THUMBS = 500
+
+
+def get_cached_thumbnail_icon(img_path: str):
+    if not img_path:
+        return None
+    icon = _GLOBAL_THUMB_CACHE.get(img_path)
+    if icon is not None:
+        return icon
+    if not os.path.exists(img_path):
+        return None
+    try:
+        px = QPixmap(img_path)
+        if px.isNull():
+            return None
+        px_scaled = px.scaled(64, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        icon = QIcon(px_scaled)
+        if len(_GLOBAL_THUMB_CACHE) >= _MAX_GLOBAL_THUMBS:
+            # Evict oldest 50 items to keep RAM bounded
+            for k in list(_GLOBAL_THUMB_CACHE.keys())[:50]:
+                _GLOBAL_THUMB_CACHE.pop(k, None)
+        _GLOBAL_THUMB_CACHE[img_path] = icon
+        return icon
+    except Exception:
+        return None
 
 
 def _load_card_editor_dialog():
@@ -560,7 +593,7 @@ class DeckView(QWidget):
         self.deck = None
         self._deck_id = None
         self._data = {}
-        self._thumb_cache = {}
+        self._thumb_cache = _GLOBAL_THUMB_CACHE
         from collections import deque as _deque
 
         self._undo_stack = _deque(maxlen=50)
@@ -1058,7 +1091,7 @@ class DeckView(QWidget):
 
     def set_structure_locked(self, locked: bool):
         self._structure_locked = bool(locked)
-        if hasattr(self, "card_list") and self.card_list:
+        if hasattr(self, "card_list") and self.card_list is not None:
             if self._structure_locked:
                 self.card_list.setDragEnabled(False)
                 self.card_list.setDragDropMode(QAbstractItemView.NoDragDrop)
@@ -1113,9 +1146,8 @@ class DeckView(QWidget):
         new_id = deck.get("_id")
         same_deck = new_id == self._deck_id
         selected_row = self.card_list.currentRow() if same_deck else -1
-        # [PERF FIX] Thumb cache sirf tab clear karo jab deck badla ho
+        # [PERF] Keep thumbnail cache intact across deck switches to prevent reload freezes
         if not same_deck:
-            self._thumb_cache.clear()
             self._undo_stack.clear()
         self._deck_id = new_id
         self.deck = deck
@@ -1124,10 +1156,17 @@ class DeckView(QWidget):
             self.lbl_deck.setText(f"⏸️ {deck.get('name', '?')} (PAUSED)")
         else:
             self.lbl_deck.setText(deck.get("name", "?"))
+        t_ld_0 = time.perf_counter()
         self._refresh()
         self._update_order_mode_ui()
         if same_deck and 0 <= selected_row < self.card_list.count():
             self.card_list.setCurrentRow(selected_row)
+        t_ld_elapsed = (time.perf_counter() - t_ld_0) * 1000.0
+        if t_ld_elapsed > 50.0:
+            print(
+                f"[PERF_TRACE][SLOW_LOAD_DECK] deck='{deck.get('name', 'Unknown')}' ({len(deck.get('cards', []))} cards) took {t_ld_elapsed:.1f}ms",
+                flush=True,
+            )
 
     @trace_perf
     def _refresh(self):
@@ -1190,6 +1229,7 @@ class DeckView(QWidget):
                         color: {color};
                     }}
                 """)
+        t_ref_start = time.perf_counter()
         self.card_list.clear()
 
         scale = getattr(self, "_font_size_val", 11) / 11.0
@@ -1205,6 +1245,7 @@ class DeckView(QWidget):
         untouched_c = 0
         mastered_c = 0
 
+        t_sm2_start = time.perf_counter()
         for c in all_cards:
             # [PERF FIX] sm2_init sirf tab call karo jab fields missing hon
             # (setdefault calls skip karna = O(1) per card instead of O(fields))
@@ -1252,8 +1293,14 @@ class DeckView(QWidget):
             due_c += card_due
             untouched_c += card_untouched
             mastered_c += card_mastered
+        t_sm2_ms = (time.perf_counter() - t_sm2_start) * 1000.0
 
         direct_cards = self.deck.get("cards", [])
+        t_cards_start = time.perf_counter()
+        t_pdf_ms = 0.0
+        t_thumb_ms = 0.0
+        pdf_ok = _pdf_support_available()
+
         for c in direct_cards:
             badge = (
                 "🔴 Due" if self._card_has_due_today(c) else f"✅ {sm2_days_left(c)}d"
@@ -1265,9 +1312,15 @@ class DeckView(QWidget):
             else:
                 # ── Pages count ───────────────────────────────────────────────────
                 pdf_path = resolve_asset_path(c.get("pdf_path", ""))
-                if pdf_path and os.path.exists(pdf_path) and _pdf_support_available():
-                    n_pages = get_pdf_page_count(pdf_path)
-                    pages_str = f"📄{n_pages}p  "
+                if pdf_path and pdf_ok:
+                    t_p0 = time.perf_counter()
+                    n_pages = c.get("pdf_page_count")
+                    if not n_pages:
+                        n_pages = get_pdf_page_count(pdf_path)
+                        if n_pages:
+                            c["pdf_page_count"] = n_pages
+                    t_pdf_ms += (time.perf_counter() - t_p0) * 1000.0
+                    pages_str = f"📄{n_pages}p  " if n_pages else ""
                 else:
                     pages_str = ""
 
@@ -1299,15 +1352,15 @@ class DeckView(QWidget):
             )
 
             img_path = resolve_asset_path(c.get("image_path", ""))
-            if img_path and os.path.exists(img_path):
-                if img_path not in self._thumb_cache:
-                    px = QPixmap(img_path).scaled(
-                        64, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                    )
-                    self._thumb_cache[img_path] = QIcon(px)
-                item.setIcon(self._thumb_cache[img_path])
+            if img_path:
+                t_th0 = time.perf_counter()
+                icon = get_cached_thumbnail_icon(img_path)
+                if icon is not None:
+                    item.setIcon(icon)
+                t_thumb_ms += (time.perf_counter() - t_th0) * 1000.0
 
             self.card_list.addItem(item)
+        t_cards_ms = (time.perf_counter() - t_cards_start) * 1000.0
 
         total_rev = sum(c.get("reviews", 0) for c in all_cards)
         self.lbl_stats.setText(
@@ -1327,6 +1380,16 @@ class DeckView(QWidget):
         self.stat_battles.set_value(total_rev)
         if hasattr(self, "btn_practice") and self.btn_practice:
             self.btn_practice.setEnabled(len(all_cards) > 0)
+
+        t_ref_elapsed = (time.perf_counter() - t_ref_start) * 1000.0
+        if t_ref_elapsed > 50.0:
+            deck_name = self.deck.get("name", "Unknown") if self.deck else "None"
+            print(
+                f"[PERF_TRACE][SLOW_REFRESH] deck='{deck_name}' took {t_ref_elapsed:.1f}ms "
+                f"(direct_cards={len(direct_cards)}, total_cards={len(all_cards)}, "
+                f"sm2={t_sm2_ms:.1f}ms, pdf={t_pdf_ms:.1f}ms, thumbs={t_thumb_ms:.1f}ms, cards_loop={t_cards_ms:.1f}ms)",
+                flush=True,
+            )
 
         if not direct_cards and getattr(self, "_theme", "classic") == "dojo":
             # Empty state for Dojo mode

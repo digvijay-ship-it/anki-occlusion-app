@@ -90,8 +90,14 @@ from ui.deck_view import DeckView
 from ui.canvas.retro_effects import CRTOverlay, RetroParticlePanel, ParticleBurstOverlay, OozeDripWidget
 
 
+_PDF_SUPPORT_AVAILABLE = None
+
+
 def _pdf_support_available():
-    return importlib.util.find_spec("fitz") is not None
+    global _PDF_SUPPORT_AVAILABLE
+    if _PDF_SUPPORT_AVAILABLE is None:
+        _PDF_SUPPORT_AVAILABLE = importlib.util.find_spec("fitz") is not None
+    return _PDF_SUPPORT_AVAILABLE
 
 # ── TMNT Palette ─────────────────────────────────────────────────────────────
 T_BG = "#0b0c10"
