@@ -456,6 +456,55 @@ def sm2_simulate(c, q):
     return previews.get(q, "?")
 
 
+def get_card_maturity_score(c) -> tuple:
+    """
+    Computes an ascending maturity metric for sorting review queues.
+    Cards with lower values are less mature (need review first).
+
+    Returns a comparison tuple:
+        (tier, effective_interval, repetitions, ease_factor, due_date_str)
+        - tier 0: Brand new / never rated cards (reviews == 0 or sm2_last_quality == -1)
+        - tier 1: Learning / relearning cards (minutes-based steps)
+        - tier 2: Review cards (days-based intervals: 1d, 2d, 3d, 6d, 15d, 60d...)
+    """
+    if not isinstance(c, dict):
+        return (0, 0, 0, 2.5, "")
+
+    sched = c.get("sched_state", "new")
+    reviews = int(c.get("reviews", 0) or 0)
+    last_q = c.get("sm2_last_quality", -1)
+
+    if sched == "new" or reviews == 0 or last_q == -1:
+        tier = 0
+        iv = 0
+    elif sched in ("learning", "relearn"):
+        tier = 1
+        iv = 0
+    else:
+        tier = 2
+        raw_iv = c.get("sm2_interval") if c.get("sm2_interval") is not None else c.get("interval", 1)
+        try:
+            iv = max(1, int(raw_iv or 1))
+        except (ValueError, TypeError):
+            iv = 1
+
+    raw_reps = c.get("sm2_repetitions") if c.get("sm2_repetitions") is not None else c.get("reps", 0)
+    try:
+        reps = max(0, int(raw_reps or 0))
+    except (ValueError, TypeError):
+        reps = 0
+
+    raw_ease = c.get("sm2_ease") if c.get("sm2_ease") is not None else c.get("factor", 2.5)
+    try:
+        ease = float(raw_ease or 2.5)
+    except (ValueError, TypeError):
+        ease = 2.5
+
+    due = str(c.get("sm2_due", "") or "")
+
+    return (tier, iv, reps, ease, due)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  BADGE
 # ─────────────────────────────────────────────────────────────────────────────

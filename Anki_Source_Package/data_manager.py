@@ -2253,6 +2253,40 @@ def sync_deck_from_source_folder(
             existing_cards_map[norm_q] = (new_card, dest_deck)
             new_count += 1
 
+    # 4. Pruning obsolete text cards when syncing from a single file
+    removed_count = 0
+    if not os.path.isdir(norm_source):
+        valid_source_uids = set()
+        valid_source_qs = set()
+        for item in parsed_cards:
+            u = str(item.get("card_uid") or item.get("_id") or "").strip()
+            if u:
+                valid_source_uids.add(u)
+            q = (item.get("question") or "").strip().lower()
+            if q:
+                valid_source_qs.add(q)
+
+        def _prune_deck_cards(d):
+            nonlocal removed_count
+            kept_cards = []
+            for card in d.get("cards", []) or []:
+                c_uid = str(card.get("card_uid") or card.get("_id") or "").strip()
+                c_q = (card.get("question") or card.get("title") or "").strip().lower()
+                # Preserve image occlusion cards with boxes or images
+                if card.get("boxes") or card.get("image_path") or card.get("pdf_path"):
+                    kept_cards.append(card)
+                    continue
+                # For text cards: keep only if present in the source file
+                if (c_uid and c_uid in valid_source_uids) or (c_q and c_q in valid_source_qs):
+                    kept_cards.append(card)
+                else:
+                    removed_count += 1
+            d["cards"] = kept_cards
+            for child in d.get("children", []) or []:
+                _prune_deck_cards(child)
+
+        _prune_deck_cards(target_deck)
+
     store.mark_dirty()
 
     return {
@@ -2260,6 +2294,7 @@ def sync_deck_from_source_folder(
         "new_count": new_count,
         "updated_count": updated_count,
         "unchanged_count": unchanged_count,
+        "removed_count": removed_count,
         "total_cards_scanned": len(parsed_cards),
         "deck_name": target_deck.get("name", "Deck"),
         "source_path": norm_source

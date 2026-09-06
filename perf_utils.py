@@ -134,7 +134,7 @@ def _deck_stats_fingerprint(decks):
                 continue
             cards = deck.get("cards", []) or []
             children = deck.get("children", []) or []
-            parts.append(("deck", deck.get("_id"), len(cards), len(children)))
+            parts.append(("deck", deck.get("_id"), bool(deck.get("is_paused", False)), len(cards), len(children)))
             for card in cards:
                 if not isinstance(card, dict):
                     continue
@@ -143,6 +143,7 @@ def _deck_stats_fingerprint(decks):
                     (
                         "card",
                         card.get("_id"),
+                        bool(card.get("is_paused", False)),
                         card.get("sched_state"),
                         card.get("sm2_due"),
                         card.get("reviews"),
@@ -169,7 +170,7 @@ def _deck_stats_fingerprint(decks):
 
 
 def card_has_due_today(card):
-    if card.get("is_formula", False):
+    if card.get("is_formula", False) or card.get("is_paused", False) or card.get("suspended", False):
         return False
     boxes = card.get("boxes", [])
     if not boxes:
@@ -188,6 +189,8 @@ def card_has_due_today(card):
 
 
 def count_due_units_in_card(card):
+    if card.get("is_formula", False) or card.get("is_paused", False) or card.get("suspended", False):
+        return 0
     boxes = card.get("boxes", [])
     if not boxes:
         return 1 if is_due_today(card) else 0
@@ -234,24 +237,27 @@ def build_deck_rollups(decks):
             card_count = len(deck.get("cards", []))
             due_card_count = 0
             due_unit_count = 0
+            is_paused = bool(deck.get("is_paused", False))
 
-            for card in deck.get("cards", []):
-                if card_has_due_today(card):
-                    due_card_count += 1
-                due_unit_count += count_due_units_in_card(card)
+            if not is_paused:
+                for card in deck.get("cards", []):
+                    if card_has_due_today(card):
+                        due_card_count += 1
+                    due_unit_count += count_due_units_in_card(card)
 
             for child in deck.get("children", []):
                 child_cards, child_due_cards, child_due_units = _walk(child)
                 card_count += child_cards
-                due_card_count += child_due_cards
-                due_unit_count += child_due_units
+                if not is_paused:
+                    due_card_count += child_due_cards
+                    due_unit_count += child_due_units
 
             if deck_id is not None:
                 total_cards[deck_id] = card_count
-                due_cards[deck_id] = due_card_count
-                due_units[deck_id] = due_unit_count
+                due_cards[deck_id] = 0 if is_paused else due_card_count
+                due_units[deck_id] = 0 if is_paused else due_unit_count
 
-            return card_count, due_card_count, due_unit_count
+            return card_count, (0 if is_paused else due_card_count), (0 if is_paused else due_unit_count)
 
         for deck in decks:
             _walk(deck)
