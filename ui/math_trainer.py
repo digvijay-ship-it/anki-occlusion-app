@@ -95,7 +95,7 @@ class MathScratchpad(QWidget):
 
         self._idle_timer = QTimer(self)
         self._idle_timer.setSingleShot(True)
-        self._idle_timer.setInterval(800)
+        self._idle_timer.setInterval(1200)
         self._idle_timer.timeout.connect(self._trigger_ocr)
 
     def resizeEvent(self, e):
@@ -153,6 +153,9 @@ class MathScratchpad(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
+            if getattr(self, "_clear_on_next_press", False):
+                self.clear()
+                self._clear_on_next_press = False
             import time
             self._idle_timer.stop()
             self._current = [e.localPos()]
@@ -163,6 +166,20 @@ class MathScratchpad(QWidget):
             e.accept()
         else:
             super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clear()
+            self._clear_on_next_press = False
+            p = self.parent()
+            while p:
+                if hasattr(p, "_on_clear_clicked"):
+                    p._on_clear_clicked()
+                    break
+                p = p.parent()
+            e.accept()
+        else:
+            super().mouseDoubleClickEvent(e)
 
     def mouseMoveEvent(self, e):
         if e.buttons() & Qt.LeftButton:
@@ -267,13 +284,26 @@ class MathScratchpad(QWidget):
             return
         from PIL import Image, ImageDraw as PilDraw
 
+        # Compute dynamic stroke width based on drawing height to match MNIST stroke aspect ratio
+        all_pts = [p for stroke in self._strokes for p in stroke]
+        if all_pts:
+            min_y = min(p.y() for p in all_pts)
+            max_y = max(p.y() for p in all_pts)
+            h = max_y - min_y
+            w = max(4, min(8, int(h * 0.11)))
+        else:
+            w = 6
+
         img = Image.new("RGB", (self.width(), self.height()), "white")
         draw = PilDraw.Draw(img)
         for stroke in self._strokes:
             if len(stroke) < 2:
                 continue
-            pts = [(p.x(), p.y()) for p in stroke]
-            draw.line(pts, fill="black", width=18, joint="curve")
+            pts = [(int(p.x()), int(p.y())) for p in stroke]
+            draw.line(pts, fill="black", width=w, joint="curve")
+            r = max(1, w // 2)
+            for pt in pts:
+                draw.ellipse((pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r), fill="black")
         self.drawing_finished.emit(img)
 
 
@@ -498,6 +528,11 @@ class MathTrainerPage(QWidget):
         self._correct_count = 0
         self._wrong_count = 0
         self._q_attempted = False
+        self._all_pool = []
+        self._active_deck = []
+        self._priority_queue = []
+        self._q_start_time = 0.0
+        self._current_q_item = None
 
         # Scaling attributes
         self._font_size = 11
@@ -1398,6 +1433,29 @@ class MathTrainerPage(QWidget):
         self._fb_lbl.setAlignment(Qt.AlignCenter)
         left_layout.addWidget(self._fb_lbl)
 
+        # Scratchpad toolbar
+        self._sp_bar = QHBoxLayout()
+        self._sp_bar.setContentsMargins(0, 4, 0, 2)
+        sp_hint_lbl = QLabel("✏ DRAW HERE (DBL-CLICK OR ESC TO CLEAR)")
+        sp_hint_lbl.setFont(QFont(self._hf, 8, QFont.Bold))
+        sp_hint_lbl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1px;")
+        self._sp_bar.addWidget(sp_hint_lbl)
+        self._sp_bar.addStretch(1)
+
+        self._clear_btn = QPushButton("CLEAR ⌫ (Esc)")
+        self._clear_btn.setFixedHeight(26)
+        self._clear_btn.setFont(QFont(self._hf, 8, QFont.Bold))
+        self._clear_btn.setCursor(Qt.PointingHandCursor)
+        self._clear_btn.setStyleSheet(
+            f"QPushButton{{font-family: {self._hf}; font-size: 8px; font-weight: bold; background:transparent;"
+            f"border:1px solid {self._p.get('C_BORDER', _h(BORDER))};color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};"
+            f"border-radius:3px;padding:0 10px;letter-spacing:1px;}}"
+            f"QPushButton:hover{{border-color:{self._p.get('C_RED', _h(RED))};color:{self._p.get('C_RED', _h(RED))};}}"
+        )
+        self._clear_btn.clicked.connect(self._on_clear_clicked)
+        self._sp_bar.addWidget(self._clear_btn)
+        left_layout.addLayout(self._sp_bar)
+
         # Scratchpad — fills remaining space
         self._scratchpad = MathScratchpad(self)
         self._scratchpad.drawing_finished.connect(self._handle_drawn_image)
@@ -1479,13 +1537,7 @@ class MathTrainerPage(QWidget):
 
     def _handle_drawn_image(self, img):
         print("[MathTrainer] Received image, queueing OCR...")
-        import inspect
-
-        print(
-            f"[MathTrainer] OcrNumberThread loaded from: {inspect.getsourcefile(OcrNumberThread)}"
-        )
-        if self._run_ocr_async(img, source="scratchpad_idle"):
-            self._scratchpad.clear()
+        self._run_ocr_async(img, source="scratchpad_idle")
 
     def _run_ocr_async(self, img, source: str = "unknown") -> bool:
         if getattr(self, "_ocr_thread", None) and self._ocr_thread.isRunning():
@@ -1511,8 +1563,28 @@ class MathTrainerPage(QWidget):
         if predicted:
             self._ans_in.setText(predicted)
             self._sb_status.setText("READY")
+            if hasattr(self, "_scratchpad") and self._scratchpad:
+                self._scratchpad._clear_on_next_press = True
         else:
             self._sb_status.setText("NO OCR")
+
+    def _on_clear_clicked(self):
+        if hasattr(self, "_scratchpad") and self._scratchpad:
+            self._scratchpad.clear()
+            self._scratchpad._clear_on_next_press = False
+        self._ans_in.setText("")
+        self._ans_in.setStyleSheet(self._ANS_SS)
+        self._fb_lbl.setText("")
+        self._sb_status.setText("READY")
+        self._ans_in.setFocus()
+
+    def eventFilter(self, obj, event):
+        from PyQt5.QtCore import QEvent
+        if event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                self._on_clear_clicked()
+                return True
+        return super().eventFilter(obj, event)
 
     def _on_ocr_failed(self, error: str):
         import time
@@ -1650,18 +1722,43 @@ class MathTrainerPage(QWidget):
             b.toggled.connect(lambda checked, k=key: self._toggle_rng(k, checked))
             self._rng_grid.addWidget(b, idx // 5, idx % 5)
 
+    def _build_pool(self):
+        if self._mode == 1:
+            if hasattr(self, "_solo_btn") and self._solo_btn.isChecked():
+                t = self._solo_combo.currentData()
+                return [(t, m) for m in [2, 3, 4, 5, 6, 7, 8, 9]]
+            else:
+                sel = [k for k, v in self._tchk.items() if v]
+                if len(sel) > 1 and 1 in sel:
+                    sel = [k for k in sel if k != 1]
+                return list(sel) if sel else [1]
+        else:
+            sel = [k for k, v in self._rchk.items() if v]
+            raw_nums = []
+            for r in sel:
+                s, e = map(int, r.split("-"))
+                raw_nums.extend(range(s, e + 1))
+            pool = [n for n in raw_nums if n != 1 and n % 10 != 0]
+            if not pool:
+                pool = raw_nums if raw_nums else [2]
+            return pool
+
     # ── Practice ──────────────────────────────────────────────────────────────
     def _start_practice(self):
         self._warn_lbl.setText("")
-        if self._mode == 1 and hasattr(self, "_solo_btn") and self._solo_btn.isChecked():
-            sel = [self._solo_combo.currentData()]
-        else:
-            sel = [
-                k for k, v in (self._tchk if self._mode == 1 else self._rchk).items() if v
-            ]
-        if not sel:
+        pool = self._build_pool()
+        if not pool:
             self._warn_lbl.setText("SELECT AT LEAST ONE TARGET, NINJA!")
             return
+
+        self._all_pool = pool
+        self._active_deck = list(pool)
+        random.shuffle(self._active_deck)
+        self._priority_queue = []
+        self._last_q = None
+        self._current_q_item = None
+        self._q_start_time = 0.0
+
         labels = {1: "TABLES", 2: "SQUARES", 3: "CUBES"}
         self._mode_badge.setText(f"{labels[self._mode]} MODE")
         self._top_mode_lbl.setText(f"{labels[self._mode]} MODE")
@@ -1725,6 +1822,51 @@ class MathTrainerPage(QWidget):
             )
         self._show(3)
 
+    def _pick_next_item(self):
+        expected_pool = self._build_pool()
+        if not self._all_pool or set(self._all_pool) != set(expected_pool):
+            self._all_pool = expected_pool
+            self._active_deck = list(self._all_pool)
+            random.shuffle(self._active_deck)
+            self._priority_queue = []
+
+        # 1. Check priority queue for items due at or before current mission (self._qn)
+        # Prioritize "wrong" (urgent retry) over "slow" (reinforcement)
+        due_wrong = [i for i, entry in enumerate(self._priority_queue) 
+                     if entry["due_at_qn"] <= self._qn and entry["reason"] == "wrong"]
+        due_slow = [i for i, entry in enumerate(self._priority_queue) 
+                    if entry["due_at_qn"] <= self._qn and entry["reason"] == "slow"]
+        
+        due_indices = due_wrong + due_slow
+        
+        chosen_entry = None
+        for idx in due_indices:
+            candidate = self._priority_queue[idx]
+            cand_item = candidate["item"]
+            total_items = len(self._all_pool) + len(self._priority_queue)
+            if cand_item != self._last_q or total_items <= 1:
+                chosen_entry = self._priority_queue.pop(idx)
+                break
+            else:
+                candidate["due_at_qn"] = self._qn + 1
+        
+        if chosen_entry is not None:
+            return chosen_entry["item"]
+        
+        # 2. Draw from active deck (guaranteed 100% round-robin coverage)
+        if not self._active_deck:
+            self._active_deck = list(self._all_pool)
+            random.shuffle(self._active_deck)
+            if len(self._active_deck) > 1 and self._active_deck[0] == self._last_q:
+                swap_idx = random.randint(1, len(self._active_deck) - 1)
+                self._active_deck[0], self._active_deck[swap_idx] = self._active_deck[swap_idx], self._active_deck[0]
+        
+        if len(self._active_deck) > 1 and self._active_deck[0] == self._last_q:
+            swap_idx = random.randint(1, len(self._active_deck) - 1)
+            self._active_deck[0], self._active_deck[swap_idx] = self._active_deck[swap_idx], self._active_deck[0]
+            
+        return self._active_deck.pop(0)
+
     def _gen_q(self):
         # Reset right panel to hint state
         self._reveal_scroll.hide()
@@ -1747,41 +1889,40 @@ class MathTrainerPage(QWidget):
         if hasattr(self, "_scratchpad"):
             self._scratchpad.clear()
 
+        q_item = self._pick_next_item()
+
         if self._mode == 1:
-            if hasattr(self, "_solo_btn") and self._solo_btn.isChecked():
-                sel = [self._solo_combo.currentData()]
+            if isinstance(q_item, tuple):
+                n1, n2 = q_item
             else:
-                sel = [k for k, v in self._tchk.items() if v]
-            while True:
-                n1 = random.choice(sel)
+                n1 = q_item
                 n2 = random.choice([2, 3, 4, 5, 6, 7, 8, 9])
-                q_key = (n1, n2)
-                if self._last_q != q_key or len(sel) == 1:
-                    self._last_q = q_key
-                    break
+            self._current_q_item = (n1, n2)
+            self._last_q = (n1, n2)
             self._ans = n1 * n2
             self._q_lbl.setText(f"{n1} × {n2} = ?")
+        elif self._mode == 2:
+            num = q_item
+            self._current_q_item = num
+            self._last_q = num
+            self._ans = num * num
+            self._q_lbl.setText(f"{num}² = ?")
         else:
-            sel = [k for k, v in self._rchk.items() if v]
-            while True:
-                r = random.choice(sel)
-                s, e = map(int, r.split("-"))
-                num = random.randint(s, e)
-                q_key = num
-                if self._last_q != q_key or (len(sel) == 1 and s == e):
-                    self._last_q = q_key
-                    break
-            if self._mode == 2:
-                self._ans = num * num
-                self._q_lbl.setText(f"{num}² = ?")
-            else:
-                self._ans = num * num * num
-                self._q_lbl.setText(f"{num}³ = ?")
+            num = q_item
+            self._current_q_item = num
+            self._last_q = num
+            self._ans = num * num * num
+            self._q_lbl.setText(f"{num}³ = ?")
 
         self._q_attempted = False
+        import time
+        self._q_start_time = time.perf_counter()
         QTimer.singleShot(0, self._ans_in.setFocus)
 
     def _auto_check(self, text):
+        if not text and hasattr(self, "_scratchpad") and self._scratchpad:
+            self._scratchpad.clear()
+            self._scratchpad._clear_on_next_press = False
         digits = "".join(c for c in text if c.isdigit())
         if digits != text:
             self._ans_in.blockSignals(True)
@@ -1796,110 +1937,15 @@ class MathTrainerPage(QWidget):
         if not v or len(v) != len(str(self._ans)):
             return
         try:
-            if int(v) == self._ans:
-                if getattr(self, "burst", None) is not None:
-                    c = self._ans_in.mapTo(self, self._ans_in.rect().center())
-                    self.burst.spawn_burst(c.x(), c.y(), "green", count=25)
-                if not getattr(self, "_q_attempted", False):
-                    self._correct_count += 1
-                self._streak += 1
-                from data_manager import store
-                vol = store.get().get("_volume", 40) / 100.0
-                if self._streak > 0 and self._streak % 5 == 0:
-                    self._snd_power.setVolume(vol)
-                    self._snd_power.play()
-                else:
-                    self._snd_pick.setVolume(vol)
-                    self._snd_pick.play()
-                cv = self._streak
-                self._combo_val.setText(str(cv))
-                color = _h(GREEN if cv >= 10 else (YELLOW if cv >= 5 else ORANG))
-                self._combo_val.setStyleSheet(
-                    f"color:{color};background:transparent;min-width:24px;"
-                )
-                self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};font-size:72pt;"
-                    f"border:2px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:6px;padding:6px;}}"
-                )
-                msgs = [
-                    "COWABUNGA!",
-                    "CORRECT!",
-                    "LETHAL!",
-                    "PERFECT!",
-                    "NAILED IT!",
-                    "KAME-HA!",
-                ]
-                self._fb_lbl.setText(random.choice(msgs))
-                self._fb_lbl.setStyleSheet(
-                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:1px;"
-                )
-                self._sb_status.setText(f"COMBO x{self._streak}")
-                self._reveal_scroll.hide()
-                self._reveal_hint.show()
-                self._show_ans_btn.hide()
-                QTimer.singleShot(650, self._gen_q)
-            else:
-                if getattr(self, "burst", None) is not None:
-                    c = self._ans_in.mapTo(self, self._ans_in.rect().center())
-                    self.burst.spawn_burst(c.x(), c.y(), "red", count=20)
-                self._shake_widget(self._ans_in)
-                from data_manager import store
-                vol = store.get().get("_volume", 40) / 100.0
-                self._snd_hit.setVolume(vol)
-                self._snd_hit.play()
-                if not getattr(self, "_q_attempted", False):
-                    self._wrong_count += 1
-                self._q_attempted = True
-                self._streak = 0
-                self._combo_val.setText("0")
-                self._combo_val.setStyleSheet(
-                    f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;"
-                )
-                self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};font-size:72pt;"
-                    f"border:2px solid {self._p.get('C_RED', _h(RED))};border-radius:6px;padding:6px;}}"
-                )
-                self._fb_lbl.setText("WRONG! ADJUST OR REVEAL.")
-                self._fb_lbl.setStyleSheet(
-                    f"color:{self._p.get('C_RED', _h(RED))};background:transparent;letter-spacing:1px;"
-                )
-                self._sb_status.setText("COMBO BROKEN")
-                self._show_ans_btn.show()
-                self._last_wrong_text = v
-                self._last_stroke_count = len(self._scratchpad._strokes) if hasattr(self, "_scratchpad") and self._scratchpad else 0
-                QTimer.singleShot(1000, self._clear_wrong_answer)
-        except ValueError:
-            pass
-
-    def _clear_wrong_answer(self):
-        current_text = self._ans_in.text()
-        last_wrong = getattr(self, "_last_wrong_text", None)
-        
-        strokes_changed = False
-        currently_drawing = False
-        if hasattr(self, "_scratchpad") and self._scratchpad:
-            stroke_count = len(self._scratchpad._strokes)
-            last_count = getattr(self, "_last_stroke_count", 0)
-            strokes_changed = stroke_count != last_count
-            currently_drawing = bool(getattr(self._scratchpad, "_current", None))
-            
-        if current_text == last_wrong and not strokes_changed and not currently_drawing:
-            self._ans_in.setText("")
-            self._ans_in.setStyleSheet(self._ANS_SS)
-            if hasattr(self, "_scratchpad") and self._scratchpad:
-                self._scratchpad.clear()
-
-    def _check(self):
-        v = self._ans_in.text()
-        if not v or len(v) != len(str(self._ans)):
-            return
-        try:
             scale = self._font_size / 11.0
+            import time
+            elapsed = time.perf_counter() - getattr(self, "_q_start_time", time.perf_counter())
             if int(v) == self._ans:
                 if getattr(self, "burst", None) is not None:
                     c = self._ans_in.mapTo(self, self._ans_in.rect().center())
                     self.burst.spawn_burst(c.x(), c.y(), "green", count=25)
-                if not getattr(self, "_q_attempted", False):
+                first_try = not getattr(self, "_q_attempted", False)
+                if first_try:
                     self._correct_count += 1
                 self._streak += 1
                 from data_manager import store
@@ -1920,17 +1966,32 @@ class MathTrainerPage(QWidget):
                     f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};font-size:{int(72*scale)}pt;"
                     f"border:{int(2*scale)}px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:{int(6*scale)}px;padding:{int(6*scale)}px;}}"
                 )
-                msgs = [
-                    "COWABUNGA!",
-                    "CORRECT!",
-                    "LETHAL!",
-                    "PERFECT!",
-                    "NAILED IT!",
-                    "KAME-HA!",
-                ]
-                self._fb_lbl.setText(random.choice(msgs))
+
+                # Feedback & Spaced Repetition logic
+                if first_try and elapsed > 4.0:
+                    # Correct, but slow/hesitant (> 4s) -> Re-queue for speed reinforcement!
+                    if not any(e["item"] == self._current_q_item for e in self._priority_queue):
+                        self._priority_queue.append({
+                            "item": self._current_q_item,
+                            "due_at_qn": self._qn + random.randint(3, 5),
+                            "reason": "slow"
+                        })
+                    self._fb_lbl.setText(f"CORRECT! ({elapsed:.1f}s - BOOST SPEED)")
+                else:
+                    msgs = [
+                        "COWABUNGA!",
+                        "CORRECT!",
+                        "LETHAL!",
+                        "PERFECT!",
+                        "NAILED IT!",
+                        "KAME-HA!",
+                    ]
+                    self._fb_lbl.setText(random.choice(msgs))
+                    # If it was in priority queue and answered fast (< 4s), it is mastered/cleared
+                    self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
+
                 self._fb_lbl.setStyleSheet(
-                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(28*scale)}px;"
+                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(24*scale)}px;"
                 )
                 self._sb_status.setText(f"COMBO x{self._streak}")
                 self._reveal_scroll.hide()
@@ -1949,6 +2010,15 @@ class MathTrainerPage(QWidget):
                 if not getattr(self, "_q_attempted", False):
                     self._wrong_count += 1
                 self._q_attempted = True
+
+                # URGENT RETRY: Re-queue after 1 intervening question (self._qn + 2)
+                self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
+                self._priority_queue.append({
+                    "item": self._current_q_item,
+                    "due_at_qn": self._qn + 2,
+                    "reason": "wrong"
+                })
+
                 self._streak = 0
                 self._combo_val.setText("0")
                 self._combo_val.setStyleSheet(
@@ -1960,7 +2030,7 @@ class MathTrainerPage(QWidget):
                 )
                 self._fb_lbl.setText("WRONG! ADJUST OR REVEAL.")
                 self._fb_lbl.setStyleSheet(
-                    f"color:{self._p.get('C_RED', _h(RED))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(28*scale)}px;"
+                    f"color:{self._p.get('C_RED', _h(RED))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(24*scale)}px;"
                 )
                 self._sb_status.setText("COMBO BROKEN")
                 self._show_ans_btn.show()
@@ -1991,6 +2061,16 @@ class MathTrainerPage(QWidget):
     def _reveal(self):
         self._show_ans_btn.hide()
         self._reveal_hint.hide()
+
+        # Schedule urgent retry for revealed question (user didn't know it!)
+        if hasattr(self, "_current_q_item") and self._current_q_item is not None:
+            self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
+            self._priority_queue.append({
+                "item": self._current_q_item,
+                "due_at_qn": self._qn + 2,
+                "reason": "wrong"
+            })
+
         q = self._q_lbl.text()
         scale = self._font_size / 11.0
         if self._mode == 1:
@@ -2352,6 +2432,9 @@ class MathTrainerPage(QWidget):
                 )
         if hasattr(self, "_scratchpad"):
             self._scratchpad.setMinimumHeight(int(180 * scale))
+        if hasattr(self, "_clear_btn"):
+            self._clear_btn.setFixedHeight(int(26 * scale))
+            self._clear_btn.setFont(QFont(self._hf, int(8 * scale), QFont.Bold))
         if hasattr(self, "_show_ans_btn"):
             self._show_ans_btn.setFixedHeight(int(44 * scale))
             self._show_ans_btn.setFont(QFont(self._hf, int(11 * scale), QFont.Bold))
