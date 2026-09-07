@@ -1684,10 +1684,56 @@ class ReviewScreen(QWidget):
             tone = "green" if quality in (4, 5, 6) else ("red" if quality in (1, 3) else "cyan")
             self.burst.spawn_burst(self.rect().center().x(), self.rect().center().y(), tone, count=30)
 
-        # 3. Session & Daily Target Tracking
-        self._session_target_done += 1
+        # 3. Session & Daily Target Tracking (Card Completion Focus: Unique Cards Only)
         today_iso = self._ensure_daily_stats_current()
-        self._daily_reviews_done += 1
+
+        current_item = None
+        if getattr(self, "mgr", None) is not None and hasattr(self.mgr, "_items") and hasattr(self.mgr, "_idx"):
+            if 0 <= self.mgr._idx < len(self.mgr._items):
+                current_item = self.mgr._items[self.mgr._idx]
+
+        is_daily_new = False
+        is_session_new = False
+        item_key = None
+
+        if current_item:
+            card, box_idx, sm2_obj = current_item
+            cid = card.get("_id") or id(card)
+            if box_idx is None:
+                item_key = (cid, None)
+            elif isinstance(box_idx, tuple) and box_idx[0] == "group":
+                item_key = (cid, ("group", box_idx[1]))
+            else:
+                bid = sm2_obj.get("box_id") if isinstance(sm2_obj, dict) else box_idx
+                item_key = (cid, bid or box_idx)
+
+            if not hasattr(self, "_daily_completed_card_keys"):
+                self._daily_completed_card_keys = set()
+                self._populate_daily_completed_keys(today_iso)
+            if not hasattr(self, "_session_completed_card_keys"):
+                self._session_completed_card_keys = set()
+
+            # Unique card completion for Daily Limit
+            if item_key not in self._daily_completed_card_keys:
+                self._daily_completed_card_keys.add(item_key)
+                self._daily_reviews_done += 1
+                is_daily_new = True
+
+            # Unique card completion for Session Limit
+            if item_key not in self._session_completed_card_keys:
+                self._session_completed_card_keys.add(item_key)
+                self._session_target_done += 1
+                is_session_new = True
+        else:
+            self._session_target_done += 1
+            self._daily_reviews_done += 1
+            is_daily_new = True
+            is_session_new = True
+
+        if not hasattr(self, "_target_progress_undo_stack"):
+            self._target_progress_undo_stack = []
+        self._target_progress_undo_stack.append((item_key, is_daily_new, is_session_new))
+
         try:
             settings = QSettings("AnkiOcclusion", "App")
             deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
@@ -1695,8 +1741,9 @@ class ReviewScreen(QWidget):
             settings.setValue(f"review/daily_study_count_{deck_tag}", self._daily_reviews_done)
             settings.setValue(f"review/session_target_done_{deck_tag}", self._session_target_done)
             settings.setValue("review/session_target_done", self._session_target_done)
-            curr_global = int(settings.value("review/daily_study_count", 0) or 0)
-            settings.setValue("review/daily_study_count", curr_global + 1)
+            if is_daily_new:
+                curr_global = int(settings.value("review/daily_study_count", 0) or 0)
+                settings.setValue("review/daily_study_count", curr_global + 1)
         except Exception:
             pass
 
@@ -1755,48 +1802,71 @@ class ReviewScreen(QWidget):
             self.cancelled.emit()
         else:
             self._session_alerts_silenced = True
+            self._session_target_done = 0
+            if hasattr(self, "_session_completed_card_keys"):
+                self._session_completed_card_keys.clear()
+            self._session_break_prompted = False
+            self._session_target_notified = False
+            try:
+                deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
+                settings = QSettings("AnkiOcclusion", "App")
+                settings.setValue(f"review/session_target_done_{deck_tag}", 0)
+                settings.setValue("review/session_target_done", 0)
+            except Exception:
+                pass
             if hasattr(self, "_btn_silence_alerts"):
                 self._btn_silence_alerts.setText("🔔")
                 self._btn_silence_alerts.setStyleSheet(
                     "color: #FFB86C; font-weight: bold; background: rgba(255, 184, 108, 0.15); border: 1px solid #FFB86C; border-radius: 4px; padding: 2px 8px;"
                 )
+            self._update_target_progress_ui()
 
     def _review_undo(self):
         # Card undo - strictly navigate back / undo cards, not ink
         try:
             today_iso = self._ensure_daily_stats_current()
             deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
-            if self.__dict__.get("_session_target_done", 0) > 0:
-                self._session_target_done = max(0, self._session_target_done - 1)
-                if self._session_target_done < self.__dict__.get("_session_target_goal", 0):
-                    self._session_target_notified = False
-                    self._session_break_prompted = False
-                try:
-                    settings = QSettings("AnkiOcclusion", "App")
-                    settings.setValue(f"review/session_target_done_{deck_tag}", self._session_target_done)
-                    settings.setValue("review/session_target_done", self._session_target_done)
-                except Exception:
-                    pass
 
-            if self.__dict__.get("_daily_reviews_done", 0) > 0:
-                self._daily_reviews_done = max(0, self._daily_reviews_done - 1)
+            if hasattr(self, "_target_progress_undo_stack") and self._target_progress_undo_stack:
+                item_key, is_daily_new, is_session_new = self._target_progress_undo_stack.pop()
+                if is_daily_new:
+                    if hasattr(self, "_daily_completed_card_keys") and item_key in self._daily_completed_card_keys:
+                        self._daily_completed_card_keys.discard(item_key)
+                    self._daily_reviews_done = max(0, self._daily_reviews_done - 1)
+                if is_session_new:
+                    if hasattr(self, "_session_completed_card_keys") and item_key in self._session_completed_card_keys:
+                        self._session_completed_card_keys.discard(item_key)
+                    self._session_target_done = max(0, self._session_target_done - 1)
+            else:
+                if self.__dict__.get("_session_target_done", 0) > 0:
+                    self._session_target_done = max(0, self._session_target_done - 1)
+                if self.__dict__.get("_daily_reviews_done", 0) > 0:
+                    self._daily_reviews_done = max(0, self._daily_reviews_done - 1)
+
+            if self._session_target_done < self.__dict__.get("_session_target_goal", 0):
+                self._session_target_notified = False
+                self._session_break_prompted = False
+
+            try:
+                settings = QSettings("AnkiOcclusion", "App")
+                settings.setValue(f"review/session_target_done_{deck_tag}", self._session_target_done)
+                settings.setValue("review/session_target_done", self._session_target_done)
+                settings.setValue(f"review/daily_study_date_{deck_tag}", today_iso)
+                settings.setValue(f"review/daily_study_count_{deck_tag}", self._daily_reviews_done)
+            except Exception:
+                pass
+
+            if self._daily_reviews_done < self.__dict__.get("_daily_target_goal", 0):
+                self._daily_target_notified = False
                 try:
                     settings = QSettings("AnkiOcclusion", "App")
-                    settings.setValue(f"review/daily_study_date_{deck_tag}", today_iso)
-                    settings.setValue(f"review/daily_study_count_{deck_tag}", self._daily_reviews_done)
+                    settings.setValue(f"review/daily_target_notified_{deck_tag}", False)
                 except Exception:
                     pass
-                if self._daily_reviews_done < self.__dict__.get("_daily_target_goal", 0):
-                    self._daily_target_notified = False
-                    try:
-                        deck_tag = str(self._deck_id or self._deck_name or "global").replace(" ", "_")
-                        QSettings("AnkiOcclusion", "App").setValue(f"review/daily_target_notified_{deck_tag}", False)
-                    except Exception:
-                        pass
-                    if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.is_daily:
-                        self._target_toast_banner.dismiss()
-                elif getattr(self, "_target_toast_banner", None) and self._target_toast_banner.is_daily:
-                    self._show_target_achieved_toast(is_daily=True)
+                if getattr(self, "_target_toast_banner", None) and self._target_toast_banner.is_daily:
+                    self._target_toast_banner.dismiss()
+            elif getattr(self, "_target_toast_banner", None) and self._target_toast_banner.is_daily:
+                self._show_target_achieved_toast(is_daily=True)
 
             self._update_target_progress_ui()
         except Exception:
@@ -2043,6 +2113,9 @@ class ReviewScreen(QWidget):
             saved_daily = str(settings.value("review/daily_target_goal", "") or "").strip()
             self._daily_target_goal = int(saved_daily) if (saved_daily and saved_daily.isdigit()) else 0
 
+        self._session_completed_card_keys = set()
+        self._daily_completed_card_keys = set()
+        self._target_progress_undo_stack = []
         self._daily_reviews_done = 0
         self._daily_target_notified = False
         self._daily_synced_with_db = False
@@ -3713,6 +3786,68 @@ class ReviewScreen(QWidget):
         overlay.show()
         overlay.raise_()
 
+    def _populate_daily_completed_keys(self, today_iso: str):
+        if not hasattr(self, "_daily_completed_card_keys"):
+            self._daily_completed_card_keys = set()
+        data_src = getattr(self, "_data", None)
+        if data_src is None and getattr(self, "mgr", None) is not None:
+            data_src = getattr(self.mgr, "data", None)
+        if not isinstance(data_src, dict):
+            return
+
+        def _scan(d):
+            for card in d.get("cards", []) or []:
+                if not isinstance(card, dict):
+                    continue
+                cid = card.get("_id") or id(card)
+                boxes = card.get("boxes", []) or []
+                if not boxes:
+                    rat = card.get("reviewed_at")
+                    if rat and str(rat).startswith(today_iso):
+                        self._daily_completed_card_keys.add((cid, None))
+                else:
+                    seen_grps = set()
+                    for idx, box in enumerate(boxes):
+                        if not isinstance(box, dict):
+                            continue
+                        brat = box.get("reviewed_at")
+                        if brat and str(brat).startswith(today_iso):
+                            gid = box.get("group_id", "")
+                            if gid:
+                                if gid not in seen_grps:
+                                    seen_grps.add(gid)
+                                    self._daily_completed_card_keys.add((cid, ("group", gid)))
+                            else:
+                                bid = box.get("box_id") or idx
+                                self._daily_completed_card_keys.add((cid, bid))
+            for c in d.get("children", []) or d.get("subdecks", []) or []:
+                if isinstance(c, dict):
+                    _scan(c)
+
+        target_deck = None
+        if self._deck_id or self._deck_name:
+            ident = str(self._deck_id or self._deck_name).strip().lower()
+            def _find(d):
+                if str(d.get("_id") or "").strip().lower() == ident or str(d.get("name") or "").strip().lower() == ident:
+                    return d
+                for c in d.get("children", []) or d.get("subdecks", []) or []:
+                    if isinstance(c, dict):
+                        res = _find(c)
+                        if res:
+                            return res
+                return None
+            for root in data_src.get("decks", []) or []:
+                if isinstance(root, dict):
+                    target_deck = _find(root)
+                    if target_deck:
+                        break
+        if target_deck:
+            _scan(target_deck)
+        else:
+            for root in data_src.get("decks", []) or []:
+                if isinstance(root, dict):
+                    _scan(root)
+
     def _ensure_daily_stats_current(self, force_sync: bool = False) -> str:
         import datetime
         today_iso = datetime.date.today().isoformat()
@@ -3759,14 +3894,17 @@ class ReviewScreen(QWidget):
                 settings.setValue(notified_key, self._daily_target_notified)
                 settings.sync()
                 self._daily_synced_with_db = True
+                if hasattr(self, "_daily_completed_card_keys"):
+                    self._daily_completed_card_keys.clear()
+                self._populate_daily_completed_keys(today_iso)
             else:
-                saved_count = int(settings.value(count_key, 0) or 0)
                 if need_db_sync:
-                    self._daily_reviews_done = max(db_today_count, saved_count)
+                    self._daily_reviews_done = db_today_count
                     settings.setValue(count_key, self._daily_reviews_done)
                     self._daily_synced_with_db = True
+                    self._populate_daily_completed_keys(today_iso)
                 else:
-                    self._daily_reviews_done = saved_count
+                    self._daily_reviews_done = int(settings.value(count_key, 0) or db_today_count)
 
                 raw_notified = settings.value(notified_key, False)
                 if isinstance(raw_notified, str):

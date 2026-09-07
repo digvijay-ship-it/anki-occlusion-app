@@ -593,12 +593,27 @@ class DirtyStore:
             self._data = {"decks": []}
             
         self._initialize_sm2_states(self._data)
+        has_shifted = False
+        try:
+            from sm2_engine import apply_paused_decks_timeline_shift
+            shifted_items = apply_paused_decks_timeline_shift(self._data.get("decks", []))
+            if shifted_items > 0:
+                print(f"[PAUSED_DECKS] Conveyor-belt timeline shift advanced {shifted_items} items.")
+                has_shifted = True
+        except Exception as e:
+            print(f"[DEBUG][data_manager] Paused decks timeline shift failed: {e}")
+
         from ui.settings_proxy import SettingsProxyDict
         self._data = SettingsProxyDict(self._data)
         with self._lock:
-            self._dirty = False
+            self._dirty = has_shifted
             self.revision += 1
             self._rebuild_card_index()
+        if has_shifted:
+            try:
+                self.save_if_dirty(force_gdrive=False)
+            except Exception as e:
+                print(f"[DEBUG][data_manager] Auto-saving shifted paused decks failed: {e}")
         return self._data
 
     def get(self):

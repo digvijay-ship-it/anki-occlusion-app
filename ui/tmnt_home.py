@@ -1803,7 +1803,7 @@ class TMNTDeckEngine(DeckTree):
         is_paused = bool(deck.get("is_paused", False))
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         item = QTreeWidgetItem([deck["name"].upper()])
-        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - {due} Due Cards)" if is_paused else deck.get("name", ""))
+        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - {due} Due Backlog)" if is_paused else deck.get("name", ""))
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])

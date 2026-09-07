@@ -2909,5 +2909,87 @@ class ReviewCardSymmetricResizeTests(unittest.TestCase):
         self.assertEqual(frame.get_saved_width(), 1500)
 
 
+class UniqueCardProgressTrackingTests(unittest.TestCase):
+    def test_unique_card_tracking_ignores_repetition(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        QWidget.__init__(screen)
+        screen._deck_id = "test_deck"
+        screen._deck_name = "test_deck"
+        screen._session_target_goal = 25
+        screen._daily_target_goal = 200
+        screen._session_target_done = 0
+        screen._daily_reviews_done = 0
+        screen._session_target_notified = False
+        screen._daily_target_notified = False
+        screen._session_break_prompted = False
+        screen._session_completed_card_keys = set()
+        screen._daily_completed_card_keys = set()
+        screen._target_progress_undo_stack = []
+        screen._target_toast_banner = None
+        screen.burst = None
+        screen._update_target_progress_ui = MagicMock()
+        screen._ensure_daily_stats_current = MagicMock(return_value="2026-09-07")
+
+        card1 = {"_id": 101, "title": "Card 1"}
+        card2 = {"_id": 102, "title": "Card 2"}
+
+        mgr = MagicMock()
+        mgr._items = [(card1, None, card1)]
+        mgr._idx = 0
+        mgr._rate = MagicMock()
+        screen.mgr = mgr
+
+        # Rate card 1 first time -> Should increment both to 1
+        screen._rate(4)
+        self.assertEqual(screen._daily_reviews_done, 1)
+        self.assertEqual(screen._session_target_done, 1)
+
+        # Rate card 1 second time (repetition) -> Must NOT increment
+        screen._rate(4)
+        self.assertEqual(screen._daily_reviews_done, 1)
+        self.assertEqual(screen._session_target_done, 1)
+
+        # Switch to card 2
+        mgr._items = [(card2, None, card2)]
+        mgr._idx = 0
+
+        # Rate card 2 first time -> Should increment both to 2
+        screen._rate(4)
+        self.assertEqual(screen._daily_reviews_done, 2)
+        self.assertEqual(screen._session_target_done, 2)
+
+        # Undo card 2 -> Should decrement both back to 1
+        screen._review_undo()
+        self.assertEqual(screen._daily_reviews_done, 1)
+        self.assertEqual(screen._session_target_done, 1)
+
+    def test_session_continue_resets_counter(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        QWidget.__init__(screen)
+        screen._deck_id = "test_deck"
+        screen._deck_name = "test_deck"
+        screen._session_target_goal = 25
+        screen._session_target_done = 25
+        screen._session_completed_card_keys = {"item1", "item2"}
+        screen._session_break_prompted = True
+        screen._session_target_notified = True
+        screen._update_target_progress_ui = MagicMock()
+        screen._btn_silence_alerts = MagicMock()
+
+        with patch("ui.review_screen.SessionBreakDialog") as MockDlg:
+            mock_inst = MagicMock()
+            mock_inst.exec_.return_value = 0
+            mock_inst.action = "continue"
+            MockDlg.return_value = mock_inst
+
+            screen._prompt_session_break()
+
+        self.assertEqual(screen._session_target_done, 0)
+        self.assertEqual(len(screen._session_completed_card_keys), 0)
+        self.assertFalse(screen._session_break_prompted)
+        self.assertFalse(screen._session_target_notified)
+
+
 if __name__ == "__main__":
     unittest.main()
+

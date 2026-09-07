@@ -348,7 +348,7 @@ class MissionReportDialog(QWidget):
 
         # QTreeWidget for Hierarchical Structure (Large full screen styling)
         self._tree_widget = QTreeWidget()
-        self._tree_widget.setHeaderLabels(["Deck / Topic", "Time Spent", "Reviews"])
+        self._tree_widget.setHeaderLabels(["Deck / Topic", "Time Spent", "Cards Completed"])
         self._tree_widget.setColumnCount(3)
         self._tree_widget.header().setStretchLastSection(False)
         self._tree_widget.header().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -552,7 +552,7 @@ class MissionReportDialog(QWidget):
         from services.activity_stats import format_activity_duration
         deck_time_formatted = format_activity_duration(total_deck_secs) if total_deck_secs > 0 else time_str
         self._lbl_decks_title.setText(
-            f"🗂️ DECKS COVERED ({len(stats['tree'])} Parent Topics · {total_deck_reviews} Reviews · ⏱ {deck_time_formatted})"
+            f"🗂️ DECKS COVERED ({len(stats['tree'])} Parent Topics · {total_deck_reviews} Cards Completed · ⏱ {deck_time_formatted})"
         )
 
         def _add_tree_node(parent_item, node_data):
@@ -574,7 +574,7 @@ class MissionReportDialog(QWidget):
 
             item.setText(0, display_text)
             item.setText(1, f"⏱ {node_time_str}")
-            item.setText(2, f"{total_revs} review(s)")
+            item.setText(2, f"{total_revs} card(s) completed")
             item.setTextAlignment(1, Qt.AlignCenter | Qt.AlignVCenter)
             item.setTextAlignment(2, Qt.AlignRight | Qt.AlignVCenter)
 

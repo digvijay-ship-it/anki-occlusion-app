@@ -1253,7 +1253,7 @@ class DeckTree(QWidget):
             else ""
         )
         item = QTreeWidgetItem([text])
-        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - {due} Due Cards)" if is_paused else deck.get("name", ""))
+        item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - {due} Due Backlog)" if is_paused else deck.get("name", ""))
         item.setData(0, Qt.UserRole, deck.get("_id"))
         item.setData(0, Qt.UserRole + 1, str(due))
         item.setData(0, Qt.UserRole + 2, deck["name"])
@@ -1348,7 +1348,7 @@ class DeckTree(QWidget):
             menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             if deck:
                 is_paused = bool(deck.get("is_paused", False))
-                pause_text = "▶️ Unpause Deck (Resume Reviews)" if is_paused else "⏸️ Pause Deck (Freeze Reviews)"
+                pause_text = "▶️ Unpause Deck (Resume Schedule)" if is_paused else "⏸️ Pause Deck (Freeze Incoming Cards)"
                 menu.addAction(pause_text, lambda: self._toggle_pause_deck_by_id(did))
                 bookmarked = deck.get("bookmarked", False)
                 action_text = "🔖 Remove Bookmark" if bookmarked else "🔖 Bookmark (Unmasked)"
@@ -1655,9 +1655,18 @@ class DeckTree(QWidget):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))
         if not deck:
             return
+        from datetime import date
         deck_history.push(self._data)  # undo snapshot
         is_paused = not deck.get("is_paused", False)
         deck["is_paused"] = is_paused
+        today_iso = date.today().isoformat()
+        if is_paused:
+            deck["pause_backlog_cutoff"] = today_iso
+            deck["pause_last_shift_date"] = today_iso
+        else:
+            deck.pop("pause_backlog_cutoff", None)
+            deck.pop("pause_last_shift_date", None)
+
         store.mark_dirty()
         store.save_soon(min_interval=3.0)
         from perf_utils import invalidate_deck_stats

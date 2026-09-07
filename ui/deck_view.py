@@ -864,7 +864,7 @@ class DeckView(QWidget):
             """)
         else:
             self.btn_pause.setText("⏸️ Pause")
-            self.btn_pause.setToolTip("Pause (freeze) this deck to stop its cards from appearing in daily reviews")
+            self.btn_pause.setToolTip("Pause (freeze) incoming cards so you can clear your existing backlog without new cards piling up")
             self.btn_pause.setStyleSheet(f"""
                 QPushButton#pause_btn {{
                     background: #1E2333;
@@ -885,9 +885,18 @@ class DeckView(QWidget):
     def _toggle_pause(self):
         if not self.deck:
             return
+        from datetime import date
         deck_history.push(self._data)
         is_paused = not self.deck.get("is_paused", False)
         self.deck["is_paused"] = is_paused
+        today_iso = date.today().isoformat()
+        if is_paused:
+            self.deck["pause_backlog_cutoff"] = today_iso
+            self.deck["pause_last_shift_date"] = today_iso
+        else:
+            self.deck.pop("pause_backlog_cutoff", None)
+            self.deck.pop("pause_last_shift_date", None)
+
         store.mark_dirty()
         store.save_soon(min_interval=3.0)
         from perf_utils import invalidate_deck_stats
@@ -900,7 +909,13 @@ class DeckView(QWidget):
             home.refresh()
         self._refresh()
 
-        status_text = "PAUSED (frozen).\nIts questions are now muted and will NOT appear in your daily reviews!" if is_paused else "UNPAUSED.\nScheduled daily reviews have been resumed."
+        status_text = (
+            "PAUSED (Incoming Cards Frozen).\n\n"
+            "• New incoming cards will be delayed day-by-day.\n"
+            "• You can now review and clear your existing backlog without new cards interrupting!"
+            if is_paused
+            else "UNPAUSED.\n\nScheduled daily reviews have been resumed."
+        )
         QMessageBox.information(
             self,
             "⏸️ Deck Paused" if is_paused else "▶️ Deck Resumed",

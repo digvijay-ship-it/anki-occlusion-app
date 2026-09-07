@@ -25,6 +25,7 @@ _SM2_KEYS = (
     "reviews",
     "reviewed_at",
     "last_quality",
+    "pause_exempt_due",
 )
 
 
@@ -439,12 +440,14 @@ class ReviewSessionManager:
         due_str = datetime.combine(due_date, datetime.min.time()).isoformat(timespec="seconds")
 
         sm2_obj["sm2_due"] = due_str
+        sm2_obj["pause_exempt_due"] = due_date.isoformat()
         # If grouped, reschedule sibling boxes too
         if isinstance(box_idx, tuple) and box_idx[0] == "group":
             gid = box_idx[1]
             for box in card.get("boxes", []):
                 if box.get("group_id") == gid and box is not sm2_obj:
                     box["sm2_due"] = due_str
+                    box["pause_exempt_due"] = due_date.isoformat()
 
         if recorded_review:
             _now = datetime.now().isoformat(timespec="seconds")

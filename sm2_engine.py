@@ -522,7 +522,110 @@ def sm2_badge(c):
         return f"{tag}  step:{step + 1}/{len(steps)}  next:{mins}m"
     if is_due_today(c):
         return f"🔴 Review Due  iv:{iv}d  EF:{ef:.2f}"
-    return f"✅ {sm2_days_left(c)}d left  iv:{iv}d  EF:{ef:.2f}"
+
+def shift_due_iso(due_str: str, days: int) -> str:
+    """Safely shift an ISO date or datetime string forward by a given number of days."""
+    if not due_str or not days:
+        return due_str
+    try:
+        if "T" in due_str:
+            dt = datetime.fromisoformat(due_str)
+            return (dt + timedelta(days=days)).isoformat(timespec="seconds")
+        elif len(due_str) >= 10:
+            d = date.fromisoformat(due_str[:10])
+            new_d = d + timedelta(days=days)
+            return new_d.isoformat() + due_str[10:]
+        return due_str
+    except Exception:
+        return due_str
+
+
+def apply_paused_decks_timeline_shift(decks, reference_date=None) -> int:
+    """
+    Conveyor-Belt Future Timeline Shift for Paused Decks.
+    When a deck is paused:
+      - Cards with due <= pause_backlog_cutoff remain due today (backlog study enabled).
+      - All cards in the future chain (due > pause_backlog_cutoff) are shifted forward
+        by the number of elapsed calendar days since pause_last_shift_date.
+      - Preserves relative spacing between all future reviews to prevent avalanche pile-ups.
+    Returns total number of items (cards/boxes) shifted.
+    """
+    if not decks:
+        return 0
+
+    today = reference_date or date.today()
+    today_iso = today.isoformat()
+    total_shifted = 0
+
+    def _process_deck_tree(deck, parent_is_paused=False, parent_cutoff=None, parent_last_shift=None):
+        nonlocal total_shifted
+        is_paused = bool(deck.get("is_paused", False)) or parent_is_paused
+
+        cutoff_str = deck.get("pause_backlog_cutoff") or parent_cutoff
+        last_shift_str = deck.get("pause_last_shift_date") or parent_last_shift
+
+        orig_last_shift = last_shift_str
+        if is_paused:
+            if not last_shift_str:
+                last_shift_str = cutoff_str or today_iso
+                deck["pause_last_shift_date"] = last_shift_str
+                orig_last_shift = last_shift_str
+            if not cutoff_str:
+                cutoff_str = last_shift_str
+                deck["pause_backlog_cutoff"] = cutoff_str
+
+            try:
+                last_shift_date = date.fromisoformat(last_shift_str[:10])
+            except Exception:
+                last_shift_date = today
+
+            days_to_shift = (today - last_shift_date).days
+
+            if days_to_shift > 0:
+                for card in deck.get("cards", []) or []:
+                    card_exempt = card.get("pause_exempt_due")
+                    if card_exempt:
+                        if card_exempt <= today_iso:
+                            card.pop("pause_exempt_due", None)
+                    else:
+                        c_due = str(card.get("sm2_due") or card.get("due") or "")
+                        if c_due and c_due[:10] > cutoff_str:
+                            if card.get("sm2_due"):
+                                card["sm2_due"] = shift_due_iso(card["sm2_due"], days_to_shift)
+                            if card.get("due"):
+                                card["due"] = shift_due_iso(card["due"], days_to_shift)
+                            total_shifted += 1
+
+                    for box in card.get("boxes", []) or []:
+                        box_exempt = box.get("pause_exempt_due")
+                        if box_exempt:
+                            if box_exempt <= today_iso:
+                                box.pop("pause_exempt_due", None)
+                        else:
+                            b_due = str(box.get("sm2_due") or box.get("due") or "")
+                            if b_due and b_due[:10] > cutoff_str:
+                                if box.get("sm2_due"):
+                                    box["sm2_due"] = shift_due_iso(box["sm2_due"], days_to_shift)
+                                if box.get("due"):
+                                    box["due"] = shift_due_iso(box["due"], days_to_shift)
+                                total_shifted += 1
+
+                if deck.get("is_paused"):
+                    deck["pause_last_shift_date"] = today_iso
+
+        children = deck.get("children", []) or deck.get("subdecks", []) or []
+        for child in children:
+            _process_deck_tree(
+                child,
+                parent_is_paused=is_paused,
+                parent_cutoff=cutoff_str if is_paused else None,
+                parent_last_shift=orig_last_shift if is_paused else None,
+            )
+
+    for root_deck in decks:
+        _process_deck_tree(root_deck)
+
+    return total_shifted
 
 
 # ─────────────────────────────────────────────────────────────────────────────

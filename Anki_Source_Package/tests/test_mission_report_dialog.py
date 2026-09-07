@@ -54,7 +54,7 @@ class TestMissionReportDialog(unittest.TestCase):
         self.assertEqual(dlg._tree_widget.columnCount(), 3)
         self.assertEqual(dlg._tree_widget.headerItem().text(0), "Deck / Topic")
         self.assertEqual(dlg._tree_widget.headerItem().text(1), "Time Spent")
-        self.assertEqual(dlg._tree_widget.headerItem().text(2), "Reviews")
+        self.assertEqual(dlg._tree_widget.headerItem().text(2), "Cards Completed")
         dlg.close()
 
     def test_clipboard_copy_includes_time(self):
