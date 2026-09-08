@@ -638,7 +638,8 @@ class MaskPanel(QWidget):
         self.list_w.blockSignals(True)
         self.list_w.clear()
         for i, b in enumerate(boxes):
-            lbl = b.get("label") or f"Mask #{i+1}"
+            mask_num = b.get("mask_num") or (i + 1)
+            lbl = b.get("label") or f"Mask #{mask_num}"
             gid = b.get("group_id", "")
             icon = "🔵" if gid else "🟧"
             badge = f" [{gid[:4]}]" if gid else ""
@@ -648,6 +649,8 @@ class MaskPanel(QWidget):
             self.list_w.setCurrentRow(sel)
             box = self._canvas._boxes[sel]
             
+            mask_num = box.get("mask_num") or (sel + 1)
+            self.inp_label.setPlaceholderText(f"e.g. Mask #{mask_num}")
             new_label = box.get("label", "")
             if self.inp_label.text() != new_label:
                 self.inp_label.blockSignals(True)
@@ -666,6 +669,7 @@ class MaskPanel(QWidget):
             self.inp_label.setEnabled(True)
             self.inp_note.setEnabled(True)
         else:
+            self.inp_label.setPlaceholderText("e.g. Mitochondria")
             self.inp_label.blockSignals(True)
             self.inp_label.clear()
             self.inp_label.blockSignals(False)
@@ -683,6 +687,8 @@ class MaskPanel(QWidget):
         if 0 <= row < len(self._canvas._boxes):
             box = self._canvas._boxes[row]
             
+            mask_num = box.get("mask_num") or (row + 1)
+            self.inp_label.setPlaceholderText(f"e.g. Mask #{mask_num}")
             new_label = box.get("label", "")
             if self.inp_label.text() != new_label:
                 self.inp_label.blockSignals(True)
@@ -701,6 +707,7 @@ class MaskPanel(QWidget):
             self.inp_label.setEnabled(True)
             self.inp_note.setEnabled(True)
         else:
+            self.inp_label.setPlaceholderText("e.g. Mitochondria")
             self.inp_label.blockSignals(True)
             self.inp_label.clear()
             self.inp_label.blockSignals(False)
@@ -714,9 +721,14 @@ class MaskPanel(QWidget):
 
     def _on_label_change(self, text):
         row = self.list_w.currentRow()
-        if row >= 0:
+        if row >= 0 and self.list_w.currentItem():
             self._canvas.update_label(row, text)
-            self.list_w.currentItem().setText(f"  🟧 {text or f'Mask #{row+1}'}")
+            box = self._canvas._boxes[row] if row < len(self._canvas._boxes) else {}
+            mask_num = box.get("mask_num") or (row + 1)
+            gid = box.get("group_id", "")
+            icon = "🔵" if gid else "🟧"
+            badge = f" [{gid[:4]}]" if gid else ""
+            self.list_w.currentItem().setText(f"  {icon} {text or f'Mask #{mask_num}'}{badge}")
 
     def _on_note_change(self):
         row = self.list_w.currentRow()

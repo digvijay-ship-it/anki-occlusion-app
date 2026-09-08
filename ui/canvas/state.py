@@ -362,8 +362,24 @@ class CanvasStateMixin:
         }
         self.setCursor(QCursor(cursors.get(tool, Qt.CrossCursor)))
 
+    def _ensure_mask_numbers(self):
+        used_nums = set()
+        for b in self._boxes:
+            num = b.get("mask_num")
+            if isinstance(num, int) and num > 0:
+                used_nums.add(num)
+        for i, b in enumerate(self._boxes):
+            num = b.get("mask_num")
+            if not isinstance(num, int) or num <= 0:
+                candidate = i + 1
+                while candidate in used_nums:
+                    candidate += 1
+                b["mask_num"] = candidate
+                used_nums.add(candidate)
+
     def set_boxes(self, boxes):
         self._boxes = [self._deserialise_box(b, revealed=False) for b in boxes]
+        self._ensure_mask_numbers()
         if hasattr(self, "_ink_path_cache"):
             self._ink_path_cache.clear()
         self.update()
@@ -372,6 +388,7 @@ class CanvasStateMixin:
         self._boxes = [
             self._deserialise_box(b, revealed=b.get("revealed", False)) for b in boxes
         ]
+        self._ensure_mask_numbers()
         if self._mode != "review":
             self._ink_strokes.clear()
             self._ink_current.clear()
@@ -402,6 +419,8 @@ class CanvasStateMixin:
                 "angle": b.get("angle", 0.0),
                 "group_id": b.get("group_id", ""),
             }
+            if "mask_num" in b and b["mask_num"] is not None:
+                d["mask_num"] = b["mask_num"]
             for k in SM2_KEYS:
                 if k in b:
                     d[k] = b[k]
@@ -769,6 +788,7 @@ class CanvasStateMixin:
             "note": b.get("note", ""),
             "box_id": b.get("box_id", ""),
             "group_id": b.get("group_id", ""),
+            "mask_num": b.get("mask_num"),
             **{
                 k: b[k]
                 for k in (

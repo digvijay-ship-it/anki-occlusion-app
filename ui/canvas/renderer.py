@@ -413,7 +413,8 @@ class CanvasRendererMixin:
     def _draw_box_impl(self, p: QPainter, i: int, b: dict, sr: QRectF, cc=None):
         cx, cy = sr.center().x(), sr.center().y()
         ang = b.get("angle", 0.0)
-        lbl = b.get("label") or f"#{i+1}"
+        mask_num = b.get("mask_num") or (i + 1)
+        lbl = b.get("label") or f"#{mask_num}"
         shape = b.get("shape", "rect")
         sel = (i == self._selected_idx) or (i in self._selected_indices)
 

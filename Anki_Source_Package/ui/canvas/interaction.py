@@ -908,6 +908,11 @@ class CanvasInteractionMixin:
             r = self._live_rect
             if r.width() > 6 and r.height() > 6:
                 self._push_undo()
+                existing_nums = [
+                    bx.get("mask_num") for bx in self._boxes
+                    if isinstance(bx.get("mask_num"), int) and bx.get("mask_num") > 0
+                ]
+                next_num = (max(existing_nums) + 1) if existing_nums else (len(self._boxes) + 1)
                 new_box = {
                     "rect": r,
                     "shape": (
@@ -916,6 +921,7 @@ class CanvasInteractionMixin:
                     "angle": 0.0,
                     "revealed": False,
                     "label": "",
+                    "mask_num": next_num,
                 }
                 self._update_box_page_num(new_box)
                 self._boxes.append(new_box)
