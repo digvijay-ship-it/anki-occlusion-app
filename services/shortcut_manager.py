@@ -23,7 +23,7 @@ SHORTCUT_ACTIONS = (
     ShortcutAction("home.redo", "Home", "Redo deck/card change", "Ctrl+Y"),
     ShortcutAction("home.music_toggle", "Home", "Toggle music", "M"),
     ShortcutAction("home.music_next", "Home", "Next music track", "N"),
-    ShortcutAction("home.edit_card", "Home", "Edit selected card", "E"),
+    ShortcutAction("home.edit_card", "Home", "Edit selected card / Mask editor", "Ctrl+E"),
     ShortcutAction("home.add_card", "Home", "Add card to selected deck", "A"),
     ShortcutAction("home.browse_cards", "Home", "Browse/manage cards", "Ctrl+B"),
     ShortcutAction("home.search_decks", "Home", "Focus deck search", "Ctrl+F"),

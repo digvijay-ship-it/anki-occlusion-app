@@ -317,6 +317,47 @@ class _DeckTreeWidget(QTreeWidget):
                     home._open_card_browser()
                     e.accept()
                     return
+        if shortcut_manager.event_matches(e, "home.edit_card") or (e.key() == Qt.Key_E and (e.modifiers() & Qt.ControlModifier) and not (e.modifiers() & (Qt.AltModifier | Qt.MetaModifier))):
+            sel_deck = getattr(self, "_selected_deck", None)
+            p = self.parent()
+            while p is not None:
+                if not sel_deck:
+                    sel_deck = getattr(p, "_selected_deck", None)
+                if hasattr(p, "_get_deck_from_item") and not sel_deck and hasattr(self, "currentItem"):
+                    cur = self.currentItem()
+                    if cur:
+                        sel_deck = p._get_deck_from_item(cur)
+                target_view = getattr(p, "main", None) or getattr(p, "deck_view", None)
+                if target_view:
+                    if sel_deck and getattr(target_view, "deck", None) != sel_deck:
+                        target_view.load_deck(sel_deck, getattr(target_view, "_data", None) or getattr(p, "_data", None))
+                    item = target_view.card_list.currentItem()
+                    if not item and target_view.card_list.count() > 0:
+                        item = target_view.card_list.item(0)
+                        target_view.card_list.setCurrentItem(item)
+                    if item:
+                        target_view._edit_card(item)
+                        e.accept()
+                        return
+                    elif getattr(target_view, "deck", None):
+                        def _find_card(d):
+                            if d.get("cards"):
+                                return d["cards"][0], d
+                            for child in d.get("children", []):
+                                r = _find_card(child)
+                                if r:
+                                    return r
+                            return None, None
+                        sub_card, sub_d = _find_card(target_view.deck)
+                        if sub_card and sub_d:
+                            target_view._edit_card_by_dict(sub_card, sub_d)
+                            e.accept()
+                            return
+                        else:
+                            target_view._add_card()
+                            e.accept()
+                            return
+                p = p.parent()
         if e.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
                        Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape,
                        Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Home, Qt.Key_End,
@@ -520,9 +561,10 @@ class DeckSettingsDialog(QDialog):
     Allows configuring per-deck daily review limits, pause state, and review priority order.
     Complies with Generous Typography rules (large readable fonts and inputs).
     """
-    def __init__(self, parent=None, deck=None):
+    def __init__(self, parent=None, deck=None, data=None):
         super().__init__(parent)
         self.deck = deck or {}
+        self._data = data
         deck_title = str(self.deck.get("name", "Deck"))
         self.setWindowTitle(f"⚙️ Deck Settings — {deck_title}")
         self.setModal(True)
@@ -735,7 +777,9 @@ class DeckSettingsDialog(QDialog):
         co_layout.setSpacing(14)
 
         self.chk_pause = QCheckBox("⏸️ Pause Deck (डेक पॉज / फ्रीज करें)")
-        self.chk_pause.setChecked(bool(self.deck.get("is_paused", False)))
+        from data_manager import is_deck_effective_paused
+        all_decks = (self._data.get("decks", []) if getattr(self, "_data", None) else None) or (self.parent()._data.get("decks", []) if hasattr(self.parent(), "_data") else None)
+        self.chk_pause.setChecked(is_deck_effective_paused(self.deck, all_decks))
         co_layout.addWidget(self.chk_pause)
 
         lbl_pause_desc = QLabel(
@@ -801,11 +845,29 @@ class DeckSettingsDialog(QDialog):
         auto_exit_val = self.chk_auto_exit.isChecked()
         order_val = self.combo_order.currentData() or "default"
 
+        all_decks = (self._data.get("decks", []) if getattr(self, "_data", None) else None) or (self.parent()._data.get("decks", []) if hasattr(self.parent(), "_data") else None)
+        from data_manager import is_deck_effective_paused, cascade_deck_pause
+        orig_paused = is_deck_effective_paused(self.deck, all_decks)
+
         self.deck["daily_limit"] = limit_val
         self.deck["session_limit"] = session_val
         self.deck["auto_exit_session"] = auto_exit_val
         self.deck["is_paused"] = is_paused_val
         self.deck["review_order"] = order_val
+
+        from datetime import date
+        today_iso = date.today().isoformat()
+        if is_paused_val:
+            if "pause_backlog_cutoff" not in self.deck:
+                self.deck["pause_backlog_cutoff"] = today_iso
+            if "pause_last_shift_date" not in self.deck:
+                self.deck["pause_last_shift_date"] = today_iso
+        else:
+            self.deck.pop("pause_backlog_cutoff", None)
+            self.deck.pop("pause_last_shift_date", None)
+
+        if is_paused_val != orig_paused:
+            cascade_deck_pause(self.deck, is_paused_val, today_iso)
 
         store.save_force(async_save=True)
         self.accept()
@@ -1229,6 +1291,10 @@ class DeckTree(QWidget):
                 self.tree.setDragDropMode(QAbstractItemView.InternalMove)
 
     def refresh(self):
+        try:
+            store.check_and_apply_paused_decks_timeline_shift()
+        except Exception:
+            pass
         sel_id = self._get_selected_id()
         rollups = build_deck_rollups(self._data.get("decks", []))
         self._due_counts = rollups["due_cards"]
@@ -1239,8 +1305,11 @@ class DeckTree(QWidget):
         if sel_id is not None:
             self._select_by_id(sel_id)
 
-    def _make_item(self, deck, depth=0):
-        is_paused = bool(deck.get("is_paused", False))
+    def _make_item(self, deck, depth=0, parent_is_paused=False):
+        if "is_paused" in deck and deck["is_paused"] is not None:
+            is_paused = bool(deck["is_paused"])
+        else:
+            is_paused = parent_is_paused
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         badge = (f"⏸️ PAUSED ({due})" if due else "⏸️ PAUSED") if is_paused else (f"🔴{due}" if due else "✅")
         theme = getattr(self, "_theme", "classic")
@@ -1267,7 +1336,7 @@ class DeckTree(QWidget):
             else:
                 item.setForeground(0, QBrush(QColor(depth_color(depth, "classic"))))
         for child in deck.get("children", []):
-            item.addChild(self._make_item(child, depth + 1))
+            item.addChild(self._make_item(child, depth + 1, parent_is_paused=is_paused))
         return item
 
     def _get_id_from_item(self, item):
@@ -1347,7 +1416,8 @@ class DeckTree(QWidget):
                 menu.addAction("📁 Link to Source Folder...", lambda: self._link_source_folder(did))
             menu.addAction("✏ Rename", lambda: self._rename_by_id(did))
             if deck:
-                is_paused = bool(deck.get("is_paused", False))
+                from data_manager import is_deck_effective_paused
+                is_paused = is_deck_effective_paused(deck, self._data.get("decks", []))
                 pause_text = "▶️ Unpause Deck (Resume Schedule)" if is_paused else "⏸️ Pause Deck (Freeze Incoming Cards)"
                 menu.addAction(pause_text, lambda: self._toggle_pause_deck_by_id(did))
                 bookmarked = deck.get("bookmarked", False)
@@ -1364,7 +1434,7 @@ class DeckTree(QWidget):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))
         if not deck:
             return
-        dlg = DeckSettingsDialog(self, deck=deck)
+        dlg = DeckSettingsDialog(self, deck=deck, data=self._data)
         if dlg.exec_() == QDialog.Accepted:
             self.refresh()
             home = self._find_home()
@@ -1656,8 +1726,10 @@ class DeckTree(QWidget):
         if not deck:
             return
         from datetime import date
+        from data_manager import cascade_deck_pause, is_deck_effective_paused
         deck_history.push(self._data)  # undo snapshot
-        is_paused = not deck.get("is_paused", False)
+        currently_paused = is_deck_effective_paused(deck, self._data.get("decks", []))
+        is_paused = not currently_paused
         deck["is_paused"] = is_paused
         today_iso = date.today().isoformat()
         if is_paused:
@@ -1666,6 +1738,8 @@ class DeckTree(QWidget):
         else:
             deck.pop("pause_backlog_cutoff", None)
             deck.pop("pause_last_shift_date", None)
+
+        cascade_deck_pause(deck, is_paused, today_iso)
 
         store.mark_dirty()
         store.save_soon(min_interval=3.0)

@@ -3251,15 +3251,36 @@ class HomeScreen(QWidget):
                 self._tmnt_layout.set_bgm_state(self.music_widget._playing)
             e.accept()
             return
-        elif shortcut_manager.event_matches(e, "home.edit_card"):
+        elif shortcut_manager.event_matches(e, "home.edit_card") or (key == Qt.Key_E and (mods & Qt.ControlModifier) and not (mods & (Qt.AltModifier | Qt.MetaModifier))):
             if getattr(self, "_active_review", None) is None:
                 dv = getattr(self, "deck_view", None) or getattr(self, "_deck_view", None)
                 if dv and dv.isVisible():
                     item = dv.card_list.currentItem()
+                    if not item and dv.card_list.count() > 0:
+                        item = dv.card_list.item(0)
+                        dv.card_list.setCurrentItem(item)
                     if item:
                         dv._edit_card(item)
                         e.accept()
                         return
+                    elif getattr(dv, "deck", None):
+                        def _find_card(d):
+                            if d.get("cards"):
+                                return d["cards"][0], d
+                            for child in d.get("children", []):
+                                r = _find_card(child)
+                                if r:
+                                    return r
+                            return None, None
+                        sub_card, sub_d = _find_card(dv.deck)
+                        if sub_card and sub_d:
+                            dv._edit_card_by_dict(sub_card, sub_d)
+                            e.accept()
+                            return
+                        else:
+                            dv._add_card()
+                            e.accept()
+                            return
         elif shortcut_manager.event_matches(e, "home.add_card") or (key == Qt.Key_A and not (mods & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))):
             fw = self.focusWidget()
             from PyQt5.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit

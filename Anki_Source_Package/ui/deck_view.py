@@ -387,21 +387,22 @@ class DojoMissionBanner(QFrame):
 
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._animate_glow)
-        self._glow_timer.setInterval(50)
+        self._glow_timer.setInterval(80)
         self._glow_step = 0
 
         from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
         self._shadow = QGraphicsDropShadowEffect(self)
         self._shadow.setOffset(0, 0)
+        self._shadow.setBlurRadius(16)
         self.btn_train.setGraphicsEffect(self._shadow)
 
         self.update_font_scale(1.0)
 
     def set_animation_enabled(self, enabled):
         try:
-            from ui.canvas.retro_effects import animations_suspended
-            if animations_suspended():
+            from ui.canvas.retro_effects import animations_suspended, _home_animations_enabled
+            if animations_suspended() or not _home_animations_enabled():
                 enabled = False
         except Exception:
             pass
@@ -414,7 +415,11 @@ class DojoMissionBanner(QFrame):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.set_animation_enabled(True)
+        try:
+            from ui.canvas.retro_effects import _home_animations_enabled
+            self.set_animation_enabled(_home_animations_enabled())
+        except Exception:
+            self.set_animation_enabled(False)
 
     def hideEvent(self, event):
         self.set_animation_enabled(False)
@@ -457,6 +462,13 @@ class DojoMissionBanner(QFrame):
         self._animate_glow()
 
     def _animate_glow(self):
+        try:
+            from ui.canvas.retro_effects import animations_suspended, _home_animations_enabled
+            if animations_suspended() or not _home_animations_enabled():
+                return
+        except Exception:
+            pass
+
         import math
 
         self._glow_step += 1
@@ -489,9 +501,7 @@ class DojoMissionBanner(QFrame):
 
         from PyQt5.QtGui import QColor
 
-        blur_radius = 5 + 35 * progress
-        shadow_alpha = int(80 + 175 * progress)
-        self._shadow.setBlurRadius(blur_radius)
+        shadow_alpha = int(80 + 120 * progress)
         self._shadow.setColor(QColor(r, g, b, shadow_alpha))
 
 
@@ -840,7 +850,9 @@ class DeckView(QWidget):
             self.btn_pause.hide()
             return
         self.btn_pause.show()
-        is_paused = bool(self.deck.get("is_paused", False))
+        from data_manager import is_deck_effective_paused
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
+        is_paused = is_deck_effective_paused(self.deck, all_decks)
         theme = getattr(self, "_theme", "classic")
         scale = getattr(self, "_font_size_val", 11) / 11.0
 
@@ -886,8 +898,11 @@ class DeckView(QWidget):
         if not self.deck:
             return
         from datetime import date
+        from data_manager import cascade_deck_pause, is_deck_effective_paused
         deck_history.push(self._data)
-        is_paused = not self.deck.get("is_paused", False)
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
+        currently_paused = is_deck_effective_paused(self.deck, all_decks)
+        is_paused = not currently_paused
         self.deck["is_paused"] = is_paused
         today_iso = date.today().isoformat()
         if is_paused:
@@ -896,6 +911,8 @@ class DeckView(QWidget):
         else:
             self.deck.pop("pause_backlog_cutoff", None)
             self.deck.pop("pause_last_shift_date", None)
+
+        cascade_deck_pause(self.deck, is_paused, today_iso)
 
         store.mark_dirty()
         store.save_soon(min_interval=3.0)
@@ -1034,9 +1051,30 @@ class DeckView(QWidget):
         if shortcut_manager.event_matches(e, "home.browse_cards"):
             self._open_card_browser()
             return
-        if shortcut_manager.event_matches(e, "home.edit_card"):
-            self._edit_card(self.card_list.currentItem())
-            return
+        if shortcut_manager.event_matches(e, "home.edit_card") or (e.key() == Qt.Key_E and (e.modifiers() & Qt.ControlModifier) and not (e.modifiers() & (Qt.AltModifier | Qt.MetaModifier))):
+            item = self.card_list.currentItem()
+            if not item and self.card_list.count() > 0:
+                item = self.card_list.item(0)
+                self.card_list.setCurrentItem(item)
+            if item:
+                self._edit_card(item)
+                return
+            elif getattr(self, "deck", None):
+                def _find_card(d):
+                    if d.get("cards"):
+                        return d["cards"][0], d
+                    for child in d.get("children", []):
+                        r = _find_card(child)
+                        if r:
+                            return r
+                    return None, None
+                sub_card, sub_d = _find_card(self.deck)
+                if sub_card and sub_d:
+                    self._edit_card_by_dict(sub_card, sub_d)
+                    return
+                else:
+                    self._add_card()
+                    return
         if shortcut_manager.event_matches(e, "home.undo"):
             self.undo()
             return
@@ -1059,12 +1097,33 @@ class DeckView(QWidget):
             self.undo()
             e.accept()
             return
-        if shortcut_manager.event_matches(e, "home.edit_card"):
+        if shortcut_manager.event_matches(e, "home.edit_card") or (e.key() == Qt.Key_E and (e.modifiers() & Qt.ControlModifier) and not (e.modifiers() & (Qt.AltModifier | Qt.MetaModifier))):
             item = self.card_list.currentItem()
+            if not item and self.card_list.count() > 0:
+                item = self.card_list.item(0)
+                self.card_list.setCurrentItem(item)
             if item:
                 self._edit_card(item)
                 e.accept()
                 return
+            elif getattr(self, "deck", None):
+                def _find_card(d):
+                    if d.get("cards"):
+                        return d["cards"][0], d
+                    for child in d.get("children", []):
+                        r = _find_card(child)
+                        if r:
+                            return r
+                    return None, None
+                sub_card, sub_d = _find_card(self.deck)
+                if sub_card and sub_d:
+                    self._edit_card_by_dict(sub_card, sub_d)
+                    e.accept()
+                    return
+                else:
+                    self._add_card()
+                    e.accept()
+                    return
         if shortcut_manager.event_matches(e, "home.add_card") or (e.key() == Qt.Key_A and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))):
             from ui.review.annotation_handler import open_annotation_for_deck
             item = self.card_list.currentItem()
@@ -1166,7 +1225,9 @@ class DeckView(QWidget):
             self._undo_stack.clear()
         self._deck_id = new_id
         self.deck = deck
-        is_paused = bool(deck.get("is_paused", False))
+        from data_manager import is_deck_effective_paused
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
+        is_paused = is_deck_effective_paused(deck, all_decks)
         if is_paused:
             self.lbl_deck.setText(f"⏸️ {deck.get('name', '?')} (PAUSED)")
         else:
@@ -1197,9 +1258,15 @@ class DeckView(QWidget):
             if hasattr(self, "btn_formulas"):
                 self.btn_formulas.hide()
             return
+        try:
+            store.check_and_apply_paused_decks_timeline_shift()
+        except Exception:
+            pass
         self._update_bookmark_button()
         self._update_pause_button()
-        is_paused = bool(self.deck.get("is_paused", False))
+        from data_manager import is_deck_effective_paused
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
+        is_paused = is_deck_effective_paused(self.deck, all_decks)
         if is_paused:
             self.lbl_deck.setText(f"⏸️ {self.deck.get('name', '?')} (PAUSED)")
         else:
@@ -1382,7 +1449,9 @@ class DeckView(QWidget):
             f"Cards:{len(all_cards)}  🔴Due:{due_c}  Reviews:{total_rev}"
         )
 
-        is_paused = bool(self.deck.get("is_paused", False)) if self.deck else False
+        from data_manager import is_deck_effective_paused
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
+        is_paused = is_deck_effective_paused(self.deck, all_decks) if self.deck else False
         if is_paused:
             self.lbl_deck_sub.setText(f"SCROLLS: {len(all_cards)} ❖ DUE: {due_c} (⏸️ PAUSED)")
             self.lbl_deck_sub.setStyleSheet("color: #FFB86C; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
@@ -1815,6 +1884,10 @@ class DeckView(QWidget):
     def _review_due(self, *args, order_mode=None):
         if not self.deck:
             return
+        try:
+            store.check_and_apply_paused_decks_timeline_shift()
+        except Exception:
+            pass
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
@@ -1924,23 +1997,31 @@ class DeckView(QWidget):
     def _collect_new_by_pdf(self, deck):
         """Recursively collect only brand new (unreviewed) cards from deck+children in DFS tree order."""
         from collections import OrderedDict
+        from data_manager import is_deck_effective_paused
         groups = OrderedDict()
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
 
-        def _walk(d):
-            if d.get("is_paused", False):
-                return
-            did = d.get("_id")
-            for card in d.get("cards", []):
-                if not card.get("is_formula", False) and self._card_is_new(card):
-                    asset = (
-                        card.get("pdf_path") or card.get("image_path") or "__text__"
-                    )
-                    key = (did, asset)
-                    groups.setdefault(key, []).append(card)
+        def _walk(d, parent_is_paused=False):
+            if "is_paused" in d and d["is_paused"] is not None:
+                is_paused = bool(d["is_paused"])
+            else:
+                is_paused = parent_is_paused
+
+            if not is_paused:
+                did = d.get("_id")
+                for card in d.get("cards", []):
+                    if not card.get("is_formula", False) and self._card_is_new(card):
+                        asset = (
+                            card.get("pdf_path") or card.get("image_path") or "__text__"
+                        )
+                        key = (did, asset)
+                        groups.setdefault(key, []).append(card)
+
             for child in d.get("children", []):
-                _walk(child)
+                _walk(child, parent_is_paused=is_paused)
 
-        _walk(deck)
+        root_paused = is_deck_effective_paused(deck, all_decks)
+        _walk(deck, parent_is_paused=root_paused)
         return list(groups.values())
 
     @trace_perf

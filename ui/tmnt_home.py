@@ -422,27 +422,6 @@ class TMNTStatCard(QFrame):
         self._scale = _tmnt_scale(data)
         self._setup(title, subtitle, color)
         self.setFixedHeight(_px(100, self._scale))
-        _apply_glow(self, color, blur=_px(18, self._scale), alpha=55)
-
-    def enterEvent(self, event):
-        super().enterEvent(event)
-        eff = self.graphicsEffect()
-        if eff and _home_animations_enabled():
-            self._hover_glow = QPropertyAnimation(eff, b"blurRadius", self)
-            self._hover_glow.setDuration(180)
-            self._hover_glow.setStartValue(eff.blurRadius())
-            self._hover_glow.setEndValue(float(_px(28, self._scale)))
-            self._hover_glow.start()
-
-    def leaveEvent(self, event):
-        super().leaveEvent(event)
-        eff = self.graphicsEffect()
-        if eff and _home_animations_enabled():
-            self._hover_glow = QPropertyAnimation(eff, b"blurRadius", self)
-            self._hover_glow.setDuration(180)
-            self._hover_glow.setStartValue(eff.blurRadius())
-            self._hover_glow.setEndValue(float(_px(18, self._scale)))
-            self._hover_glow.start()
 
     def _setup(self, title, subtitle, color):
         app = QApplication.instance()
@@ -456,9 +435,10 @@ class TMNTStatCard(QFrame):
             QFrame#tmnt_stat_card1 {{
                 background: {T_CARD};
                 border: 1px solid {T_BORDER};
+                border-left: 3px solid {color};
                 border-radius: 4px;
             }}
-            QFrame#tmnt_stat_card1:hover {{ background: #2b2f3b; border-color: {T_BORDER}; }}
+            QFrame#tmnt_stat_card1:hover {{ background: #2b2f3b; border-color: {color}; }}
             QLabel {{ background: transparent; border: none; }}
         """,
                 self._scale,
@@ -685,13 +665,11 @@ class TMNTMissionBanner(QFrame):
 
         base_w = _px(240, self._scale)
         base_h = _px(76, self._scale)
-        max_w = int(base_w * 1.20)
-        max_h = int(base_h * 1.20)
 
         self.btn_train_container = QWidget()
         self.btn_train_container.setObjectName("btnTrainContainer")
         self.btn_train_container.setStyleSheet("background:transparent; border:none;")
-        self.btn_train_container.setFixedSize(max_w, max_h)
+        self.btn_train_container.setFixedSize(base_w, base_h)
 
         self.btn_train = HTMLButton(btn_train_html, self.btn_train_container)
         self.btn_train.setObjectName("btnTrain")
@@ -713,7 +691,7 @@ class TMNTMissionBanner(QFrame):
             )
         )
         self.btn_train.setFixedSize(base_w, base_h)
-        self.btn_train.move((max_w - base_w) // 2, (max_h - base_h) // 2)
+        self.btn_train.move(0, 0)
         self.btn_train.clicked.connect(self.train_clicked)
         _apply_glow(self.btn_train, "#72FF4F", blur=_px(16, self._scale), alpha=100)
 
@@ -829,12 +807,6 @@ class TMNTMissionBanner(QFrame):
         self.btn_selected.setMinimumHeight(_px(36, self._scale))
 
     def set_animation_enabled(self, enabled):
-        try:
-            from ui.canvas.retro_effects import animations_suspended
-            if animations_suspended():
-                enabled = False
-        except Exception:
-            pass
         if enabled:
             if not self._glow_timer.isActive():
                 self._glow_timer.start()
@@ -844,10 +816,10 @@ class TMNTMissionBanner(QFrame):
 
     def sync_timer(self):
         try:
-            from ui.canvas.retro_effects import animations_suspended
-            self.set_animation_enabled(not animations_suspended())
+            from ui.canvas.retro_effects import animations_suspended, _home_animations_enabled
+            self.set_animation_enabled(not animations_suspended() and _home_animations_enabled())
         except Exception:
-            self.set_animation_enabled(True)
+            self.set_animation_enabled(False)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -859,40 +831,31 @@ class TMNTMissionBanner(QFrame):
         super().hideEvent(event)
 
     def _tick_glow(self):
+        try:
+            from ui.canvas.retro_effects import animations_suspended, _home_animations_enabled
+            if animations_suspended() or not _home_animations_enabled():
+                return
+        except Exception:
+            pass
+
         self._glow_step += 1
         t = (math.sin(self._glow_step * math.pi / 15.0) + 1.0) / 2.0
         eff = self.btn_train.graphicsEffect()
         if eff and isinstance(eff, QGraphicsDropShadowEffect):
-            blur = _px(16 + 24 * t, self._scale)
-            eff.setBlurRadius(blur)
-            alpha = int(100 + 120 * t)
             glow_color = QColor("#72FF4F")
-            glow_color.setAlpha(alpha)
+            glow_color.setAlpha(int(80 + 90 * t))
             eff.setColor(glow_color)
 
-        # Pulse scale
-        scale_factor = 1.0 + 0.15 * t
-        base_w = _px(240, self._scale)
-        base_h = _px(76, self._scale)
-        w = int(base_w * scale_factor)
-        h = int(base_h * scale_factor)
-        self.btn_train.setFixedSize(w, h)
-        max_w = int(base_w * 1.20)
-        max_h = int(base_h * 1.20)
-        self.btn_train.move((max_w - w) // 2, (max_h - h) // 2)
-
-        # Rapid Heartbeat Pulse animation on the chosen Solid Orange Resume button
-        eff = self.btn_resume.graphicsEffect()
-        if eff and isinstance(eff, QGraphicsDropShadowEffect):
+        # Heartbeat pulse animation on resume button
+        eff2 = self.btn_resume.graphicsEffect()
+        if eff2 and isinstance(eff2, QGraphicsDropShadowEffect):
             if self.btn_resume.isEnabled():
                 t2 = (math.sin(self._glow_step * math.pi / 6.0) + 1.0) / 2.0
-                eff.setBlurRadius(_px(12 + 18 * t2, self._scale))
                 glow_c = QColor("#ff9f43")
-                glow_c.setAlpha(int(120 + 100 * t2))
-                eff.setColor(glow_c)
+                glow_c.setAlpha(int(110 + 80 * t2))
+                eff2.setColor(glow_c)
             else:
-                eff.setBlurRadius(0)
-                eff.setColor(QColor(0, 0, 0, 0))
+                eff2.setColor(QColor(0, 0, 0, 0))
 
     def set_resume_enabled(self, enabled):
         self.btn_resume.setEnabled(enabled)
@@ -1787,6 +1750,50 @@ class TMNTDeckEngine(DeckTree):
                     home._open_card_browser()
                     event.accept()
                     return
+        if shortcut_manager.event_matches(event, "home.edit_card") or (key == Qt.Key_E and (event.modifiers() & Qt.ControlModifier) and not (event.modifiers() & (Qt.AltModifier | Qt.MetaModifier))):
+            sel_deck = getattr(self, "_selected_deck", None)
+            if not sel_deck and hasattr(self, "currentItem"):
+                cur_item = self.currentItem()
+                if cur_item and hasattr(self, "_get_deck_from_item"):
+                    sel_deck = self._get_deck_from_item(cur_item)
+            p = self.parent()
+            main = None
+            while p is not None:
+                if not sel_deck:
+                    sel_deck = getattr(p, "_selected_deck", None)
+                if hasattr(p, "main") and getattr(p, "main", None):
+                    main = p.main
+                    break
+                p = p.parent()
+            if main:
+                if sel_deck and getattr(main, "deck", None) != sel_deck:
+                    main.load_deck(sel_deck, getattr(main, "_data", None) or getattr(self, "_data", None))
+                item = main.card_list.currentItem()
+                if not item and main.card_list.count() > 0:
+                    item = main.card_list.item(0)
+                    main.card_list.setCurrentItem(item)
+                if item:
+                    main._edit_card(item)
+                    event.accept()
+                    return
+                elif getattr(main, "deck", None):
+                    def _find_card(d):
+                        if d.get("cards"):
+                            return d["cards"][0], d
+                        for child in d.get("children", []):
+                            r = _find_card(child)
+                            if r:
+                                return r
+                        return None, None
+                    sub_card, sub_d = _find_card(main.deck)
+                    if sub_card and sub_d:
+                        main._edit_card_by_dict(sub_card, sub_d)
+                        event.accept()
+                        return
+                    else:
+                        main._add_card()
+                        event.accept()
+                        return
         if key in (Qt.Key_Delete, Qt.Key_Backspace):
             self._delete_selected()
             event.accept()
@@ -1799,8 +1806,11 @@ class TMNTDeckEngine(DeckTree):
                 return
         super().keyPressEvent(event)
 
-    def _make_item(self, deck, depth=0):
-        is_paused = bool(deck.get("is_paused", False))
+    def _make_item(self, deck, depth=0, parent_is_paused=False):
+        if "is_paused" in deck and deck["is_paused"] is not None:
+            is_paused = bool(deck["is_paused"])
+        else:
+            is_paused = parent_is_paused
         due = getattr(self, "_due_counts", {}).get(deck.get("_id"), 0)
         item = QTreeWidgetItem([deck["name"].upper()])
         item.setToolTip(0, f"{deck.get('name', '')} (⏸️ PAUSED - {due} Due Backlog)" if is_paused else deck.get("name", ""))
@@ -1816,7 +1826,7 @@ class TMNTDeckEngine(DeckTree):
         item.setData(0, Qt.UserRole + 5, deck.get("bookmarked", False))
         item.setData(0, Qt.UserRole + 6, is_paused)
         for child in deck.get("children", []):
-            item.addChild(self._make_item(child, depth + 1))
+            item.addChild(self._make_item(child, depth + 1, parent_is_paused=is_paused))
         return item
 
     def _blink_tick(self):
@@ -2607,7 +2617,8 @@ class TMNTMainContent(DeckView):
         # Create a container widget for the actual content
         content_widget = QWidget()
         content_widget.setObjectName("tmnt_main_content_widget")
-        content_widget.setStyleSheet("QWidget#tmnt_main_content_widget { background: transparent; }")
+        content_widget.setStyleSheet(f"QWidget#tmnt_main_content_widget {{ background: {T_BG}; }}")
+        scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_active)
 
         L = QVBoxLayout(content_widget)
         L.setContentsMargins(
@@ -2716,7 +2727,6 @@ class TMNTMainContent(DeckView):
             )
         )
         self.btn_add.clicked.connect(self._add_card)
-        _apply_glow(self.btn_add, T_GREEN, blur=_px(22, self._scale), alpha=95)
         buttons_row.addWidget(self.btn_add)
 
         self.btn_add_text = QPushButton(btn_add_text_label)
@@ -2740,7 +2750,6 @@ class TMNTMainContent(DeckView):
             )
         )
         self.btn_add_text.clicked.connect(self._add_text_card)
-        _apply_glow(self.btn_add_text, T_PURPLE, blur=_px(22, self._scale), alpha=95)
         buttons_row.addWidget(self.btn_add_text)
 
         self.btn_import = QPushButton("📥  IMPORT")
@@ -2764,7 +2773,6 @@ class TMNTMainContent(DeckView):
             )
         )
         self.btn_import.clicked.connect(self._import_cards)
-        _apply_glow(self.btn_import, T_GREEN, blur=_px(22, self._scale), alpha=95)
         buttons_row.addWidget(self.btn_import)
 
         # Set explicitly in Python to prevent sizeHint layout calculation errors and clipping
@@ -2972,7 +2980,6 @@ class TMNTMainContent(DeckView):
             )
         )
         self.btn_delete_tmnt.clicked.connect(self._delete_card)
-        _apply_glow(self.btn_delete_tmnt, T_RED, blur=_px(18, self._scale), alpha=100)
         
         del_font = QFont(del_font_family)
         del_font.setPixelSize(_px(del_font_size, self._scale))
@@ -2991,6 +2998,29 @@ class TMNTMainContent(DeckView):
         main_layout.addWidget(scroll)
 
         self._sync_action_state()
+
+    def _on_scroll_active(self):
+        try:
+            from ui.canvas.retro_effects import suspend_animations
+            if not getattr(self, "_is_scrolling", False):
+                self._is_scrolling = True
+                suspend_animations(self)
+            if not hasattr(self, "_scroll_resume_timer"):
+                self._scroll_resume_timer = QTimer(self)
+                self._scroll_resume_timer.setSingleShot(True)
+                self._scroll_resume_timer.setInterval(250)
+                self._scroll_resume_timer.timeout.connect(self._on_scroll_finished)
+            self._scroll_resume_timer.start()
+        except Exception:
+            pass
+
+    def _on_scroll_finished(self):
+        self._is_scrolling = False
+        try:
+            from ui.canvas.retro_effects import resume_animations
+            resume_animations(self)
+        except Exception:
+            pass
 
     def set_theme(self, theme):
         # Override DeckView's set_theme so it doesn't mess with our TMNT layout
@@ -5257,6 +5287,11 @@ class TMNTHomeLayout(QWidget):
                 # Release any fixed width so stretch takes over
                 self.sidebar.setMinimumWidth(0)
                 self.sidebar.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
+        try:
+            from ui.canvas.retro_effects import resume_animations
+            resume_animations(self)
+        except Exception:
+            pass
 
     def _expand_sidebar(self):
         if self._sidebar_expanded:
@@ -5265,6 +5300,12 @@ class TMNTHomeLayout(QWidget):
         body = getattr(self, "_body_w", None)
         if not body or not hasattr(self, "_sidebar_anim"):
             return
+
+        try:
+            from ui.canvas.retro_effects import suspend_animations
+            suspend_animations(self)
+        except Exception:
+            pass
 
         # Save current geometry before removing from layout
         saved_geom = self.sidebar.geometry()
@@ -5293,6 +5334,12 @@ class TMNTHomeLayout(QWidget):
         body = getattr(self, "_body_w", None)
         if not body or not hasattr(self, "_sidebar_anim"):
             return
+
+        try:
+            from ui.canvas.retro_effects import suspend_animations
+            suspend_animations(self)
+        except Exception:
+            pass
 
         # Animate width back to 30% of body (matches SIDEBAR_STRETCH)
         start_w = self.sidebar.width()
@@ -5363,13 +5410,36 @@ class TMNTHomeLayout(QWidget):
             self._apply_deck_history(redo=True)
             event.accept()
             return
-        if shortcut_manager.event_matches(event, "home.edit_card"):
+        if shortcut_manager.event_matches(event, "home.edit_card") or (event.key() == Qt.Key_E and (event.modifiers() & Qt.ControlModifier) and not (event.modifiers() & (Qt.AltModifier | Qt.MetaModifier))):
             if self.main and self.main.isVisible():
+                if not getattr(self.main, "deck", None) and hasattr(self, "sidebar") and getattr(self.sidebar, "_selected_deck", None):
+                    self.main.load_deck(self.sidebar._selected_deck, getattr(self.main, "_data", None) or getattr(self, "_data", None))
                 item = self.main.card_list.currentItem()
+                if not item and self.main.card_list.count() > 0:
+                    item = self.main.card_list.item(0)
+                    self.main.card_list.setCurrentItem(item)
                 if item:
                     self.main._edit_card(item)
                     event.accept()
                     return
+                elif getattr(self.main, "deck", None):
+                    def _find_card(d):
+                        if d.get("cards"):
+                            return d["cards"][0], d
+                        for child in d.get("children", []):
+                            r = _find_card(child)
+                            if r:
+                                return r
+                        return None, None
+                    sub_card, sub_d = _find_card(self.main.deck)
+                    if sub_card and sub_d:
+                        self.main._edit_card_by_dict(sub_card, sub_d)
+                        event.accept()
+                        return
+                    else:
+                        self.main._add_card()
+                        event.accept()
+                        return
         if shortcut_manager.event_matches(event, "home.add_card"):
             if self.main and self.main.isVisible() and self.main.btn_add.isEnabled():
                 self.main._add_card()

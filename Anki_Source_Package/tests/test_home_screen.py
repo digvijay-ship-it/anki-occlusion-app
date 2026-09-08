@@ -229,7 +229,25 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         self.assertEqual(self.home_screen._btn_shortcuts.text(), "⌨ SHORTCUTS")
         self.assertIsNotNone(self.home_screen._classic_settings_panel)
 
-    def test_e_key_press_edits_card_when_deck_selected(self):
+    def test_ctrl_e_key_press_edits_card_when_deck_selected(self):
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_E, Qt.ControlModifier)
+        
+        deck_view = MagicMock()
+        deck_view.isVisible.return_value = True
+        item = MagicMock()
+        deck_view.card_list.currentItem.return_value = item
+        
+        self.home_screen.deck_view = deck_view
+        self.home_screen._deck_view = deck_view
+        self.home_screen._active_review = None
+        
+        self.home_screen.keyPressEvent(event)
+        deck_view._edit_card.assert_called_once_with(item)
+
+    def test_bare_e_key_does_not_trigger_edit(self):
         from PyQt5.QtGui import QKeyEvent
         from PyQt5.QtCore import QEvent, Qt
         
@@ -244,13 +262,51 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         self.home_screen._deck_view = deck_view
         self.home_screen._active_review = None
         
-        def mock_event_matches(event_obj, action_id):
-            return action_id == "home.edit_card"
-            
-        with patch("ui.home_screen.shortcut_manager.event_matches", side_effect=mock_event_matches):
-            self.home_screen.keyPressEvent(event)
-            
-        deck_view._edit_card.assert_called_once_with(item)
+        self.home_screen.keyPressEvent(event)
+        deck_view._edit_card.assert_not_called()
+
+    def test_ctrl_e_subdeck_card_fallback_opens_mask_editor(self):
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_E, Qt.ControlModifier)
+        
+        deck_view = MagicMock()
+        deck_view.isVisible.return_value = True
+        deck_view.card_list.currentItem.return_value = None
+        deck_view.card_list.count.return_value = 0
+        child_card = {"_id": 999, "pdf_path": "test.pdf"}
+        child_deck = {"_id": 2, "name": "Child", "cards": [child_card]}
+        parent_deck = {"_id": 1, "name": "Parent", "cards": [], "children": [child_deck]}
+        deck_view.deck = parent_deck
+        
+        self.home_screen.deck_view = deck_view
+        self.home_screen._deck_view = deck_view
+        self.home_screen._active_review = None
+        
+        self.home_screen.keyPressEvent(event)
+        deck_view._edit_card_by_dict.assert_called_once_with(child_card, child_deck)
+
+    def test_ctrl_e_empty_deck_opens_add_card_not_add_text_card(self):
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_E, Qt.ControlModifier)
+        
+        deck_view = MagicMock()
+        deck_view.isVisible.return_value = True
+        deck_view.card_list.currentItem.return_value = None
+        deck_view.card_list.count.return_value = 0
+        empty_deck = {"_id": 1, "name": "Empty Deck", "cards": [], "children": []}
+        deck_view.deck = empty_deck
+        
+        self.home_screen.deck_view = deck_view
+        self.home_screen._deck_view = deck_view
+        self.home_screen._active_review = None
+        
+        self.home_screen.keyPressEvent(event)
+        deck_view._add_card.assert_called_once()
+        deck_view._add_text_card.assert_not_called()
 
     def test_classic_settings_panel_toggles_and_shows_archive_controls(self):
         self.home_screen._toggle_classic_settings_panel()
@@ -337,23 +393,28 @@ class HomeScreenClassicUiTests(unittest.TestCase):
         refresh.assert_not_called()
         dialog_cls.assert_not_called()
 
-    def test_startup_review_recovery_with_blocked_event_still_opens_dialog(self):
+    def test_startup_review_recovery_with_missing_card_does_not_open_dialog(self):
         summary = {
             "drafts": [],
             "review_events": [{"event_id": "r1", "status": "missing_card"}],
         }
-        dialog = MagicMock()
-        dialog.action = "close"
+        empty_summary = {"drafts": [], "review_events": []}
+        result = {"applied": 0, "already_applied": 0, "blocked": []}
 
-        with patch("ui.home_screen.recovery_manager.scan_recovery", return_value=summary), \
-             patch("ui.home_screen.recovery_manager.apply_pending_review_events") as apply_events, \
-             patch("ui.home_screen.RecoveryDialog", return_value=dialog) as dialog_cls:
+        with patch(
+            "ui.home_screen.recovery_manager.scan_recovery",
+            side_effect=[summary, empty_summary],
+        ), patch(
+            "ui.home_screen.recovery_manager.apply_pending_review_events",
+            return_value=result,
+        ) as apply_events, patch(
+            "ui.home_screen.RecoveryDialog"
+        ) as dialog_cls:
             shown = self.home_screen.show_recovery_center(startup=True)
 
         self.assertTrue(shown)
-        apply_events.assert_not_called()
-        dialog_cls.assert_called_once()
-        dialog.exec_.assert_called_once_with()
+        apply_events.assert_called_once()
+        dialog_cls.assert_not_called()
 
     def test_review_cancel_without_changes_does_not_force_save(self):
         class FakeReview(QWidget):

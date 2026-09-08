@@ -427,6 +427,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         log_memory("App Cold Start - Init")
+        from services.dialog_key_filter import install_dialog_key_filter
+        install_dialog_key_filter()
         initialize_mission_archive()
         self.setWindowTitle("Anki Occlusion")
         self.setMinimumSize(1100, 720)
@@ -514,8 +516,32 @@ class MainWindow(QMainWindow):
         else:
             QTimer.singleShot(350, self._show_recovery_prompt)
 
+        self._last_calendar_date = date.today()
+        self._midnight_check_timer = QTimer(self)
+        self._midnight_check_timer.setInterval(60000)  # Check every 60 seconds
+        self._midnight_check_timer.timeout.connect(self._check_midnight_rollover)
+        self._midnight_check_timer.start()
+
         self._data_thread = None
         log_memory("App Ready - Home Screen Loaded")
+
+    def _check_midnight_rollover(self):
+        try:
+            today = date.today()
+            if today != getattr(self, "_last_calendar_date", None):
+                self._last_calendar_date = today
+                shifted = store.check_and_apply_paused_decks_timeline_shift()
+                if shifted > 0:
+                    home = self.centralWidget()
+                    if hasattr(home, "refresh"):
+                        home.refresh()
+        except Exception as e:
+            print(f"[DEBUG][MainWindow] Midnight rollover check failed: {e}")
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self._check_midnight_rollover()
 
     def _on_data_load_error(self, err_msg):
         print(f"[main] Failed to load data: {err_msg}")
@@ -768,6 +794,13 @@ class MainWindow(QMainWindow):
             e.accept()
             return
 
+        if shortcut_manager.event_matches(e, "home.browse_cards"):
+            if home is not None and getattr(home, "_active_review", None) is None:
+                if hasattr(home, "_open_card_browser"):
+                    home._open_card_browser()
+                    e.accept()
+                    return
+
         if key == Qt.Key_Escape:
             if home is not None:
                 # 1. Classic Settings Panel
@@ -915,6 +948,8 @@ if __name__ == "__main__":
     _os.environ.setdefault("QT_MULTIMEDIA_PREFERRED_PLUGINS", "windowsmediafoundation")
 
     app = QApplication(sys.argv)
+    from services.dialog_key_filter import install_dialog_key_filter
+    install_dialog_key_filter(app)
     load_custom_fonts()
     app.setStyleSheet(SS)
     app.setApplicationName("Anki Occlusion")

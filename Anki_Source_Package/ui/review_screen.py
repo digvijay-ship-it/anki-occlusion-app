@@ -3107,6 +3107,10 @@ class ReviewScreen(QWidget):
             return
             
         target_box = card.get("boxes")[box_idx_to_edit]
+        mask_num = target_box.get("mask_num") if hasattr(target_box, "get") else getattr(target_box, "mask_num", None)
+        mask_num = mask_num or (box_idx_to_edit + 1)
+        custom_lbl = target_box.get("label") if hasattr(target_box, "get") else getattr(target_box, "label", "")
+        box_display_lbl = custom_lbl or f"Mask #{mask_num}"
         
         current_note = ""
         if hasattr(target_box, "get"):
@@ -3117,7 +3121,7 @@ class ReviewScreen(QWidget):
         current_note = current_note or ""
         
         dialog = QuickNoteDialog(current_note, parent=self)
-        dialog.setWindowTitle(f"Edit Mask Note / Hint - Mask #{box_idx_to_edit + 1}")
+        dialog.setWindowTitle(f"Edit Mask Note / Hint - {box_display_lbl}")
         accepted = (dialog.exec_() == QDialog.Accepted)
         
         if getattr(self, "_was_ink_active_before_ctrl", False):
@@ -3174,7 +3178,7 @@ class ReviewScreen(QWidget):
                 if not self._reveal_bar.isVisible():
                     self._set_hint_panel_visible(True)
             else:
-                self._show_review_toast(f"💾 Saved note for Mask #{box_idx_to_edit + 1}!")
+                self._show_review_toast(f"💾 Saved note for {box_display_lbl}!")
                 
         dialog.deleteLater()
 
@@ -3205,6 +3209,10 @@ class ReviewScreen(QWidget):
         
         target_box = card.get("boxes")[box_idx]
         gid = target_box.get("group_id") if hasattr(target_box, "get") else getattr(target_box, "group_id", None)
+        mask_num = target_box.get("mask_num") if hasattr(target_box, "get") else getattr(target_box, "mask_num", None)
+        mask_num = mask_num or (box_idx + 1)
+        custom_lbl = target_box.get("label") if hasattr(target_box, "get") else getattr(target_box, "label", "")
+        box_display_lbl = custom_lbl or f"Mask #{mask_num}"
         
         is_active = False
         if isinstance(current_box_idx, int) and current_box_idx == box_idx:
@@ -3215,9 +3223,9 @@ class ReviewScreen(QWidget):
         if is_active:
             label_text = "💡 Edit Hint for Active Mask (Current)"
         elif gid:
-            label_text = f"✏️ Edit Hint for Group '{gid}' (Mask #{box_idx + 1})"
+            label_text = f"✏️ Edit Hint for Group '{gid}' ({box_display_lbl})"
         else:
-            label_text = f"✏️ Edit Hint for Mask #{box_idx + 1}"
+            label_text = f"✏️ Edit Hint for {box_display_lbl}"
             
         action_edit = menu.addAction(label_text)
         action_cancel = menu.addAction("✕ Cancel")
