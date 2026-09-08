@@ -306,9 +306,9 @@ class MathScratchpad(QWidget):
             min_y = min(p.y() for p in all_pts)
             max_y = max(p.y() for p in all_pts)
             h = max_y - min_y
-            w = max(8, min(14, int(h * 0.18)))
+            w = max(4, min(8, int(h * 0.11)))
         else:
-            w = 9
+            w = 6
 
         img = Image.new("RGB", (self.width(), self.height()), "white")
         draw = PilDraw.Draw(img)
@@ -317,11 +317,11 @@ class MathScratchpad(QWidget):
                 continue
             pts = [(int(p.x()), int(p.y())) for p in stroke]
             if len(pts) == 1:
-                r = max(3, w // 2)
+                r = max(2, w // 2)
                 draw.ellipse((pts[0][0] - r, pts[0][1] - r, pts[0][0] + r, pts[0][1] + r), fill="black")
             else:
                 draw.line(pts, fill="black", width=w, joint="curve")
-                r = max(2, w // 2)
+                r = max(1, w // 2)
                 for pt in pts:
                     draw.ellipse((pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r), fill="black")
         self.drawing_finished.emit(img)
@@ -958,6 +958,10 @@ class MathTrainerPage(QWidget):
             self._copy_misread_to_clipboard()
             e.accept()
             return
+        elif e.key() == Qt.Key_R and (e.modifiers() & Qt.ControlModifier):
+            self._on_manual_reset_streak()
+            e.accept()
+            return
         elif e.key() == Qt.Key_Space:
             if getattr(self, "_is_revealed", False):
                 self._gen_q()
@@ -976,6 +980,9 @@ class MathTrainerPage(QWidget):
         if e.type() == QEvent.KeyPress:
             if e.key() == Qt.Key_C and (e.modifiers() & Qt.ControlModifier):
                 self._copy_misread_to_clipboard()
+                return True
+            elif e.key() == Qt.Key_R and (e.modifiers() & Qt.ControlModifier):
+                self._on_manual_reset_streak()
                 return True
             elif e.key() == Qt.Key_Space:
                 if getattr(self, "_is_revealed", False):
@@ -1731,6 +1738,20 @@ class MathTrainerPage(QWidget):
         self._clear_btn.clicked.connect(self._on_clear_clicked)
         self._sp_bar.addWidget(self._clear_btn)
 
+        self._reset_streak_btn = QPushButton("↺ RESET STREAK (Ctrl+R)")
+        self._reset_streak_btn.setFixedHeight(26)
+        self._reset_streak_btn.setFont(QFont(self._hf, 8, QFont.Bold))
+        self._reset_streak_btn.setCursor(Qt.PointingHandCursor)
+        self._reset_streak_btn.setToolTip("Reset this question's streak and combo to 0")
+        self._reset_streak_btn.setStyleSheet(
+            f"QPushButton{{font-family: {self._hf}; font-size: 8px; font-weight: bold; background:transparent;"
+            f"border:1px solid {self._p.get('C_ORANGE', _h(ORANG))};color:{self._p.get('C_ORANGE', _h(ORANG))};"
+            f"border-radius:3px;padding:0 10px;letter-spacing:1px;}}"
+            f"QPushButton:hover{{background:rgba(255,184,108,0.15);}}"
+        )
+        self._reset_streak_btn.clicked.connect(self._on_manual_reset_streak)
+        self._sp_bar.addWidget(self._reset_streak_btn)
+
         self._copy_misread_btn = QPushButton("📸 COPY MISREAD (Ctrl+C)")
         self._copy_misread_btn.setFixedHeight(26)
         self._copy_misread_btn.setFont(QFont(self._hf, 8, QFont.Bold))
@@ -1956,6 +1977,22 @@ class MathTrainerPage(QWidget):
             self._side_scratchpad.clear()
             self._side_scratchpad._clear_on_next_press = False
 
+    def _on_manual_reset_streak(self):
+        if hasattr(self, "_current_q_item") and self._current_q_item is not None:
+            self._item_streaks[self._current_q_item] = 0
+        self._streak = 0
+        self._combo_val.setText("0")
+        self._combo_val.setStyleSheet(
+            f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;"
+        )
+        self._update_mastery_ui()
+        self._sb_status.setText("STREAK RESET")
+        scale = getattr(self, "_font_size", 11.0) / 11.0
+        self._fb_lbl.setText("↺ STREAK & COMBO RESET")
+        self._fb_lbl.setStyleSheet(
+            f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(20*scale)}px;"
+        )
+
     def _on_reveal_clicked(self):
         if getattr(self, "_is_revealed", False):
             self._gen_q()
@@ -1963,7 +2000,12 @@ class MathTrainerPage(QWidget):
             self._reveal()
 
     def _copy_misread_to_clipboard(self):
-        import datetime, os
+        import datetime, os, time
+        now_ts = time.time()
+        last_ts = getattr(self, "_last_misread_copy_time", 0.0)
+        if now_ts - last_ts < 0.6:
+            return
+        self._last_misread_copy_time = now_ts
         
         # 1. Find strokes from active pads or fallback to last completed strokes
         strokes = []
@@ -2894,14 +2936,10 @@ class MathTrainerPage(QWidget):
                     self._wrong_count += 1
                 self._q_attempted = True
 
-                # Soft penalty on wrong attempt: preserve pre-error streak and decrement by 1 instead of wipeout
-                if hasattr(self, "_current_q_item") and self._current_q_item is not None:
-                    cur_s = self._item_streaks.get(self._current_q_item, 0)
-                    self._pre_error_streak = cur_s
-                    self._item_streaks[self._current_q_item] = max(0, cur_s - 1)
+                # User-controlled streak: app does NOT automatically decrement or reset streak/combo on wrong attempt
                 self._update_mastery_ui()
 
-                # URGENT RETRY: Re-queue after 1 intervening question (self._qn + 2)
+                # Re-queue after 1 intervening question (self._qn + 2) for practice
                 self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
                 self._priority_queue.append({
                     "item": self._current_q_item,
@@ -2909,11 +2947,6 @@ class MathTrainerPage(QWidget):
                     "reason": "wrong"
                 })
 
-                self._streak = 0
-                self._combo_val.setText("0")
-                self._combo_val.setStyleSheet(
-                    f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;"
-                )
                 self._ans_in.setStyleSheet(
                     f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};font-size:{int(52*scale)}pt;"
                     f"border:{int(2*scale)}px solid {self._p.get('C_RED', _h(RED))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
@@ -2922,7 +2955,7 @@ class MathTrainerPage(QWidget):
                 self._fb_lbl.setStyleSheet(
                     f"color:{self._p.get('C_RED', _h(RED))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(24*scale)}px;"
                 )
-                self._sb_status.setText("COMBO BROKEN")
+                self._sb_status.setText("ADJUST ANSWER")
                 self._show_ans_btn.show()
                 self._last_wrong_text = str(v)
                 self._last_stroke_count = len(self._scratchpad._strokes) if hasattr(self, "_scratchpad") and self._scratchpad else 0
@@ -2969,14 +3002,7 @@ class MathTrainerPage(QWidget):
         if not getattr(self, "_q_attempted", False):
             self._wrong_count += 1
         self._q_attempted = True
-        self._streak = 0
-        if hasattr(self, "_current_q_item") and self._current_q_item is not None:
-            self._item_streaks[self._current_q_item] = 0
         self._update_mastery_ui()
-        self._combo_val.setText("0")
-        self._combo_val.setStyleSheet(
-            f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;"
-        )
 
         q = self._q_lbl.text()
         scale = self._font_size / 11.0
@@ -3414,6 +3440,9 @@ class MathTrainerPage(QWidget):
         if hasattr(self, "_clear_btn"):
             self._clear_btn.setFixedHeight(int(26 * scale))
             self._clear_btn.setFont(QFont(self._hf, int(8 * scale), QFont.Bold))
+        if hasattr(self, "_reset_streak_btn"):
+            self._reset_streak_btn.setFixedHeight(int(26 * scale))
+            self._reset_streak_btn.setFont(QFont(self._hf, int(8 * scale), QFont.Bold))
         if hasattr(self, "_copy_misread_btn"):
             self._copy_misread_btn.setFixedHeight(int(26 * scale))
             self._copy_misread_btn.setFont(QFont(self._hf, int(8 * scale), QFont.Bold))

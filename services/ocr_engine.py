@@ -120,15 +120,45 @@ def preprocess_digit_image(pil_img):
                     has_loop = True
                     break
 
-        # 3. Geometric mass distribution (upper half vs lower half)
+        # 3. Lower loop check (crucial to distinguish 8 [2 loops] vs 9 [1 loop])
+        lower = dilated[int(h * 0.40):, :]
+        l_cnts, l_hier = cv2.findContours(lower, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        has_lower_loop = False
+        if l_hier is not None:
+            for i, hi in enumerate(l_hier[0]):
+                if hi[3] != -1 and cv2.contourArea(l_cnts[i]) >= 2:
+                    has_lower_loop = True
+                    break
+
+        # 4. Bottom horizontal baseline span (2 vs 7)
+        # A genuine 2 has a wide flat baseline; a 7 tapers down to a single point
+        bottom_part = dilated[int(h * 0.75):, :]
+        bot_nonzero = np.where(bottom_part > 0)[1]
+        bottom_span = (np.max(bot_nonzero) - np.min(bot_nonzero)) / float(max(1, w)) if len(bot_nonzero) > 0 else 0.0
+
+        # 5. Middle-right profile (3 vs 5)
+        # A 3 has rounded convex lobes on the right; a 5 or S has its stem on the left and upper-middle right open
+        mid_y1, mid_y2 = int(h * 0.35), int(h * 0.65)
+        mid_slice = dilated[mid_y1:mid_y2, :]
+        mid_nonzero_x = np.where(mid_slice > 0)[1] if np.any(mid_slice > 0) else np.array([0])
+        mid_right_max = np.max(mid_nonzero_x) / float(max(1, w)) if len(mid_nonzero_x) > 0 else 0.0
+
+        # 6. Geometric mass distribution (upper half vs lower half)
         h_half = max(1, h // 2)
         upper_pixels = int(cv2.countNonZero(dilated[:h_half, :]))
         lower_pixels = int(cv2.countNonZero(dilated[h_half:, :]))
         total_pixels = max(1, upper_pixels + lower_pixels)
         upper_ratio = upper_pixels / float(total_pixels)
-        meta.append({"has_loop": has_loop, "upper_ratio": upper_ratio, "w": w, "h": h})
+        meta.append({
+            "has_loop": has_loop,
+            "has_lower_loop": has_lower_loop,
+            "bottom_span": bottom_span,
+            "mid_right_max": mid_right_max,
+            "upper_ratio": upper_ratio,
+            "w": w, "h": h
+        })
 
-        # 4. Aspect-ratio preserved resize to 20x20
+        # 7. Aspect-ratio preserved resize to 20x20
         if h > w:
             nh = 20
             nw = max(1, int(round(w * 20.0 / h)))
@@ -137,14 +167,14 @@ def preprocess_digit_image(pil_img):
             nh = max(1, int(round(h * 20.0 / w)))
         resized = cv2.resize(dilated, (nw, nh), interpolation=cv2.INTER_AREA)
 
-        # 5. Pad to 28x28
+        # 8. Pad to 28x28
         pt = (28 - nh) // 2
         pb = 28 - nh - pt
         pl = (28 - nw) // 2
         pr = 28 - nw - pl
         padded = np.pad(resized, ((pt, pb), (pl, pr)), "constant")
 
-        # 6. Center of mass alignment (Yann LeCun MNIST standard)
+        # 9. Center of mass alignment (Yann LeCun MNIST standard)
         M = cv2.moments(padded)
         if M["m00"] > 0:
             cx = M["m10"] / M["m00"]
@@ -191,8 +221,12 @@ def ocr_number(pil_img, _retried=False) -> str:
             probs = out[i]
             top1 = int(np.argmax(probs))
             top2 = int(np.argsort(probs)[::-1][1])
-            has_loop = meta[i]["has_loop"]
-            upper_ratio = meta[i].get("upper_ratio", 0.5)
+            m = meta[i]
+            has_loop = m["has_loop"]
+            has_lower_loop = m.get("has_lower_loop", False)
+            bottom_span = m.get("bottom_span", 0.0)
+            mid_right_max = m.get("mid_right_max", 1.0)
+            upper_ratio = m.get("upper_ratio", 0.5)
             
             pred = top1
             # 1. Disambiguate 3 vs 9 using topological loop invariant
@@ -205,7 +239,18 @@ def ocr_number(pil_img, _retried=False) -> str:
                 pred = 9
             elif top1 == 1 and upper_ratio > 0.52 and (probs[9] > 0.10 or top2 == 9):
                 pred = 9
-            # 3. Disambiguate 5 vs 9 using vertical mass distribution:
+            # 3. Disambiguate 2 vs 7: A digit 2 has a wide flat baseline (> 0.45); a 7 tapers to a narrow tip
+            elif top1 == 7 and bottom_span > 0.45 and (probs[2] > 0.05 or top2 == 2):
+                pred = 2
+            elif top1 == 2 and bottom_span < 0.25 and (probs[7] > 0.10 or top2 == 7):
+                pred = 7
+            # 4. Disambiguate 8 vs 9: An 8 requires two distinct loops. If only upper loop exists and no lower loop, it is a 9
+            elif top1 == 8 and has_loop and not has_lower_loop and (probs[9] > 0.05 or top2 == 9):
+                pred = 9
+            # 5. Disambiguate 3 vs 5: A 5 or S-shaped 5 has middle-right open/empty (< 0.75), whereas a 3 has right lobes
+            elif top1 == 3 and (probs[5] > 0.05 or top2 == 5) and mid_right_max < 0.75:
+                pred = 5
+            # 6. Disambiguate 5 vs 9 using vertical mass distribution:
             # 9 has its loop/mass concentrated in the upper half (> 0.58).
             # 5 has its belly in the lower half (< 0.45).
             elif top1 == 5 and upper_ratio > 0.58 and (probs[9] > 0.05 or top2 == 9):

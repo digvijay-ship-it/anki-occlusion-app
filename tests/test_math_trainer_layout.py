@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 import unittest
+import unittest.mock as mock
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PyQt5.QtWidgets import QApplication
@@ -74,7 +74,7 @@ class TestMathTrainerLayout(unittest.TestCase):
         self.page._start_practice()
         self.assertFalse(self.page._p2.isHidden())
 
-        with unittest.mock.patch.object(self.page, "_prompt_exit_confirmation") as mock_prompt:
+        with mock.patch.object(self.page, "_prompt_exit_confirmation") as mock_prompt:
             self.page._back_btn_p2.click()
             mock_prompt.assert_not_called()
             self.assertTrue(self.page._p2.isHidden())
@@ -89,7 +89,7 @@ class TestMathTrainerLayout(unittest.TestCase):
         self.assertFalse(self.page._p2.isHidden())
 
         # With empty pads, pressing Escape calls _prompt_exit_confirmation
-        with unittest.mock.patch.object(self.page, "_prompt_exit_confirmation") as mock_prompt:
+        with mock.patch.object(self.page, "_prompt_exit_confirmation") as mock_prompt:
             esc_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
             self.page.keyPressEvent(esc_event)
             mock_prompt.assert_called_once()
@@ -102,15 +102,53 @@ class TestMathTrainerLayout(unittest.TestCase):
         self.assertFalse(self.page._p2.isHidden())
 
         # 1. Rejected -> Stays on page 2
-        with unittest.mock.patch("ui.math_trainer.DojoExitConfirmationDialog.exec_", return_value=QDialog.Rejected):
+        with mock.patch("ui.math_trainer.DojoExitConfirmationDialog.exec_", return_value=QDialog.Rejected):
             self.page._prompt_exit_confirmation()
             self.assertFalse(self.page._p2.isHidden())
 
         # 2. Accepted -> Navigates to page 1
-        with unittest.mock.patch("ui.math_trainer.DojoExitConfirmationDialog.exec_", return_value=QDialog.Accepted):
+        with mock.patch("ui.math_trainer.DojoExitConfirmationDialog.exec_", return_value=QDialog.Accepted):
             self.page._prompt_exit_confirmation()
             self.assertTrue(self.page._p2.isHidden())
             self.assertFalse(self.page._p1.isHidden())
+
+    def test_manual_reset_button_and_streak_persistence(self):
+        self.page._mode = 2
+        self.page._rchk = {"11-12": True}
+        self.page._start_practice()
+        
+        # Verify reset button exists
+        self.assertTrue(hasattr(self.page, "_reset_streak_btn"))
+        self.assertIn("RESET", self.page._reset_streak_btn.text())
+
+        # Set up a positive streak on current question and combo
+        cur_item = self.page._current_q_item
+        self.page._item_streaks[cur_item] = 3
+        self.page._streak = 5
+        self.page._combo_val.setText("5")
+        self.page._update_mastery_ui()
+        self.assertIn("3/", self.page._q_mastery_badge.text())
+
+        # 1. Wrong answer entered in _check() -> STREAK AND COMBO MUST PERSIST (not decrease or wipe automatically)
+        wrong_ans = "999" if self.page._ans != 999 else "111"
+        self.page._ans_in.setText(wrong_ans)
+        self.page._check()
+
+        self.assertEqual(self.page._item_streaks[cur_item], 3, "Question streak should NOT decrease automatically on wrong answer")
+        self.assertEqual(self.page._streak, 5, "Combo streak should NOT reset automatically on wrong answer")
+        self.assertIn("3/", self.page._q_mastery_badge.text())
+
+        # 2. Reveal answer -> STREAK AND COMBO MUST PERSIST
+        self.page._reveal()
+        self.assertEqual(self.page._item_streaks[cur_item], 3, "Question streak should NOT reset automatically on reveal")
+        self.assertEqual(self.page._streak, 5, "Combo streak should NOT reset automatically on reveal")
+
+        # 3. Manual Reset button click -> EXPLICIT RESET of both streak and combo
+        self.page._reset_streak_btn.click()
+        self.assertEqual(self.page._item_streaks[cur_item], 0, "Question streak must reset to 0 upon clicking Reset button")
+        self.assertEqual(self.page._streak, 0, "Combo must reset to 0 upon clicking Reset button")
+        self.assertEqual(self.page._combo_val.text(), "0")
+        self.assertIn("0/", self.page._q_mastery_badge.text())
 
 if __name__ == "__main__":
     unittest.main()

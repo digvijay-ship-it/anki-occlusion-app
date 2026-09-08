@@ -323,17 +323,17 @@ class MathTrainerVerificationTests(unittest.TestCase):
                 self.assertIn("STREAK: {}/5".format(streak_step), page._q_mastery_badge.text())
                 self.assertIn(11, page._all_pool)
 
-            # 2. Test soft penalty on wrong answer (e.g. OCR error)
+            # 2. Test that app does NOT decrease or wipe streak on wrong answer (user-controlled streak)
             page._ans_in.setText("999")
             page._check()
-            # Streak must NOT be completely wiped out to 0; soft penalty drops 4 to 3!
-            self.assertEqual(page._item_streaks[11], 3)
-            self.assertIn("STREAK: 3/5", page._q_mastery_badge.text())
+            # Streak must NOT decrease or wipe out; stays intact at 4!
+            self.assertEqual(page._item_streaks[11], 4)
+            self.assertIn("STREAK: 4/5", page._q_mastery_badge.text())
 
-            # 3. Test misread reporting (Ctrl+C): restores pre-error streak and credits as correct!
+            # 3. Test misread reporting (Ctrl+C): advances streak to 5 and retires 11!
             page._scratchpad._strokes = [[QPointF(10, 10), QPointF(20, 20)]]
             page._copy_misread_to_clipboard()
-            # Since pre-error streak was 4, reporting misread credits it to 5 and retires 11!
+            # Since streak was 4, reporting misread credits it to 5 and retires 11!
             self.assertEqual(page._item_streaks[11], 5)
             self.assertIn(11, page._mastered_items)
             self.assertNotIn(11, page._all_pool)
