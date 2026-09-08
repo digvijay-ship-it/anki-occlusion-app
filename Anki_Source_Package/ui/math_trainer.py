@@ -63,10 +63,12 @@ BORDER = QColor("#1A1A26")
 GREEN = QColor("#72FF4F")
 PURPLE = QColor("#A86CFF")
 BLUE = QColor("#4FC3F7")
+CYAN = QColor("#4FC3F7")
 RED = QColor("#FF5555")
 YELLOW = QColor("#F1FA8C")
 TEXT = QColor("#E0E0FF")
 SUBTEXT = QColor("#A6ADC8")
+MUTED = QColor("#6C7086")
 ORANG = QColor("#FF4444")
 
 
@@ -78,9 +80,11 @@ def _h(c):
 class MathScratchpad(QWidget):
     drawing_finished = pyqtSignal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, enable_ocr: bool = True, label: str = "✏  DRAW HERE"):
         super().__init__(parent)
-        self.setMinimumHeight(180)
+        self._enable_ocr = enable_ocr
+        self._label_text = label
+        self.setMinimumHeight(150 if not enable_ocr else 240)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setCursor(Qt.CrossCursor)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)  # Bypass alpha-blending parent compositing
@@ -91,11 +95,11 @@ class MathScratchpad(QWidget):
         self._current_widths = []
         self._canvas_pixmap = None
         self._pen_color = GREEN
-        self._pen_width = 2.5  # Thin ink style
-
+        self._pen_width = 5.2  # Rich, bold ink style
+ 
         self._idle_timer = QTimer(self)
         self._idle_timer.setSingleShot(True)
-        self._idle_timer.setInterval(1200)
+        self._idle_timer.setInterval(1500)
         self._idle_timer.timeout.connect(self._trigger_ocr)
 
     def resizeEvent(self, e):
@@ -103,6 +107,12 @@ class MathScratchpad(QWidget):
         super().resizeEvent(e)
 
     def clear(self):
+        strokes_to_save = [list(s) for s in self._strokes]
+        if getattr(self, "_current", None) and len(self._current) >= 1:
+            strokes_to_save.append(list(self._current))
+        if strokes_to_save:
+            self._last_strokes = strokes_to_save
+            self._last_stroke_widths = [list(w) for w in self._stroke_widths]
         self._strokes = []
         self._stroke_widths = []
         self._current = []
@@ -147,7 +157,7 @@ class MathScratchpad(QWidget):
         label_col = QColor(GREEN)
         label_col.setAlphaF(0.7)
         p.setPen(QPen(label_col))
-        p.drawText(12, 22, "✏  DRAW HERE")
+        p.drawText(12, 22, self._label_text)
         
         p.end()
 
@@ -162,7 +172,7 @@ class MathScratchpad(QWidget):
             self._current_widths = []
             self._last_time = time.time()
             self._last_point = e.localPos()
-            self._current_width = 3.0  # start width
+            self._current_width = 3.6  # rich solid start width
             e.accept()
         else:
             super().mousePressEvent(e)
@@ -171,12 +181,16 @@ class MathScratchpad(QWidget):
         if e.button() == Qt.LeftButton:
             self.clear()
             self._clear_on_next_press = False
-            p = self.parent()
-            while p:
-                if hasattr(p, "_on_clear_clicked"):
-                    p._on_clear_clicked()
-                    break
-                p = p.parent()
+            if self._enable_ocr:
+                p = self.parent()
+                while p:
+                    if hasattr(p, "_clear_main_scratchpad"):
+                        p._clear_main_scratchpad()
+                        break
+                    elif hasattr(p, "_on_clear_clicked"):
+                        p._on_clear_clicked()
+                        break
+                    p = p.parent()
             e.accept()
         else:
             super().mouseDoubleClickEvent(e)
@@ -215,8 +229,8 @@ class MathScratchpad(QWidget):
                 velocity = dist / dt
                 
                 # Map velocity to width (faster -> thinner, slower -> thicker)
-                min_w = 1.2
-                max_w = 4.8
+                min_w = 4.0
+                max_w = 7.5
                 target_w = max_w - (max_w - min_w) * min(1.0, velocity / 1200.0)
                 
                 # Exponential smoothing (alpha = 0.20)
@@ -274,7 +288,8 @@ class MathScratchpad(QWidget):
             self._current = []
             self._current_widths = []
             self.update()
-            self._idle_timer.start()
+            if self._enable_ocr:
+                self._idle_timer.start()
             e.accept()
         else:
             super().mouseReleaseEvent(e)
@@ -290,20 +305,24 @@ class MathScratchpad(QWidget):
             min_y = min(p.y() for p in all_pts)
             max_y = max(p.y() for p in all_pts)
             h = max_y - min_y
-            w = max(4, min(8, int(h * 0.11)))
+            w = max(8, min(14, int(h * 0.18)))
         else:
-            w = 6
+            w = 9
 
         img = Image.new("RGB", (self.width(), self.height()), "white")
         draw = PilDraw.Draw(img)
         for stroke in self._strokes:
-            if len(stroke) < 2:
+            if not stroke:
                 continue
             pts = [(int(p.x()), int(p.y())) for p in stroke]
-            draw.line(pts, fill="black", width=w, joint="curve")
-            r = max(1, w // 2)
-            for pt in pts:
-                draw.ellipse((pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r), fill="black")
+            if len(pts) == 1:
+                r = max(3, w // 2)
+                draw.ellipse((pts[0][0] - r, pts[0][1] - r, pts[0][0] + r, pts[0][1] + r), fill="black")
+            else:
+                draw.line(pts, fill="black", width=w, joint="curve")
+                r = max(2, w // 2)
+                for pt in pts:
+                    draw.ellipse((pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r), fill="black")
         self.drawing_finished.emit(img)
 
 
@@ -584,7 +603,9 @@ class MathTrainerPage(QWidget):
             "squares": {},
             "cubes": {},
             "solo_focus_active": False,
-            "solo_focus_table": 1
+            "solo_focus_table": 1,
+            "selected_timer": 0,
+            "streak_target": 5,
         }
         if os.path.exists(CONFIG_FILE):
             try:
@@ -592,6 +613,8 @@ class MathTrainerPage(QWidget):
                     self._config = json.load(f)
             except:
                 pass
+        self._selected_timer = self._config.get("selected_timer", 0)
+        self._streak_target = self._config.get("streak_target", 5)
 
     def _save_config(self):
         self._config["tables"] = {str(k): int(v) for k, v in self._tchk.items()}
@@ -601,6 +624,8 @@ class MathTrainerPage(QWidget):
         if hasattr(self, "_solo_btn") and hasattr(self, "_solo_combo"):
             self._config["solo_focus_active"] = self._solo_btn.isChecked()
             self._config["solo_focus_table"] = self._solo_combo.currentData()
+        self._config["selected_timer"] = getattr(self, "_selected_timer", 0)
+        self._config["streak_target"] = getattr(self, "_streak_target", 5)
         try:
             with open(CONFIG_FILE, "w") as f:
                 json.dump(self._config, f)
@@ -789,23 +814,66 @@ class MathTrainerPage(QWidget):
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
-            self.go_back()
+            if hasattr(self, "_p2") and not self._p2.isHidden():
+                has_scratch = hasattr(self, "_scratchpad") and self._scratchpad and bool(self._scratchpad._strokes or getattr(self._scratchpad, "_current", None))
+                has_side = hasattr(self, "_side_scratchpad") and self._side_scratchpad and bool(self._side_scratchpad._strokes or getattr(self._side_scratchpad, "_current", None))
+                has_input = hasattr(self, "_ans_in") and bool(self._ans_in.text())
+                if has_scratch or has_side or has_input:
+                    self._on_clear_clicked()
+                else:
+                    self.go_back()
+            else:
+                self.go_back()
             e.accept()
             return
         elif e.key() == Qt.Key_QuoteLeft:
             self._toggle_pen()
             e.accept()
             return
-        elif e.key() == Qt.Key_Space:
-            self._reveal()
+        elif e.key() == Qt.Key_C and (e.modifiers() & Qt.ControlModifier):
+            self._copy_misread_to_clipboard()
             e.accept()
             return
+        elif e.key() == Qt.Key_Space:
+            if getattr(self, "_is_revealed", False):
+                self._gen_q()
+            else:
+                self._reveal()
+            e.accept()
+            return
+        elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if getattr(self, "_is_revealed", False):
+                self._gen_q()
+                e.accept()
+                return
         super().keyPressEvent(e)
 
     def eventFilter(self, obj, e):
-        if hasattr(self, "_ans_in") and obj == self._ans_in and e.type() == QEvent.KeyPress:
-            if e.key() == Qt.Key_Space:
-                self._reveal()
+        if e.type() == QEvent.KeyPress:
+            if e.key() == Qt.Key_C and (e.modifiers() & Qt.ControlModifier):
+                self._copy_misread_to_clipboard()
+                return True
+            elif e.key() == Qt.Key_Space:
+                if getattr(self, "_is_revealed", False):
+                    self._gen_q()
+                else:
+                    self._reveal()
+                return True
+            elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if getattr(self, "_is_revealed", False):
+                    self._gen_q()
+                    return True
+            elif e.key() == Qt.Key_Escape:
+                if hasattr(self, "_p2") and not self._p2.isHidden():
+                    has_scratch = hasattr(self, "_scratchpad") and self._scratchpad and bool(self._scratchpad._strokes or getattr(self._scratchpad, "_current", None))
+                    has_side = hasattr(self, "_side_scratchpad") and self._side_scratchpad and bool(self._side_scratchpad._strokes or getattr(self._side_scratchpad, "_current", None))
+                    has_input = hasattr(self, "_ans_in") and bool(self._ans_in.text())
+                    if has_scratch or has_side or has_input:
+                        self._on_clear_clicked()
+                    else:
+                        self.go_back()
+                else:
+                    self.go_back()
                 return True
         return super().eventFilter(obj, e)
 
@@ -1197,17 +1265,57 @@ class MathTrainerPage(QWidget):
         tm_gw.setStyleSheet(
             f"background:{self._p.get('C_SURFACE', _h(SURFACE))};border-radius:4px;"
         )
-        tm_grid = QHBoxLayout(tm_gw)
+        tm_grid = QGridLayout(tm_gw)
         tm_grid.setContentsMargins(8, 8, 8, 8)
         tm_grid.setSpacing(6)
         self._timer_btns = {}
-        for mins, txt in [(0, "NONE"), (1, "1 MIN"), (3, "3 MIN"), (5, "5 MIN")]:
-            b = self._mk_rcb(txt, mins == 0)
+        timer_opts = [
+            (0, "NONE"), (1, "1 MIN"), (2, "2 MIN"), (3, "3 MIN"), (5, "5 MIN"),
+            (10, "10 MIN"), (15, "15 MIN"), (20, "20 MIN"), (25, "25 MIN"), (30, "30 MIN")
+        ]
+        cur_tmr = getattr(self, "_selected_timer", 0)
+        for idx, (mins, txt) in enumerate(timer_opts):
+            b = self._mk_rcb(txt, mins == cur_tmr)
             b.clicked.connect(lambda _, m=mins: self._set_timer_val(m))
             self._timer_btns[mins] = b
-            tm_grid.addWidget(b)
+            r, c = divmod(idx, 5)
+            tm_grid.addWidget(b, r, c)
         tmsl.addWidget(tm_gw)
         bl.addWidget(self._tmr_sec)
+
+        # ── Streak Target Selection Section ────────────────────────────────────
+        self._streak_sec = QWidget()
+        self._streak_sec.setStyleSheet("background:transparent;")
+        st_sl = QVBoxLayout(self._streak_sec)
+        st_sl.setContentsMargins(0, 0, 0, 0)
+        st_sl.setSpacing(6)
+        self._lbl_streak_title = QLabel("— RETIRE CARD AFTER CONSECUTIVE STREAK —")
+        self._lbl_streak_title.setFont(QFont(self._hf, 7))
+        self._lbl_streak_title.setStyleSheet(
+            f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1.5px;"
+        )
+        st_sl.addWidget(self._lbl_streak_title)
+        st_gw = QWidget()
+        st_gw.setStyleSheet(
+            f"background:{self._p.get('C_SURFACE', _h(SURFACE))};border-radius:4px;"
+        )
+        st_grid = QGridLayout(st_gw)
+        st_grid.setContentsMargins(8, 8, 8, 8)
+        st_grid.setSpacing(6)
+        self._streak_btns = {}
+        streak_opts = [
+            (1, "1 STREAK"), (2, "2 STREAK"), (3, "3 STREAK"), (4, "4 STREAK"),
+            (5, "5 STREAK ★"), (7, "7 STREAK"), (10, "10 STREAK"), (0, "OFF (ENDLESS ∞)")
+        ]
+        cur_stk = getattr(self, "_streak_target", 5)
+        for idx, (s_val, txt) in enumerate(streak_opts):
+            b = self._mk_scb(txt, s_val == cur_stk)
+            b.clicked.connect(lambda _, s=s_val: self._set_streak_target(s))
+            self._streak_btns[s_val] = b
+            r, c = divmod(idx, 4)
+            st_grid.addWidget(b, r, c)
+        st_sl.addWidget(st_gw)
+        bl.addWidget(self._streak_sec)
 
         self._warn_lbl = QLabel("")
         self._warn_lbl.setFont(QFont(self._hf, 11))
@@ -1278,14 +1386,30 @@ class MathTrainerPage(QWidget):
         b = QPushButton(text)
         b.setCheckable(True)
         b.setChecked(checked)
-        b.setFixedSize(int(102 * scale), int(48 * scale))
-        b.setFont(QFont("Arial", int(12 * scale), QFont.Bold))
+        b.setFixedSize(int(98 * scale), int(42 * scale))
+        b.setFont(QFont("Arial", int(11 * scale), QFont.Bold))
         c_hex = _h(PURPLE)
         b.setStyleSheet(f"""
-            QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:{int(12*scale)}pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
+            QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:{int(11*scale)}pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
                 border:{int(1*scale)}px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:{int(3*scale)}px;}}
             QPushButton:hover{{border-color:{c_hex};color:{c_hex};}}
             QPushButton:checked{{background:rgba(168,108,255,0.12);border-color:{c_hex};color:{c_hex};}}
+        """)
+        return b
+
+    def _mk_scb(self, text, checked):
+        scale = self._font_size / 11.0
+        b = QPushButton(text)
+        b.setCheckable(True)
+        b.setChecked(checked)
+        b.setFixedSize(int(124 * scale), int(42 * scale))
+        b.setFont(QFont("Arial", int(11 * scale), QFont.Bold))
+        c_hex = _h(CYAN)
+        b.setStyleSheet(f"""
+            QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:{int(11*scale)}pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
+                border:{int(1*scale)}px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:{int(3*scale)}px;}}
+            QPushButton:hover{{border-color:{c_hex};color:{c_hex};}}
+            QPushButton:checked{{background:rgba(79,195,247,0.12);border-color:{c_hex};color:{c_hex};}}
         """)
         return b
 
@@ -1337,8 +1461,15 @@ class MathTrainerPage(QWidget):
 
     def _set_timer_val(self, m):
         self._selected_timer = m
-        for k, b in self._timer_btns.items():
+        for k, b in getattr(self, "_timer_btns", {}).items():
             b.setChecked(k == m)
+        self._save_config()
+
+    def _set_streak_target(self, s):
+        self._streak_target = s
+        for k, b in getattr(self, "_streak_btns", {}).items():
+            b.setChecked(k == s)
+        self._save_config()
 
     # ── Page 2 — 60/40 SPLIT LAYOUT ──────────────────────────────────────────
     def _build_p2(self):
@@ -1388,35 +1519,55 @@ class MathTrainerPage(QWidget):
         left.setStyleSheet("background:transparent;")
         left.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(24, 16, 12, 16)
-        left_layout.setSpacing(10)
+        left_layout.setContentsMargins(24, 8, 12, 8)
+        left_layout.setSpacing(6)
 
-        # Giant question display
+        # Question display — compacted ~25% to maximize drawing canvas
         self._scan_card = ScanCard()
         self._scan_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._scan_card.setFixedHeight(200)
+        self._scan_card.setFixedHeight(160)
         inner = QVBoxLayout(self._scan_card)
-        inner.setContentsMargins(10, 4, 10, 4)
+        inner.setContentsMargins(16, 6, 16, 4)
+        inner.setSpacing(2)
+
+        meta_row = QHBoxLayout()
+        meta_row.setContentsMargins(4, 2, 4, 0)
+        meta_row.setSpacing(10)
+        self._q_pool_progress_lbl = QLabel("🎯 REMAINING: 0/0")
+        self._q_pool_progress_lbl.setFont(QFont(self._hf, 11, QFont.Bold))
+        self._q_pool_progress_lbl.setStyleSheet(
+            f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:0.5px;font-size:11pt;"
+        )
+        self._q_mastery_badge = QLabel("★ STREAK: 0/5  [ ○ ○ ○ ○ ○ ]")
+        self._q_mastery_badge.setFont(QFont(self._hf, 12, QFont.Bold))
+        self._q_mastery_badge.setStyleSheet(
+            f"color:{self._p.get('C_CYAN', _h(CYAN))};background:transparent;letter-spacing:1px;font-size:12pt;"
+        )
+        meta_row.addWidget(self._q_pool_progress_lbl, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        meta_row.addStretch(1)
+        meta_row.addWidget(self._q_mastery_badge, 0, Qt.AlignRight | Qt.AlignVCenter)
+        inner.addLayout(meta_row)
+
         self._q_lbl = QLabel("?")
-        self._q_lbl.setFont(QFont(self._hf, 54, QFont.Black))  # BIG font
+        self._q_lbl.setFont(QFont(self._hf, 40, QFont.Black))
         self._q_lbl.setStyleSheet(
-            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;font-size:54pt;"
+            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;font-size:40pt;"
         )
         self._q_lbl.setAlignment(Qt.AlignCenter)
         inner.addWidget(self._q_lbl)
         left_layout.addWidget(self._scan_card)
 
-        # Answer input — large
+        # Answer input — compacted ~26% to maximize drawing canvas
         self._ans_in = QLineEdit()
         self._ans_in.installEventFilter(self)
         self._ans_in.setPlaceholderText("?")
         self._ans_in.setAlignment(Qt.AlignCenter)
         self._ans_in.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._ans_in.setFixedHeight(120)
-        self._ans_in.setFont(QFont(self._hf, 72, QFont.Bold))
+        self._ans_in.setFixedHeight(88)
+        self._ans_in.setFont(QFont(self._hf, 52, QFont.Bold))
         self._ANS_SS = (
-            f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_TEXT', _h(TEXT))};font-size:72pt;"
-            f"border:2px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:6px;padding:6px;}}"
+            f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_TEXT', _h(TEXT))};font-size:52pt;"
+            f"border:2px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:6px;padding:4px;}}"
             f"QLineEdit:focus{{border:2px solid {self._p.get('C_GREEN', _h(GREEN))};}} "
         )
         self._ans_in.setStyleSheet(self._ANS_SS)
@@ -1426,9 +1577,10 @@ class MathTrainerPage(QWidget):
 
         # Feedback label
         self._fb_lbl = QLabel("")
-        self._fb_lbl.setFont(QFont(self._hf, 28, QFont.Bold))
+        self._fb_lbl.setFont(QFont(self._hf, 18, QFont.Bold))
+        self._fb_lbl.setFixedHeight(30)
         self._fb_lbl.setStyleSheet(
-            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;"
+            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;font-size:18px;"
         )
         self._fb_lbl.setAlignment(Qt.AlignCenter)
         left_layout.addWidget(self._fb_lbl)
@@ -1454,28 +1606,56 @@ class MathTrainerPage(QWidget):
         )
         self._clear_btn.clicked.connect(self._on_clear_clicked)
         self._sp_bar.addWidget(self._clear_btn)
+
+        self._copy_misread_btn = QPushButton("📸 COPY MISREAD (Ctrl+C)")
+        self._copy_misread_btn.setFixedHeight(26)
+        self._copy_misread_btn.setFont(QFont(self._hf, 8, QFont.Bold))
+        self._copy_misread_btn.setCursor(Qt.PointingHandCursor)
+        self._copy_misread_btn.setStyleSheet(
+            f"QPushButton{{font-family: {self._hf}; font-size: 8px; font-weight: bold; background:transparent;"
+            f"border:1px solid {self._p.get('C_RED', _h(RED))};color:{self._p.get('C_RED', _h(RED))};"
+            f"border-radius:3px;padding:0 10px;letter-spacing:1px;}}"
+            f"QPushButton:hover{{background:rgba(255,107,107,0.15);}}"
+        )
+        self._copy_misread_btn.clicked.connect(self._copy_misread_to_clipboard)
+        self._sp_bar.addWidget(self._copy_misread_btn)
+
+        self._reveal_bar_btn = QPushButton("REVEAL 👁 (Space)")
+        self._reveal_bar_btn.setFixedHeight(26)
+        self._reveal_bar_btn.setFont(QFont(self._hf, 8, QFont.Bold))
+        self._reveal_bar_btn.setCursor(Qt.PointingHandCursor)
+        self._reveal_bar_btn.setStyleSheet(
+            f"QPushButton{{font-family: {self._hf}; font-size: 8px; font-weight: bold; background:transparent;"
+            f"border:1px solid {self._p.get('C_YELLOW', _h(YELLOW))};color:{self._p.get('C_YELLOW', _h(YELLOW))};"
+            f"border-radius:3px;padding:0 10px;letter-spacing:1px;}}"
+            f"QPushButton:hover{{background:rgba(241,250,140,0.1);}}"
+        )
+        self._reveal_bar_btn.clicked.connect(self._on_reveal_clicked)
+        self._sp_bar.addWidget(self._reveal_bar_btn)
         left_layout.addLayout(self._sp_bar)
 
-        # Scratchpad — fills remaining space
-        self._scratchpad = MathScratchpad(self)
+        # Scratchpad — expands to fill all saved vertical real estate
+        self._scratchpad = MathScratchpad(self, enable_ocr=True, label="✏  DRAW HERE")
+        self._scratchpad.installEventFilter(self)
         self._scratchpad.drawing_finished.connect(self._handle_drawn_image)
         self._scratchpad.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._scratchpad.setMinimumHeight(240)
         left_layout.addWidget(self._scratchpad, 1)
 
         # Reveal button (shown on wrong answer)
         self._show_ans_btn = QPushButton("REVEAL ANSWER 👁")
-        self._show_ans_btn.setFixedHeight(44)
-        self._show_ans_btn.setFont(QFont(self._hf, 11, QFont.Bold))
+        self._show_ans_btn.setFixedHeight(40)
+        self._show_ans_btn.setFont(QFont(self._hf, 10, QFont.Bold))
         self._show_ans_btn.setStyleSheet(
-            f"QPushButton{{font-family: {self._hf}; font-size: 11px; font-weight: bold; background:transparent;border:1px solid {self._p.get('C_YELLOW', _h(YELLOW))};"
+            f"QPushButton{{font-family: {self._hf}; font-size: 10px; font-weight: bold; background:transparent;border:1px solid {self._p.get('C_YELLOW', _h(YELLOW))};"
             f"color:{self._p.get('C_YELLOW', _h(YELLOW))};border-radius:3px;padding:0 14px;letter-spacing:1px;}}"
             f"QPushButton:hover{{background:rgba(241,250,140,0.1);}}"
         )
         self._show_ans_btn.hide()
-        self._show_ans_btn.clicked.connect(self._reveal)
+        self._show_ans_btn.clicked.connect(self._on_reveal_clicked)
         left_layout.addWidget(self._show_ans_btn)
 
-        # ── RIGHT PANEL (30%) — reveal / reference ────────────────────────
+        # ── RIGHT PANEL (30%) — compact reveal / reference + rough pad ────
         self._right_panel = QFrame()
         self._right_panel.setStyleSheet(
             f"QFrame{{background:{self._p.get('C_SURFACE', _h(SURFACE))};"
@@ -1483,8 +1663,8 @@ class MathTrainerPage(QWidget):
         )
         self._right_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(self._right_panel)
-        right_layout.setContentsMargins(12, 16, 16, 16)
-        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(12, 10, 12, 10)
+        right_layout.setSpacing(6)
 
         # Panel header
         rp_hdr = QLabel("▣  REFERENCE")
@@ -1499,26 +1679,48 @@ class MathTrainerPage(QWidget):
         div.setStyleSheet(f"background:{self._p.get('C_BORDER', _h(BORDER))};")
         right_layout.addWidget(div)
 
-        # Hint when nothing revealed yet
+        # Hint when nothing revealed yet (compact)
         self._reveal_hint = QLabel(
-            "Draw your answer\nor type it in.\n\nWrong answer?\nHit REVEAL to see\nthe full table here."
+            "Draw your answer or type it in.\nHit Space or REVEAL to see answer."
         )
-        self._reveal_hint.setFont(QFont(self._hf, 13))
+        self._reveal_hint.setFont(QFont(self._hf, 9))
         self._reveal_hint.setStyleSheet(
-            f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"
+            f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;padding:2px 0;"
         )
         self._reveal_hint.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(self._reveal_hint, 1)
+        self._reveal_hint.setFixedHeight(45)
+        right_layout.addWidget(self._reveal_hint)
 
-        # Reveal content scroll
+        # Compact Answer Card (for mode 2, 3, 4: squares, cubes, roots)
+        self._reveal_card = QFrame()
+        self._reveal_card.setStyleSheet(
+            f"QFrame{{background:{self._p.get('C_CARD', _h(CARD))};border:1px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:4px;}}"
+        )
+        rc_lay = QVBoxLayout(self._reveal_card)
+        rc_lay.setContentsMargins(8, 6, 8, 6)
+        rc_lay.setSpacing(2)
+        self._reveal_card_hdr = QLabel("ANSWER")
+        self._reveal_card_hdr.setFont(QFont(self._hf, 7, QFont.Bold))
+        self._reveal_card_hdr.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};letter-spacing:1px;background:transparent;")
+        rc_lay.addWidget(self._reveal_card_hdr)
+        self._reveal_card_val = QLabel("")
+        self._reveal_card_val.setFont(QFont(self._hf, 18, QFont.Bold))
+        self._reveal_card_val.setStyleSheet(f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;")
+        self._reveal_card_val.setAlignment(Qt.AlignCenter)
+        rc_lay.addWidget(self._reveal_card_val)
+        self._reveal_card.hide()
+        right_layout.addWidget(self._reveal_card)
+
+        # Reveal content scroll (for mode 1: tables)
         self._reveal_scroll = QScrollArea()
         self._reveal_scroll.setStyleSheet(
             f"QScrollArea{{background:transparent;border:none;}}"
             f"QScrollBar:vertical{{background:{self._p.get('C_CARD', _h(CARD))};width:6px;border-radius:3px;}}"
             f"QScrollBar::handle:vertical{{background:{self._p.get('C_BORDER', _h(BORDER))};border-radius:3px;}}"
         )
+        self._reveal_scroll.setMaximumHeight(170)
         self._reveal_lbl = QLabel("")
-        self._reveal_lbl.setFont(QFont("Courier New", 16))
+        self._reveal_lbl.setFont(QFont("Courier New", 14))
         self._reveal_lbl.setStyleSheet(
             f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;padding:4px;"
         )
@@ -1526,7 +1728,42 @@ class MathTrainerPage(QWidget):
         self._reveal_scroll.setWidget(self._reveal_lbl)
         self._reveal_scroll.setWidgetResizable(True)
         self._reveal_scroll.hide()
-        right_layout.addWidget(self._reveal_scroll, 1)
+        right_layout.addWidget(self._reveal_scroll)
+
+        # Divider above rough pad
+        div2 = QFrame()
+        div2.setFixedHeight(1)
+        div2.setStyleSheet(f"background:{self._p.get('C_BORDER', _h(BORDER))};")
+        right_layout.addWidget(div2)
+
+        # Rough pad toolbar
+        self._side_sp_bar = QHBoxLayout()
+        self._side_sp_bar.setContentsMargins(0, 2, 0, 2)
+        side_hint_lbl = QLabel("✏ ROUGH PAD")
+        side_hint_lbl.setFont(QFont(self._hf, 8, QFont.Bold))
+        side_hint_lbl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1px;")
+        self._side_sp_bar.addWidget(side_hint_lbl)
+        self._side_sp_bar.addStretch(1)
+
+        self._side_clear_btn = QPushButton("CLEAR ⌫")
+        self._side_clear_btn.setFixedHeight(22)
+        self._side_clear_btn.setFont(QFont(self._hf, 7, QFont.Bold))
+        self._side_clear_btn.setCursor(Qt.PointingHandCursor)
+        self._side_clear_btn.setStyleSheet(
+            f"QPushButton{{font-family: {self._hf}; font-size: 7px; font-weight: bold; background:transparent;"
+            f"border:1px solid {self._p.get('C_BORDER', _h(BORDER))};color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};"
+            f"border-radius:3px;padding:0 8px;letter-spacing:1px;}}"
+            f"QPushButton:hover{{border-color:{self._p.get('C_RED', _h(RED))};color:{self._p.get('C_RED', _h(RED))};}}"
+        )
+        self._side_clear_btn.clicked.connect(self._clear_side_scratchpad)
+        self._side_sp_bar.addWidget(self._side_clear_btn)
+        right_layout.addLayout(self._side_sp_bar)
+
+        # Rough Scratchpad — expands to fill remaining space
+        self._side_scratchpad = MathScratchpad(self, enable_ocr=False, label="✏  ROUGH PAD")
+        self._side_scratchpad.installEventFilter(self)
+        self._side_scratchpad.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_layout.addWidget(self._side_scratchpad, 1)
 
         # Assemble split: 70 / 30
         split_layout.addWidget(left, 7)
@@ -1561,14 +1798,13 @@ class MathTrainerPage(QWidget):
         elapsed = (time.perf_counter() - getattr(self, "_ocr_t0", time.perf_counter())) * 1000.0
         print(f"[PROFILE][math_ocr] OCR prediction succeeded in {elapsed:.1f}ms, result: '{predicted}'")
         if predicted:
+            self._last_predicted_ocr = str(predicted)
             self._ans_in.setText(predicted)
             self._sb_status.setText("READY")
-            if hasattr(self, "_scratchpad") and self._scratchpad:
-                self._scratchpad._clear_on_next_press = True
         else:
             self._sb_status.setText("NO OCR")
 
-    def _on_clear_clicked(self):
+    def _clear_main_scratchpad(self):
         if hasattr(self, "_scratchpad") and self._scratchpad:
             self._scratchpad.clear()
             self._scratchpad._clear_on_next_press = False
@@ -1578,13 +1814,252 @@ class MathTrainerPage(QWidget):
         self._sb_status.setText("READY")
         self._ans_in.setFocus()
 
-    def eventFilter(self, obj, event):
-        from PyQt5.QtCore import QEvent
-        if event.type() == QEvent.KeyPress:
-            if event.key() == Qt.Key_Escape:
-                self._on_clear_clicked()
-                return True
-        return super().eventFilter(obj, event)
+    def _on_clear_clicked(self):
+        if hasattr(self, "_scratchpad") and self._scratchpad:
+            self._scratchpad.clear()
+            self._scratchpad._clear_on_next_press = False
+        if hasattr(self, "_side_scratchpad") and self._side_scratchpad:
+            self._side_scratchpad.clear()
+            self._side_scratchpad._clear_on_next_press = False
+        self._ans_in.setText("")
+        self._ans_in.setStyleSheet(self._ANS_SS)
+        self._fb_lbl.setText("")
+        self._sb_status.setText("READY")
+        self._ans_in.setFocus()
+
+    def _clear_side_scratchpad(self):
+        if hasattr(self, "_side_scratchpad") and self._side_scratchpad:
+            self._side_scratchpad.clear()
+            self._side_scratchpad._clear_on_next_press = False
+
+    def _on_reveal_clicked(self):
+        if getattr(self, "_is_revealed", False):
+            self._gen_q()
+        else:
+            self._reveal()
+
+    def _copy_misread_to_clipboard(self):
+        import datetime, os
+        
+        # 1. Find strokes from active pads or fallback to last completed strokes
+        strokes = []
+        has_strokes = False
+        using_prev_strokes = False
+        
+        # First check active scratchpad strokes
+        for pad in [getattr(self, "_scratchpad", None), getattr(self, "_side_scratchpad", None)]:
+            if pad and (pad._strokes or getattr(pad, "_current", None)):
+                strokes = [list(s) for s in pad._strokes]
+                if getattr(pad, "_current", None) and len(pad._current) >= 1:
+                    strokes.append(list(pad._current))
+                if strokes:
+                    has_strokes = True
+                    break
+
+        # If active strokes are empty (e.g. question advanced or cleared), check backup
+        if not has_strokes:
+            for pad in [getattr(self, "_scratchpad", None), getattr(self, "_side_scratchpad", None)]:
+                if pad and getattr(pad, "_last_strokes", None):
+                    strokes = [list(s) for s in pad._last_strokes]
+                    if strokes:
+                        has_strokes = True
+                        using_prev_strokes = True
+                        break
+
+        # Determine Question, Expected, and Perceived Answer
+        # If we fell back to previous strokes AND current question hasn't been attempted yet,
+        # fallback to the previous question's context!
+        if using_prev_strokes and not getattr(self, "_q_attempted", False) and getattr(self, "_prev_ans", None):
+            q_text = getattr(self, "_prev_q_text", self._q_lbl.text() if hasattr(self, "_q_lbl") else "?")
+            expected_ans = str(getattr(self, "_prev_ans", "?"))
+            perceived_ans = getattr(self, "_prev_predicted_ocr", "") or getattr(self, "_prev_wrong_text", "")
+        else:
+            q_text = self._q_lbl.text() if hasattr(self, "_q_lbl") else "?"
+            expected_ans = str(getattr(self, "_ans", "?"))
+            if getattr(self, "_is_revealed", False):
+                # If revealed, ans_in holds expected_ans, so look for what OCR actually misread
+                perceived_ans = getattr(self, "_last_predicted_ocr", "").strip() or getattr(self, "_last_wrong_text", "").strip()
+            else:
+                perceived_ans = self._ans_in.text().strip() if hasattr(self, "_ans_in") else ""
+                if not perceived_ans:
+                    perceived_ans = getattr(self, "_last_predicted_ocr", "").strip()
+                if not perceived_ans:
+                    perceived_ans = getattr(self, "_last_wrong_text", "").strip()
+                if not perceived_ans:
+                    perceived_ans = getattr(self, "_last_checked_answer", "").strip()
+
+        # Dimensions
+        card_w = 640
+        card_h = 420
+        pix = QPixmap(card_w, card_h)
+        pix.fill(QColor("#07070B"))
+
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Header box: #12131A
+        hdr_rect = QRect(0, 0, card_w, 110)
+        painter.fillRect(hdr_rect, QColor("#12131A"))
+        painter.setPen(QPen(QColor("#252836"), 1))
+        painter.drawLine(0, 110, card_w, 110)
+
+        # Badge
+        badge_rect = QRect(16, 12, 180, 22)
+        painter.fillRect(badge_rect, QColor(255, 107, 107, 40))
+        painter.setPen(QPen(QColor("#FF6B6B"), 1))
+        painter.drawRect(badge_rect)
+        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        painter.drawText(badge_rect, Qt.AlignCenter, "OCR MISREAD REPORT")
+
+        # Timestamp
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        painter.setPen(QPen(QColor("#888E9E")))
+        painter.setFont(QFont("Segoe UI", 9))
+        painter.drawText(QRect(card_w - 200, 12, 184, 22), Qt.AlignRight | Qt.AlignVCenter, now_str)
+
+        # Non-overlapping two-row data grid with dynamic font metrics spacing
+        painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        fm = painter.fontMetrics()
+        get_w = getattr(fm, "horizontalAdvance", fm.width)
+        
+        # Row 1: QUESTION (left) and EXPECTED (right)
+        painter.setPen(QPen(QColor("#888E9E")))
+        painter.drawText(16, 62, "QUESTION:")
+        q_w = get_w("QUESTION:")
+        painter.setPen(QPen(QColor("#E2E8F0")))
+        painter.drawText(16 + q_w + 12, 62, q_text)
+
+        painter.setPen(QPen(QColor("#888E9E")))
+        painter.drawText(330, 62, "EXPECTED:")
+        exp_w = get_w("EXPECTED:")
+        painter.setPen(QPen(QColor("#72FF4F")))
+        painter.drawText(330 + exp_w + 12, 62, expected_ans)
+
+        # Row 2: OCR PERCEIVED (wide row, generous spacing)
+        painter.setPen(QPen(QColor("#888E9E")))
+        painter.drawText(16, 94, "OCR PERCEIVED:")
+        ocr_w = get_w("OCR PERCEIVED:")
+        painter.setPen(QPen(QColor("#FF6B6B")))
+        p_str = perceived_ans if perceived_ans else "(blank / no OCR)"
+        painter.drawText(16 + ocr_w + 14, 94, p_str)
+
+        # Drawing Canvas area: (0, 110) to (card_w, card_h)
+        # Background grid
+        painter.setPen(QPen(QColor(255, 255, 255, 12), 1, Qt.DotLine))
+        for x in range(0, card_w, 40):
+            painter.drawLine(x, 110, x, card_h)
+        for y in range(110, card_h, 40):
+            painter.drawLine(0, y, card_w, y)
+
+        # Draw user handwriting
+        if has_strokes and strokes:
+            all_pts = [p for s in strokes for p in s]
+            if all_pts:
+                min_x = min(p.x() for p in all_pts)
+                max_x = max(p.x() for p in all_pts)
+                min_y = min(p.y() for p in all_pts)
+                max_y = max(p.y() for p in all_pts)
+                bw = max(1.0, max_x - min_x)
+                bh = max(1.0, max_y - min_y)
+
+                # Fit inside canvas area (margin 25)
+                avail_w = card_w - 50
+                avail_h = (card_h - 110) - 50
+                fit_scale = min(2.5, min(avail_w / bw, avail_h / bh))
+
+                center_dst_x = 25 + avail_w / 2.0
+                center_dst_y = 110 + 25 + avail_h / 2.0
+
+                src_cx = (min_x + max_x) / 2.0
+                src_cy = (min_y + max_y) / 2.0
+
+                for stroke in strokes:
+                    if len(stroke) == 0:
+                        continue
+                    pen = QPen(QColor("#72FF4F"), max(2.5, 3.0 * fit_scale), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                    painter.setPen(pen)
+                    if len(stroke) == 1:
+                        p0 = stroke[0]
+                        x0 = center_dst_x + (p0.x() - src_cx) * fit_scale
+                        y0 = center_dst_y + (p0.y() - src_cy) * fit_scale
+                        r = max(2.0, 2.5 * fit_scale)
+                        painter.setBrush(QBrush(QColor("#72FF4F")))
+                        painter.drawEllipse(QPointF(x0, y0), r, r)
+                        painter.setBrush(Qt.NoBrush)
+                    else:
+                        for i in range(len(stroke) - 1):
+                            p0 = stroke[i]
+                            p1 = stroke[i+1]
+                            x0 = center_dst_x + (p0.x() - src_cx) * fit_scale
+                            y0 = center_dst_y + (p0.y() - src_cy) * fit_scale
+                            x1 = center_dst_x + (p1.x() - src_cx) * fit_scale
+                            y1 = center_dst_y + (p1.y() - src_cy) * fit_scale
+                            painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+        else:
+            painter.setPen(QPen(QColor("#888E9E")))
+            painter.setFont(QFont("Segoe UI", 13, QFont.Bold))
+            painter.drawText(QRect(0, 110, card_w, card_h - 110), Qt.AlignCenter, "(No ink drawn on scratchpad)")
+
+        # Draw border around entire card
+        painter.setPen(QPen(QColor("#FF6B6B"), 2))
+        painter.drawRect(0, 0, card_w - 1, card_h - 1)
+        painter.end()
+
+        # 1. Copy to clipboard
+        QApplication.clipboard().setPixmap(pix)
+
+        # 2. Archive to disk in logs/ocr_misreads/
+        try:
+            from storage_paths import app_resource_path
+            misread_dir = app_resource_path("logs", "ocr_misreads")
+            os.makedirs(misread_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = os.path.join(misread_dir, f"misread_{ts}_{expected_ans}_vs_{perceived_ans or 'none'}.png")
+            pix.save(file_path, "PNG")
+            print(f"[MathTrainer] Saved misread diagnostic snapshot to: {file_path}")
+        except Exception as e:
+            print(f"[MathTrainer] Could not save misread snapshot to disk: {e}")
+
+        # 3. Misread streak recovery: restore and credit previous streak
+        scale = getattr(self, "_font_size", 11) / 11.0
+        if hasattr(self, "_current_q_item") and self._current_q_item is not None:
+            pre_s = getattr(self, "_pre_error_streak", None)
+            if pre_s is not None:
+                restored_s = pre_s + 1
+            else:
+                restored_s = self._item_streaks.get(self._current_q_item, 0) + 1
+
+            self._item_streaks[self._current_q_item] = restored_s
+            self._pre_error_streak = None
+
+            target = getattr(self, "_streak_target", 5)
+            retired = False
+            if target > 0 and restored_s >= target and self._current_q_item in self._all_pool:
+                retired = True
+                self._mastered_items.add(self._current_q_item)
+                self._all_pool.remove(self._current_q_item)
+                self._active_deck = [item for item in self._active_deck if item != self._current_q_item]
+                self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
+
+            self._update_mastery_ui()
+
+            if retired:
+                self._fb_lbl.setText("📸 MISREAD REPORTED • STREAK RESTORED & TARGET RETIRED! 🌟")
+                if len(self._all_pool) == 0:
+                    QTimer.singleShot(1000, self._show_all_mastered_celebration)
+            else:
+                if target == 0:
+                    self._fb_lbl.setText(f"📸 MISREAD REPORTED • STREAK RESTORED TO {restored_s}! 🌟")
+                else:
+                    self._fb_lbl.setText(f"📸 MISREAD REPORTED • STREAK RESTORED TO {restored_s}/{target}! 🌟")
+        else:
+            self._fb_lbl.setText("📸 MISREAD COPIED TO CLIPBOARD! (PASTE WITH CTRL+V)")
+
+        self._fb_lbl.setStyleSheet(
+            f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(18*scale)}px;font-weight:bold;"
+        )
+        self._sb_status.setText("CLIPBOARD READY (CTRL+V)")
+        QTimer.singleShot(4000, lambda: self._fb_lbl.setText("") if "MISREAD" in self._fb_lbl.text() else None)
 
     def _on_ocr_failed(self, error: str):
         import time
@@ -1614,35 +2089,48 @@ class MathTrainerPage(QWidget):
         hl.setContentsMargins(16, 0, 16, 0)
         hl.setSpacing(10)
         self._back_btn_p3 = self._mk_back_btn()
-        self._back_btn_p3.setText("◀ HOME")
-        self._back_btn_p3.clicked.connect(lambda: self._show(0))
+        self._back_btn_p3.setText("◀ MENU")
+        self._back_btn_p3.clicked.connect(lambda: self._show(1))
         hl.addWidget(self._back_btn_p3)
-        title = QLabel("MISSION REPORT")
-        title.setFont(QFont(self._hf, 11, QFont.Bold))
-        title.setStyleSheet(
+        self._p3_title = QLabel("MISSION REPORT")
+        self._p3_title.setFont(QFont(self._hf, 11, QFont.Bold))
+        self._p3_title.setStyleSheet(
             f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:2px;"
         )
-        hl.addWidget(title)
+        hl.addWidget(self._p3_title)
         hl.addStretch()
         L.addWidget(hdr)
 
         body = QWidget()
         body.setStyleSheet("background:transparent;")
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(40, 40, 40, 40)
+        bl.setContentsMargins(40, 24, 40, 24)
         bl.setAlignment(Qt.AlignCenter)
-        bl.setSpacing(20)
+        bl.setSpacing(14)
+
+        self._rep_trophy = QLabel("🏆")
+        self._rep_trophy.setFont(QFont(self._hf, 44))
+        self._rep_trophy.setAlignment(Qt.AlignCenter)
+        bl.addWidget(self._rep_trophy)
+
+        self._rep_badge = QLabel("SESSION COMPLETE")
+        self._rep_badge.setFont(QFont(self._hf, 20, QFont.Bold))
+        self._rep_badge.setStyleSheet(
+            f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:1.5px;"
+        )
+        self._rep_badge.setAlignment(Qt.AlignCenter)
+        bl.addWidget(self._rep_badge)
 
         self._rep_score = QLabel("0 CORRECT")
-        self._rep_score.setFont(QFont(self._hf, 36, QFont.Black))
+        self._rep_score.setFont(QFont(self._hf, 32, QFont.Black))
         self._rep_score.setStyleSheet(
-            f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;"
+            f"color:{self._p.get('C_CYAN', _h(CYAN))};background:transparent;"
         )
         self._rep_score.setAlignment(Qt.AlignCenter)
         bl.addWidget(self._rep_score)
 
         self._rep_acc = QLabel("ACCURACY: 0%")
-        self._rep_acc.setFont(QFont(self._hf, 16, QFont.Bold))
+        self._rep_acc.setFont(QFont(self._hf, 15, QFont.Bold))
         self._rep_acc.setStyleSheet(
             f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;"
         )
@@ -1650,12 +2138,72 @@ class MathTrainerPage(QWidget):
         bl.addWidget(self._rep_acc)
 
         self._rep_speed = QLabel("SPEED: 0s / Q")
-        self._rep_speed.setFont(QFont(self._hf, 12))
+        self._rep_speed.setFont(QFont(self._hf, 13))
         self._rep_speed.setStyleSheet(
             f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"
         )
         self._rep_speed.setAlignment(Qt.AlignCenter)
         bl.addWidget(self._rep_speed)
+
+        # Motivational Quote Card
+        self._quote_card = QFrame()
+        self._quote_card.setMaximumWidth(720)
+        self._quote_card.setStyleSheet(
+            f"QFrame{{background:{self._p.get('C_CARD', _h(CARD))};"
+            f"border:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:12px;padding:16px;}}"
+        )
+        ql = QVBoxLayout(self._quote_card)
+        ql.setContentsMargins(24, 16, 24, 16)
+        ql.setSpacing(8)
+
+        self._quote_text_lbl = QLabel("")
+        self._quote_text_lbl.setWordWrap(True)
+        self._quote_text_lbl.setFont(QFont(self._hf, 15, QFont.Normal))
+        self._quote_text_lbl.setStyleSheet(
+            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;font-style:italic;line-height:1.4;"
+        )
+        self._quote_text_lbl.setAlignment(Qt.AlignCenter)
+        ql.addWidget(self._quote_text_lbl)
+
+        self._quote_author_lbl = QLabel("")
+        self._quote_author_lbl.setFont(QFont(self._hf, 12, QFont.Bold))
+        self._quote_author_lbl.setStyleSheet(
+            f"color:{self._p.get('C_CYAN', _h(CYAN))};background:transparent;letter-spacing:1px;"
+        )
+        self._quote_author_lbl.setAlignment(Qt.AlignRight)
+        ql.addWidget(self._quote_author_lbl)
+        bl.addWidget(self._quote_card)
+
+        # Action Buttons Row
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(16)
+        btn_row.setAlignment(Qt.AlignCenter)
+
+        self._p3_btn_menu = QPushButton("◀ BACK TO MENU")
+        self._p3_btn_menu.setFixedHeight(46)
+        self._p3_btn_menu.setFixedWidth(180)
+        self._p3_btn_menu.setFont(QFont(self._hf, 11, QFont.Bold))
+        self._p3_btn_menu.setStyleSheet(
+            f"QPushButton{{background:{self._p.get('C_SURFACE', _h(SURFACE))};color:{self._p.get('C_TEXT', _h(TEXT))};"
+            f"border:1px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:6px;letter-spacing:1px;}}"
+            f"QPushButton:hover{{border-color:{self._p.get('C_CYAN', _h(CYAN))};color:{self._p.get('C_CYAN', _h(CYAN))};}}"
+        )
+        self._p3_btn_menu.clicked.connect(lambda: self._show(1))
+        btn_row.addWidget(self._p3_btn_menu)
+
+        self._p3_btn_again = QPushButton("PRACTICE AGAIN ↺")
+        self._p3_btn_again.setFixedHeight(46)
+        self._p3_btn_again.setFixedWidth(200)
+        self._p3_btn_again.setFont(QFont(self._hf, 12, QFont.Bold))
+        self._p3_btn_again.setStyleSheet(
+            f"QPushButton{{background:{self._p.get('C_GREEN', _h(GREEN))};color:#000000;"
+            f"border:none;border-radius:6px;font-weight:bold;letter-spacing:1px;}}"
+            f"QPushButton:hover{{background:#34d399;}}"
+        )
+        self._p3_btn_again.clicked.connect(self._start_practice)
+        btn_row.addWidget(self._p3_btn_again)
+
+        bl.addLayout(btn_row)
 
         L.addWidget(body, 1)
         return p
@@ -1751,10 +2299,16 @@ class MathTrainerPage(QWidget):
             self._warn_lbl.setText("SELECT AT LEAST ONE TARGET, NINJA!")
             return
 
-        self._all_pool = pool
+        import time
+        self._practice_start_wall_time = time.time()
+        self._expected_base_pool = list(pool)
+        self._all_pool = list(pool)
         self._active_deck = list(pool)
         random.shuffle(self._active_deck)
         self._priority_queue = []
+        self._item_streaks = {item: 0 for item in pool}
+        self._mastered_items = set()
+        self._initial_pool_count = len(pool)
         self._last_q = None
         self._current_q_item = None
         self._q_start_time = 0.0
@@ -1797,9 +2351,75 @@ class MathTrainerPage(QWidget):
                 self._practice_timer.stop()
             self._show_report()
 
+    def _update_mastery_ui(self):
+        if not hasattr(self, "_q_mastery_badge") or not hasattr(self, "_q_pool_progress_lbl"):
+            return
+
+        streak = 0
+        if hasattr(self, "_current_q_item") and hasattr(self, "_item_streaks") and self._current_q_item is not None:
+            streak = self._item_streaks.get(self._current_q_item, 0)
+
+        target = getattr(self, "_streak_target", 5)
+        scale = getattr(self, "_font_size", 11.0) / 11.0
+
+        if target == 0:
+            # ENDLESS mode: cards are never retired
+            if streak >= 10:
+                color = self._p.get('C_GREEN', _h(GREEN))
+            elif streak >= 5:
+                color = self._p.get('C_YELLOW', _h(YELLOW))
+            elif streak > 0:
+                color = self._p.get('C_CYAN', _h(CYAN))
+            else:
+                color = self._p.get('C_SUBTEXT', _h(SUBTEXT))
+            streak_text = f"★ STREAK: {streak} (ENDLESS ∞)"
+        else:
+            streak_clamped = max(0, min(target, streak))
+            filled_dots = "● " * streak_clamped
+            empty_dots = "○ " * (target - streak_clamped)
+            dots_str = (filled_dots + empty_dots).strip()
+
+            if streak >= target:
+                color = self._p.get('C_GREEN', _h(GREEN))
+                streak_text = f"★ MASTERED! {target}/{target}  [ {dots_str} ]"
+            elif streak >= max(1, target // 2 + 1):
+                color = self._p.get('C_YELLOW', _h(YELLOW))
+                streak_text = f"★ STREAK: {streak}/{target}  [ {dots_str} ]"
+            elif streak > 0:
+                color = self._p.get('C_CYAN', _h(CYAN))
+                streak_text = f"★ STREAK: {streak}/{target}  [ {dots_str} ]"
+            else:
+                color = self._p.get('C_SUBTEXT', _h(SUBTEXT))
+                streak_text = f"★ STREAK: 0/{target}  [ {dots_str} ]"
+
+        self._q_mastery_badge.setText(streak_text)
+        self._q_mastery_badge.setStyleSheet(
+            f"color:{color};background:transparent;letter-spacing:1px;font-size:{int(12*scale)}pt;font-weight:bold;"
+        )
+
+        total = getattr(self, "_initial_pool_count", 0)
+        active_remaining = len(getattr(self, "_all_pool", []))
+        mastered_count = len(getattr(self, "_mastered_items", set()))
+        if total == 0:
+            total = active_remaining + mastered_count
+
+        if target == 0:
+            prog_text = f"🎯 ACTIVE TARGETS: {active_remaining} (ENDLESS)"
+        elif mastered_count > 0:
+            prog_text = f"🎯 REMAINING: {active_remaining}/{total}  ({mastered_count} DONE)"
+        else:
+            prog_text = f"🎯 REMAINING: {active_remaining}/{total}"
+        self._q_pool_progress_lbl.setText(prog_text)
+        self._q_pool_progress_lbl.setStyleSheet(
+            f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:0.5px;font-size:{int(11*scale)}pt;font-weight:bold;"
+        )
+
     def _show_report(self):
         total = self._correct_count + self._wrong_count
         acc = int((self._correct_count / total * 100) if total > 0 else 0)
+        self._p3_title.setText("MISSION REPORT")
+        self._rep_trophy.setText("⏱")
+        self._rep_badge.setText("TIME UP!")
         self._rep_score.setText(f"{self._correct_count} CORRECT")
         self._rep_acc.setText(f"ACCURACY: {acc}% ({self._correct_count}/{total} Qs)")
         q_per_min = (
@@ -1820,18 +2440,87 @@ class MathTrainerPage(QWidget):
             self._rep_score.setStyleSheet(
                 f"color:{self._p.get('C_RED', _h(RED))};background:transparent;"
             )
+
+        quotes = [
+            ("“We are what we repeatedly do. Excellence, then, is not an act, but a habit.”", "Will Durant"),
+            ("“Consistency is the DNA of mastery.”", "Robin Sharma"),
+            ("“Pure mathematics is, in its way, the poetry of logical ideas.”", "Albert Einstein"),
+            ("“Small daily improvements over time lead to stunning results.”", "Robin Sharma"),
+        ]
+        quote_text, quote_author = random.choice(quotes)
+        self._quote_text_lbl.setText(quote_text)
+        self._quote_author_lbl.setText(f"— {quote_author}")
+        self._show(3)
+
+    def _show_all_mastered_celebration(self):
+        if getattr(self, "_practice_timer", None):
+            self._practice_timer.stop()
+            self._practice_timer = None
+
+        from data_manager import store
+        vol = store.get().get("_volume", 40) / 100.0
+        self._snd_power.setVolume(vol)
+        self._snd_power.play()
+
+        total = self._correct_count + self._wrong_count
+        acc = int((self._correct_count / total * 100) if total > 0 else 100)
+
+        import time
+        elapsed_sec = max(1.0, time.time() - getattr(self, "_practice_start_wall_time", time.time()))
+        q_per_min = self._correct_count / (elapsed_sec / 60.0)
+
+        quotes = [
+            ("“We are what we repeatedly do. Excellence, then, is not an act, but a habit.”", "Will Durant"),
+            ("“Consistency is the DNA of mastery.”", "Robin Sharma"),
+            ("“Pure mathematics is, in its way, the poetry of logical ideas.”", "Albert Einstein"),
+            ("“Small daily improvements over time lead to stunning results.”", "Robin Sharma"),
+            ("“The only way to learn mathematics is to do mathematics.”", "Paul Halmos"),
+            ("“Speed and precision are the natural byproducts of relentless practice.”", "Dojo Wisdom"),
+            ("“There are no shortcuts to any place worth going.”", "Beverly Sills"),
+            ("“Success is the sum of small efforts, repeated day in and day out.”", "Robert Collier"),
+            ("“Discipline is the bridge between goals and accomplishment.”", "Jim Rohn"),
+        ]
+        quote_text, quote_author = random.choice(quotes)
+
+        self._p3_title.setText("MASTERY CELEBRATION")
+        self._rep_trophy.setText("🏆")
+        self._rep_badge.setText("ALL TARGETS MASTERED!")
+        self._rep_badge.setStyleSheet(
+            f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:2px;font-weight:bold;"
+        )
+        target = getattr(self, "_streak_target", 5)
+        mastered_num = len(getattr(self, "_mastered_items", [])) or getattr(self, "_initial_pool_count", 0)
+        self._rep_score.setText(f"{mastered_num} TARGETS RETIRED ({target}/{target} STREAK)")
+        self._rep_score.setStyleSheet(
+            f"color:{self._p.get('C_CYAN', _h(CYAN))};background:transparent;font-weight:900;"
+        )
+        self._rep_acc.setText(f"ACCURACY: {acc}%  •  TOTAL ATTEMPTS: {total}")
+        self._rep_speed.setText(f"TIME: {int(elapsed_sec // 60)}m {int(elapsed_sec % 60):02d}s  •  SPEED: {q_per_min:.1f} Q/MIN")
+
+        self._quote_text_lbl.setText(quote_text)
+        self._quote_author_lbl.setText(f"— {quote_author}")
         self._show(3)
 
     def _pick_next_item(self):
         expected_pool = self._build_pool()
-        if not self._all_pool or set(self._all_pool) != set(expected_pool):
-            self._all_pool = expected_pool
+        if getattr(self, "_expected_base_pool", None) is None or set(self._expected_base_pool) != set(expected_pool):
+            self._expected_base_pool = list(expected_pool)
+            self._all_pool = list(expected_pool)
             self._active_deck = list(self._all_pool)
             random.shuffle(self._active_deck)
             self._priority_queue = []
+            self._item_streaks = {item: 0 for item in expected_pool}
+            self._mastered_items = set()
+            self._initial_pool_count = len(expected_pool)
+
+        if not self._all_pool:
+            return None
 
         # 1. Check priority queue for items due at or before current mission (self._qn)
         # Prioritize "wrong" (urgent retry) over "slow" (reinforcement)
+        # Filter priority queue to only items still in active _all_pool
+        self._priority_queue = [e for e in self._priority_queue if e["item"] in self._all_pool]
+
         due_wrong = [i for i, entry in enumerate(self._priority_queue) 
                      if entry["due_at_qn"] <= self._qn and entry["reason"] == "wrong"]
         due_slow = [i for i, entry in enumerate(self._priority_queue) 
@@ -1854,13 +2543,19 @@ class MathTrainerPage(QWidget):
             return chosen_entry["item"]
         
         # 2. Draw from active deck (guaranteed 100% round-robin coverage)
+        self._active_deck = [item for item in self._active_deck if item in self._all_pool]
         if not self._active_deck:
+            if not self._all_pool:
+                return None
             self._active_deck = list(self._all_pool)
             random.shuffle(self._active_deck)
             if len(self._active_deck) > 1 and self._active_deck[0] == self._last_q:
                 swap_idx = random.randint(1, len(self._active_deck) - 1)
                 self._active_deck[0], self._active_deck[swap_idx] = self._active_deck[swap_idx], self._active_deck[0]
         
+        if not self._active_deck:
+            return None
+
         if len(self._active_deck) > 1 and self._active_deck[0] == self._last_q:
             swap_idx = random.randint(1, len(self._active_deck) - 1)
             self._active_deck[0], self._active_deck[swap_idx] = self._active_deck[swap_idx], self._active_deck[0]
@@ -1868,15 +2563,35 @@ class MathTrainerPage(QWidget):
         return self._active_deck.pop(0)
 
     def _gen_q(self):
+        # Archive last question context for fallback in misread reports
+        if hasattr(self, "_ans"):
+            self._prev_q_text = self._q_lbl.text() if hasattr(self, "_q_lbl") else ""
+            self._prev_ans = str(self._ans)
+            self._prev_predicted_ocr = getattr(self, "_last_predicted_ocr", "")
+            self._prev_wrong_text = getattr(self, "_last_wrong_text", "")
+
+        self._last_predicted_ocr = ""
+        self._last_wrong_text = ""
+        self._last_checked_answer = ""
+        self._pre_error_streak = None
+        self._is_revealed = False
+        if hasattr(self, "_reveal_bar_btn"):
+            self._reveal_bar_btn.setText("REVEAL 👁 (Space)")
         # Reset right panel to hint state
-        self._reveal_scroll.hide()
-        self._reveal_hint.show()
+        if hasattr(self, "_reveal_scroll"):
+            self._reveal_scroll.hide()
+        if hasattr(self, "_reveal_card"):
+            self._reveal_card.hide()
+        if hasattr(self, "_reveal_hint"):
+            self._reveal_hint.show()
         self._show_ans_btn.hide()
         self._fb_lbl.setText("")
         self._fb_lbl.setStyleSheet(
             f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;"
         )
+        self._ans_in.blockSignals(True)
         self._ans_in.setText("")
+        self._ans_in.blockSignals(False)
         self._ans_in.setStyleSheet(self._ANS_SS)
         self._qn += 1
         if getattr(self, "_practice_timer", None):
@@ -1888,8 +2603,18 @@ class MathTrainerPage(QWidget):
         self._sb_status.setText("TRAINING...")
         if hasattr(self, "_scratchpad"):
             self._scratchpad.clear()
+        if hasattr(self, "_side_scratchpad"):
+            self._side_scratchpad.clear()
+
+        scale = self._font_size / 11.0
+        self._q_lbl.setStyleSheet(
+            f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:1px;font-size:{int(40*scale)}pt;"
+        )
 
         q_item = self._pick_next_item()
+        if q_item is None:
+            self._show_all_mastered_celebration()
+            return
 
         if self._mode == 1:
             if isinstance(q_item, tuple):
@@ -1897,8 +2622,8 @@ class MathTrainerPage(QWidget):
             else:
                 n1 = q_item
                 n2 = random.choice([2, 3, 4, 5, 6, 7, 8, 9])
-            self._current_q_item = (n1, n2)
-            self._last_q = (n1, n2)
+            self._current_q_item = q_item
+            self._last_q = q_item
             self._ans = n1 * n2
             self._q_lbl.setText(f"{n1} × {n2} = ?")
         elif self._mode == 2:
@@ -1914,15 +2639,13 @@ class MathTrainerPage(QWidget):
             self._ans = num * num * num
             self._q_lbl.setText(f"{num}³ = ?")
 
+        self._update_mastery_ui()
         self._q_attempted = False
         import time
         self._q_start_time = time.perf_counter()
         QTimer.singleShot(0, self._ans_in.setFocus)
 
     def _auto_check(self, text):
-        if not text and hasattr(self, "_scratchpad") and self._scratchpad:
-            self._scratchpad.clear()
-            self._scratchpad._clear_on_next_press = False
         digits = "".join(c for c in text if c.isdigit())
         if digits != text:
             self._ans_in.blockSignals(True)
@@ -1933,9 +2656,13 @@ class MathTrainerPage(QWidget):
             QTimer.singleShot(300, self._check)
 
     def _check(self):
+        if getattr(self, "_is_revealed", False):
+            self._gen_q()
+            return
         v = self._ans_in.text()
         if not v or len(v) != len(str(self._ans)):
             return
+        self._last_checked_answer = str(v)
         try:
             scale = self._font_size / 11.0
             import time
@@ -1948,9 +2675,17 @@ class MathTrainerPage(QWidget):
                 if first_try:
                     self._correct_count += 1
                 self._streak += 1
+
+                target = getattr(self, "_streak_target", 5)
+                cur_item_streak = 0
+                if hasattr(self, "_current_q_item") and self._current_q_item is not None:
+                    cur_item_streak = self._item_streaks.get(self._current_q_item, 0) + 1
+                    self._item_streaks[self._current_q_item] = cur_item_streak
+                self._update_mastery_ui()
+
                 from data_manager import store
                 vol = store.get().get("_volume", 40) / 100.0
-                if self._streak > 0 and self._streak % 5 == 0:
+                if (target > 0 and cur_item_streak >= target) or (self._streak > 0 and self._streak % 5 == 0):
                     self._snd_power.setVolume(vol)
                     self._snd_power.play()
                 else:
@@ -1963,12 +2698,28 @@ class MathTrainerPage(QWidget):
                     f"color:{color};background:transparent;min-width:24px;"
                 )
                 self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};font-size:{int(72*scale)}pt;"
-                    f"border:{int(2*scale)}px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:{int(6*scale)}px;padding:{int(6*scale)}px;}}"
+                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};font-size:{int(52*scale)}pt;"
+                    f"border:{int(2*scale)}px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
                 )
 
+                # Check if item reached streak target and retire it (if target > 0)
+                retired = False
+                if target > 0 and cur_item_streak >= target and hasattr(self, "_current_q_item") and self._current_q_item in self._all_pool:
+                    retired = True
+                    self._mastered_items.add(self._current_q_item)
+                    self._all_pool.remove(self._current_q_item)
+                    self._active_deck = [item for item in self._active_deck if item != self._current_q_item]
+                    self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
+                    self._update_mastery_ui()
+
                 # Feedback & Spaced Repetition logic
-                if first_try and elapsed > 4.0:
+                if retired:
+                    target_name = f"{self._current_q_item}³" if self._mode == 3 else (f"{self._current_q_item}²" if self._mode == 2 else f"{self._current_q_item}")
+                    if len(self._all_pool) == 0:
+                        self._fb_lbl.setText(f"🌟 ALL TARGETS MASTERED! ({target}/{target}) 🌟")
+                    else:
+                        self._fb_lbl.setText(f"🌟 {target_name} RETIRED! ({target}/{target}) 🌟")
+                elif first_try and elapsed > 4.0:
                     # Correct, but slow/hesitant (> 4s) -> Re-queue for speed reinforcement!
                     if not any(e["item"] == self._current_q_item for e in self._priority_queue):
                         self._priority_queue.append({
@@ -1991,13 +2742,21 @@ class MathTrainerPage(QWidget):
                     self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
 
                 self._fb_lbl.setStyleSheet(
-                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(24*scale)}px;"
+                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(20*scale)}px;"
                 )
                 self._sb_status.setText(f"COMBO x{self._streak}")
-                self._reveal_scroll.hide()
-                self._reveal_hint.show()
+                if hasattr(self, "_reveal_scroll"):
+                    self._reveal_scroll.hide()
+                if hasattr(self, "_reveal_card"):
+                    self._reveal_card.hide()
+                if hasattr(self, "_reveal_hint"):
+                    self._reveal_hint.show()
                 self._show_ans_btn.hide()
-                QTimer.singleShot(650, self._gen_q)
+
+                if target > 0 and len(self._all_pool) == 0:
+                    QTimer.singleShot(750, self._show_all_mastered_celebration)
+                else:
+                    QTimer.singleShot(650, self._gen_q)
             else:
                 if getattr(self, "burst", None) is not None:
                     c = self._ans_in.mapTo(self, self._ans_in.rect().center())
@@ -2010,6 +2769,13 @@ class MathTrainerPage(QWidget):
                 if not getattr(self, "_q_attempted", False):
                     self._wrong_count += 1
                 self._q_attempted = True
+
+                # Soft penalty on wrong attempt: preserve pre-error streak and decrement by 1 instead of wipeout
+                if hasattr(self, "_current_q_item") and self._current_q_item is not None:
+                    cur_s = self._item_streaks.get(self._current_q_item, 0)
+                    self._pre_error_streak = cur_s
+                    self._item_streaks[self._current_q_item] = max(0, cur_s - 1)
+                self._update_mastery_ui()
 
                 # URGENT RETRY: Re-queue after 1 intervening question (self._qn + 2)
                 self._priority_queue = [e for e in self._priority_queue if e["item"] != self._current_q_item]
@@ -2025,8 +2791,8 @@ class MathTrainerPage(QWidget):
                     f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;"
                 )
                 self._ans_in.setStyleSheet(
-                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};font-size:{int(72*scale)}pt;"
-                    f"border:{int(2*scale)}px solid {self._p.get('C_RED', _h(RED))};border-radius:{int(6*scale)}px;padding:{int(6*scale)}px;}}"
+                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};font-size:{int(52*scale)}pt;"
+                    f"border:{int(2*scale)}px solid {self._p.get('C_RED', _h(RED))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
                 )
                 self._fb_lbl.setText("WRONG! ADJUST OR REVEAL.")
                 self._fb_lbl.setStyleSheet(
@@ -2034,7 +2800,7 @@ class MathTrainerPage(QWidget):
                 )
                 self._sb_status.setText("COMBO BROKEN")
                 self._show_ans_btn.show()
-                self._last_wrong_text = v
+                self._last_wrong_text = str(v)
                 self._last_stroke_count = len(self._scratchpad._strokes) if hasattr(self, "_scratchpad") and self._scratchpad else 0
                 QTimer.singleShot(1000, self._clear_wrong_answer)
         except ValueError:
@@ -2056,9 +2822,14 @@ class MathTrainerPage(QWidget):
             self._ans_in.setText("")
             self._ans_in.setStyleSheet(self._ANS_SS)
             if hasattr(self, "_scratchpad") and self._scratchpad:
-                self._scratchpad.clear()
+                self._scratchpad._clear_on_next_press = True
+            if hasattr(self, "_side_scratchpad") and self._side_scratchpad:
+                self._side_scratchpad._clear_on_next_press = True
 
     def _reveal(self):
+        if getattr(self, "_is_revealed", False):
+            return
+        self._is_revealed = True
         self._show_ans_btn.hide()
         self._reveal_hint.hide()
 
@@ -2071,9 +2842,50 @@ class MathTrainerPage(QWidget):
                 "reason": "wrong"
             })
 
+        if not getattr(self, "_q_attempted", False):
+            self._wrong_count += 1
+        self._q_attempted = True
+        self._streak = 0
+        if hasattr(self, "_current_q_item") and self._current_q_item is not None:
+            self._item_streaks[self._current_q_item] = 0
+        self._update_mastery_ui()
+        self._combo_val.setText("0")
+        self._combo_val.setStyleSheet(
+            f"color:{self._p.get('C_ORANGE', _h(ORANG))};background:transparent;min-width:24px;"
+        )
+
         q = self._q_lbl.text()
         scale = self._font_size / 11.0
+        solved_q = q.replace("?", str(self._ans))
+
+        self._q_lbl.setText(solved_q)
+        self._q_lbl.setStyleSheet(
+            f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:1px;font-size:{int(42*scale)}pt;"
+        )
+
+        self._ans_in.blockSignals(True)
+        self._ans_in.setText(str(self._ans))
+        self._ans_in.blockSignals(False)
+        self._ans_in.setStyleSheet(
+            f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_YELLOW', _h(YELLOW))};font-size:{int(52*scale)}pt;"
+            f"border:{int(2*scale)}px solid {self._p.get('C_YELLOW', _h(YELLOW))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
+        )
+
+        self._fb_lbl.setText("REVEALED • HIT SPACE OR ENTER FOR NEXT")
+        self._fb_lbl.setStyleSheet(
+            f"color:{self._p.get('C_YELLOW', _h(YELLOW))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(16*scale)}px;font-weight:bold;"
+        )
+        self._sb_status.setText("ANSWER REVEALED")
+
+        if hasattr(self, "_reveal_bar_btn"):
+            self._reveal_bar_btn.setText("NEXT ➔ (Space)")
+
+        if hasattr(self, "_reveal_hint"):
+            self._reveal_hint.hide()
+
         if self._mode == 1:
+            if hasattr(self, "_reveal_card"):
+                self._reveal_card.hide()
             base = int(q.split("×")[0].strip())
             asked = int(q.split("×")[1].split("=")[0].strip())
             lines = [
@@ -2082,14 +2894,21 @@ class MathTrainerPage(QWidget):
             ]
             self._reveal_lbl.setText("\n".join(lines))
             self._reveal_lbl.setStyleSheet(
-                f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;padding:{int(4*scale)}px;font-size:{int(16*scale)}pt;"
+                f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;padding:{int(4*scale)}px;font-size:{int(14*scale)}pt;"
             )
+            self._reveal_scroll.show()
         else:
-            self._reveal_lbl.setText(f"ANSWER:\n\n{q.replace('?', str(self._ans))}")
-            self._reveal_lbl.setStyleSheet(
-                f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;padding:{int(4*scale)}px;font-size:{int(22*scale)}pt;"
-            )
-        self._reveal_scroll.show()
+            if hasattr(self, "_reveal_scroll"):
+                self._reveal_scroll.hide()
+            if hasattr(self, "_reveal_card"):
+                self._reveal_card_val.setText(solved_q)
+                self._reveal_card_val.setStyleSheet(
+                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;font-size:{int(18*scale)}pt;font-weight:bold;"
+                )
+                self._reveal_card.show()
+            else:
+                self._reveal_lbl.setText(f"ANSWER:\n\n{solved_q}")
+                self._reveal_scroll.show()
 
     def _get_font_size(self):
         win = self.window()
@@ -2322,17 +3141,31 @@ class MathTrainerPage(QWidget):
                     QPushButton:checked{{background:rgba(168,108,255,0.12);border-color:{_h(PURPLE)};color:{_h(PURPLE)};}}
                 """)
         for b in getattr(self, "_timer_btns", {}).values():
-            b.setFixedSize(int(102 * scale), int(48 * scale))
-            b.setFont(QFont("Arial", int(12 * scale), QFont.Bold))
+            b.setFixedSize(int(98 * scale), int(42 * scale))
+            b.setFont(QFont("Arial", int(11 * scale), QFont.Bold))
             b.setStyleSheet(f"""
-                QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:{int(12*scale)}pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
+                QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:{int(11*scale)}pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
                     border:{int(1*scale)}px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:{int(3*scale)}px;}}
                 QPushButton:hover{{border-color:{_h(PURPLE)};color:{_h(PURPLE)};}}
                 QPushButton:checked{{background:rgba(168,108,255,0.12);border-color:{_h(PURPLE)};color:{_h(PURPLE)};}}
             """)
+        for b in getattr(self, "_streak_btns", {}).values():
+            b.setFixedSize(int(124 * scale), int(42 * scale))
+            b.setFont(QFont("Arial", int(11 * scale), QFont.Bold))
+            b.setStyleSheet(f"""
+                QPushButton{{padding:0px !important;margin:0px !important;font-family:Arial !important;font-weight:bold;font-size:{int(11*scale)}pt;background:#0D0D16;color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};
+                    border:{int(1*scale)}px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:{int(3*scale)}px;}}
+                QPushButton:hover{{border-color:{_h(CYAN)};color:{_h(CYAN)};}}
+                QPushButton:checked{{background:rgba(79,195,247,0.12);border-color:{_h(CYAN)};color:{_h(CYAN)};}}
+            """)
         if hasattr(self, "_lbl_timer_title"):
             self._lbl_timer_title.setFont(QFont(self._hf, int(7 * scale)))
             self._lbl_timer_title.setStyleSheet(
+                f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:{int(1.5 * scale)}px;"
+            )
+        if hasattr(self, "_lbl_streak_title"):
+            self._lbl_streak_title.setFont(QFont(self._hf, int(7 * scale)))
+            self._lbl_streak_title.setStyleSheet(
                 f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:{int(1.5 * scale)}px;"
             )
         if hasattr(self, "_warn_lbl"):
@@ -2387,20 +3220,25 @@ class MathTrainerPage(QWidget):
                 f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"
             )
         if hasattr(self, "_scan_card"):
-            self._scan_card.setFixedHeight(int(200 * scale))
+            self._scan_card.setFixedHeight(int(150 * scale))
         if hasattr(self, "_q_lbl"):
-            q_lbl_font_size = int(54 * scale)
+            q_lbl_font_size = int(42 * scale)
             self._q_lbl.setFont(QFont(self._hf, q_lbl_font_size, QFont.Black))
-            self._q_lbl.setStyleSheet(
-                f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:{int(1 * scale)}px;font-size:{q_lbl_font_size}pt;"
-            )
+            if getattr(self, "_is_revealed", False):
+                self._q_lbl.setStyleSheet(
+                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:{int(1 * scale)}px;font-size:{q_lbl_font_size}pt;"
+                )
+            else:
+                self._q_lbl.setStyleSheet(
+                    f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:{int(1 * scale)}px;font-size:{q_lbl_font_size}pt;"
+                )
         if hasattr(self, "_ans_in"):
-            ans_in_font_size = int(72 * scale)
-            self._ans_in.setFixedHeight(int(120 * scale))
+            ans_in_font_size = int(52 * scale)
+            self._ans_in.setFixedHeight(int(88 * scale))
             self._ans_in.setFont(QFont(self._hf, ans_in_font_size, QFont.Bold))
             self._ANS_SS = (
                 f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_TEXT', _h(TEXT))};font-size:{ans_in_font_size}pt;"
-                f"border:{int(2*scale)}px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:{int(6*scale)}px;padding:{int(6*scale)}px;}}"
+                f"border:{int(2*scale)}px solid {self._p.get('C_BORDER', _h(BORDER))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
                 f"QLineEdit:focus{{border:{int(2*scale)}px solid {self._p.get('C_GREEN', _h(GREEN))};}} "
             )
             if not self._fb_lbl.text() or self._fb_lbl.text() == "":
@@ -2408,16 +3246,22 @@ class MathTrainerPage(QWidget):
             elif "CORRECT" in self._fb_lbl.text() or "COWABUNGA" in self._fb_lbl.text() or "PERFECT" in self._fb_lbl.text() or "KAME-HA" in self._fb_lbl.text() or "LETHAL" in self._fb_lbl.text() or "NAILED" in self._fb_lbl.text():
                 self._ans_in.setStyleSheet(
                     f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_GREEN', _h(GREEN))};font-size:{ans_in_font_size}pt;"
-                    f"border:{int(2*scale)}px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:{int(6*scale)}px;padding:{int(6*scale)}px;}}"
+                    f"border:{int(2*scale)}px solid {self._p.get('C_GREEN', _h(GREEN))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
+                )
+            elif "REVEALED" in self._fb_lbl.text():
+                self._ans_in.setStyleSheet(
+                    f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_YELLOW', _h(YELLOW))};font-size:{ans_in_font_size}pt;"
+                    f"border:{int(2*scale)}px solid {self._p.get('C_YELLOW', _h(YELLOW))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
                 )
             else:
                 self._ans_in.setStyleSheet(
                     f"QLineEdit{{background:{self._p.get('C_CARD', _h(CARD))};color:{self._p.get('C_RED', _h(RED))};font-size:{ans_in_font_size}pt;"
-                    f"border:{int(2*scale)}px solid {self._p.get('C_RED', _h(RED))};border-radius:{int(6*scale)}px;padding:{int(6*scale)}px;}}"
+                    f"border:{int(2*scale)}px solid {self._p.get('C_RED', _h(RED))};border-radius:{int(6*scale)}px;padding:{int(4*scale)}px;}}"
                 )
         if hasattr(self, "_fb_lbl"):
-            fb_font_size = int(28 * scale)
+            fb_font_size = int(18 * scale)
             self._fb_lbl.setFont(QFont(self._hf, fb_font_size, QFont.Bold))
+            self._fb_lbl.setFixedHeight(int(30 * scale))
             if not self._fb_lbl.text() or self._fb_lbl.text() == "":
                 self._fb_lbl.setStyleSheet(
                     f"color:{self._p.get('C_TEXT', _h(TEXT))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{fb_font_size}px;"
@@ -2426,38 +3270,50 @@ class MathTrainerPage(QWidget):
                 self._fb_lbl.setStyleSheet(
                     f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{fb_font_size}px;"
                 )
+            elif "REVEALED" in self._fb_lbl.text():
+                self._fb_lbl.setStyleSheet(
+                    f"color:{self._p.get('C_YELLOW', _h(YELLOW))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{int(16*scale)}px;font-weight:bold;"
+                )
             else:
                 self._fb_lbl.setStyleSheet(
                     f"color:{self._p.get('C_RED', _h(RED))};background:transparent;letter-spacing:{int(1*scale)}px;font-size:{fb_font_size}px;"
                 )
         if hasattr(self, "_scratchpad"):
-            self._scratchpad.setMinimumHeight(int(180 * scale))
+            self._scratchpad.setMinimumHeight(int(240 * scale))
+        if hasattr(self, "_side_scratchpad"):
+            self._side_scratchpad.setMinimumHeight(int(150 * scale))
+        if hasattr(self, "_side_clear_btn"):
+            self._side_clear_btn.setFixedHeight(int(22 * scale))
+            self._side_clear_btn.setFont(QFont(self._hf, int(7 * scale), QFont.Bold))
+        if hasattr(self, "_reveal_card_val"):
+            self._reveal_card_val.setFont(QFont(self._hf, int(18 * scale), QFont.Bold))
         if hasattr(self, "_clear_btn"):
             self._clear_btn.setFixedHeight(int(26 * scale))
             self._clear_btn.setFont(QFont(self._hf, int(8 * scale), QFont.Bold))
+        if hasattr(self, "_copy_misread_btn"):
+            self._copy_misread_btn.setFixedHeight(int(26 * scale))
+            self._copy_misread_btn.setFont(QFont(self._hf, int(8 * scale), QFont.Bold))
+        if hasattr(self, "_reveal_bar_btn"):
+            self._reveal_bar_btn.setFixedHeight(int(26 * scale))
+            self._reveal_bar_btn.setFont(QFont(self._hf, int(8 * scale), QFont.Bold))
         if hasattr(self, "_show_ans_btn"):
-            self._show_ans_btn.setFixedHeight(int(44 * scale))
-            self._show_ans_btn.setFont(QFont(self._hf, int(11 * scale), QFont.Bold))
+            self._show_ans_btn.setFixedHeight(int(40 * scale))
+            self._show_ans_btn.setFont(QFont(self._hf, int(10 * scale), QFont.Bold))
             self._show_ans_btn.setStyleSheet(
-                f"QPushButton{{font-family: {self._hf}; font-size: {int(11 * scale)}px; font-weight: bold; background:transparent;border:{int(1*scale)}px solid {self._p.get('C_YELLOW', _h(YELLOW))};"
+                f"QPushButton{{font-family: {self._hf}; font-size: {int(10 * scale)}px; font-weight: bold; background:transparent;border:{int(1*scale)}px solid {self._p.get('C_YELLOW', _h(YELLOW))};"
                 f"color:{self._p.get('C_YELLOW', _h(YELLOW))};border-radius:{int(3*scale)}px;padding:0 {int(14*scale)}px;letter-spacing:{int(1*scale)}px;}}"
                 f"QPushButton:hover{{background:rgba(241,250,140,0.1);}}"
             )
         if hasattr(self, "_reveal_hint"):
-            self._reveal_hint.setFont(QFont(self._hf, int(13 * scale)))
+            self._reveal_hint.setFont(QFont(self._hf, int(9 * scale)))
             self._reveal_hint.setStyleSheet(
-                f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;"
+                f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;padding:{int(2*scale)}px 0;"
             )
         if hasattr(self, "_reveal_lbl"):
-            self._reveal_lbl.setFont(QFont("Courier New", int(16 * scale)))
-            if self._mode != 1 and self._reveal_scroll.isVisible():
-                self._reveal_lbl.setStyleSheet(
-                    f"color:{self._p.get('C_GREEN', _h(GREEN))};background:transparent;padding:{int(4*scale)}px;font-size:{int(22*scale)}pt;"
-                )
-            else:
-                self._reveal_lbl.setStyleSheet(
-                    f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;padding:{int(4*scale)}px;"
-                )
+            self._reveal_lbl.setFont(QFont("Courier New", int(14 * scale)))
+            self._reveal_lbl.setStyleSheet(
+                f"color:{self._p.get('C_BLUE', _h(BLUE))};background:transparent;padding:{int(4*scale)}px;"
+            )
 
         # 4. Page 3
         if hasattr(self, "_back_btn_p3"):
@@ -2472,9 +3328,27 @@ class MathTrainerPage(QWidget):
                 }}
                 QPushButton:hover{{border-color:{self._p.get('C_GREEN', _h(GREEN))};color:{self._p.get('C_GREEN', _h(GREEN))};}}
             """)
+        if hasattr(self, "_rep_trophy"):
+            self._rep_trophy.setFont(QFont(self._hf, int(44 * scale)))
+        if hasattr(self, "_rep_badge"):
+            self._rep_badge.setFont(QFont(self._hf, int(20 * scale), QFont.Bold))
         if hasattr(self, "_rep_score"):
-            self._rep_score.setFont(QFont(self._hf, int(36 * scale), QFont.Black))
+            self._rep_score.setFont(QFont(self._hf, int(30 * scale), QFont.Black))
         if hasattr(self, "_rep_acc"):
-            self._rep_acc.setFont(QFont(self._hf, int(16 * scale), QFont.Bold))
+            self._rep_acc.setFont(QFont(self._hf, int(15 * scale), QFont.Bold))
         if hasattr(self, "_rep_speed"):
-            self._rep_speed.setFont(QFont(self._hf, int(12 * scale)))
+            self._rep_speed.setFont(QFont(self._hf, int(13 * scale)))
+        if hasattr(self, "_quote_text_lbl"):
+            self._quote_text_lbl.setFont(QFont(self._hf, int(15 * scale)))
+        if hasattr(self, "_quote_author_lbl"):
+            self._quote_author_lbl.setFont(QFont(self._hf, int(12 * scale), QFont.Bold))
+        if hasattr(self, "_p3_btn_menu"):
+            self._p3_btn_menu.setFixedHeight(int(46 * scale))
+            self._p3_btn_menu.setFixedWidth(int(180 * scale))
+            self._p3_btn_menu.setFont(QFont(self._hf, int(11 * scale), QFont.Bold))
+        if hasattr(self, "_p3_btn_again"):
+            self._p3_btn_again.setFixedHeight(int(46 * scale))
+            self._p3_btn_again.setFixedWidth(int(200 * scale))
+            self._p3_btn_again.setFont(QFont(self._hf, int(12 * scale), QFont.Bold))
+        if hasattr(self, "_q_mastery_badge") and hasattr(self, "_q_pool_progress_lbl"):
+            self._update_mastery_ui()

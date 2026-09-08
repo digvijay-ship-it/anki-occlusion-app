@@ -200,7 +200,12 @@ def ocr_number(pil_img, _retried=False) -> str:
                 pred = 9
             elif top1 == 9 and not has_loop and probs[3] > 0.35 and probs[9] < 0.65:
                 pred = 3
-            # 2. Disambiguate 5 vs 9 using vertical mass distribution:
+            # 2. Disambiguate 1 vs 9 and 7 vs 9: A digit 1 or 7 NEVER has an upper closed loop!
+            elif (top1 == 1 or top1 == 7) and has_loop and (probs[9] > 0.05 or top2 == 9):
+                pred = 9
+            elif top1 == 1 and upper_ratio > 0.52 and (probs[9] > 0.10 or top2 == 9):
+                pred = 9
+            # 3. Disambiguate 5 vs 9 using vertical mass distribution:
             # 9 has its loop/mass concentrated in the upper half (> 0.58).
             # 5 has its belly in the lower half (< 0.45).
             elif top1 == 5 and upper_ratio > 0.58 and (probs[9] > 0.05 or top2 == 9):
