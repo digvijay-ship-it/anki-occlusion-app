@@ -4983,7 +4983,7 @@ function App() {
                           }}
                         >
                           <span className="mask-number" style={{ fontWeight: 'bold', color: isSelected ? 'var(--purple)' : 'var(--text)' }}>
-                            Mask #{index + 1}
+                            {mask.label || `Mask #${mask.mask_num || (index + 1)}`}
                           </span>
                           {mask.group_id && (
                             <span className="mask-group-tag" style={{

@@ -66,6 +66,8 @@ def _home_animations_enabled():
 
 # ── CRT Monitor Scanlines & Sweep Overlay ────────────────────────────────────
 class CRTOverlay(QWidget):
+    _cached_textures = {}
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -92,7 +94,7 @@ class CRTOverlay(QWidget):
             return True
 
     def sync_timer(self):
-        should_run = self.isVisible() and _home_animations_enabled() and self._is_theme_active()
+        should_run = self.isVisible() and _home_animations_enabled() and self._is_theme_active() and not animations_suspended()
         if should_run:
             if not self._timer.isActive():
                 interval = 30 if self._boot_flicker_active else 40
@@ -111,14 +113,14 @@ class CRTOverlay(QWidget):
 
     def trigger_boot_flicker(self):
         """Simulates a physical cathode ray tube monitor warming up with rapid flashes."""
-        if not _home_animations_enabled():
+        if not _home_animations_enabled() or animations_suspended():
             return
         self._boot_flicker_active = True
         self._boot_ticks = 0
         self.sync_timer()
 
     def _on_tick(self):
-        if not _home_animations_enabled() or not self._is_theme_active():
+        if not _home_animations_enabled() or not self._is_theme_active() or animations_suspended():
             self.sync_timer()
             return
 
@@ -139,7 +141,7 @@ class CRTOverlay(QWidget):
 
     def paintEvent(self, event):
         # Only draw scanlines if retro mode is active and animations are enabled
-        if not self._is_theme_active() or not _home_animations_enabled():
+        if not self._is_theme_active() or not _home_animations_enabled() or animations_suspended():
             return
 
         painter = QPainter(self)
@@ -149,14 +151,17 @@ class CRTOverlay(QWidget):
         h = self.height()
         w = self.width()
 
-        # 1. Repeating 4px horizontal scanlines using a tiled texture brush
+        # 1. Repeating 4px horizontal scanlines using a cached tiled texture brush
         alpha = int(255 * self._flicker_opacity)
-        texture = QPixmap(1, 4)
-        texture.fill(Qt.transparent)
-        tex_painter = QPainter(texture)
-        tex_painter.setPen(QColor(0, 0, 0, alpha))
-        tex_painter.drawPoint(0, 0)
-        tex_painter.end()
+        texture = CRTOverlay._cached_textures.get(alpha)
+        if texture is None:
+            texture = QPixmap(1, 4)
+            texture.fill(Qt.transparent)
+            tex_painter = QPainter(texture)
+            tex_painter.setPen(QColor(0, 0, 0, alpha))
+            tex_painter.drawPoint(0, 0)
+            tex_painter.end()
+            CRTOverlay._cached_textures[alpha] = texture
         painter.fillRect(0, 0, w, h, QBrush(texture))
 
         # 2. Scrolling neon cyber sweep line - only when animations are active
@@ -222,7 +227,7 @@ class RetroParticlePanel(QWidget):
             return False
 
     def sync_timer(self):
-        should_run = self.isVisible() and _home_animations_enabled() and self._is_theme_active()
+        should_run = self.isVisible() and _home_animations_enabled() and self._is_theme_active() and not animations_suspended()
         if should_run:
             if not self.timer.isActive():
                 self.timer.start(33) # ~30 FPS
@@ -292,7 +297,7 @@ class RetroParticlePanel(QWidget):
         )
 
     def update_particles(self):
-        if not _home_animations_enabled() or not self._is_theme_active():
+        if not _home_animations_enabled() or not self._is_theme_active() or animations_suspended():
             self.sync_timer()
             return
         w = max(10, self.width())
