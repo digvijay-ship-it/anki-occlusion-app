@@ -630,6 +630,41 @@ class DirtyStore:
             self.revision += 1
             self._rebuild_card_index()
 
+    def check_and_apply_paused_decks_timeline_shift(self, reference_date=None) -> int:
+        """
+        Check if any paused deck requires a conveyor-belt timeline shift (e.g. crossing midnight
+        mid-session, or when navigating decks on a new day).
+        If items were shifted:
+          - Marks store as dirty
+          - Invalidates deck stats cache
+          - Triggers auto-save
+        Returns number of items shifted.
+        """
+        if not self._data or not isinstance(self._data, dict):
+            return 0
+        try:
+            from sm2_engine import apply_paused_decks_timeline_shift
+            decks = self._data.get("decks", [])
+            shifted = apply_paused_decks_timeline_shift(decks, reference_date=reference_date)
+            if shifted > 0:
+                print(f"[PAUSED_DECKS] Mid-session timeline shift advanced {shifted} items.")
+                with self._lock:
+                    self._dirty = True
+                    self.revision += 1
+                try:
+                    from perf_utils import invalidate_deck_stats
+                    invalidate_deck_stats()
+                except Exception:
+                    pass
+                try:
+                    self.save_soon(min_interval=3.0)
+                except Exception as ex:
+                    print(f"[DEBUG][data_manager] save_soon after mid-session shift failed: {ex}")
+            return shifted
+        except Exception as e:
+            print(f"[DEBUG][data_manager] check_and_apply_paused_decks_timeline_shift error: {e}")
+            return 0
+
     # ── Dirty flag ────────────────────────────────────────────────────────────
 
     def mark_dirty(self):
@@ -1076,6 +1111,68 @@ def find_deck_by_id(deck_id, lst):
         if found:
             return found
     return None
+
+
+def find_parent_deck(deck_id, lst, parent=None):
+    """Return the parent deck dict of the given deck_id, or None if top-level."""
+    for d in lst:
+        if d.get("_id") == deck_id:
+            return parent
+        found = find_parent_deck(deck_id, d.get("children", []) or d.get("subdecks", []), d)
+        if found is not None:
+            return found
+    return None
+
+
+def is_deck_effective_paused(deck, lst=None):
+    """
+    Check whether a deck is effectively paused following the precedence rule:
+    - Explicit local setting on `deck` (True or False) takes highest precedence.
+    - If not explicitly set (or is None), walk up the parent hierarchy.
+      The nearest ancestor with an explicit is_paused setting dictates the status.
+    - Default is False.
+    """
+    if not deck:
+        return False
+    if "is_paused" in deck and deck["is_paused"] is not None:
+        return bool(deck["is_paused"])
+    if lst:
+        curr = deck
+        while curr:
+            curr_id = curr.get("_id")
+            parent = find_parent_deck(curr_id, lst)
+            if not parent:
+                break
+            if "is_paused" in parent and parent["is_paused"] is not None:
+                return bool(parent["is_paused"])
+            curr = parent
+    return False
+
+
+def cascade_deck_pause(deck, is_paused, today_iso=None):
+    """
+    Recursively cascades pause/unpause state down to all subdecks of the given deck.
+    """
+    if not deck:
+        return
+    if today_iso is None:
+        from datetime import date
+        today_iso = date.today().isoformat()
+    children = deck.get("children", []) or deck.get("subdecks", [])
+    for child in children:
+        child["is_paused"] = is_paused
+        if is_paused:
+            child["pause_backlog_cutoff"] = today_iso
+            child["pause_last_shift_date"] = today_iso
+        else:
+            child.pop("pause_backlog_cutoff", None)
+            child.pop("pause_last_shift_date", None)
+        cascade_deck_pause(child, is_paused, today_iso)
+
+
+def check_paused_decks_shift(reference_date=None) -> int:
+    """Convenience helper to check and apply paused decks shift on global store."""
+    return store.check_and_apply_paused_decks_timeline_shift(reference_date=reference_date)
 
 
 def next_deck_id(data):

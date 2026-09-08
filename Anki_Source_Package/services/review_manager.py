@@ -599,16 +599,21 @@ class ReviewSessionManager:
                 label = f"📝 {card.get('title', 'Text')}"
             elif isinstance(box_idx, tuple) and box_idx[0] == "group":
                 gid = box_idx[1]
-                # Find box number of first box in group
-                grp_num = next(
-                    (j + 1 for j, b in enumerate(boxes) if b.get("group_id") == gid),
-                    "?",
-                )
+                grp_box = next((b for b in boxes if b.get("group_id") == gid), None)
+                grp_num = (grp_box.get("mask_num") if grp_box else None)
+                if not grp_num:
+                    grp_num = next(
+                        (j + 1 for j, b in enumerate(boxes) if b.get("group_id") == gid),
+                        "?",
+                    )
                 label = f"{page_str}#{grp_num} [grp]"
             elif box_idx is None:
                 label = f"{page_str}card"
             else:
-                label = f"{page_str}#{box_idx + 1}"
+                target_box = boxes[box_idx] if (0 <= box_idx < len(boxes)) else None
+                box_num = (target_box.get("mask_num") if target_box else None) or (box_idx + 1)
+                custom_lbl = target_box.get("label") if target_box else ""
+                label = f"{page_str}{custom_lbl or f'#{box_num}'}"
 
             item = QListWidgetItem(label)
             item.setData(QUEUE_INDEX_ROLE, i)

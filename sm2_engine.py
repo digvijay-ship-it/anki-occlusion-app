@@ -559,7 +559,12 @@ def apply_paused_decks_timeline_shift(decks, reference_date=None) -> int:
 
     def _process_deck_tree(deck, parent_is_paused=False, parent_cutoff=None, parent_last_shift=None):
         nonlocal total_shifted
-        is_paused = bool(deck.get("is_paused", False)) or parent_is_paused
+        # Precedence rule: An explicit local is_paused on the deck (True or False)
+        # always takes precedence over the inherited parent deck state.
+        if "is_paused" in deck and deck["is_paused"] is not None:
+            is_paused = bool(deck["is_paused"])
+        else:
+            is_paused = parent_is_paused
 
         cutoff_str = deck.get("pause_backlog_cutoff") or parent_cutoff
         last_shift_str = deck.get("pause_last_shift_date") or parent_last_shift
@@ -610,7 +615,7 @@ def apply_paused_decks_timeline_shift(decks, reference_date=None) -> int:
                                     box["due"] = shift_due_iso(box["due"], days_to_shift)
                                 total_shifted += 1
 
-                if deck.get("is_paused"):
+                if is_paused:
                     deck["pause_last_shift_date"] = today_iso
 
         children = deck.get("children", []) or deck.get("subdecks", []) or []
