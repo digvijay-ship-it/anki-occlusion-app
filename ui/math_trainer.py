@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QComboBox,
     QSpinBox,
+    QDialog,
 )
 from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QEvent, QRect, QUrl
 from PyQt5.QtGui import (
@@ -515,6 +516,111 @@ class ScanCard(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  EXIT PRACTICE CONFIRMATION POPUP DIALOG
+# ═══════════════════════════════════════════════════════════════════════════════
+class DojoExitConfirmationDialog(QDialog):
+    """
+    Themed confirmation dialog when attempting to exit active practice mode via Escape.
+    Styled with generous typography, dark ninja aesthetic, and large clear action buttons.
+    """
+    def __init__(self, parent=None, palette=None, font_family="Segoe UI"):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setModal(True)
+        self._p = palette or {}
+        self._hf = font_family
+
+        scale = 1.0
+        if parent and hasattr(parent, "_font_size"):
+            scale = parent._font_size / 11.0
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+
+        card = QFrame(self)
+        c_card = self._p.get("C_CARD", "#13131F")
+        c_red = self._p.get("C_RED", "#FF5555")
+        c_green = self._p.get("C_GREEN", "#72FF4F")
+        c_text = self._p.get("C_TEXT", "#F8F8F2")
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {c_card};
+                border: 2px solid {c_red};
+                border-radius: 8px;
+            }}
+        """)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(int(26 * scale), int(22 * scale), int(26 * scale), int(22 * scale))
+        cl.setSpacing(int(14 * scale))
+
+        title_lbl = QLabel("⚠️  ABANDON PRACTICE SESSION?")
+        title_lbl.setFont(QFont(self._hf, int(15 * scale), QFont.Bold))
+        title_lbl.setStyleSheet(f"color: {c_red}; background: transparent; letter-spacing: 1.5px;")
+        title_lbl.setAlignment(Qt.AlignCenter)
+        cl.addWidget(title_lbl)
+
+        desc_lbl = QLabel("Are you sure you want to exit to the menu?\nYour active streak combo and current round progress will be lost.")
+        desc_lbl.setFont(QFont(self._hf, int(12 * scale)))
+        desc_lbl.setStyleSheet(f"color: {c_text}; background: transparent; line-height: 140%;")
+        desc_lbl.setAlignment(Qt.AlignCenter)
+        desc_lbl.setWordWrap(True)
+        cl.addWidget(desc_lbl)
+
+        cl.addSpacing(int(6 * scale))
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(int(14 * scale))
+
+        self.btn_cancel = QPushButton("▶  KEEP PRACTICING")
+        self.btn_cancel.setFont(QFont(self._hf, int(11 * scale), QFont.Bold))
+        self.btn_cancel.setFixedHeight(int(42 * scale))
+        self.btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background: {c_green};
+                color: #07070B;
+                border: none;
+                border-radius: 4px;
+                padding: 0 {int(18 * scale)}px;
+                font-weight: bold;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{ background: white; }}
+        """)
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_cancel.setDefault(True)
+        self.btn_cancel.setFocus()
+        btn_row.addWidget(self.btn_cancel)
+
+        self.btn_exit = QPushButton("✕  EXIT TO MENU")
+        self.btn_exit.setFont(QFont(self._hf, int(11 * scale), QFont.Bold))
+        self.btn_exit.setFixedHeight(int(42 * scale))
+        self.btn_exit.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {c_red};
+                border: 1px solid {c_red};
+                border-radius: 4px;
+                padding: 0 {int(18 * scale)}px;
+                font-weight: bold;
+                letter-spacing: 1px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 85, 85, 0.15);
+                border-color: #FF6B6B;
+                color: #FF6B6B;
+            }}
+        """)
+        self.btn_exit.clicked.connect(self.accept)
+        btn_row.addWidget(self.btn_exit)
+
+        cl.addLayout(btn_row)
+        root_layout.addWidget(card)
+
+        self.setFixedWidth(int(480 * scale))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN PAGE WIDGET
 # ═══════════════════════════════════════════════════════════════════════════════
 class MathTrainerPage(QWidget):
@@ -812,6 +918,24 @@ class MathTrainerPage(QWidget):
         elif not self._p0.isHidden():
             self.closed.emit()
 
+    def _prompt_exit_confirmation(self):
+        timer_was_active = False
+        if getattr(self, "_practice_timer", None) and self._practice_timer.isActive():
+            self._practice_timer.stop()
+            timer_was_active = True
+
+        dlg = DojoExitConfirmationDialog(self, palette=self._p, font_family=self._hf)
+        res = dlg.exec_()
+        dlg.deleteLater()
+
+        if res == QDialog.Accepted:
+            self._show(1)
+        else:
+            if timer_was_active and getattr(self, "_practice_timer", None):
+                self._practice_timer.start(1000)
+            if hasattr(self, "_ans_in") and self._ans_in:
+                self._ans_in.setFocus()
+
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
             if hasattr(self, "_p2") and not self._p2.isHidden():
@@ -821,7 +945,7 @@ class MathTrainerPage(QWidget):
                 if has_scratch or has_side or has_input:
                     self._on_clear_clicked()
                 else:
-                    self.go_back()
+                    self._prompt_exit_confirmation()
             else:
                 self.go_back()
             e.accept()
@@ -871,7 +995,7 @@ class MathTrainerPage(QWidget):
                     if has_scratch or has_side or has_input:
                         self._on_clear_clicked()
                     else:
-                        self.go_back()
+                        self._prompt_exit_confirmation()
                 else:
                     self.go_back()
                 return True

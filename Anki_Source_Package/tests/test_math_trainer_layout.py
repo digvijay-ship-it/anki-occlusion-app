@@ -68,5 +68,49 @@ class TestMathTrainerLayout(unittest.TestCase):
         self.assertFalse(self.page._reveal_scroll.isHidden())
         self.assertTrue(self.page._reveal_card.isHidden())
 
+    def test_back_button_exits_without_confirmation(self):
+        self.page._mode = 2
+        self.page._rchk = {"11-12": True}
+        self.page._start_practice()
+        self.assertFalse(self.page._p2.isHidden())
+
+        with unittest.mock.patch.object(self.page, "_prompt_exit_confirmation") as mock_prompt:
+            self.page._back_btn_p2.click()
+            mock_prompt.assert_not_called()
+            self.assertTrue(self.page._p2.isHidden())
+            self.assertFalse(self.page._p1.isHidden())
+
+    def test_escape_in_practice_mode_prompts_confirmation(self):
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+        self.page._mode = 2
+        self.page._rchk = {"11-12": True}
+        self.page._start_practice()
+        self.assertFalse(self.page._p2.isHidden())
+
+        # With empty pads, pressing Escape calls _prompt_exit_confirmation
+        with unittest.mock.patch.object(self.page, "_prompt_exit_confirmation") as mock_prompt:
+            esc_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+            self.page.keyPressEvent(esc_event)
+            mock_prompt.assert_called_once()
+
+    def test_escape_confirmation_accepted_and_rejected_flow(self):
+        from PyQt5.QtWidgets import QDialog
+        self.page._mode = 2
+        self.page._rchk = {"11-12": True}
+        self.page._start_practice()
+        self.assertFalse(self.page._p2.isHidden())
+
+        # 1. Rejected -> Stays on page 2
+        with unittest.mock.patch("ui.math_trainer.DojoExitConfirmationDialog.exec_", return_value=QDialog.Rejected):
+            self.page._prompt_exit_confirmation()
+            self.assertFalse(self.page._p2.isHidden())
+
+        # 2. Accepted -> Navigates to page 1
+        with unittest.mock.patch("ui.math_trainer.DojoExitConfirmationDialog.exec_", return_value=QDialog.Accepted):
+            self.page._prompt_exit_confirmation()
+            self.assertTrue(self.page._p2.isHidden())
+            self.assertFalse(self.page._p1.isHidden())
+
 if __name__ == "__main__":
     unittest.main()
