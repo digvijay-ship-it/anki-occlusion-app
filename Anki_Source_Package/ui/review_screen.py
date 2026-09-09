@@ -1913,6 +1913,76 @@ class ReviewScreen(QWidget):
         if getattr(self, "mgr", None) is not None:
             self.mgr.super_skip()
 
+    def _custom_reschedule(self, days: int):
+        if getattr(self, "mgr", None) is not None:
+            self.mgr.custom_reschedule(days)
+
+    def _is_numpad_revision_enabled(self) -> bool:
+        try:
+            from data_manager import store
+            return bool(store.get().get("_numpad_custom_revision", False))
+        except Exception:
+            return False
+
+    def _toggle_numpad_revision_setting(self, enabled: bool):
+        try:
+            from data_manager import store
+            store.get()["_numpad_custom_revision"] = bool(enabled)
+            store.mark_dirty()
+            store.save_soon(delay_from_now=True)
+            self._update_numpad_revision_ui()
+            status = "enabled" if enabled else "disabled"
+            self._show_review_toast(f"Numpad Revision (1–9 Days) {status}")
+        except Exception as ex:
+            print(f"[DEBUG][review_screen] toggle numpad setting error: {ex}")
+
+    def _update_numpad_revision_ui(self):
+        enabled = self._is_numpad_revision_enabled()
+        if hasattr(self, "_btn_numpad_revision") and self._btn_numpad_revision is not None:
+            self._btn_numpad_revision.setVisible(enabled)
+        if hasattr(self, "_act_numpad_revision") and self._act_numpad_revision is not None:
+            self._act_numpad_revision.setChecked(enabled)
+
+    def _show_custom_reschedule_dialog(self):
+        menu = QMenu(self)
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        from theme_manager import get_palette
+        p = get_palette(theme)
+        card = p.get("C_CARD", "#262638")
+        text = p.get("C_TEXT", "#FFFFFF")
+        border = p.get("C_BORDER", "#44445A")
+        accent = p.get("C_ACCENT", "#7C6AF7")
+        menu.setStyleSheet(
+            f"QMenu {{ background-color: {card}; color: {text}; border: 1.5px solid {border}; border-radius: 6px; padding: 6px; font-size: 14px; }}"
+            f"QMenu::item {{ padding: 8px 24px 8px 24px; border-radius: 4px; font-weight: bold; }}"
+            f"QMenu::item:selected {{ background-color: {accent}; color: white; }}"
+        )
+        title_act = menu.addAction("📅 Reschedule in Days (SM-2 Safe)")
+        title_act.setEnabled(False)
+        menu.addSeparator()
+
+        for d in [1, 2, 3, 4, 5, 7]:
+            label = "1 Day (Tomorrow)" if d == 1 else f"{d} Days"
+            if d == 7:
+                label = "7 Days (1 Week)"
+            menu.addAction(f"⚡ {label}", lambda _, days=d: self._custom_reschedule(days))
+
+        menu.addSeparator()
+        menu.addAction("✏️ Other Days...", self._prompt_custom_days)
+
+        menu.exec_(self.cursor().pos())
+
+    def _prompt_custom_days(self):
+        from PyQt5.QtWidgets import QInputDialog
+        days, ok = QInputDialog.getInt(
+            self,
+            "Custom Revision Days",
+            "Schedule for review in how many days?\n(SM-2 Ease Factor & Stats stay safe):",
+            1, 1, 365, 1
+        )
+        if ok and days > 0:
+            self._custom_reschedule(days)
+
     def _close_bg_prefetch_dialog(self):
         self._bg_accept_mode = False
         self._bg_prefetch_total_pages = 0
@@ -4835,6 +4905,14 @@ class ReviewScreen(QWidget):
         key = e.key()
         mods = e.modifiers()
 
+        # Numpad Instant Custom Days Revision (1 to 9 days)
+        if bool(mods & Qt.KeypadModifier) and self._is_numpad_revision_enabled():
+            if Qt.Key_1 <= key <= Qt.Key_9 and not (mods & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)):
+                days = int(key - Qt.Key_0)
+                self._custom_reschedule(days)
+                e.accept()
+                return
+
         # Alt+M toggle Mind-Map Concept Hub
         if (mods & Qt.AltModifier) and key == Qt.Key_M:
             self._toggle_concept_hub()
@@ -5899,6 +5977,11 @@ class ReviewScreen(QWidget):
         self._act_cache.setChecked(False)
         self._act_cache.triggered.connect(self._toggle_cache_panel)
         self._menu_options.addAction(self._act_cache)
+
+        self._act_numpad_revision = QAction("🔢 Numpad Quick Revision (1–9 Days)", self, checkable=True)
+        self._act_numpad_revision.setChecked(self._is_numpad_revision_enabled())
+        self._act_numpad_revision.triggered.connect(self._toggle_numpad_revision_setting)
+        self._menu_options.addAction(self._act_numpad_revision)
         
         self._menu_options.addSeparator()
 
@@ -7236,6 +7319,33 @@ class ReviewScreen(QWidget):
         b_super_rate.clicked.connect(self._super_skip)
         rfl.addWidget(b_super_rate)
 
+        # Add Numpad Custom Revision button to rating frame
+        self._btn_numpad_revision = QPushButton("📅 Custom (Numpad 1–9)")
+        self._btn_numpad_revision.setFixedHeight(control_metrics["rating_height"])
+        self._btn_numpad_revision.setToolTip(
+            "Quick Revision: Schedule this card in 1 to 9 days using Numpad keys (1–9) or click here. SM-2 stats stay 100% safe."
+        )
+        if dojo:
+            self._btn_numpad_revision.setStyleSheet(
+                f"QPushButton{{background:rgba(7,7,11,200);color:{accent};"
+                f"border:1px solid {accent};border-radius:2px;"
+                f"font-size:{control_metrics['rating_font']}px;font-weight:900;"
+                f"padding:0 16px;"
+                f"font-family:{font};letter-spacing:0.5px;}}"
+                f"QPushButton:hover{{background:{accent};color:{bg};}}"
+            )
+        else:
+            self._btn_numpad_revision.setStyleSheet(
+                f"QPushButton{{background:{surface};color:{accent};"
+                f"border:1.5px solid {accent};border-radius:8px;"
+                f"font-size:{control_metrics['rating_font']}px;font-weight:bold;"
+                f"padding:0 16px;}}"
+                f"QPushButton:hover{{background:{accent};color:white;}}"
+            )
+        self._btn_numpad_revision.clicked.connect(self._show_custom_reschedule_dialog)
+        self._btn_numpad_revision.setVisible(self._is_numpad_revision_enabled())
+        rfl.addWidget(self._btn_numpad_revision)
+
         self._rating_frame.hide()
         self._mid_row_widget = self._reveal_bar
 
@@ -7439,6 +7549,10 @@ class ReviewScreen(QWidget):
         self._act_summary.setChecked(self._show_summary_popup)
         is_cache_visible = self._cache_panel.isVisible() if getattr(self, "_cache_panel", None) is not None else False
         self._act_cache.setChecked(is_cache_visible)
+        if hasattr(self, "_act_numpad_revision"):
+            self._act_numpad_revision.setChecked(self._is_numpad_revision_enabled())
+        if hasattr(self, "_btn_numpad_revision"):
+            self._btn_numpad_revision.setVisible(self._is_numpad_revision_enabled())
 
     def _toggle_auto_reveal(self):
         from data_manager import store

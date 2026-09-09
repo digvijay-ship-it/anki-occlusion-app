@@ -4252,84 +4252,57 @@ class TMNTTopBar(QFrame):
         fx_l.addWidget(self._cb_home_animations)
         panel_l.addWidget(fx_box)
 
-        # Pen Performance Selector (Beta)
-        pen_lbl = QLabel("PEN PERFORMANCE (BETA)")
-        pen_lbl.setStyleSheet(
+        # Numpad Quick Revision Setting
+        numpad_lbl = QLabel("KEYBOARD & SHORTCUTS")
+        numpad_lbl.setStyleSheet(
             _scale_ss(
                 f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
                 self._scale,
             )
         )
-        panel_l.addWidget(pen_lbl)
+        panel_l.addWidget(numpad_lbl)
 
-        pen_box = QFrame()
-        pen_box.setStyleSheet(
+        numpad_box = QFrame()
+        numpad_box.setStyleSheet(
             _scale_ss(
                 f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
                 self._scale,
             )
         )
-        pen_layout = QHBoxLayout(pen_box)
-        pen_layout.setContentsMargins(
+        numpad_l = QHBoxLayout(numpad_box)
+        numpad_l.setContentsMargins(
             _px(8, self._scale),
             _px(6, self._scale),
             _px(8, self._scale),
             _px(6, self._scale),
         )
-        pen_layout.setSpacing(_px(6, self._scale))
-        
-        pen_mode_lbl = QLabel("PEN MODE")
-        pen_mode_lbl.setStyleSheet(
+        numpad_l.setSpacing(_px(6, self._scale))
+
+        numpad_text_lbl = QLabel("NUMPAD QUICK REVISION (1-9 DAYS)")
+        numpad_text_lbl.setToolTip("Use Numpad keys 1–9 during review to reschedule cards for 1–9 days without altering SM-2 Ease Factor.")
+        numpad_text_lbl.setStyleSheet(
             _scale_ss(
                 f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
                 self._scale,
             )
         )
-        pen_layout.addWidget(pen_mode_lbl)
-        pen_layout.addStretch()
+        numpad_l.addWidget(numpad_text_lbl)
+        numpad_l.addStretch()
 
-        from PyQt5.QtCore import QSettings
-        settings = QSettings("AnkiOcclusion", "App")
-        saved_impl = settings.value("review/pen_implementation", "filtered")
-
-        from PyQt5.QtWidgets import QComboBox
-        self._btn_pen_perf = QComboBox()
-        self._btn_pen_perf.addItems([
-            "CLASSIC SMOOTH",
-            "INCREMENTAL BEZIER",
-            "RAW POLYLINE",
-            "DISTANCE-FILTERED"
-        ])
-        self._btn_pen_perf.setCursor(Qt.PointingHandCursor)
-        self._btn_pen_perf.setStyleSheet(
+        self._cb_numpad_revision = QCheckBox()
+        self._cb_numpad_revision.setCursor(Qt.PointingHandCursor)
+        self._cb_numpad_revision.setStyleSheet(
             _scale_ss(
-                f"""
-                QComboBox {{
-                    background: {T_BG};
-                    border: 1px solid {T_BORDER};
-                    border-radius: 4px;
-                    padding: 2px 6px;
-                    color: {T_PURPLE};
-                    font-family: {T_MONO};
-                    font-size: 9px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: {T_PANEL};
-                    color: {T_PURPLE};
-                    border: 1px solid {T_BORDER};
-                    selection-background-color: {T_BG};
-                    selection-color: {T_NEON};
-                }}
-                """,
-                self._scale,
+                f"QCheckBox::indicator {{ width: 14px; height: 14px; }}"
+                f"QCheckBox::indicator:unchecked {{ border: 1px solid {T_BORDER}; background: {T_BG}; }}"
+                f"QCheckBox::indicator:checked {{ border: 1px solid {T_NEON}; background: {T_NEON}; }}"
+                , self._scale
             )
         )
-        
-        _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
-        self._btn_pen_perf.currentIndexChanged.connect(self._on_tmnt_pen_perf_changed)
-        pen_layout.addWidget(self._btn_pen_perf)
-        panel_l.addWidget(pen_box)
+        self._cb_numpad_revision.setChecked(store.get().get("_numpad_custom_revision", False))
+        self._cb_numpad_revision.stateChanged.connect(self._on_tmnt_numpad_revision_changed)
+        numpad_l.addWidget(self._cb_numpad_revision)
+        panel_l.addWidget(numpad_box)
 
         archive_lbl = QLabel("MISSION ARCHIVE")
         archive_lbl.setStyleSheet(
@@ -4811,13 +4784,10 @@ class TMNTTopBar(QFrame):
                 if hasattr(self, "_scroll_val_lbl") and self._scroll_val_lbl:
                     self._scroll_val_lbl.setText(f"{s_val}%")
                 self._scroll_slider.blockSignals(False)
-            if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
-                self._btn_pen_perf.blockSignals(True)
-                from PyQt5.QtCore import QSettings
-                saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "filtered")
-                _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-                self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
-                self._btn_pen_perf.blockSignals(False)
+            if hasattr(self, "_cb_numpad_revision") and self._cb_numpad_revision:
+                self._cb_numpad_revision.blockSignals(True)
+                self._cb_numpad_revision.setChecked(store.get().get("_numpad_custom_revision", False))
+                self._cb_numpad_revision.blockSignals(False)
             self._refresh_gdrive_display()
         
         # Reset constraints first to get true size hint
@@ -4914,11 +4884,11 @@ class TMNTTopBar(QFrame):
         except Exception as e:
             print(f"[DEBUG][tmnt_home] sync_all_retro_widgets error: {e}")
 
-    def _on_tmnt_pen_perf_changed(self, idx):
-        _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
-        impl = _idx_to_impl.get(idx, "classic")
-        from PyQt5.QtCore import QSettings
-        QSettings("AnkiOcclusion", "App").setValue("review/pen_implementation", impl)
+    def _on_tmnt_numpad_revision_changed(self, state):
+        enabled = (state == Qt.Checked)
+        store.get()["_numpad_custom_revision"] = enabled
+        store.mark_dirty()
+        store.save_soon(delay_from_now=True)
 
     def _reset_brand_glitch(self):
         self.brand_name.setText("ANKI OCCLUSION")

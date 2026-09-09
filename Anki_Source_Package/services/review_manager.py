@@ -478,6 +478,99 @@ class ReviewSessionManager:
         self.rs.canvas._show_toast("Card skipped until tomorrow")
         self.rs._load_item()
 
+    def custom_reschedule(self, days: int = 1):
+        """Reschedule current card for N days later without modifying SM-2 Ease Factor or repetitions."""
+        if not (0 <= self._idx < len(self._items)):
+            return
+
+        days = max(1, int(days))
+        card, box_idx, sm2_obj = self._items[self._idx]
+        sibling_snapshots = _sibling_snapshots_for_item(card, box_idx, sm2_obj)
+
+        mask_secs = 0
+        if self.rs and getattr(self.rs, "_stimer", None):
+            st = self.rs._stimer
+            try:
+                if hasattr(st, "get_current_mask_seconds") and callable(st.get_current_mask_seconds):
+                    val = st.get_current_mask_seconds()
+                    if isinstance(val, (int, float)):
+                        mask_secs = int(val)
+                elif hasattr(st, "_mask_seconds") and isinstance(st._mask_seconds, dict) and hasattr(st, "_current_mask"):
+                    val = st._mask_seconds.get(st._current_mask, 0)
+                    if isinstance(val, (int, float)):
+                        mask_secs = int(val)
+            except Exception:
+                mask_secs = 0
+
+        recorded_review = (mask_secs >= 60)
+
+        snapshot = {
+            "idx": self._idx,
+            "done": self._done,
+            "items_order": list(self._items),
+            "card": card,
+            "box_idx": box_idx,
+            "quality": None,
+            "sm2_obj": sm2_obj,
+            "sm2_state": _sm2_snapshot(sm2_obj),
+            "sibling_snapshots": sibling_snapshots,
+            "card_reviewed_at": card.get("last_reviewed_at"),
+            "recovery_event": None,
+            "recorded_review": recorded_review,
+        }
+        self._review_undo_stack.append(snapshot)
+        self._review_redo_stack.clear()
+
+        # Reschedule to Today + N days (00:00:00)
+        from datetime import date, timedelta, datetime
+        due_date = date.today() + timedelta(days=days)
+        due_str = datetime.combine(due_date, datetime.min.time()).isoformat(timespec="seconds")
+
+        sm2_obj["sm2_due"] = due_str
+        sm2_obj["pause_exempt_due"] = due_date.isoformat()
+        # If grouped, reschedule sibling boxes too
+        if isinstance(box_idx, tuple) and box_idx[0] == "group":
+            gid = box_idx[1]
+            for box in card.get("boxes", []):
+                if box.get("group_id") == gid and box is not sm2_obj:
+                    box["sm2_due"] = due_str
+                    box["pause_exempt_due"] = due_date.isoformat()
+
+        if recorded_review:
+            _now = datetime.now().isoformat(timespec="seconds")
+            sm2_obj["reviewed_at"] = _now
+            if isinstance(box_idx, tuple) and box_idx[0] == "group":
+                gid = box_idx[1]
+                for box in card.get("boxes", []):
+                    if box.get("group_id") == gid and box is not sm2_obj:
+                        box["reviewed_at"] = _now
+            if box_idx is None:
+                card["reviewed_at"] = _now
+            card["last_reviewed_at"] = _now
+            self._done += 1
+            if self.rs and getattr(self.rs, "_stimer", None):
+                pdf_path = card.get("pdf_path", "")
+                if pdf_path:
+                    self.rs._stimer.record_card_review(pdf_path)
+
+        # Mark database as dirty so the new due date is saved
+        store.mark_dirty()
+        self.rs._review_data_dirty = True
+
+        # Pop from session queue
+        self._items.pop(self._idx)
+        self._queue_needs_full_rebuild = True
+
+        day_text = f"{days} day" if days == 1 else f"{days} days"
+        date_text = due_date.strftime("%b %d")
+        toast_msg = f"📅 Rescheduled in {day_text} ({date_text}) • SM-2 Safe"
+        if hasattr(self.rs, "canvas") and hasattr(self.rs.canvas, "_show_toast"):
+            self.rs.canvas._show_toast(toast_msg)
+        elif hasattr(self.rs, "_show_review_toast"):
+            self.rs._show_review_toast(toast_msg)
+
+        self.rs._load_item()
+
     def _promote_expired_learning(self, insert_pos):
         from datetime import datetime as _dt
 

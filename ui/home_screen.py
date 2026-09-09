@@ -2599,45 +2599,31 @@ class HomeScreen(QWidget):
         window_layout.addWidget(self._cb_keep_fullscreen, 0, Qt.AlignRight)
         layout.addWidget(window_box)
 
-        # Pen Performance Selector (Beta)
-        pen_perf_title = QLabel("PEN PERFORMANCE (BETA)")
-        pen_perf_title.setStyleSheet(
+        # Numpad Quick Revision Setting
+        numpad_title = QLabel("KEYBOARD & SHORTCUTS")
+        numpad_title.setStyleSheet(
             f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
         )
-        layout.addWidget(pen_perf_title)
+        layout.addWidget(numpad_title)
 
-        pen_perf_box = QFrame()
-        pen_perf_box.setStyleSheet(
+        numpad_box = QFrame()
+        numpad_box.setStyleSheet(
             f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
         )
-        pen_perf_layout = QHBoxLayout(pen_perf_box)
-        pen_perf_layout.setContentsMargins(10, 8, 10, 8)
-        pen_perf_layout.setSpacing(8)
-        
-        pen_perf_label = QLabel("Pen Mode")
-        pen_perf_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
-        pen_perf_layout.addWidget(pen_perf_label, 1)
+        numpad_layout = QHBoxLayout(numpad_box)
+        numpad_layout.setContentsMargins(10, 8, 10, 8)
+        numpad_layout.setSpacing(8)
+        numpad_label = QLabel("Numpad Quick Revision (1–9 Days)")
+        numpad_label.setToolTip("Use Numpad keys 1–9 during review to reschedule cards for 1–9 days without altering SM-2 Ease Factor.")
+        numpad_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        numpad_layout.addWidget(numpad_label, 1)
 
-        from PyQt5.QtCore import QSettings
-        settings = QSettings("AnkiOcclusion", "App")
-        saved_impl = settings.value("review/pen_implementation", "filtered")
-
-        from PyQt5.QtWidgets import QComboBox
-        self._btn_pen_perf = QComboBox()
-        self._btn_pen_perf.addItems([
-            "Classic Smooth",
-            "Incremental Bezier",
-            "Raw Polyline",
-            "Distance-Filtered"
-        ])
-        self._btn_pen_perf.setCursor(Qt.PointingHandCursor)
-        self._btn_pen_perf.setObjectName("font_btn")
-        
-        _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-        self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
-        self._btn_pen_perf.currentIndexChanged.connect(self._on_classic_pen_perf_changed)
-        pen_perf_layout.addWidget(self._btn_pen_perf, 0, Qt.AlignRight)
-        layout.addWidget(pen_perf_box)
+        self._cb_numpad_revision = QCheckBox()
+        self._cb_numpad_revision.setCursor(Qt.PointingHandCursor)
+        self._cb_numpad_revision.setChecked(store.get().get("_numpad_custom_revision", False))
+        self._cb_numpad_revision.stateChanged.connect(self._on_numpad_revision_changed)
+        numpad_layout.addWidget(self._cb_numpad_revision, 0, Qt.AlignRight)
+        layout.addWidget(numpad_box)
 
         archive_title = QLabel("MISSION ARCHIVE")
         archive_title.setStyleSheet(
@@ -2855,11 +2841,11 @@ class HomeScreen(QWidget):
             else:
                 win.showMaximized()
 
-    def _on_classic_pen_perf_changed(self, idx):
-        _idx_to_impl = {0: "classic", 1: "incremental", 2: "polyline", 3: "filtered"}
-        impl = _idx_to_impl.get(idx, "classic")
-        from PyQt5.QtCore import QSettings
-        QSettings("AnkiOcclusion", "App").setValue("review/pen_implementation", impl)
+    def _on_numpad_revision_changed(self, state):
+        enabled = (state == Qt.Checked)
+        store.get()["_numpad_custom_revision"] = enabled
+        store.mark_dirty()
+        store.save_soon(delay_from_now=True)
 
     def _refresh_classic_archive_display(self):
         if self._classic_archive_value is None:
@@ -2899,13 +2885,10 @@ class HomeScreen(QWidget):
             if hasattr(self, "_classic_scroll_val_lbl") and self._classic_scroll_val_lbl:
                 self._classic_scroll_val_lbl.setText(f"{s_val}%")
             self._classic_scroll_slider.blockSignals(False)
-        if hasattr(self, "_btn_pen_perf") and self._btn_pen_perf:
-            self._btn_pen_perf.blockSignals(True)
-            from PyQt5.QtCore import QSettings
-            saved_impl = QSettings("AnkiOcclusion", "App").value("review/pen_implementation", "filtered")
-            _impl_to_idx = {"classic": 0, "incremental": 1, "polyline": 2, "filtered": 3}
-            self._btn_pen_perf.setCurrentIndex(_impl_to_idx.get(saved_impl, 3))
-            self._btn_pen_perf.blockSignals(False)
+        if hasattr(self, "_cb_numpad_revision") and self._cb_numpad_revision:
+            self._cb_numpad_revision.blockSignals(True)
+            self._cb_numpad_revision.setChecked(store.get().get("_numpad_custom_revision", False))
+            self._cb_numpad_revision.blockSignals(False)
         self._refresh_classic_archive_display()
         self._refresh_gdrive_display()
         # Reset constraints first to get true size hint
