@@ -579,19 +579,10 @@ class CanvasRendererMixin:
         return smooth_points_to_path(pts, scale=sc)
 
     def _stroke_to_path(self, stroke, sc) -> QPainterPath:
-        impl = getattr(stroke, "_implementation", "classic")
         pts = stroke[1:]
         if not pts:
             return QPainterPath()
-        
-        path = QPainterPath()
-        if impl in ("classic", "incremental", "filtered"):
-            path = self._smooth_points_to_path(pts, sc)
-        else: # polyline
-            path.moveTo(QPointF(pts[0].x() * sc, pts[0].y() * sc))
-            for pt in pts[1:]:
-                path.lineTo(QPointF(pt.x() * sc, pt.y() * sc))
-        return path
+        return self._smooth_points_to_path(pts, sc)
 
     def _invalidate_ink_layer(self):
         pass

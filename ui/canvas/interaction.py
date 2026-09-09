@@ -491,90 +491,75 @@ class CanvasInteractionMixin:
         if not self._ink_current:
             return
         
-        # Distance filter for "filtered" mode
-        impl = getattr(self, "_ink_implementation", "filtered")
-        if impl == "filtered":
-            last_ip = self._ink_current[-1]
-            dx = ip.x() - last_ip.x()
-            dy = ip.y() - last_ip.y()
-            if dx * dx + dy * dy < 2.25:  # 1.5 pixels threshold -> squared distance is 2.25
-                return
+        # Distance filter (ignore micro-jitter < 1.5px)
+        last_ip = self._ink_current[-1]
+        dx = ip.x() - last_ip.x()
+        dy = ip.y() - last_ip.y()
+        if dx * dx + dy * dy < 2.25:  # 1.5 pixels threshold -> squared distance is 2.25
+            return
 
         self._ink_current.append(ip)
         sc = self._scale
         pen_w = max(1.0, self._ink_width * sc)
         pen_pad = max(2.0, pen_w) + 8  # generous AA padding
         
-        # Incremental path building for non-classic modes
-        if impl != "classic":
-            p_new = QPointF(ip.x() * sc, ip.y() * sc)
-            if impl in ("incremental", "filtered"):
-                pts_count = len(self._ink_current) - 1
-                if pts_count == 2:
-                    p0 = QPointF(self._ink_current[1].x() * sc, self._ink_current[1].y() * sc)
-                    p1 = p_new
-                    mid = QPointF((p0.x() + p1.x()) / 2.0, (p0.y() + p1.y()) / 2.0)
-                    
-                    seg = QPainterPath()
-                    seg.moveTo(p0)
-                    seg.lineTo(mid)
-                    seg.lineTo(p1)
-                    self._ink_live_segment = seg
-                    self._ink_last_mid = mid
-                    
-                    self._ink_current_stable_path = QPainterPath()
-                    self._ink_current_stable_path.moveTo(p0)
-                    self._ink_current_stable_path.lineTo(mid)
-                    self._ink_current_path = seg
-                    
-                    xs = [p0.x(), mid.x(), p1.x()]
-                    ys = [p0.y(), mid.y(), p1.y()]
-                    dirty = QRect(
-                        int(math.floor(min(xs) - pen_pad)),
-                        int(math.floor(min(ys) - pen_pad)),
-                        int(math.ceil(max(xs) - min(xs) + 2 * pen_pad)),
-                        int(math.ceil(max(ys) - min(ys) + 2 * pen_pad)),
-                    )
-                    self.update(dirty)
-                    return
-                elif pts_count >= 3:
-                    p_prev = QPointF(self._ink_current[-2].x() * sc, self._ink_current[-2].y() * sc)
-                    p_curr = p_new
-                    mid = QPointF((p_prev.x() + p_curr.x()) / 2.0, (p_prev.y() + p_curr.y()) / 2.0)
-                    
-                    seg = QPainterPath()
-                    seg.moveTo(mid)
-                    seg.lineTo(p_curr)
-                    self._ink_live_segment = seg
-                    
-                    xs = [self._ink_last_mid.x(), p_prev.x(), mid.x(), p_curr.x()]
-                    ys = [self._ink_last_mid.y(), p_prev.y(), mid.y(), p_curr.y()]
-                    self._ink_last_mid = mid
-                    
-                    self._ink_current_stable_path.quadTo(p_prev, mid)
-                    self._ink_current_path = seg
-                    
-                    dirty = QRect(
-                        int(math.floor(min(xs) - pen_pad)),
-                        int(math.floor(min(ys) - pen_pad)),
-                        int(math.ceil(max(xs) - min(xs) + 2 * pen_pad)),
-                        int(math.ceil(max(ys) - min(ys) + 2 * pen_pad)),
-                    )
-                    self.update(dirty)
-                    return
-            elif impl == "polyline":
-                self._ink_current_path.lineTo(p_new)
+        # Incremental quadratic Bézier path building with localized dirty rect updates
+        p_new = QPointF(ip.x() * sc, ip.y() * sc)
+        pts_count = len(self._ink_current) - 1
+        if pts_count == 2:
+            p0 = QPointF(self._ink_current[1].x() * sc, self._ink_current[1].y() * sc)
+            p1 = p_new
+            mid = QPointF((p0.x() + p1.x()) / 2.0, (p0.y() + p1.y()) / 2.0)
+            
+            seg = QPainterPath()
+            seg.moveTo(p0)
+            seg.lineTo(mid)
+            seg.lineTo(p1)
+            self._ink_live_segment = seg
+            self._ink_last_mid = mid
+            
+            self._ink_current_stable_path = QPainterPath()
+            self._ink_current_stable_path.moveTo(p0)
+            self._ink_current_stable_path.lineTo(mid)
+            self._ink_current_path = seg
+            
+            xs = [p0.x(), mid.x(), p1.x()]
+            ys = [p0.y(), mid.y(), p1.y()]
+            dirty = QRect(
+                int(math.floor(min(xs) - pen_pad)),
+                int(math.floor(min(ys) - pen_pad)),
+                int(math.ceil(max(xs) - min(xs) + 2 * pen_pad)),
+                int(math.ceil(max(ys) - min(ys) + 2 * pen_pad)),
+            )
+            self.update(dirty)
+            return
+        elif pts_count >= 3:
+            p_prev = QPointF(self._ink_current[-2].x() * sc, self._ink_current[-2].y() * sc)
+            p_curr = p_new
+            mid = QPointF((p_prev.x() + p_curr.x()) / 2.0, (p_prev.y() + p_curr.y()) / 2.0)
+            
+            seg = QPainterPath()
+            seg.moveTo(mid)
+            seg.lineTo(p_curr)
+            self._ink_live_segment = seg
+            
+            xs = [self._ink_last_mid.x(), p_prev.x(), mid.x(), p_curr.x()]
+            ys = [self._ink_last_mid.y(), p_prev.y(), mid.y(), p_curr.y()]
+            self._ink_last_mid = mid
+            
+            self._ink_current_stable_path.quadTo(p_prev, mid)
+            self._ink_current_path = seg
+            
+            dirty = QRect(
+                int(math.floor(min(xs) - pen_pad)),
+                int(math.floor(min(ys) - pen_pad)),
+                int(math.ceil(max(xs) - min(xs) + 2 * pen_pad)),
+                int(math.ceil(max(ys) - min(ys) + 2 * pen_pad)),
+            )
+            self.update(dirty)
+            return
 
-        pts = self._ink_current[1:]
-        if len(pts) >= 2:
-            p0, p1 = pts[-2], pts[-1]
-            x0 = math.floor(min(p0.x(), p1.x()) * sc - pen_pad)
-            y0 = math.floor(min(p0.y(), p1.y()) * sc - pen_pad)
-            x1 = math.ceil(max(p0.x(), p1.x()) * sc + pen_pad)
-            y1 = math.ceil(max(p0.y(), p1.y()) * sc + pen_pad)
-            self.update(QRect(x0, y0, x1 - x0, y1 - y0))
-        else:
-            self.update()
+        self.update()
 
     def _ink_release(self):
         if len(self._ink_current) >= 2:
