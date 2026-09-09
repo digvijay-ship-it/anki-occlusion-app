@@ -2093,6 +2093,9 @@ class ReviewScreen(QWidget):
         auto_exit_session: bool = None,
         deck_id: str = None,
         deck_name: str = None,
+        target_card_id=None,
+        target_box_idx=None,
+        target_box_id=None,
     ):
         super().__init__(parent)
         self._init_review_profile(cards)
@@ -2101,6 +2104,9 @@ class ReviewScreen(QWidget):
         self.mgr = ReviewSessionManager(self)
         self.mgr.is_practice = bool(is_practice)
         self._initial_idx = int(initial_idx or 0)
+        self._target_card_id = target_card_id
+        self._target_box_idx = target_box_idx
+        self._target_box_id = target_box_id
         self._data = data
         self._order_mode = str(order_mode or "default")
         self._deck_id = deck_id
@@ -2421,8 +2427,37 @@ class ReviewScreen(QWidget):
                 due_items=len(self._items),
                 queued_ids=len(self._queued_ids),
             )
-            init_idx = getattr(self, "_initial_idx", 0)
-            self._idx = max(0, min(init_idx, len(self._items) - 1)) if self._items else 0
+            target_idx = None
+            if (
+                getattr(self, "_target_box_idx", None) is not None
+                or getattr(self, "_target_box_id", None) is not None
+                or getattr(self, "_target_card_id", None) is not None
+            ):
+                t_card_id = getattr(self, "_target_card_id", None)
+                t_box_idx = getattr(self, "_target_box_idx", None)
+                t_box_id = getattr(self, "_target_box_id", None)
+                for i, (c, b_idx, sm2) in enumerate(self._items):
+                    c_id = c.get("_id") or c.get("id")
+                    if t_card_id is not None and c_id != t_card_id:
+                        continue
+                    b_id = sm2.get("box_id") or sm2.get("id") if isinstance(sm2, dict) else None
+                    if t_box_id and b_id == t_box_id:
+                        target_idx = i
+                        break
+                    if t_box_idx is not None:
+                        if b_idx == t_box_idx:
+                            target_idx = i
+                            break
+                        if isinstance(b_idx, (tuple, list)) and isinstance(t_box_idx, (tuple, list)):
+                            if list(b_idx) == list(t_box_idx):
+                                target_idx = i
+                                break
+
+            if target_idx is not None:
+                self._idx = target_idx
+            else:
+                init_idx = getattr(self, "_initial_idx", 0)
+                self._idx = max(0, min(init_idx, len(self._items) - 1)) if self._items else 0
             self._done = 0
             self._review_undo_stack = []  # list of state snapshots
             self._review_redo_stack = []  # cleared on new rating, filled on undo
@@ -4635,7 +4670,19 @@ class ReviewScreen(QWidget):
         try:
             home = self._find_home()
             if home is not None and hasattr(home, "save_last_review_session") and self._items and not self.is_practice:
-                home.save_last_review_session([item[0] for item in self._items], self._idx)
+                box_id = None
+                if isinstance(sm2_obj, dict):
+                    box_id = sm2_obj.get("box_id") or sm2_obj.get("id")
+                home.save_last_review_session(
+                    [item[0] for item in self._items],
+                    self._idx,
+                    active_card=card,
+                    active_box_idx=box_idx,
+                    active_box_id=box_id,
+                    deck_id=getattr(self, "_deck_id", None),
+                    deck_name=getattr(self, "_deck_name", None),
+                    order_mode=getattr(self, "_order_mode", "default"),
+                )
         except Exception:
             pass
         if hasattr(self, "_hint_scroll_positions") and self._hint_scroll_positions is not None:

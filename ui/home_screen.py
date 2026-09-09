@@ -1546,6 +1546,9 @@ class HomeScreen(QWidget):
         auto_exit_session=None,
         deck_id=None,
         deck_name=None,
+        target_card_id=None,
+        target_box_idx=None,
+        target_box_id=None,
     ):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
@@ -1565,6 +1568,9 @@ class HomeScreen(QWidget):
             auto_exit_session=auto_exit_session,
             deck_id=deck_id,
             deck_name=deck_name,
+            target_card_id=target_card_id,
+            target_box_idx=target_box_idx,
+            target_box_id=target_box_id,
         )
         self._active_review = rev
 
@@ -1835,12 +1841,33 @@ class HomeScreen(QWidget):
                 return child
         return None
 
-    def save_last_review_session(self, cards, current_idx=0):
+    def save_last_review_session(
+        self,
+        cards,
+        current_idx=0,
+        active_card=None,
+        active_box_idx=None,
+        active_box_id=None,
+        deck_id=None,
+        deck_name=None,
+        order_mode="default",
+    ):
         if not cards or current_idx >= len(cards):
             self.clear_last_review_session()
             return
         try:
             import json
+            active_card_id = None
+            active_card_title = None
+            if isinstance(active_card, dict):
+                active_card_id = active_card.get("_id") or active_card.get("id")
+                active_card_title = active_card.get("title")
+            elif 0 <= current_idx < len(cards):
+                c = cards[current_idx]
+                if isinstance(c, dict):
+                    active_card_id = c.get("_id") or c.get("id")
+                    active_card_title = c.get("title")
+
             session_data = {
                 "card_identifiers": [
                     {
@@ -1853,7 +1880,14 @@ class HomeScreen(QWidget):
                         "visual_hash": card.get("visual_hash")
                     } for card in cards
                 ],
-                "idx": current_idx
+                "idx": current_idx,
+                "active_card_id": active_card_id,
+                "active_card_title": active_card_title,
+                "active_box_idx": active_box_idx,
+                "active_box_id": active_box_id,
+                "deck_id": deck_id,
+                "deck_name": deck_name,
+                "order_mode": order_mode,
             }
             from storage_paths import current_data_file
             app_dir = os.path.dirname(current_data_file())
@@ -1906,6 +1940,13 @@ class HomeScreen(QWidget):
         
         identifiers = session.get("card_identifiers", [])
         idx = session.get("idx", 0)
+        active_card_id = session.get("active_card_id")
+        active_card_title = session.get("active_card_title")
+        active_box_idx = session.get("active_box_idx")
+        active_box_id = session.get("active_box_id")
+        saved_deck_id = session.get("deck_id")
+        saved_deck_name = session.get("deck_name")
+        saved_order_mode = session.get("order_mode", "default")
         if not identifiers:
             return
             
@@ -1957,12 +1998,45 @@ class HomeScreen(QWidget):
         if not resolved_cards:
             QMessageBox.information(self, "Resume Failed", "Could not find the cards of the last session in the database.")
             return
-            
-        self.show_review(resolved_cards, self._data, initial_idx=idx)
+
+        kwargs = {}
+        if saved_deck_id is not None:
+            kwargs["deck_id"] = saved_deck_id
+        if saved_deck_name is not None:
+            kwargs["deck_name"] = saved_deck_name
+        if saved_order_mode and saved_order_mode != "default":
+            kwargs["order_mode"] = saved_order_mode
+        if active_card_id is not None:
+            kwargs["target_card_id"] = active_card_id
+        if active_box_idx is not None:
+            kwargs["target_box_idx"] = active_box_idx
+        if active_box_id is not None:
+            kwargs["target_box_id"] = active_box_id
+
+        self.show_review(resolved_cards, self._data, initial_idx=idx, **kwargs)
         
         if hasattr(self, "_active_review") and self._active_review:
             if self._active_review._items:
-                target_idx = max(0, min(idx, len(self._active_review._items) - 1))
+                target_idx = None
+                if active_card_id is not None or active_box_idx is not None or active_box_id is not None:
+                    for i, (c, b_idx, sm2) in enumerate(self._active_review._items):
+                        c_id = c.get("_id") or c.get("id")
+                        if active_card_id is not None and c_id != active_card_id:
+                            continue
+                        b_id = sm2.get("box_id") or sm2.get("id") if isinstance(sm2, dict) else None
+                        if active_box_id and b_id == active_box_id:
+                            target_idx = i
+                            break
+                        if active_box_idx is not None:
+                            if b_idx == active_box_idx:
+                                target_idx = i
+                                break
+                            if isinstance(b_idx, (tuple, list)) and isinstance(active_box_idx, (tuple, list)):
+                                if list(b_idx) == list(active_box_idx):
+                                    target_idx = i
+                                    break
+                if target_idx is None:
+                    target_idx = max(0, min(idx, len(self._active_review._items) - 1))
                 if self._active_review._idx != target_idx:
                     self._active_review._idx = target_idx
                     self._active_review._load_item()

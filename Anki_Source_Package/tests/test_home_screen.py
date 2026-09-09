@@ -708,6 +708,52 @@ class HomeScreenResumeSessionTests(unittest.TestCase):
         rs_practice = ReviewScreen([due_card, future_card], data={"decks": []}, is_practice=True)
         self.assertEqual(len(rs_practice._items), 2)
 
+    def test_resume_last_review_exact_box_match_after_queue_shift(self):
+        card = {
+            "_id": 100,
+            "title": "Math Occlusion",
+            "boxes": [
+                {"box_id": "b0", "sm2_due": "2020-01-01"},
+                {"box_id": "b1", "sm2_due": "2020-01-01"},
+                {"box_id": "b2", "sm2_due": "2020-01-01"},
+            ]
+        }
+        data = {
+            "decks": [
+                {"_id": 1, "name": "Deck", "cards": [card], "children": []}
+            ],
+            "_theme": "classic"
+        }
+        home = HomeScreen(data)
+        self.addCleanup(home.close)
+
+        home._btn_resume = MagicMock()
+        home.show_review = MagicMock()
+        home._active_review = MagicMock()
+        # Suppose b0 was completed, so newly built _items only has b1 and b2
+        # b1 is at index 0, b2 is at index 1
+        home._active_review._items = [
+            (card, 1, {"box_id": "b1"}),
+            (card, 2, {"box_id": "b2"}),
+        ]
+        home._active_review._idx = 0
+
+        # Save session where user was on b2 (originally index 2, active_box_idx=2)
+        home.save_last_review_session(
+            [card, card, card],
+            current_idx=2,
+            active_card=card,
+            active_box_idx=2,
+            active_box_id="b2",
+        )
+
+        home.resume_last_review()
+
+        # In the shifted queue, b2 is at index 1! Target idx must be resolved to 1, not raw 2
+        self.assertEqual(home._active_review._idx, 1)
+        home._active_review._load_item.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
