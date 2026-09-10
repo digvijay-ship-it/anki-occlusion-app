@@ -60,11 +60,21 @@ class CropCanvas(QWidget):
                 qc = QColor(Qt.white)
                 
             p.setPen(QPen(qc, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            path = QPainterPath()
-            path.moveTo(pts[0])
-            for pt in pts[1:]:
-                path.lineTo(pt)
-            p.drawPath(path)
+            if len(pts) == 1:
+                p.setBrush(qc)
+                r = max(1.5, pen_w / 2.0)
+                p.drawEllipse(pts[0], r, r)
+                p.setBrush(Qt.NoBrush)
+            else:
+                try:
+                    from ui.canvas.geometry import smooth_points_to_path
+                    path = smooth_points_to_path(pts)
+                except Exception:
+                    path = QPainterPath()
+                    path.moveTo(pts[0])
+                    for pt in pts[1:]:
+                        path.lineTo(pt)
+                p.drawPath(path)
         p.end()
         
         # Scale to fit a comfortable maximum preview size
@@ -664,11 +674,21 @@ def render_cropped_strokes(strokes, crop_rect, ink_width):
             qc = QColor(Qt.white)
             
         p.setPen(QPen(qc, pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        path = QPainterPath()
-        path.moveTo(pts[0])
-        for pt in pts[1:]:
-            path.lineTo(pt)
-        p.drawPath(path)
+        if len(pts) == 1:
+            p.setBrush(qc)
+            r = max(1.5, pen_w / 2.0)
+            p.drawEllipse(pts[0], r, r)
+            p.setBrush(Qt.NoBrush)
+        else:
+            try:
+                from ui.canvas.geometry import smooth_points_to_path
+                path = smooth_points_to_path(pts)
+            except Exception:
+                path = QPainterPath()
+                path.moveTo(pts[0])
+                for pt in pts[1:]:
+                    path.lineTo(pt)
+            p.drawPath(path)
     p.end()
     return px
 
