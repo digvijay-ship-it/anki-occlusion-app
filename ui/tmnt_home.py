@@ -543,6 +543,7 @@ class TMNTMissionBanner(QFrame):
     selected_clicked = pyqtSignal()
     resume_clicked = pyqtSignal()
     practice_clicked = pyqtSignal()
+    review_new_clicked = pyqtSignal()
     GLOW_INTERVAL_MS = 50
 
     def __init__(self, data=None, parent=None):
@@ -636,10 +637,10 @@ class TMNTMissionBanner(QFrame):
 
         if theme_name == "manhattan":
             btn_train_text = "▶  FIGHT FOOT CLAN\nREVIEW DUE COMBATS"
-            btn_selected_text = "◎  CLEAR SELECTED AREA"
+            btn_selected_text = "🌱  REVIEW LEAST MATURE"
         else:
             btn_train_text = "▶  START TRAINING\nREVIEW DUE SCROLLS"
-            btn_selected_text = "◎  TRAIN SELECTED SCROLL"
+            btn_selected_text = "🌱  REVIEW LEAST MATURE"
         btn_train_size = 14
         btn_train_family = "Orbitron"
         btn_selected_size = 12
@@ -701,8 +702,8 @@ class TMNTMissionBanner(QFrame):
                 f"""
             QPushButton {{
                 background: transparent;
-                color: #aab1c4;
-                border: 1px solid #555c6e;
+                color: #8BE9FD;
+                border: 1px solid #8BE9FD;
                 border-radius: 2px;
                 font-size: {btn_selected_size}px;
                 font-weight: 700;
@@ -710,17 +711,53 @@ class TMNTMissionBanner(QFrame):
                 letter-spacing: 1px;
                 padding: 8px 16px;
             }}
-            QPushButton:hover {{ background: rgba(255,255,255,0.04); color: {T_TEXT}; border-color: #70788f; }}
+            QPushButton:hover {{ background: rgba(139, 233, 253, 0.1); color: #A4F0FF; border-color: #A4F0FF; }}
+            QPushButton:disabled {{
+                background: transparent;
+                color: {T_SUBTEXT};
+                border: 1px solid {T_BORDER};
+            }}
         """,
                 self._scale,
             )
         )
         self.btn_selected.clicked.connect(self.selected_clicked)
+        self.btn_selected.setToolTip("Review cards starting with least mature / lowest retention score first")
         
         btn_sel_font = QFont(btn_selected_family)
         btn_sel_font.setPixelSize(_px(btn_selected_size, self._scale))
         btn_sel_font.setBold(btn_selected_bold)
         self.btn_selected.setFont(btn_sel_font)
+
+        self.btn_review_new = QPushButton("✨  REVIEW NEW (0)")
+        self.btn_review_new.setStyleSheet(
+            _scale_ss(
+                f"""
+            QPushButton {{
+                background: transparent;
+                color: #BD93F9;
+                border: 1px solid #BD93F9;
+                border-radius: 2px;
+                font-size: {btn_selected_size}px;
+                font-weight: 700;
+                font-family: {btn_selected_family};
+                letter-spacing: 1px;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{ background: rgba(189, 147, 249, 0.12); color: #D6ACFF; border-color: #D6ACFF; }}
+            QPushButton:disabled {{
+                background: transparent;
+                color: {T_SUBTEXT};
+                border: 1px solid {T_BORDER};
+            }}
+        """,
+                self._scale,
+            )
+        )
+        self.btn_review_new.setFont(btn_sel_font)
+        self.btn_review_new.clicked.connect(self.review_new_clicked)
+        self.btn_review_new.setToolTip("Review only brand-new cards (skipping due / previously reviewed cards)")
+        self.btn_review_new.setEnabled(False)
 
         self.btn_resume = QPushButton("⚡  RESUME LAST MISSION")
         self.btn_resume.setStyleSheet(
@@ -787,6 +824,7 @@ class TMNTMissionBanner(QFrame):
         right.addWidget(self.btn_train_container)
         right.addWidget(self.btn_resume)
         right.addWidget(self.btn_selected)
+        right.addWidget(self.btn_review_new)
         right.addWidget(self.btn_practice)
         l.addLayout(right)
 
@@ -805,6 +843,11 @@ class TMNTMissionBanner(QFrame):
         self.setMinimumHeight(_px(110, self._scale))
         self.btn_train.setMinimumHeight(_px(76, self._scale))
         self.btn_selected.setMinimumHeight(_px(36, self._scale))
+        self.btn_review_new.setMinimumHeight(_px(36, self._scale))
+
+    def set_new_cards_count(self, count: int):
+        self.btn_review_new.setText(f"✨  REVIEW NEW ({count})")
+        self.btn_review_new.setEnabled(count > 0)
 
     def set_animation_enabled(self, enabled):
         if enabled:
@@ -2808,8 +2851,10 @@ class TMNTMainContent(DeckView):
         self.btn_due = self.banner.btn_train
         self.btn_all = self.banner.btn_selected
         self.btn_practice = self.banner.btn_practice
+        self.btn_review_new = self.banner.btn_review_new
         self.btn_due.clicked.connect(self._review_due)
-        self.btn_all.clicked.connect(self._review_selected)
+        self.btn_all.clicked.connect(self._review_due_least_mature)
+        self.btn_review_new.clicked.connect(self._review_new_cards)
         self.banner.practice_clicked.connect(self._practice_deck)
         L.addWidget(self.banner)
 
@@ -3049,6 +3094,7 @@ class TMNTMainContent(DeckView):
         has_deck = self.deck is not None
         has_card = self.card_list.currentRow() >= 0 and self.card_list.count() > 0
         has_due = bool(has_deck and self._collect_due_by_pdf(self.deck))
+        has_reviewed_due = bool(has_deck and self._collect_due_by_pdf(self.deck, exclude_new=True))
         all_deck_cards = self._collect_all_by_pdf(self.deck) if has_deck else []
         has_any_cards = bool(has_deck and len(all_deck_cards) > 0)
         self.btn_add.setEnabled(has_deck)
@@ -3056,9 +3102,13 @@ class TMNTMainContent(DeckView):
         self.btn_due.setEnabled(has_due)
         self.btn_edit.setEnabled(has_card)
         self.btn_delete_tmnt.setEnabled(has_card)
-        self.btn_all.setEnabled(has_card)
+        self.btn_all.setEnabled(has_reviewed_due)
         if hasattr(self, "btn_practice") and self.btn_practice:
             self.btn_practice.setEnabled(has_any_cards)
+        new_groups = self._collect_new_by_pdf(self.deck) if has_deck else []
+        new_count = sum(len(g) for g in new_groups)
+        if hasattr(self, "banner") and hasattr(self.banner, "set_new_cards_count"):
+            self.banner.set_new_cards_count(new_count)
 
     def _review_selected(self):
         row = self.card_list.currentRow()
@@ -3081,6 +3131,8 @@ class TMNTMainContent(DeckView):
         self._empty_lbl.setText("★\n\n— SELECT A DOJO TO BEGIN —")
         self._empty_lbl.show()
         self.btn_due.setEnabled(False)
+        if hasattr(self, "banner") and hasattr(self.banner, "set_new_cards_count"):
+            self.banner.set_new_cards_count(0)
         self._sync_action_state()
 
 

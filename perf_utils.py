@@ -169,11 +169,13 @@ def _deck_stats_fingerprint(decks):
     return tuple(parts)
 
 
-def card_has_due_today(card):
+def card_has_due_today(card, exclude_new=False):
     if card.get("is_formula", False) or card.get("is_paused", False) or card.get("suspended", False):
         return False
     boxes = card.get("boxes", [])
     if not boxes:
+        if exclude_new and (card.get("sched_state", "new") == "new" and int(card.get("reviews", 0) or 0) == 0 and card.get("sm2_last_quality", -1) == -1):
+            return False
         return is_due_today(card)
 
     seen_groups = set()
@@ -183,6 +185,8 @@ def card_has_due_today(card):
             if gid in seen_groups:
                 continue
             seen_groups.add(gid)
+        if exclude_new and (box.get("sched_state", "new") == "new" and int(box.get("reviews", 0) or 0) == 0 and box.get("sm2_last_quality", -1) == -1):
+            continue
         if is_due_today(box):
             return True
     return False

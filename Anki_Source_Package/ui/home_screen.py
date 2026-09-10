@@ -1661,6 +1661,19 @@ class HomeScreen(QWidget):
     ):
         """Review card groups one PDF at a time.
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
+        if str(order_mode or "default") == "least_mature":
+            all_cards = [c for grp in groups for c in grp]
+            return self.show_review(
+                all_cards,
+                data,
+                is_practice=is_practice,
+                order_mode="least_mature",
+                default_daily_target=default_daily_target,
+                default_session_target=default_session_target,
+                auto_exit_session=auto_exit_session,
+                deck_id=deck_id,
+                deck_name=deck_name,
+            )
         self._sequential_groups = list(groups)
         self._past_sequential_sessions = []
         self._current_sequential_group = None

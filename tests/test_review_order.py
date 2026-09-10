@@ -127,6 +127,175 @@ class TestReviewOrder(unittest.TestCase):
         mark_dirty.assert_called_once()
         save_soon.assert_called_once()
 
+    def test_parent_deck_review_due_least_mature_flattens(self):
+        c1 = {"id": "c1", "sched_state": "new", "reviews": 0}
+        c2 = {"id": "c2", "sched_state": "review", "reviews": 5, "sm2_interval": 30}
+        sub1 = {"_id": "sub1", "name": "Percentage", "cards": [c1]}
+        sub2 = {"_id": "sub2", "name": "Trigonometry", "cards": [c2]}
+        parent_deck = {"_id": "parent", "name": "Math", "children": [sub1, sub2]}
+
+        dv = DeckView()
+        dv.deck = parent_deck
+        dv._data = {"decks": [parent_deck]}
+
+        with patch.object(dv, "_card_has_due_today", return_value=True), \
+             patch.object(dv, "_prompt_selective_cards", side_effect=lambda cards, is_due: cards), \
+             patch.object(dv, "_start_review") as mock_start_review:
+            dv._review_due(order_mode="least_mature")
+
+            mock_start_review.assert_called_once()
+            args, kwargs = mock_start_review.call_args
+            called_cards = args[0]
+            # Must contain both cards from both subdecks flattened together
+            self.assertEqual(len(called_cards), 2)
+            self.assertEqual({c["id"] for c in called_cards}, {"c1", "c2"})
+            self.assertEqual(kwargs.get("order_mode"), "least_mature")
+            self.assertFalse(kwargs.get("is_practice", False))
+
+    def test_parent_deck_practice_least_mature_flattens(self):
+        c1 = {"id": "c1", "sched_state": "new", "reviews": 0}
+        c2 = {"id": "c2", "sched_state": "review", "reviews": 5, "sm2_interval": 30}
+        sub1 = {"_id": "sub1", "name": "Percentage", "cards": [c1]}
+        sub2 = {"_id": "sub2", "name": "Trigonometry", "cards": [c2]}
+        parent_deck = {"_id": "parent", "name": "Math", "children": [sub1, sub2]}
+
+        dv = DeckView()
+        dv.deck = parent_deck
+        dv._data = {"decks": [parent_deck]}
+
+        with patch.object(dv, "_prompt_selective_cards", side_effect=lambda cards, is_due: cards), \
+             patch.object(dv, "_start_review") as mock_start_review:
+            dv._practice_deck(order_mode="least_mature")
+
+            mock_start_review.assert_called_once()
+            args, kwargs = mock_start_review.call_args
+            called_cards = args[0]
+            # Must contain both cards from both subdecks flattened together
+            self.assertEqual(len(called_cards), 2)
+            self.assertEqual({c["id"] for c in called_cards}, {"c1", "c2"})
+            self.assertEqual(kwargs.get("order_mode"), "least_mature")
+            self.assertTrue(kwargs.get("is_practice"))
+
+    def test_home_screen_show_review_sequential_least_mature(self):
+        from ui.home_screen import HomeScreen
+        home = MagicMock(spec=HomeScreen)
+        c1 = {"id": "c1"}
+        c2 = {"id": "c2"}
+        groups = [[c1], [c2]]
+
+        HomeScreen.show_review_sequential(
+            home,
+            groups,
+            data={},
+            is_practice=True,
+            order_mode="least_mature",
+            deck_id="parent_id",
+            deck_name="Math",
+        )
+
+        home.show_review.assert_called_once_with(
+            [c1, c2],
+            {},
+            is_practice=True,
+            order_mode="least_mature",
+            default_daily_target=None,
+            default_session_target=None,
+            auto_exit_session=None,
+            deck_id="parent_id",
+            deck_name="Math",
+        )
+
+
+    def test_tmnt_banner_least_mature_button(self):
+        from ui.tmnt_home import TMNTMainContent
+        c1 = {"id": "c1", "sched_state": "new", "reviews": 0}
+        deck = {"_id": "math_sub", "name": "Percentage", "cards": [c1]}
+
+        main = TMNTMainContent(data={"decks": [deck]})
+        with patch.object(main, "_collect_due_by_pdf", return_value=[c1]):
+            main.load_deck(deck, {"decks": [deck]})
+
+            # Check button text and tooltip
+            self.assertIn("REVIEW LEAST MATURE", main.btn_all.text())
+            self.assertTrue(main.btn_all.isEnabled())
+            self.assertIn("Review cards", main.btn_all.toolTip())
+            self.assertNotIn("Practice cards", main.btn_all.toolTip())
+
+            # Clicking btn_all triggers _review_due with order_mode="least_mature"
+            with patch.object(main, "_review_due") as mock_review:
+                main.btn_all.click()
+                mock_review.assert_called_once_with(order_mode="least_mature")
+
+    def test_tmnt_banner_review_new_button(self):
+        from ui.tmnt_home import TMNTMainContent
+        c1 = {"id": "c1", "sched_state": "new", "reviews": 0}
+        c2 = {"id": "c2", "sched_state": "new", "reviews": 0}
+        deck = {"_id": "math_sub", "name": "Percentage", "cards": [c1, c2]}
+
+        main = TMNTMainContent(data={"decks": [deck]})
+        main.load_deck(deck, {"decks": [deck]})
+
+        # Check button text shows count of new cards
+        self.assertEqual(main.btn_review_new.text(), "✨  REVIEW NEW (2)")
+        self.assertTrue(main.btn_review_new.isEnabled())
+        self.assertIn("Review only brand-new cards", main.btn_review_new.toolTip())
+
+        # Clicking btn_review_new triggers _start_review with is_practice=False
+        with patch.object(main, "_prompt_selective_cards", side_effect=lambda cards, is_due: cards), \
+             patch.object(main, "_start_review") as mock_start_review:
+            main.btn_review_new.click()
+            mock_start_review.assert_called_once()
+            args, kwargs = mock_start_review.call_args
+            self.assertFalse(kwargs.get("is_practice", False))
+            self.assertEqual(len(args[0]), 2)
+
+        # When cleared, count resets to 0 and disabled
+        main.clear()
+        self.assertEqual(main.btn_review_new.text(), "✨  REVIEW NEW (0)")
+        self.assertFalse(main.btn_review_new.isEnabled())
+
+    def test_review_new_cards_not_practice(self):
+        c1 = {"id": "c1", "sched_state": "new", "reviews": 0}
+        deck = {"_id": "leaf", "name": "Algebra", "cards": [c1]}
+
+        dv = DeckView()
+        dv.deck = deck
+        dv._data = {"decks": [deck]}
+
+        with patch.object(dv, "_prompt_selective_cards", side_effect=lambda cards, is_due: cards), \
+             patch.object(dv, "_start_review") as mock_start_review:
+            dv._review_new_cards()
+
+            mock_start_review.assert_called_once()
+            args, kwargs = mock_start_review.call_args
+            # Must be review (is_practice=False), not practice!
+            self.assertFalse(kwargs.get("is_practice", False))
+            self.assertEqual(args[0], [c1])
+
+
+    def test_least_mature_excludes_new_cards(self):
+        # c_new is brand new, c_due is reviewed and due
+        c_new = {"id": "c_new", "sched_state": "new", "reviews": 0, "sm2_last_quality": -1}
+        c_due = {"id": "c_due", "sched_state": "review", "reviews": 3, "sm2_last_quality": 4, "sm2_due": "2020-01-01"}
+        deck = {"_id": "math_sub", "name": "Geometry", "cards": [c_new, c_due]}
+
+        dv = DeckView()
+        dv.deck = deck
+        dv._data = {"decks": [deck]}
+
+        # When reviewing due in least_mature mode, it should ONLY include c_due, excluding c_new!
+        with patch.object(dv, "_prompt_selective_cards", side_effect=lambda cards, is_due: cards), \
+             patch.object(dv, "_start_review") as mock_start_review:
+            dv._review_due_least_mature()
+
+            mock_start_review.assert_called_once()
+            args, kwargs = mock_start_review.call_args
+            self.assertEqual(kwargs.get("order_mode"), "least_mature")
+            self.assertFalse(kwargs.get("is_practice", True))
+            reviewed_cards = args[0]
+            self.assertEqual(len(reviewed_cards), 1)
+            self.assertEqual(reviewed_cards[0]["id"], "c_due")
+
 
 if __name__ == "__main__":
     unittest.main()

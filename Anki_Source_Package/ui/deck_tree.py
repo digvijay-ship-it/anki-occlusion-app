@@ -1387,7 +1387,7 @@ class DeckTree(QWidget):
             menu.addAction("▶ Open", lambda: self._on_double_click(item, 0))
             menu.addAction("⚙️ Deck Settings / डेक सेटिंग्स...", lambda: self._open_deck_settings(did))
             menu.addAction("🎯 Practice Mode (All Cards)", lambda: self._practice_deck_by_id(did))
-            menu.addAction("✨ Practice only the new card, not the due one", lambda: self._practice_new_cards_by_id(did))
+            menu.addAction("✨ Review only the new card, not the due one", lambda: self._review_new_cards_by_id(did))
             menu.addAction("🌱 Review: Least Mature First", lambda checked=False, d_id=did: self._review_least_mature_by_id(d_id))
             menu.addAction("🎯 Practice: Least Mature First", lambda checked=False, d_id=did: self._practice_least_mature_by_id(d_id))
 
@@ -1468,7 +1468,7 @@ class DeckTree(QWidget):
                 active_dv._deck_id = deck_id
                 active_dv._practice_deck()
 
-    def _practice_new_cards_by_id(self, deck_id):
+    def _review_new_cards_by_id(self, deck_id):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))
         if not deck:
             return
@@ -1484,8 +1484,12 @@ class DeckTree(QWidget):
             if active_dv:
                 active_dv.deck = deck
                 active_dv._deck_id = deck_id
-                if hasattr(active_dv, "_practice_new_cards"):
+                if hasattr(active_dv, "_review_new_cards"):
+                    active_dv._review_new_cards()
+                elif hasattr(active_dv, "_practice_new_cards"):
                     active_dv._practice_new_cards()
+
+    _practice_new_cards_by_id = _review_new_cards_by_id
 
     def _review_least_mature_by_id(self, deck_id):
         deck = find_deck_by_id(deck_id, self._data.get("decks", []))

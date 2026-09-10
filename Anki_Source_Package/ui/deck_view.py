@@ -373,14 +373,20 @@ class DojoMissionBanner(QFrame):
         right_l.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
 
         self.btn_train = QPushButton("▶ START TRAINING\nREVIEW DUE SCROLLS")
-        self.btn_all = QPushButton("  TRAIN SELECTED SCROLL")
+        self.btn_all = QPushButton("🌱  REVIEW LEAST MATURE")
+        self.btn_all.setToolTip("Review cards starting with least mature / lowest retention score first")
         if NINJA_THEME_ENABLED:
             from dojo_assets import DojoAssets
 
             self.btn_all.setIcon(QIcon(DojoAssets.get().get_ui_icon(2, 32)))
 
+        self.btn_review_new = QPushButton("✨  REVIEW NEW (0)")
+        self.btn_review_new.setToolTip("Review only brand-new cards (skipping due / previously reviewed cards)")
+        self.btn_review_new.setEnabled(False)
+
         right_l.addWidget(self.btn_train)
         right_l.addWidget(self.btn_all)
+        right_l.addWidget(self.btn_review_new)
         l.addLayout(right_l)
 
         from PyQt5.QtCore import QTimer
@@ -459,6 +465,29 @@ class DojoMissionBanner(QFrame):
                 background: rgba(80, 250, 123, 0.1);
             }}
         """)
+        self.btn_review_new.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: #BD93F9;
+                border: 1px solid #BD93F9;
+                border-radius: 6px;
+                font-size: {max(9, int(11 * scale))}px;
+                font-weight: 900;
+                font-family: 'Orbitron';
+                letter-spacing: 1px;
+                min-height: {int(38 * scale)}px;
+                padding: 0px {int(20 * scale)}px;
+                text-align: center;
+            }}
+            QPushButton:hover {{
+                background: rgba(189, 147, 249, 0.12);
+            }}
+            QPushButton:disabled {{
+                background: transparent;
+                color: #5F627D;
+                border: 1px solid #2E303E;
+            }}
+        """)
         self._animate_glow()
 
     def _animate_glow(self):
@@ -503,6 +532,10 @@ class DojoMissionBanner(QFrame):
 
         shadow_alpha = int(80 + 120 * progress)
         self._shadow.setColor(QColor(r, g, b, shadow_alpha))
+
+    def set_new_cards_count(self, count: int):
+        self.btn_review_new.setText(f"✨  REVIEW NEW ({count})")
+        self.btn_review_new.setEnabled(count > 0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -676,9 +709,9 @@ class DeckView(QWidget):
         self.btn_practice = QPushButton("🎯 Practice")
         self.btn_practice.setToolTip("Practice all cards without affecting SM-2 schedule")
         self.btn_practice.clicked.connect(self._practice_deck)
-        self.btn_practice_new = QPushButton("✨ Practice New")
-        self.btn_practice_new.setToolTip("Practice only brand-new cards (skipping due / previously reviewed cards)")
-        self.btn_practice_new.clicked.connect(self._practice_new_cards)
+        self.btn_practice_new = QPushButton("✨ Review New")
+        self.btn_practice_new.setToolTip("Review only brand-new cards (skipping due / previously reviewed cards)")
+        self.btn_practice_new.clicked.connect(self._review_new_cards)
         self.btn_formulas = QPushButton("📐 Formulas")
         self.btn_formulas.setObjectName("formulas_btn")
         self.btn_formulas.setCursor(Qt.PointingHandCursor)
@@ -737,7 +770,8 @@ class DeckView(QWidget):
 
         self.dojo_banner = DojoMissionBanner()
         self.dojo_banner.btn_train.clicked.connect(self._review_due)
-        self.dojo_banner.btn_all.clicked.connect(self._review_all)
+        self.dojo_banner.btn_all.clicked.connect(self._review_due_least_mature)
+        self.dojo_banner.btn_review_new.clicked.connect(self._review_new_cards)
         dc_layout.addWidget(self.dojo_banner)
 
         L.addWidget(self.dojo_container)
@@ -1257,6 +1291,11 @@ class DeckView(QWidget):
                 self.btn_pause.hide()
             if hasattr(self, "btn_formulas"):
                 self.btn_formulas.hide()
+            if hasattr(self, "btn_practice_new"):
+                self.btn_practice_new.setText("✨ Review New (0)")
+                self.btn_practice_new.setEnabled(False)
+            if hasattr(self, "dojo_banner") and hasattr(self.dojo_banner, "set_new_cards_count"):
+                self.dojo_banner.set_new_cards_count(0)
             return
         try:
             store.check_and_apply_paused_decks_timeline_shift()
@@ -1464,6 +1503,13 @@ class DeckView(QWidget):
         self.stat_battles.set_value(total_rev)
         if hasattr(self, "btn_practice") and self.btn_practice:
             self.btn_practice.setEnabled(len(all_cards) > 0)
+        new_groups = self._collect_new_by_pdf(self.deck) if self.deck else []
+        new_count = sum(len(g) for g in new_groups)
+        if hasattr(self, "btn_practice_new"):
+            self.btn_practice_new.setText(f"✨ Review New ({new_count})")
+            self.btn_practice_new.setEnabled(new_count > 0)
+        if hasattr(self, "dojo_banner") and hasattr(self.dojo_banner, "set_new_cards_count"):
+            self.dojo_banner.set_new_cards_count(new_count)
 
         t_ref_elapsed = (time.perf_counter() - t_ref_start) * 1000.0
         if t_ref_elapsed > 50.0:
@@ -1816,10 +1862,10 @@ class DeckView(QWidget):
         dlg.exec_()
         self._refresh()
 
-    def _card_has_due_today(self, card):
-        return card_has_due_today(card)
+    def _card_has_due_today(self, card, exclude_new=False):
+        return card_has_due_today(card, exclude_new=exclude_new)
 
-    def _collect_due_by_pdf(self, deck):
+    def _collect_due_by_pdf(self, deck, exclude_new=False):
         """Recursively collect due cards from deck+children in DFS tree order,
         grouped by (deck_id, asset_path) so each subdeck and document retains its sequential order."""
         from collections import OrderedDict
@@ -1829,7 +1875,7 @@ class DeckView(QWidget):
         def _walk(d):
             did = d.get("_id")
             for card in d.get("cards", []):
-                if self._card_has_due_today(card):
+                if self._card_has_due_today(card, exclude_new=exclude_new):
                     asset = (
                         card.get("pdf_path") or card.get("image_path") or "__text__"
                     )
@@ -1891,6 +1937,18 @@ class DeckView(QWidget):
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
+            if order_mode == "least_mature":
+                groups = self._collect_due_by_pdf(self.deck, exclude_new=True)
+                if not groups:
+                    QMessageBox.information(
+                        self, "✅ All clear!", "इस डेक में कोई ड्यू रिविज़न कार्ड नहीं है!\nनए कार्ड्स पढ़ने के लिए '✨ REVIEW NEW' का उपयोग करें। 🌙"
+                    )
+                    return
+                all_due = [c for grp in groups for c in grp]
+                filtered_due = self._prompt_selective_cards(all_due, is_due=True)
+                if filtered_due is not None and len(filtered_due) > 0:
+                    self._start_review(filtered_due, is_practice=False, order_mode="least_mature")
+                return
             # Parent deck: group due cards by PDF and review sequentially
             groups = self._collect_due_by_pdf(self.deck)
             if not groups:
@@ -1916,6 +1974,17 @@ class DeckView(QWidget):
                     deck_name=deck_name,
                 )
         else:
+            if order_mode == "least_mature":
+                due = [c for c in self.deck.get("cards", []) if self._card_has_due_today(c, exclude_new=True)]
+                if not due:
+                    QMessageBox.information(
+                        self, "✅ All clear!", "इस डेक में कोई ड्यू रिविज़न कार्ड नहीं है!\nनए कार्ड्स पढ़ने के लिए '✨ REVIEW NEW' का उपयोग करें। 🌙"
+                    )
+                    return
+                filtered_due = self._prompt_selective_cards(due, is_due=True)
+                if filtered_due is not None and len(filtered_due) > 0:
+                    self._start_review(filtered_due, is_practice=False, order_mode="least_mature")
+                return
             due = [c for c in self.deck.get("cards", []) if self._card_has_due_today(c)]
             if not due:
                 QMessageBox.information(
@@ -1932,6 +2001,39 @@ class DeckView(QWidget):
             return
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
+        if self.deck.get("children"):
+            if order_mode == "least_mature":
+                groups = self._collect_all_by_pdf(self.deck)
+                if not groups:
+                    QMessageBox.information(self, "Empty", "Add some cards first!")
+                    return
+                all_cards = [c for grp in groups for c in grp]
+                filtered_cards = self._prompt_selective_cards(all_cards, is_due=False)
+                if filtered_cards is not None and len(filtered_cards) > 0:
+                    self._start_review(filtered_cards, is_practice=False, order_mode="least_mature")
+                return
+            groups = self._collect_all_by_pdf(self.deck)
+            if not groups:
+                QMessageBox.information(self, "Empty", "Add some cards first!")
+                return
+            home = self._find_home()
+            if home:
+                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
+                session_limit = int(self.deck.get("session_limit", 25) or 25)
+                auto_exit = bool(self.deck.get("auto_exit_session", True))
+                deck_id = self.deck.get("_id")
+                deck_name = self.deck.get("name")
+                home.show_review_sequential(
+                    groups,
+                    self._data,
+                    order_mode=order_mode,
+                    default_daily_target=daily_limit,
+                    default_session_target=session_limit,
+                    auto_exit_session=auto_exit,
+                    deck_id=deck_id,
+                    deck_name=deck_name,
+                )
+            return
         cards = [c for c in self.deck.get("cards", []) if not c.get("is_formula", False)]
         if not cards:
             QMessageBox.information(self, "Empty", "Add some cards first!")
@@ -1948,6 +2050,16 @@ class DeckView(QWidget):
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
+            if order_mode == "least_mature":
+                groups = self._collect_all_by_pdf(self.deck)
+                if not groups:
+                    QMessageBox.information(self, "Empty", "Add some cards first!")
+                    return
+                all_cards = [c for grp in groups for c in grp]
+                filtered_cards = self._prompt_selective_cards(all_cards, is_due=False)
+                if filtered_cards is not None and len(filtered_cards) > 0:
+                    self._start_review(filtered_cards, is_practice=True, order_mode="least_mature")
+                return
             groups = self._collect_all_by_pdf(self.deck)
             if not groups:
                 QMessageBox.information(self, "Empty", "Add some cards first!")
@@ -2025,19 +2137,33 @@ class DeckView(QWidget):
         return list(groups.values())
 
     @trace_perf
-    def _practice_new_cards(self, *args, order_mode=None):
-        """Review ONLY new (unreviewed) cards in practice mode, skipping previously studied due cards."""
+    def _review_new_cards(self, *args, order_mode=None):
+        """Review ONLY new (unreviewed) cards in real review mode (schedules them in SM-2), skipping due cards."""
         if not self.deck:
             return
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
+            if order_mode == "least_mature":
+                groups = self._collect_new_by_pdf(self.deck)
+                if not groups:
+                    QMessageBox.information(
+                        self,
+                        "No New Cards",
+                        "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।"
+                    )
+                    return
+                all_cards = [c for grp in groups for c in grp]
+                filtered_cards = self._prompt_selective_cards(all_cards, is_due=False)
+                if filtered_cards is not None and len(filtered_cards) > 0:
+                    self._start_review(filtered_cards, is_practice=False, order_mode="least_mature")
+                return
             groups = self._collect_new_by_pdf(self.deck)
             if not groups:
                 QMessageBox.information(
                     self,
                     "No New Cards",
-                    "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।\nपूरे डेक का अभ्यास करने के लिए 'Practice' चुनें।"
+                    "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।"
                 )
                 return
             home = self._find_home()
@@ -2050,7 +2176,7 @@ class DeckView(QWidget):
                 home.show_review_sequential(
                     groups,
                     self._data,
-                    is_practice=True,
+                    is_practice=False,
                     order_mode=order_mode,
                     default_daily_target=daily_limit,
                     default_session_target=session_limit,
@@ -2064,12 +2190,14 @@ class DeckView(QWidget):
                 QMessageBox.information(
                     self,
                     "No New Cards",
-                    "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।\nपूरे डेक का अभ्यास करने के लिए 'Practice' चुनें।"
+                    "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।"
                 )
                 return
             filtered_cards = self._prompt_selective_cards(cards, is_due=False)
             if filtered_cards is not None and len(filtered_cards) > 0:
-                self._start_review(filtered_cards, is_practice=True, order_mode=order_mode)
+                self._start_review(filtered_cards, is_practice=False, order_mode=order_mode)
+
+    _practice_new_cards = _review_new_cards
 
     def _review_due_least_mature(self):
         self._review_due(order_mode="least_mature")
