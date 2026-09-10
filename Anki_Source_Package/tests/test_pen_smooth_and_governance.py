@@ -125,7 +125,7 @@ class TestPenSmoothingAndGovernance(unittest.TestCase):
         screen._prog_timer.isActive.return_value = False
         screen._proximity_timer.isActive.return_value = False
         self.canvas._ink_active = False
-        with patch("theme_manager.is_retro_theme", return_value=True):
+        with patch("theme_manager.is_retro_theme", return_value=True), patch("ui.canvas.retro_effects._home_animations_enabled", return_value=True):
             screen._on_ink_active_changed()
         screen._prog_timer.start.assert_called_once_with(40)
         screen._proximity_timer.start.assert_called_once()

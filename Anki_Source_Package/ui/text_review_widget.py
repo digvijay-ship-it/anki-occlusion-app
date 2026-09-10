@@ -4,9 +4,46 @@ from PyQt5.QtWidgets import (
     QTextBrowser, QFrame, QApplication, QScrollArea, QSizePolicy,
     QMenu, QAction
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QUrl, QEvent
-from PyQt5.QtGui import QFont, QColor, QPen, QPainter, QKeySequence
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QUrl, QEvent, QObject, QVariantAnimation, QEasingCurve, QRect
+from PyQt5.QtGui import QFont, QColor, QPen, QPainter, QKeySequence, QPainterPath
 from theme_manager import get_palette
+from ui.canvas.geometry import smooth_points_to_path
+from storage_paths import is_running_tests
+
+class SmoothScrollController(QObject):
+    """Provides buttery-smooth kinetic animated scrolling for scroll areas."""
+    def __init__(self, scroll_area):
+        super().__init__(scroll_area)
+        self.scroll_area = scroll_area
+        self.anim = QVariantAnimation(self)
+        self.anim.setDuration(160)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.anim.valueChanged.connect(self._on_anim_step)
+        self.anim.finished.connect(lambda: setattr(self, "target_val", None))
+        self.target_val = None
+
+    def _on_anim_step(self, val):
+        vb = self.scroll_area.verticalScrollBar()
+        if vb:
+            vb.setValue(int(val))
+
+    def scroll_by(self, delta, is_pixel=False):
+        vb = self.scroll_area.verticalScrollBar()
+        if not vb:
+            return
+        if is_pixel or is_running_tests():
+            vb.setValue(vb.value() - delta)
+            return
+        if self.anim.state() == QVariantAnimation.Running and self.target_val is not None:
+            current = self.target_val
+        else:
+            current = vb.value()
+        new_target = max(0, min(vb.maximum(), current - delta))
+        self.target_val = new_target
+        self.anim.stop()
+        self.anim.setStartValue(vb.value())
+        self.anim.setEndValue(new_target)
+        self.anim.start()
 
 def get_base_url():
     from storage_paths import get_mission_archive_root, current_data_file
@@ -20,7 +57,7 @@ def get_base_url():
 def get_scroll_damping_factor():
     """
     Returns the scroll sensitivity factor based on user setting (10% to 100%).
-    Defaults to 35% (0.35x), which provides smooth and comfortable card scrolling.
+    Defaults to 100% (1.0x) for natural, fluid, and responsive scrolling.
     """
     try:
         from data_manager import store
@@ -34,10 +71,10 @@ def get_scroll_damping_factor():
         from storage_paths import is_running_tests
         org = "AnkiOcclusionTest" if is_running_tests() else "AnkiOcclusion"
         app = "AppTest" if is_running_tests() else "App"
-        val = QSettings(org, app).value("settings/_scroll_speed", 35)
+        val = QSettings(org, app).value("settings/_scroll_speed", 100)
         return max(10, min(100, int(val))) / 100.0
     except Exception:
-        return 0.35
+        return 1.0
 
 class ZoomableTextBrowser(QTextBrowser):
     def __init__(self, parent=None):
@@ -59,17 +96,36 @@ class ZoomableTextBrowser(QTextBrowser):
             e.accept()
         else:
             p = self.parentWidget()
-            while p and not isinstance(p, QScrollArea) and not hasattr(p, "scroll_area"):
+            while p and not isinstance(p, QScrollArea) and not hasattr(p, "scroll_area") and not hasattr(p, "smooth_scroller"):
                 p = p.parentWidget()
             if p:
+                sc = getattr(p, "smooth_scroller", None)
                 sa = p if isinstance(p, QScrollArea) else getattr(p, "scroll_area", None)
-                if sa and sa.verticalScrollBar():
-                    factor = get_scroll_damping_factor()
-                    raw_delta = e.angleDelta().y()
-                    delta = int(raw_delta * factor)
-                    if delta == 0 and raw_delta != 0:
-                        delta = 1 if raw_delta > 0 else -1
-                    sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - delta)
+                if sc is None and sa is not None:
+                    sc = getattr(sa, "smooth_scroller", None)
+
+                if sc is not None:
+                    if e.pixelDelta().y() != 0:
+                        sc.scroll_by(e.pixelDelta().y(), is_pixel=True)
+                    else:
+                        factor = get_scroll_damping_factor()
+                        raw_delta = e.angleDelta().y()
+                        delta = int(raw_delta * factor)
+                        if delta == 0 and raw_delta != 0:
+                            delta = 1 if raw_delta > 0 else -1
+                        sc.scroll_by(delta, is_pixel=False)
+                    e.accept()
+                    return
+                elif sa and sa.verticalScrollBar():
+                    if e.pixelDelta().y() != 0:
+                        sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.pixelDelta().y())
+                    else:
+                        factor = get_scroll_damping_factor()
+                        raw_delta = e.angleDelta().y()
+                        delta = int(raw_delta * factor)
+                        if delta == 0 and raw_delta != 0:
+                            delta = 1 if raw_delta > 0 else -1
+                        sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - delta)
                     e.accept()
                     return
             super().wheelEvent(e)
@@ -206,6 +262,24 @@ class ZoomableTextBrowser(QTextBrowser):
         if e.matches(QKeySequence.Copy):
             super().keyPressEvent(e)
             return
+
+        from services import shortcut_manager
+        if shortcut_manager.event_matches(e, "review.save_ink_keep") and not e.isAutoRepeat():
+            p = self.parent()
+            while p and not hasattr(p, "_save_review_ink_to_note"):
+                p = p.parent()
+            if p and hasattr(p, "_save_review_ink_to_note"):
+                p._save_review_ink_to_note(clear_ink=False)
+                e.accept()
+                return
+        elif shortcut_manager.event_matches(e, "review.save_ink_clear") and not e.isAutoRepeat():
+            p = self.parent()
+            while p and not hasattr(p, "_save_review_ink_to_note"):
+                p = p.parent()
+            if p and hasattr(p, "_save_review_ink_to_note"):
+                p._save_review_ink_to_note(clear_ink=True)
+                e.accept()
+                return
 
         # Alt+W toggle card width mode
         if e.modifiers() & Qt.AltModifier and e.key() == Qt.Key_W:
@@ -385,10 +459,6 @@ class ResizableCardFrame(QFrame):
 
     def paintEvent(self, e):
         super().paintEvent(e)
-        if hasattr(self, "left_handle"):
-            self.left_handle.raise_()
-        if hasattr(self, "right_handle"):
-            self.right_handle.raise_()
 
     def _get_viewport_width(self) -> int:
         vw = 0
@@ -688,6 +758,8 @@ class TextReviewWidget(QWidget):
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.viewport().setAttribute(Qt.WA_StaticContents, True)
+        self.smooth_scroller = SmoothScrollController(self.scroll_area)
         self.scroll_area.setStyleSheet(f"""
             QScrollArea {{
                 background: transparent;
@@ -1006,6 +1078,23 @@ class TextReviewWidget(QWidget):
         main_layout.addWidget(self.scroll_area)
 
     def keyPressEvent(self, e):
+        from services import shortcut_manager
+        if shortcut_manager.event_matches(e, "review.save_ink_keep") and not e.isAutoRepeat():
+            p = self.parent()
+            while p and not hasattr(p, "_save_review_ink_to_note"):
+                p = p.parent()
+            if p and hasattr(p, "_save_review_ink_to_note"):
+                p._save_review_ink_to_note(clear_ink=False)
+                e.accept()
+                return
+        elif shortcut_manager.event_matches(e, "review.save_ink_clear") and not e.isAutoRepeat():
+            p = self.parent()
+            while p and not hasattr(p, "_save_review_ink_to_note"):
+                p = p.parent()
+            if p and hasattr(p, "_save_review_ink_to_note"):
+                p._save_review_ink_to_note(clear_ink=True)
+                e.accept()
+                return
         # Handle scroll navigation keys (Up, Down, PageUp, PageDown, Home, End)
         k = e.key()
         if k in (Qt.Key_Down, Qt.Key_Up, Qt.Key_PageDown, Qt.Key_PageUp, Qt.Key_Home, Qt.Key_End) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
@@ -1272,14 +1361,13 @@ class TextReviewWidget(QWidget):
     def showEvent(self, e):
         super().showEvent(e)
         self._apply_width_mode()
-        self._adjust_browser_heights()
+        from PyQt5.QtCore import QTimer
         QTimer.singleShot(0, self._apply_width_mode)
-        
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._apply_width_mode()
-        self._update_scaled_html()
-        self._adjust_browser_heights()
+        if hasattr(self, "card_frame") and isinstance(self.card_frame, ResizableCardFrame):
+            self._apply_width_mode()
         if hasattr(self, "scratchpad"):
             self.scratchpad.sync_geometry_with_parent()
         
@@ -1509,6 +1597,146 @@ class TextReviewWidget(QWidget):
         import re
         return bool(re.search(r'<(br|b|i|u|p|div|span|strong|em|ul|ol|li|h[1-6]|table|img|font)\b[^>]*>', text, re.IGNORECASE))
 
+    @staticmethod
+    def _build_fraction_table(num: str, den: str, text_color: str, border_color: str, font_size: int = 20) -> str:
+        import re
+        num = num.strip()
+        den = den.strip()
+        
+        # Convert caret notation to <sup> e.g. k^2 -> k² or k<sup>2</sup>
+        num = re.sub(r'([a-zA-Z0-9θ\)])\^(\d+|[a-zA-Z])', r'\1<sup>\2</sup>', num)
+        den = re.sub(r'([a-zA-Z0-9θ\)])\^(\d+|[a-zA-Z])', r'\1<sup>\2</sup>', den)
+
+        # Check for small nested fraction in numerator like 1/k
+        sub_frac = re.match(r'^(.*?)\s*([+\-])\s*(\d+|[a-zA-Z])\s*/\s*([a-zA-Z]|\d+)(.*)$', num)
+        if sub_frac:
+            prefix, op, s_num, s_den, suffix = sub_frac.groups()
+            s_num_size = max(11, int(font_size * 0.65))
+            s_den_size = max(11, int(font_size * 0.65))
+            num = (
+                f'{prefix} {op} '
+                f'<table border="0" cellpadding="0" cellspacing="0" style="display:inline-table; vertical-align:middle; margin:0 2px;">'
+                f'<tr><td align="center" style="border-bottom: 1px solid {border_color}; padding:0 2px; font-size:{s_num_size}px;">{s_num}</td></tr>'
+                f'<tr><td align="center" style="padding:0 2px; font-size:{s_den_size}px;">{s_den}</td></tr>'
+                f'</table>{suffix}'
+            )
+
+        num_size = max(13, int(font_size * 0.88))
+        den_size = max(13, int(font_size * 0.88))
+
+        return (
+            f'<table border="0" cellpadding="0" cellspacing="0" style="margin: 0 4px;">'
+            f'<tr><td align="center" style="border-bottom: 1.5px solid {border_color}; padding: 0 5px; color:{text_color}; font-weight:bold; font-size:{num_size}px; line-height:1.2;">{num}</td></tr>'
+            f'<tr><td align="center" style="padding: 0 5px; color:{text_color}; font-weight:bold; font-size:{den_size}px; line-height:1.2;">{den}</td></tr>'
+            f'</table>'
+        )
+
+    @staticmethod
+    def _build_math_box(lhs: str, frac_table: str, suffix: str, is_highlighted: bool, font_size: int = 20) -> str:
+        bg_style = "background: rgba(255, 214, 10, 0.22); border: 1px solid rgba(255, 214, 10, 0.55); border-radius: 6px;" if is_highlighted else ""
+        text_color = "#FFE600" if is_highlighted else "#FFFFFF"
+        
+        lhs_td = f'<td valign="middle" style="color:{text_color}; font-weight:bold; font-size:{font_size}px; padding: 2px 4px;">{lhs}</td>' if lhs else ""
+        suffix_td = f'<td valign="middle" style="color:{text_color}; font-weight:bold; font-size:{font_size}px; padding: 2px 4px;">{suffix}</td>' if suffix else ""
+        
+        return (
+            f'<table border="0" cellpadding="3" cellspacing="0" style="{bg_style} margin: 2px 0;">'
+            f'<tr>'
+            f'{lhs_td}'
+            f'<td valign="middle" align="center" style="padding: 2px 2px;">{frac_table}</td>'
+            f'{suffix_td}'
+            f'</tr>'
+            f'</table>'
+        )
+
+    def _parse_single_math_expr(self, expr: str, is_highlighted: bool = True, font_size: int = 20):
+        import re
+        expr = expr.strip()
+        # If expression has multiple equals, transition arrows, or commas, do not treat as a single fraction
+        if expr.count('=') > 1 or '➔' in expr or '➜' in expr or '->' in expr or ',' in expr:
+            return None
+
+        # Reject Devanagari/Hindi sentences
+        if re.search(r'[\u0900-\u097F]', expr):
+            return None
+
+        border_color = "#FFE600" if is_highlighted else "rgba(103, 232, 249, 0.6)"
+        text_color = "#FFE600" if is_highlighted else "#FFFFFF"
+        
+        # Check for \frac{num}{den}
+        frac_match = re.match(r'^(.*?=\s*)?\\frac\{([^}]+)\}\{([^}]+)\}(.*)$', expr)
+        if frac_match:
+            lhs = frac_match.group(1) or ""
+            num = frac_match.group(2).strip()
+            den = frac_match.group(3).strip()
+            suffix = frac_match.group(4) or ""
+            frac_table = self._build_fraction_table(num, den, text_color, border_color, font_size)
+            return self._build_math_box(lhs, frac_table, suffix, is_highlighted, font_size)
+
+        # Check for [LHS = ] (num) / (den) or num / den
+        m = re.match(r'^(.*?=\s*)?\(?([^\(\)]+?|\([^\(\)]+?\)[^\(\)]*?)\)?\s*/\s*\(?([^\(\)]+?)\)?$', expr)
+        if m:
+            lhs = m.group(1) or ""
+            num = m.group(2).strip()
+            den = m.group(3).strip()
+            # If num or den contains commas, Hindi characters, or multi-word prose, reject
+            if ',' in num or ',' in den or re.search(r'[\u0900-\u097F]', num) or re.search(r'[\u0900-\u097F]', den):
+                return None
+            if len(num.split()) > 3 or len(den.split()) > 3:
+                return None
+            if num.startswith("(") and num.endswith(")"):
+                num = num[1:-1].strip()
+            if den.startswith("(") and den.endswith(")"):
+                den = den[1:-1].strip()
+            frac_table = self._build_fraction_table(num, den, text_color, border_color, font_size)
+            return self._build_math_box(lhs, frac_table, "", is_highlighted, font_size)
+
+        return None
+
+    def _render_math_line(self, raw_line: str, font_size: int = 20) -> str:
+        import re
+        if not any(k in raw_line for k in ['/', '\\frac', 'θ', '²', '±', '√', 'α', 'β']):
+            return raw_line
+
+        parts = re.split(r'(==(?:(?!==)[^\n])+?==)', raw_line)
+        
+        tds = []
+        has_math = False
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith('==') and part.endswith('=='):
+                inner = part[2:-2].strip()
+                parsed_box = self._parse_single_math_expr(inner, is_highlighted=True, font_size=font_size)
+                if parsed_box:
+                    has_math = True
+                    tds.append(f'<td valign="middle">{parsed_box}</td>')
+                else:
+                    # Normal highlight without fractions
+                    mark_style = (
+                        "background: rgba(255, 214, 10, 0.22); "
+                        "color: #FFE600; "
+                        "font-weight: bold; "
+                        "padding: 2px 7px; "
+                        "border-radius: 4px; "
+                        "border: 1px solid rgba(255, 214, 10, 0.55);"
+                    )
+                    tds.append(f'<td valign="middle" style="padding: 0 4px;"><span style="{mark_style}">{inner}</span></td>')
+            else:
+                clean_text = part.strip()
+                if clean_text:
+                    unhighlighted_box = self._parse_single_math_expr(clean_text, is_highlighted=False, font_size=font_size)
+                    if unhighlighted_box:
+                        has_math = True
+                        tds.append(f'<td valign="middle">{unhighlighted_box}</td>')
+                    else:
+                        tds.append(f'<td valign="middle" style="color:#67E8F9; font-weight:bold; font-size:{int(font_size*0.95)}px; padding: 0 6px;">{part}</td>')
+
+        if not has_math or not tds:
+            return raw_line
+            
+        return f'<table border="0" cellpadding="0" cellspacing="0" style="margin: 4px 0;"><tr>{"".join(tds)}</tr></table>'
+
     def _format_content(self, text: str, is_answer: bool = False, default_color: str = "#FFFFFF", font_size: int = 20) -> str:
         if not text:
             return ""
@@ -1535,8 +1763,16 @@ class TextReviewWidget(QWidget):
         # Convert Markdown image ![alt](url) to <img src="url" />
         formatted = re.sub(r'!\[[^\]]*\]\(([^)]+)\)', r'<img src="\1" />', formatted)
 
-        # 1. Convert ==highlight== syntax to <mark> tags
-        formatted = re.sub(r'==([^=\n]+)==', r'<mark>\1</mark>', formatted)
+        # Pre-process math equations & stacked fractions (e.g. sec θ = (k + 1/k) / 2, \frac{a}{b})
+        lines = formatted.split("\n")
+        new_lines = []
+        for line in lines:
+            rendered = self._render_math_line(line, font_size=font_size)
+            new_lines.append(rendered)
+        formatted = "\n".join(new_lines)
+
+        # 1. Convert ==highlight== syntax to <mark> tags (supports '=' inside math formulas)
+        formatted = re.sub(r'==((?:(?!==)[^\n])+?)==', r'<mark>\1</mark>', formatted)
 
         # 2. Convert Markdown bold **text** to <b> tags
         formatted = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', formatted)
@@ -1629,15 +1865,32 @@ class TextReviewWidget(QWidget):
                 self.zoom_out()
             e.accept()
         else:
-            if hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.verticalScrollBar():
-                factor = get_scroll_damping_factor()
-                raw_delta = e.angleDelta().y()
-                delta = int(raw_delta * factor)
-                if delta == 0 and raw_delta != 0:
-                    delta = 1 if raw_delta > 0 else -1
-                self.scroll_area.verticalScrollBar().setValue(
-                    self.scroll_area.verticalScrollBar().value() - delta
-                )
+            if hasattr(self, "smooth_scroller") and self.smooth_scroller:
+                if e.pixelDelta().y() != 0:
+                    self.smooth_scroller.scroll_by(e.pixelDelta().y(), is_pixel=True)
+                else:
+                    factor = get_scroll_damping_factor()
+                    raw_delta = e.angleDelta().y()
+                    delta = int(raw_delta * factor)
+                    if delta == 0 and raw_delta != 0:
+                        delta = 1 if raw_delta > 0 else -1
+                    self.smooth_scroller.scroll_by(delta, is_pixel=False)
+                e.accept()
+                return
+            elif hasattr(self, "scroll_area") and self.scroll_area and self.scroll_area.verticalScrollBar():
+                if e.pixelDelta().y() != 0:
+                    self.scroll_area.verticalScrollBar().setValue(
+                        self.scroll_area.verticalScrollBar().value() - e.pixelDelta().y()
+                    )
+                else:
+                    factor = get_scroll_damping_factor()
+                    raw_delta = e.angleDelta().y()
+                    delta = int(raw_delta * factor)
+                    if delta == 0 and raw_delta != 0:
+                        delta = 1 if raw_delta > 0 else -1
+                    self.scroll_area.verticalScrollBar().setValue(
+                        self.scroll_area.verticalScrollBar().value() - delta
+                    )
                 e.accept()
                 return
             super().wheelEvent(e)
@@ -1667,18 +1920,6 @@ class TextReviewWidget(QWidget):
         TextReviewWidget.save_zoom_factor(self._zoom_factor)
         self._update_scaled_html()
 
-    def showEvent(self, e):
-        super().showEvent(e)
-        self._apply_width_mode()
-        from PyQt5.QtCore import QTimer
-        QTimer.singleShot(0, self._apply_width_mode)
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        if hasattr(self, "card_frame") and isinstance(self.card_frame, ResizableCardFrame):
-            self._apply_width_mode()
-        if hasattr(self, "scratchpad"):
-            self.scratchpad.sync_geometry_with_parent()
 
 class ScratchpadOverlay(QWidget):
     def __init__(self, parent=None):
@@ -1688,8 +1929,9 @@ class ScratchpadOverlay(QWidget):
         self.strokes = []
         self.redo_stack = []
         self.current_stroke = []
-        self.active_color = QColor("#FF4444")
-        self.active_width = 2.0
+        self._current_path = None
+        self.active_color = QColor("#FFD700")
+        self.active_width = 2.5
         self.mode = "pen"  # "pen" or "eraser"
         if parent is not None:
             try:
@@ -1722,6 +1964,32 @@ class ScratchpadOverlay(QWidget):
         p = self.parent()
         if p is not None:
             self.setGeometry(0, 0, p.width(), p.height())
+
+    def keyPressEvent(self, e):
+        from services import shortcut_manager
+        if shortcut_manager.event_matches(e, "review.save_ink_keep") and not e.isAutoRepeat():
+            p = self.parent()
+            while p and not hasattr(p, "_save_review_ink_to_note"):
+                p = p.parent()
+            if p and hasattr(p, "_save_review_ink_to_note"):
+                p._save_review_ink_to_note(clear_ink=False)
+                e.accept()
+                return
+        elif shortcut_manager.event_matches(e, "review.save_ink_clear") and not e.isAutoRepeat():
+            p = self.parent()
+            while p and not hasattr(p, "_save_review_ink_to_note"):
+                p = p.parent()
+            if p and hasattr(p, "_save_review_ink_to_note"):
+                p._save_review_ink_to_note(clear_ink=True)
+                e.accept()
+                return
+        p = self.parent()
+        while p and not hasattr(p, "keyPressEvent"):
+            p = p.parent()
+        if p and hasattr(p, "keyPressEvent"):
+            p.keyPressEvent(e)
+        else:
+            super().keyPressEvent(e)
         
     def set_pen_active(self, active, mode="pen"):
         self.mode = mode
@@ -1776,25 +2044,47 @@ class ScratchpadOverlay(QWidget):
                     e.accept()
                     return
 
-        # 2. Forward vertical wheel scrolling to QScrollArea
+        # 2. Forward vertical wheel scrolling to smooth_scroller or QScrollArea
         p = self.parent()
+        sc = None
         sa = None
         while p:
+            if hasattr(p, "smooth_scroller") and p.smooth_scroller:
+                sc = p.smooth_scroller
+                break
             if hasattr(p, "scroll_area") and p.scroll_area:
                 sa = p.scroll_area
+                if hasattr(sa, "smooth_scroller"):
+                    sc = sa.smooth_scroller
                 break
             if isinstance(p, QScrollArea):
                 sa = p
                 break
             p = p.parent()
 
+        if sc is not None:
+            if e.pixelDelta().y() != 0:
+                sc.scroll_by(e.pixelDelta().y(), is_pixel=True)
+            else:
+                factor = get_scroll_damping_factor()
+                raw_delta = e.angleDelta().y()
+                delta = int(raw_delta * factor)
+                if delta == 0 and raw_delta != 0:
+                    delta = 1 if raw_delta > 0 else -1
+                sc.scroll_by(delta, is_pixel=False)
+            e.accept()
+            return
+
         if sa and sa.verticalScrollBar():
-            factor = get_scroll_damping_factor()
-            raw_delta = e.angleDelta().y()
-            delta = int(raw_delta * factor)
-            if delta == 0 and raw_delta != 0:
-                delta = 1 if raw_delta > 0 else -1
-            sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - delta)
+            if e.pixelDelta().y() != 0:
+                sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - e.pixelDelta().y())
+            else:
+                factor = get_scroll_damping_factor()
+                raw_delta = e.angleDelta().y()
+                delta = int(raw_delta * factor)
+                if delta == 0 and raw_delta != 0:
+                    delta = 1 if raw_delta > 0 else -1
+                sa.verticalScrollBar().setValue(sa.verticalScrollBar().value() - delta)
             e.accept()
             return
         e.ignore()
@@ -1803,15 +2093,17 @@ class ScratchpadOverlay(QWidget):
         self.strokes = []
         self.redo_stack = []
         self.current_stroke = []
+        self._current_path = None
         self.update()
 
     def erase_at(self, pos, radius=24):
         new_strokes = []
         changed = False
+        r_sq = radius ** 2
         for s in self.strokes:
             keep = True
             for pt in s.get("points", []):
-                if (pt.x() - pos.x()) ** 2 + (pt.y() - pos.y()) ** 2 <= radius ** 2:
+                if (pt.x() - pos.x()) ** 2 + (pt.y() - pos.y()) ** 2 <= r_sq:
                     keep = False
                     changed = True
                     break
@@ -1823,21 +2115,43 @@ class ScratchpadOverlay(QWidget):
         
     def paintEvent(self, e):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.setBrush(Qt.NoBrush)
         
         for stroke in self.strokes:
             pen = QPen(stroke["color"], stroke["width"], Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
-            points = stroke["points"]
-            if len(points) > 1:
-                for i in range(len(points) - 1):
-                    painter.drawLine(points[i], points[i+1])
+            points = stroke.get("points", [])
+            if len(points) == 1:
+                painter.setBrush(stroke["color"])
+                r = max(1.5, stroke["width"] / 2.0)
+                painter.drawEllipse(points[0], r, r)
+                painter.setBrush(Qt.NoBrush)
+            elif len(points) > 1:
+                painter.setBrush(Qt.NoBrush)
+                path = stroke.get("_path")
+                if path is None:
+                    path = smooth_points_to_path(points)
+                    stroke["_path"] = path
+                painter.drawPath(path)
                     
-        if len(self.current_stroke) > 1:
+        if self.current_stroke:
             pen = QPen(self.active_color, self.active_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
-            for i in range(len(self.current_stroke) - 1):
-                painter.drawLine(self.current_stroke[i], self.current_stroke[i+1])
+            if len(self.current_stroke) == 1:
+                painter.setBrush(self.active_color)
+                r = max(1.5, self.active_width / 2.0)
+                painter.drawEllipse(self.current_stroke[0], r, r)
+                painter.setBrush(Qt.NoBrush)
+            else:
+                painter.setBrush(Qt.NoBrush)
+                path = getattr(self, "_current_path", None)
+                if path is None:
+                    path = smooth_points_to_path(self.current_stroke)
+                    self._current_path = path
+                painter.drawPath(path)
                 
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
@@ -1853,6 +2167,7 @@ class ScratchpadOverlay(QWidget):
                 self.erase_at(e.pos())
             else:
                 self.current_stroke = [e.pos()]
+                self._current_path = smooth_points_to_path(self.current_stroke)
             self.update()
             e.accept()
         else:
@@ -1863,8 +2178,28 @@ class ScratchpadOverlay(QWidget):
             self.erase_at(e.pos())
             e.accept()
         elif self.current_stroke:
-            self.current_stroke.append(e.pos())
-            self.update()
+            pos = e.pos()
+            # Micro-jitter filter
+            last = self.current_stroke[-1]
+            dx = pos.x() - last.x()
+            dy = pos.y() - last.y()
+            if dx * dx + dy * dy < 2.0:
+                e.accept()
+                return
+            self.current_stroke.append(pos)
+            self._current_path = smooth_points_to_path(self.current_stroke)
+            
+            # Localized dirty rect repaint for ultra-responsive 120+ FPS
+            pen_pad = int(self.active_width * 2 + 16)
+            p0 = self.current_stroke[-2]
+            p1 = pos
+            dirty = QRect(
+                int(min(p0.x(), p1.x()) - pen_pad),
+                int(min(p0.y(), p1.y()) - pen_pad),
+                int(abs(p1.x() - p0.x()) + 2 * pen_pad),
+                int(abs(p1.y() - p0.y()) + 2 * pen_pad)
+            )
+            self.update(dirty)
             e.accept()
         else:
             e.ignore()
@@ -1872,14 +2207,72 @@ class ScratchpadOverlay(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
             if self.mode != "eraser" and self.current_stroke:
+                pts = list(self.current_stroke)
+                path = smooth_points_to_path(pts)
                 self.strokes.append({
                     "color": QColor(self.active_color),
                     "width": self.active_width,
-                    "points": self.current_stroke
+                    "points": pts,
+                    "_path": path
                 })
                 self.current_stroke = []
+                self._current_path = None
                 self.redo_stack.clear()
             self.update()
             e.accept()
         else:
             e.ignore()
+
+    def tabletEvent(self, e):
+        if not self.isVisible() or self.testAttribute(Qt.WA_TransparentForMouseEvents):
+            e.ignore()
+            return
+        
+        pos = e.posF().toPoint()
+        if e.type() == QEvent.TabletPress:
+            if self.mode == "eraser":
+                self.erase_at(pos)
+            else:
+                self.current_stroke = [pos]
+                self._current_path = smooth_points_to_path(self.current_stroke)
+            self.update()
+            e.accept()
+        elif e.type() == QEvent.TabletMove:
+            if self.mode == "eraser" and (e.buttons() & Qt.LeftButton or e.pressure() > 0):
+                self.erase_at(pos)
+                e.accept()
+            elif self.current_stroke:
+                last = self.current_stroke[-1]
+                dx = pos.x() - last.x()
+                dy = pos.y() - last.y()
+                if dx * dx + dy * dy < 2.0:
+                    e.accept()
+                    return
+                self.current_stroke.append(pos)
+                self._current_path = smooth_points_to_path(self.current_stroke)
+                pen_pad = int(self.active_width * 2 + 16)
+                p0 = self.current_stroke[-2]
+                p1 = pos
+                dirty = QRect(
+                    int(min(p0.x(), p1.x()) - pen_pad),
+                    int(min(p0.y(), p1.y()) - pen_pad),
+                    int(abs(p1.x() - p0.x()) + 2 * pen_pad),
+                    int(abs(p1.y() - p0.y()) + 2 * pen_pad)
+                )
+                self.update(dirty)
+                e.accept()
+        elif e.type() == QEvent.TabletRelease:
+            if self.mode != "eraser" and self.current_stroke:
+                pts = list(self.current_stroke)
+                path = smooth_points_to_path(pts)
+                self.strokes.append({
+                    "color": QColor(self.active_color),
+                    "width": self.active_width,
+                    "points": pts,
+                    "_path": path
+                })
+                self.current_stroke = []
+                self._current_path = None
+                self.redo_stack.clear()
+            self.update()
+            e.accept()

@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QUrl, QEvent
 from PyQt5.QtGui import QFont, QColor, QPalette, QKeySequence, QPixmap, QTextDocument
 from theme_manager import get_palette
-from ui.text_review_widget import ZoomableTextBrowser, ScratchpadOverlay, get_base_url, ResizableCardFrame
+from ui.text_review_widget import ZoomableTextBrowser, ScratchpadOverlay, get_base_url, ResizableCardFrame, SmoothScrollController
 
 
 class AutoFitTextBrowser(ZoomableTextBrowser):
@@ -319,6 +319,8 @@ class MCQReviewWidget(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.viewport().setAttribute(Qt.WA_StaticContents, True)
+        self.smooth_scroller = SmoothScrollController(self.scroll_area)
         self.scroll_area.setStyleSheet("background: transparent;")
 
         self.scroll_content = QWidget()

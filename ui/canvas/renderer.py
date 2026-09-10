@@ -141,9 +141,9 @@ class CanvasRendererMixin:
 
     def paintEvent(self, event):
         """File: editor_ui.py -> Class: OcclusionCanvas -> Fixed paintEvent"""
+        paint_t0 = time.perf_counter()
         profile = self._canvas_paint_profile_enabled()
         if profile:
-            paint_t0 = time.perf_counter()
             phases = {
                 "page_scale_ms": 0.0,
                 "page_draw_ms": 0.0,
@@ -156,7 +156,6 @@ class CanvasRendererMixin:
                 "mask_clip": "none",
             }
         else:
-            paint_t0 = 0.0
             phases = None
 
         pages_drawn = 0
@@ -390,9 +389,23 @@ class CanvasRendererMixin:
         if profile:
             phases["ink_ms"] += (time.perf_counter() - ink_t0) * 1000.0
         p.end()
+        
+        paint_elapsed_ms = (time.perf_counter() - paint_t0) * 1000.0
+        if getattr(self, "_ink_active", False) or getattr(self, "_ink_strokes", None) or getattr(self, "_ink_current", None):
+            try:
+                from services.pen_profiler import pen_profiler
+                pen_profiler.record_paint(
+                    duration_ms=paint_elapsed_ms,
+                    rect_w=clip.width(),
+                    rect_h=clip.height(),
+                    stroke_count=len(getattr(self, "_ink_strokes", []) or [])
+                )
+            except Exception:
+                pass
+
         if profile:
             self._log_canvas_paint_profile(
-                (time.perf_counter() - paint_t0) * 1000.0,
+                paint_elapsed_ms,
                 clip,
                 pages_drawn,
                 phases,

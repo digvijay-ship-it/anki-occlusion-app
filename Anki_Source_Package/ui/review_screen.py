@@ -508,7 +508,7 @@ def format_hint_content(text, text_color="#CDD6F4", accent_color="#7C6AF7", bord
         "border-radius: 4px; "
         "border: 1px solid rgba(255, 214, 10, 0.50);"
     )
-    processed = re.sub(r'==([^=\n]+)==', f'<span style="{mark_style}">\\1</span>', processed)
+    processed = re.sub(r'==((?:(?!==)[^\n])+?)==', f'<span style="{mark_style}">\\1</span>', processed)
 
     # 6. Convert Markdown bold **text** to <b> tags
     processed = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', processed)
@@ -2346,6 +2346,10 @@ class ReviewScreen(QWidget):
                     if item_key not in seen_item_keys:
                         seen_item_keys.add(item_key)
                         sm2_init(card)
+                        if getattr(self, "_order_mode", "default") == "least_mature":
+                            is_new = (card.get("sched_state", "new") == "new" and int(card.get("reviews", 0) or 0) == 0 and card.get("sm2_last_quality", -1) == -1)
+                            if is_new:
+                                continue
                         _due_result = is_due_today(card)
                         if _due_result or getattr(self, "is_practice", False):
                             self._items.append((card, None, card))
@@ -2363,6 +2367,10 @@ class ReviewScreen(QWidget):
                             item_key = (card_key, ("group", gid))
                             if item_key not in seen_item_keys:
                                 seen_item_keys.add(item_key)
+                                if getattr(self, "_order_mode", "default") == "least_mature":
+                                    is_new = (box.get("sched_state", "new") == "new" and int(box.get("reviews", 0) or 0) == 0 and box.get("sm2_last_quality", -1) == -1)
+                                    if is_new:
+                                        continue
                                 _due_result = is_due_today(box)
                                 if _due_result or getattr(self, "is_practice", False):
                                     self._items.append((card, ("group", gid), box))
@@ -2372,6 +2380,10 @@ class ReviewScreen(QWidget):
                         item_key = (card_key, box_id)
                         if item_key not in seen_item_keys:
                             seen_item_keys.add(item_key)
+                            if getattr(self, "_order_mode", "default") == "least_mature":
+                                is_new = (box.get("sched_state", "new") == "new" and int(box.get("reviews", 0) or 0) == 0 and box.get("sm2_last_quality", -1) == -1)
+                                if is_new:
+                                    continue
                             _due_result = is_due_today(box)
                             if _due_result or getattr(self, "is_practice", False):
                                 self._items.append((card, i, box))
@@ -2509,12 +2521,13 @@ class ReviewScreen(QWidget):
         else:
             theme = self._data.get("theme", "tokyo_night") if hasattr(self, "_data") and isinstance(self._data, dict) else "tokyo_night"
             from theme_manager import is_retro_theme
+            from ui.canvas.retro_effects import _home_animations_enabled
             if (
                 hasattr(self, "_prog_timer")
                 and self._prog_timer is not None
                 and not self._prog_timer.isActive()
                 and is_retro_theme(theme)
-                and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}
+                and _home_animations_enabled()
             ):
                 self._prog_timer.start(40)
             if hasattr(self, "_proximity_timer") and self._proximity_timer is not None:
@@ -3041,40 +3054,77 @@ class ReviewScreen(QWidget):
         self._review_toast_timer.start(2000)
 
     def _save_review_ink_to_note(self, clear_ink=True):
-        if not getattr(self, "canvas", None) or not self.canvas._ink_strokes:
-            self._show_review_toast("⚠️ No drawings to save!")
-            return
-            
-        was_active = getattr(self, "_was_ink_active_before_ctrl", False) or getattr(self.canvas, "_ink_active", False)
         from PyQt5.QtCore import QSize
         from PyQt5.QtWidgets import QDialog, QApplication
+        from PyQt5.QtGui import QColor
         from ui.crop_dialog import CropInkDialog, get_auto_crop_rect, render_cropped_strokes
-        
-        # Calculate canvas size dynamically based on scale to prevent clipping scratchpad drawings
-        sc = getattr(self.canvas, "_scale", 1.0) or 1.0
-        canvas_size = QSize(int(self.canvas.width() / sc), int(self.canvas.height() / sc))
-        
-        card_img_size = None
-        if self.canvas._px is not None:
-            card_img_size = self.canvas._px.size()
-        elif getattr(self.canvas, "_pages", None):
-            card_img_size = QSize(self.canvas._total_w, self.canvas._total_h)
-            
+
+        is_text_mode = False
+        text_widget = getattr(self, "_text_review_widget", None)
+        active_scratchpad = None
+        if hasattr(self, "_stacked_widget") and self._stacked_widget.currentWidget() == text_widget:
+            if text_widget is not None and hasattr(text_widget, "scratchpad"):
+                active_scratchpad = text_widget.scratchpad
+                is_text_mode = True
+
+        if is_text_mode:
+            strokes_raw = getattr(active_scratchpad, "strokes", [])
+            if not strokes_raw:
+                self._show_review_toast("⚠️ No drawings to save!")
+                return
+            class StrokeList(list):
+                pass
+
+            ink_strokes = []
+            for s in strokes_raw:
+                pts = list(s.get("points", []))
+                if not pts:
+                    continue
+                stroke_item = StrokeList([s.get("color", QColor("#FFD700"))] + pts)
+                stroke_item._implementation = "smooth"
+                stroke_item._path_key = None
+                ink_strokes.append(stroke_item)
+            canvas_size = active_scratchpad.size()
+            if canvas_size.width() <= 0 or canvas_size.height() <= 0:
+                canvas_size = QSize(max(100, text_widget.width()), max(100, text_widget.height()))
+            ink_width = getattr(active_scratchpad, "active_width", 2.5)
+            card_img_size = None
+            was_active = (
+                getattr(active_scratchpad, "isVisible", lambda: False)()
+                and not active_scratchpad.testAttribute(Qt.WA_TransparentForMouseEvents)
+            )
+        else:
+            if not getattr(self, "canvas", None) or not self.canvas._ink_strokes:
+                self._show_review_toast("⚠️ No drawings to save!")
+                return
+            ink_strokes = self.canvas._ink_strokes
+            sc = getattr(self.canvas, "_scale", 1.0) or 1.0
+            canvas_size = QSize(int(self.canvas.width() / sc), int(self.canvas.height() / sc))
+            card_img_size = None
+            if self.canvas._px is not None:
+                card_img_size = self.canvas._px.size()
+            elif getattr(self.canvas, "_pages", None):
+                card_img_size = QSize(self.canvas._total_w, self.canvas._total_h)
+            ink_width = self.canvas._ink_width
+            was_active = getattr(self, "_was_ink_active_before_ctrl", False) or getattr(self.canvas, "_ink_active", False)
+
         if not clear_ink:
             # INSTANT COPY (no prompting dialog)
-            crop_rect = get_auto_crop_rect(self.canvas._ink_strokes, canvas_size, card_img_size)
-            px = render_cropped_strokes(self.canvas._ink_strokes, crop_rect, self.canvas._ink_width)
+            crop_rect = get_auto_crop_rect(ink_strokes, canvas_size, card_img_size)
+            px = render_cropped_strokes(ink_strokes, crop_rect, ink_width)
         else:
             dialog = CropInkDialog(
-                self.canvas._ink_strokes,
+                ink_strokes,
                 canvas_size,
-                self.canvas._ink_width,
+                ink_width,
                 parent=self,
                 card_img_size=card_img_size
             )
             if dialog.exec_() != QDialog.Accepted:
                 if was_active:
-                    if getattr(self, "canvas", None):
+                    if is_text_mode and active_scratchpad:
+                        active_scratchpad.set_pen_active(True)
+                    elif getattr(self, "canvas", None):
                         self.canvas.ink_set_active(True)
                         self._update_ink_hint()
                         self._update_pen_button_states()
@@ -3120,7 +3170,7 @@ class ReviewScreen(QWidget):
                     import base64
                     import json
                     stroke_data_list = []
-                    for stroke in self.canvas._ink_strokes:
+                    for stroke in ink_strokes:
                         color_hex = stroke[0].name() if hasattr(stroke[0], "name") else str(stroke[0])
                         pts = [{"x": pt.x(), "y": pt.y()} for pt in stroke[1:]]
                         stroke_data_list.append({
@@ -3185,7 +3235,10 @@ class ReviewScreen(QWidget):
                 pass
                 
         if clear_ink:
-            self.canvas.ink_clear()
+            if is_text_mode and active_scratchpad:
+                active_scratchpad.clear()
+            elif getattr(self, "canvas", None):
+                self.canvas.ink_clear()
             if saved_to_note:
                 self._show_review_toast("🎨 Saved drawing to hint box & copied to clipboard!")
             else:
@@ -3195,7 +3248,9 @@ class ReviewScreen(QWidget):
 
         # Restore or keep ink state active
         if was_active:
-            if getattr(self, "canvas", None):
+            if is_text_mode and active_scratchpad:
+                active_scratchpad.set_pen_active(True)
+            elif getattr(self, "canvas", None):
                 self.canvas.ink_set_active(True)
                 self._update_ink_hint()
                 self._update_pen_button_states()
@@ -3669,6 +3724,20 @@ class ReviewScreen(QWidget):
             recovery_manager.flush()
         except Exception as ex:
             print(f"[review_screen] Failed to flush recovery events: {ex}")
+
+        # Flush pen diagnostics on window close
+        try:
+            from services.pen_profiler import pen_profiler
+            prev_card = getattr(self, "_active_profiler_card", None)
+            if prev_card:
+                pen_profiler.flush_card_report(
+                    card_id=str(prev_card.get("_id") or prev_card.get("id") or ""),
+                    title=str(prev_card.get("title", "")),
+                    card_type=str(prev_card.get("card_type", "unknown"))
+                )
+                self._active_profiler_card = None
+        except Exception:
+            pass
 
         # Disconnect all signals originating from this ReviewScreen
         try:
@@ -4715,8 +4784,32 @@ class ReviewScreen(QWidget):
             else:
                 mask_key = f"{card_id}_card"
             self._stimer.set_current_mask(mask_key)
+
+        # Pen Lag Diagnostics: Flush previous card's telemetry to log and start new card
+        try:
+            from services.pen_profiler import pen_profiler
+            prev_card = getattr(self, "_active_profiler_card", None)
+            if prev_card:
+                pen_profiler.flush_card_report(
+                    card_id=str(prev_card.get("_id") or prev_card.get("id") or ""),
+                    title=str(prev_card.get("title", "")),
+                    card_type=str(prev_card.get("card_type", "unknown"))
+                )
+            self._active_profiler_card = card
+            pen_profiler.start_card(
+                card_id=str(card.get("_id") or card.get("id") or ""),
+                title=str(card.get("title", "")),
+                card_type=str(card.get("card_type", "unknown"))
+            )
+        except Exception:
+            pass
+
         if hasattr(self.canvas, "clear_review_ink_for_card_switch"):
             self.canvas.clear_review_ink_for_card_switch()
+        if hasattr(self, "_text_review_widget") and hasattr(self._text_review_widget, "scratchpad"):
+            self._text_review_widget.scratchpad.clear()
+        if hasattr(self, "_mcq_review_widget") and hasattr(self._mcq_review_widget, "scratchpad"):
+            self._mcq_review_widget.scratchpad.clear()
         self._last_saved_ink_strokes_key = None
         self._sync_queue_state()  # state-only fast path for normal card advances
 
@@ -5439,7 +5532,7 @@ class ReviewScreen(QWidget):
                 return None
             source_p = _find_parent_source(data.get("decks", []), target_deck)
 
-        # Auto-discovery fallback: search SSC-Copilot flashcards
+        # Auto-discovery fallback: search across Math, English, and GK directories
         if not source_p or not os.path.exists(source_p):
             deck_n = target_deck.get("name", "")
             clean_name = deck_n
@@ -5450,7 +5543,17 @@ class ReviewScreen(QWidget):
             if parts and parts[0].isdigit() and len(parts) > 1:
                 clean_name = parts[1]
 
+            cand_terms = [clean_name, deck_n]
+            ctx = current_card.get("context_anchor", "")
+            if ctx:
+                cand_terms.extend([p.strip() for p in ctx.split("::") if p.strip()])
+            d_name = current_card.get("deck_name", "")
+            if d_name:
+                cand_terms.extend([p.strip() for p in d_name.split("::") if p.strip()])
+
             cand_dirs = [
+                r"C:\Users\Digvijay\Desktop\Math",
+                r"C:\Users\Digvijay\Downloads\blackbookAnki",
                 r"c:\Users\Digvijay\Downloads\SSC-Copilot\data\generated_flashcards",
                 r"C:\Users\Digvijay\Downloads\SSC-Copilot\data\generated_flashcards",
                 r"E:\GK"
@@ -5459,11 +5562,17 @@ class ReviewScreen(QWidget):
                 if os.path.exists(c_dir):
                     for root_d, _, files in os.walk(c_dir):
                         for fn in files:
-                            if fn.endswith(".json") and (clean_name.lower().replace(" ", "_") in fn.lower() or fn.lower().replace("_", " ") in clean_name.lower()):
-                                source_p = os.path.join(root_d, fn).replace("\\", "/")
-                                target_deck["source_file_path"] = source_p
-                                target_deck["source_folder_path"] = source_p
-                                break
+                            if fn.endswith(".json"):
+                                fn_lower = fn.lower()
+                                for term in cand_terms:
+                                    t_clean = term.lower().replace(" ", "_")
+                                    if len(t_clean) >= 4 and (t_clean in fn_lower or fn_lower.replace("_", " ") in term.lower()):
+                                        source_p = os.path.join(root_d, fn).replace("\\", "/")
+                                        target_deck["source_file_path"] = source_p
+                                        target_deck["source_folder_path"] = source_p
+                                        break
+                                if source_p:
+                                    break
                         if source_p:
                             break
                 if source_p:
@@ -6180,7 +6289,8 @@ class ReviewScreen(QWidget):
                 )
             self._prog_timer.timeout.connect(_animate_prog)
             from theme_manager import is_retro_theme
-            if is_retro_theme(theme) and os.environ.get("ANKI_HOME_ANIMATIONS", "").strip().lower() not in {"0", "false", "no", "off"}:
+            from ui.canvas.retro_effects import _home_animations_enabled
+            if is_retro_theme(theme) and _home_animations_enabled():
                 self._prog_timer.start(40)
         else:
             self.prog.setStyleSheet(
@@ -7400,7 +7510,8 @@ class ReviewScreen(QWidget):
         self.crt = None
         self.burst = None
         from theme_manager import is_retro_theme
-        if is_retro_theme(theme):
+        from ui.canvas.retro_effects import _home_animations_enabled
+        if is_retro_theme(theme) and _home_animations_enabled():
             self.crt = CRTOverlay(self)
             self.burst = ParticleBurstOverlay(self)
 
@@ -10479,6 +10590,19 @@ class ReviewScreen(QWidget):
                 self._idx = earliest_idx
                 self._load_item()
                 return
+
+        try:
+            from services.pen_profiler import pen_profiler
+            prev_card = getattr(self, "_active_profiler_card", None)
+            if prev_card:
+                pen_profiler.flush_card_report(
+                    card_id=str(prev_card.get("_id") or prev_card.get("id") or ""),
+                    title=str(prev_card.get("title", "")),
+                    card_type=str(prev_card.get("card_type", "unknown"))
+                )
+                self._active_profiler_card = None
+        except Exception:
+            pass
 
         self.prog.setValue(len(self._items))
         self._show_session_summary()

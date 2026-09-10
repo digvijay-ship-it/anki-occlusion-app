@@ -98,6 +98,7 @@ class CanvasInteractionMixin:
         pressure = self._tablet_pressure(e)
 
         if et == QEvent.TabletPress:
+            self._last_tablet_pressure = pressure
             hit = self._hit_box(ip)
             if hit >= 0 and bool(e.modifiers() & Qt.ControlModifier):
                 self._ink_pending_mask_idx = hit
@@ -114,6 +115,7 @@ class CanvasInteractionMixin:
             return True
 
         if et == QEvent.TabletMove:
+            self._last_tablet_pressure = pressure
             if self._ink_pending_mask_idx >= 0:
                 if self._start_pending_mask_ink_if_needed(sp, ip, input_kind="tablet"):
                     e.accept()
@@ -486,16 +488,37 @@ class CanvasInteractionMixin:
         self._ink_last_mid = p0
         self._ink_current_stable_path.moveTo(p0)
         self._ink_current_path.moveTo(p0)
+        
+        try:
+            from services.pen_profiler import pen_profiler
+            pressure = float(getattr(self, "_last_tablet_pressure", 1.0) or 1.0)
+            pen_profiler.record_press(
+                ip.x(), ip.y(),
+                pressure=pressure,
+                input_kind=input_kind,
+                canvas_name="OcclusionCanvas",
+                device_type="stylus" if input_kind == "tablet" else "mouse"
+            )
+        except Exception:
+            pass
 
     def _ink_move(self, ip):
         if not self._ink_current:
             return
+        
+        calc_t0 = time.perf_counter()
+        pressure = float(getattr(self, "_last_tablet_pressure", 1.0) or 1.0)
         
         # Distance filter (ignore micro-jitter < 1.5px)
         last_ip = self._ink_current[-1]
         dx = ip.x() - last_ip.x()
         dy = ip.y() - last_ip.y()
         if dx * dx + dy * dy < 2.25:  # 1.5 pixels threshold -> squared distance is 2.25
+            try:
+                from services.pen_profiler import pen_profiler
+                pen_profiler.record_move(ip.x(), ip.y(), pressure=pressure, accepted=False)
+            except Exception:
+                pass
             return
 
         self._ink_current.append(ip)
@@ -523,6 +546,13 @@ class CanvasInteractionMixin:
             self._ink_current_stable_path.lineTo(mid)
             self._ink_current_path = seg
             
+            path_calc_ms = (time.perf_counter() - calc_t0) * 1000.0
+            try:
+                from services.pen_profiler import pen_profiler
+                pen_profiler.record_move(ip.x(), ip.y(), pressure=pressure, accepted=True, path_calc_ms=path_calc_ms)
+            except Exception:
+                pass
+
             xs = [p0.x(), mid.x(), p1.x()]
             ys = [p0.y(), mid.y(), p1.y()]
             dirty = QRect(
@@ -550,6 +580,13 @@ class CanvasInteractionMixin:
             self._ink_current_stable_path.quadTo(p_prev, mid)
             self._ink_current_path = seg
             
+            path_calc_ms = (time.perf_counter() - calc_t0) * 1000.0
+            try:
+                from services.pen_profiler import pen_profiler
+                pen_profiler.record_move(ip.x(), ip.y(), pressure=pressure, accepted=True, path_calc_ms=path_calc_ms)
+            except Exception:
+                pass
+
             dirty = QRect(
                 int(math.floor(min(xs) - pen_pad)),
                 int(math.floor(min(ys) - pen_pad)),
@@ -562,6 +599,13 @@ class CanvasInteractionMixin:
         self.update()
 
     def _ink_release(self):
+        try:
+            from services.pen_profiler import pen_profiler
+            last_pt = self._ink_current[-1] if len(self._ink_current) >= 2 else QPointF(0, 0)
+            pen_profiler.record_release(last_pt.x(), last_pt.y())
+        except Exception:
+            pass
+
         if len(self._ink_current) >= 2:
             self._push_ink_undo()
             if not hasattr(self, "_stroke_seq"):
