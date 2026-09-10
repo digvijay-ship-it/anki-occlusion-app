@@ -1537,6 +1537,7 @@ class HomeScreen(QWidget):
         _on_batch_done=None,
         state_to_restore=None,
         is_practice=False,
+        is_new_only=False,
         initial_idx: int = 0,
         order_mode: str = "default",
         initial_session_done=None,
@@ -1559,6 +1560,7 @@ class HomeScreen(QWidget):
             parent=self,
             state_to_restore=state_to_restore,
             is_practice=is_practice,
+            is_new_only=is_new_only,
             initial_idx=initial_idx,
             order_mode=order_mode,
             initial_session_done=initial_session_done,
@@ -1599,6 +1601,8 @@ class HomeScreen(QWidget):
                     "deleted_ids": set(rev._deleted_ids),
                     "order_mode": getattr(rev, "_order_mode", "default"),
                     "batch": self._current_sequential_group,
+                    "is_practice": getattr(rev, "is_practice", False),
+                    "is_new_only": getattr(rev, "is_new_only", False),
                     "session_target_done": self._sequential_session_done,
                     "session_alerts_silenced": self._sequential_alerts_silenced,
                 }
@@ -1638,10 +1642,14 @@ class HomeScreen(QWidget):
             if split is None:
                 return
             self._pre_review_sizes = split.sizes()
+            split.replaceWidget(1, rev)
+            self._active_review = rev
+            self.deck_view.hide()
             self.deck_tree.hide()
+            if getattr(self, "_cache_widget", None):
+                self._cache_widget.hide()
             self._top_bar.hide()
             self.window().statusBar().hide()
-            split.replaceWidget(1, rev)
             split.setSizes([0, split.width(), 0])
 
         rev.show()
@@ -1652,6 +1660,7 @@ class HomeScreen(QWidget):
         groups,
         data,
         is_practice=False,
+        is_new_only=False,
         order_mode: str = "default",
         default_daily_target=None,
         default_session_target=None,
@@ -1667,6 +1676,7 @@ class HomeScreen(QWidget):
                 all_cards,
                 data,
                 is_practice=is_practice,
+                is_new_only=is_new_only,
                 order_mode="least_mature",
                 default_daily_target=default_daily_target,
                 default_session_target=default_session_target,
@@ -1679,6 +1689,7 @@ class HomeScreen(QWidget):
         self._current_sequential_group = None
         self._sequential_data = data
         self._sequential_is_practice = bool(is_practice)
+        self._sequential_is_new_only = bool(is_new_only)
         self._sequential_order_mode = str(order_mode or "default")
         self._sequential_session_done = None
         self._sequential_alerts_silenced = False
@@ -1727,6 +1738,7 @@ class HomeScreen(QWidget):
                 data,
                 _on_batch_done=_on_done,
                 is_practice=self._sequential_is_practice,
+                is_new_only=self._sequential_is_new_only,
                 order_mode=self._sequential_order_mode,
                 initial_session_done=getattr(self, "_sequential_session_done", None),
                 initial_silenced=getattr(self, "_sequential_alerts_silenced", False),
@@ -1769,6 +1781,7 @@ class HomeScreen(QWidget):
             _on_batch_done=self._sequential_on_done,
             state_to_restore=prev_state,
             is_practice=prev_state.get("is_practice", getattr(self, "_sequential_is_practice", False)),
+            is_new_only=prev_state.get("is_new_only", getattr(self, "_sequential_is_new_only", False)),
             initial_session_done=self._sequential_session_done,
             initial_silenced=self._sequential_alerts_silenced,
             default_daily_target=getattr(self, "_sequential_default_daily_target", None),

@@ -212,6 +212,53 @@ def count_due_units_in_card(card):
     return due_units
 
 
+def count_new_units_in_card(card):
+    if card.get("is_formula", False) or card.get("is_paused", False) or card.get("suspended", False):
+        return 0
+    boxes = card.get("boxes", [])
+    if not boxes:
+        is_new = (
+            int(card.get("reviews", 0) or 0) == 0
+            and int(card.get("sm2_repetitions", 0) or 0) == 0
+            and card.get("sched_state", "new") == "new"
+            and card.get("sm2_last_quality", -1) == -1
+        )
+        return 1 if is_new else 0
+
+    seen_groups = set()
+    new_units = 0
+    for box in boxes:
+        gid = box.get("group_id", "")
+        if gid:
+            if gid in seen_groups:
+                continue
+            seen_groups.add(gid)
+        is_new = (
+            int(box.get("reviews", 0) or 0) == 0
+            and int(box.get("sm2_repetitions", 0) or 0) == 0
+            and box.get("sched_state", "new") == "new"
+            and box.get("sm2_last_quality", -1) == -1
+        )
+        if is_new:
+            new_units += 1
+    return new_units
+
+
+def count_deck_new_units(deck, all_decks=None):
+    if not deck:
+        return 0
+    from data_manager import is_deck_effective_paused
+    all_d = all_decks or []
+    if is_deck_effective_paused(deck, all_d):
+        return 0
+    total = 0
+    for card in deck.get("cards", []):
+        total += count_new_units_in_card(card)
+    for child in deck.get("children", []):
+        total += count_deck_new_units(child, all_d)
+    return total
+
+
 def build_deck_rollups(decks):
     global _DECK_STATS_CACHE, _CACHE_DATE, _CACHE_FINGERPRINT, _CACHE_REF
 
@@ -235,31 +282,36 @@ def build_deck_rollups(decks):
         total_cards = {}
         due_cards = {}
         due_units = {}
+        new_units = {}
 
         def _walk(deck):
             deck_id = deck.get("_id")
             card_count = len(deck.get("cards", []))
             due_card_count = 0
             due_unit_count = 0
+            new_unit_count = 0
             is_paused = bool(deck.get("is_paused", False))
 
             for card in deck.get("cards", []):
                 if card_has_due_today(card):
                     due_card_count += 1
                 due_unit_count += count_due_units_in_card(card)
+                new_unit_count += count_new_units_in_card(card)
 
             for child in deck.get("children", []):
-                child_cards, child_due_cards, child_due_units = _walk(child)
+                child_cards, child_due_cards, child_due_units, child_new_units = _walk(child)
                 card_count += child_cards
                 due_card_count += child_due_cards
                 due_unit_count += child_due_units
+                new_unit_count += child_new_units
 
             if deck_id is not None:
                 total_cards[deck_id] = card_count
                 due_cards[deck_id] = due_card_count
                 due_units[deck_id] = due_unit_count
+                new_units[deck_id] = new_unit_count
 
-            return card_count, due_card_count, due_unit_count
+            return card_count, due_card_count, due_unit_count, new_unit_count
 
         for deck in decks:
             _walk(deck)
@@ -268,6 +320,7 @@ def build_deck_rollups(decks):
             "total_cards": total_cards,
             "due_cards": due_cards,
             "due_units": due_units,
+            "new_units": new_units,
         }
         _CACHE_DATE = today
         _CACHE_FINGERPRINT = current_ref if not is_store_decks else None

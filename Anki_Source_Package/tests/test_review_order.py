@@ -197,6 +197,7 @@ class TestReviewOrder(unittest.TestCase):
             [c1, c2],
             {},
             is_practice=True,
+            is_new_only=False,
             order_mode="least_mature",
             default_daily_target=None,
             default_session_target=None,
@@ -295,6 +296,53 @@ class TestReviewOrder(unittest.TestCase):
             reviewed_cards = args[0]
             self.assertEqual(len(reviewed_cards), 1)
             self.assertEqual(reviewed_cards[0]["id"], "c_due")
+
+    def test_count_deck_new_units(self):
+        from perf_utils import count_deck_new_units, count_new_units_in_card
+
+        c1 = {
+            "id": "c1",
+            "boxes": [
+                {"box_id": "b1", "sched_state": "new", "reviews": 0, "sm2_last_quality": -1},
+                {"box_id": "b2", "sched_state": "review", "reviews": 2, "sm2_last_quality": 4},
+                {"box_id": "b3", "sched_state": "new", "reviews": 0, "sm2_last_quality": -1, "group_id": "g1"},
+                {"box_id": "b4", "sched_state": "new", "reviews": 0, "sm2_last_quality": -1, "group_id": "g1"},
+            ]
+        }
+        # b1 is 1 new unit, b2 is reviewed (0), b3+b4 are 1 grouped new unit -> total 2 new units
+        self.assertEqual(count_new_units_in_card(c1), 2)
+
+        c_text = {"id": "c_text", "sched_state": "new", "reviews": 0, "sm2_last_quality": -1, "boxes": []}
+        self.assertEqual(count_new_units_in_card(c_text), 1)
+
+        parent_deck = {
+            "_id": 100,
+            "name": "Math",
+            "cards": [],
+            "children": [
+                {"_id": 101, "name": "Sub1", "cards": [c1]},
+                {"_id": 102, "name": "Sub2", "cards": [c_text]},
+            ]
+        }
+        all_decks = [parent_deck]
+        self.assertEqual(count_deck_new_units(parent_deck, all_decks), 3)
+
+    def test_review_new_cards_passes_is_new_only(self):
+        c1 = {"id": "c1", "sched_state": "new", "reviews": 0, "sm2_last_quality": -1, "boxes": []}
+        deck = {"_id": "sub_d", "name": "Trig", "cards": [c1]}
+
+        dv = DeckView()
+        dv.deck = deck
+        dv._data = {"decks": [deck]}
+
+        with patch.object(dv, "_prompt_selective_cards", return_value=[c1]), \
+             patch.object(dv, "_start_review") as mock_start_review:
+            dv._review_new_cards()
+
+            mock_start_review.assert_called_once()
+            args, kwargs = mock_start_review.call_args
+            self.assertTrue(kwargs.get("is_new_only", False))
+            self.assertFalse(kwargs.get("is_practice", True))
 
 
 if __name__ == "__main__":

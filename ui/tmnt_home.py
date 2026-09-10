@@ -3105,8 +3105,9 @@ class TMNTMainContent(DeckView):
         self.btn_all.setEnabled(has_reviewed_due)
         if hasattr(self, "btn_practice") and self.btn_practice:
             self.btn_practice.setEnabled(has_any_cards)
-        new_groups = self._collect_new_by_pdf(self.deck) if has_deck else []
-        new_count = sum(len(g) for g in new_groups)
+        from perf_utils import count_deck_new_units
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
+        new_count = count_deck_new_units(self.deck, all_decks) if has_deck else 0
         if hasattr(self, "banner") and hasattr(self.banner, "set_new_cards_count"):
             self.banner.set_new_cards_count(new_count)
 

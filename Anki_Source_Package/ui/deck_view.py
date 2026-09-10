@@ -1503,8 +1503,9 @@ class DeckView(QWidget):
         self.stat_battles.set_value(total_rev)
         if hasattr(self, "btn_practice") and self.btn_practice:
             self.btn_practice.setEnabled(len(all_cards) > 0)
-        new_groups = self._collect_new_by_pdf(self.deck) if self.deck else []
-        new_count = sum(len(g) for g in new_groups)
+        from perf_utils import count_deck_new_units
+        all_decks = self._data.get("decks", []) if getattr(self, "_data", None) else []
+        new_count = count_deck_new_units(self.deck, all_decks) if self.deck else 0
         if hasattr(self, "btn_practice_new"):
             self.btn_practice_new.setText(f"✨ Review New ({new_count})")
             self.btn_practice_new.setEnabled(new_count > 0)
@@ -2097,12 +2098,18 @@ class DeckView(QWidget):
         boxes = card.get("boxes", [])
         if not boxes:
             return (
-                card.get("reviews", 0) == 0
-                and card.get("sm2_repetitions", 0) == 0
+                int(card.get("reviews", 0) or 0) == 0
+                and int(card.get("sm2_repetitions", 0) or 0) == 0
                 and card.get("sched_state", "new") == "new"
+                and card.get("sm2_last_quality", -1) == -1
             )
         for box in boxes:
-            if box.get("reviews", 0) == 0 and box.get("sched_state", "new") == "new":
+            if (
+                int(box.get("reviews", 0) or 0) == 0
+                and int(box.get("sm2_repetitions", 0) or 0) == 0
+                and box.get("sched_state", "new") == "new"
+                and box.get("sm2_last_quality", -1) == -1
+            ):
                 return True
         return False
 
@@ -2144,20 +2151,6 @@ class DeckView(QWidget):
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
         if self.deck.get("children"):
-            if order_mode == "least_mature":
-                groups = self._collect_new_by_pdf(self.deck)
-                if not groups:
-                    QMessageBox.information(
-                        self,
-                        "No New Cards",
-                        "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।"
-                    )
-                    return
-                all_cards = [c for grp in groups for c in grp]
-                filtered_cards = self._prompt_selective_cards(all_cards, is_due=False)
-                if filtered_cards is not None and len(filtered_cards) > 0:
-                    self._start_review(filtered_cards, is_practice=False, order_mode="least_mature")
-                return
             groups = self._collect_new_by_pdf(self.deck)
             if not groups:
                 QMessageBox.information(
@@ -2165,6 +2158,12 @@ class DeckView(QWidget):
                     "No New Cards",
                     "इस डेक में कोई नया कार्ड नहीं है! सभी कार्ड्स पहले ही पढ़े जा चुके हैं।"
                 )
+                return
+            if order_mode == "least_mature":
+                all_cards = [c for grp in groups for c in grp]
+                filtered_cards = self._prompt_selective_cards(all_cards, is_due=False)
+                if filtered_cards is not None and len(filtered_cards) > 0:
+                    self._start_review(filtered_cards, is_practice=False, is_new_only=True, order_mode="least_mature")
                 return
             home = self._find_home()
             if home:
@@ -2177,6 +2176,7 @@ class DeckView(QWidget):
                     groups,
                     self._data,
                     is_practice=False,
+                    is_new_only=True,
                     order_mode=order_mode,
                     default_daily_target=daily_limit,
                     default_session_target=session_limit,
@@ -2195,7 +2195,7 @@ class DeckView(QWidget):
                 return
             filtered_cards = self._prompt_selective_cards(cards, is_due=False)
             if filtered_cards is not None and len(filtered_cards) > 0:
-                self._start_review(filtered_cards, is_practice=False, order_mode=order_mode)
+                self._start_review(filtered_cards, is_practice=False, is_new_only=True, order_mode=order_mode)
 
     _practice_new_cards = _review_new_cards
 
@@ -2206,7 +2206,7 @@ class DeckView(QWidget):
         self._practice_deck(order_mode="least_mature")
 
     @trace_perf
-    def _start_review(self, cards, is_practice=False, order_mode=None):
+    def _start_review(self, cards, is_practice=False, is_new_only=False, order_mode=None):
         home = self._find_home()
         if home:
             if order_mode is None:
@@ -2220,6 +2220,7 @@ class DeckView(QWidget):
                 cards,
                 self._data,
                 is_practice=is_practice,
+                is_new_only=is_new_only,
                 order_mode=order_mode,
                 default_daily_target=daily_limit,
                 default_session_target=session_limit,

@@ -2084,6 +2084,7 @@ class ReviewScreen(QWidget):
         parent=None,
         state_to_restore=None,
         is_practice=False,
+        is_new_only=False,
         initial_idx: int = 0,
         order_mode: str = "default",
         initial_session_done: int = None,
@@ -2103,6 +2104,8 @@ class ReviewScreen(QWidget):
 
         self.mgr = ReviewSessionManager(self)
         self.mgr.is_practice = bool(is_practice)
+        self.is_practice = bool(is_practice)
+        self.is_new_only = bool(is_new_only)
         self._initial_idx = int(initial_idx or 0)
         self._target_card_id = target_card_id
         self._target_box_idx = target_box_idx
@@ -2325,6 +2328,8 @@ class ReviewScreen(QWidget):
             self._deleted_ids = state_to_restore["deleted_ids"]
             if "order_mode" in state_to_restore:
                 self._order_mode = state_to_restore["order_mode"]
+            if "is_new_only" in state_to_restore:
+                self.is_new_only = state_to_restore["is_new_only"]
         else:
             self._items = []
             self._queued_ids = set()
@@ -2346,12 +2351,19 @@ class ReviewScreen(QWidget):
                     if item_key not in seen_item_keys:
                         seen_item_keys.add(item_key)
                         sm2_init(card)
-                        if getattr(self, "_order_mode", "default") == "least_mature":
-                            is_new = (card.get("sched_state", "new") == "new" and int(card.get("reviews", 0) or 0) == 0 and card.get("sm2_last_quality", -1) == -1)
+                        is_new = (
+                            card.get("sched_state", "new") == "new"
+                            and int(card.get("reviews", 0) or 0) == 0
+                            and card.get("sm2_last_quality", -1) == -1
+                        )
+                        if getattr(self, "is_new_only", False):
+                            if not is_new:
+                                continue
+                        elif getattr(self, "_order_mode", "default") == "least_mature":
                             if is_new:
                                 continue
                         _due_result = is_due_today(card)
-                        if _due_result or getattr(self, "is_practice", False):
+                        if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False):
                             self._items.append((card, None, card))
                     continue
 
@@ -2367,12 +2379,19 @@ class ReviewScreen(QWidget):
                             item_key = (card_key, ("group", gid))
                             if item_key not in seen_item_keys:
                                 seen_item_keys.add(item_key)
-                                if getattr(self, "_order_mode", "default") == "least_mature":
-                                    is_new = (box.get("sched_state", "new") == "new" and int(box.get("reviews", 0) or 0) == 0 and box.get("sm2_last_quality", -1) == -1)
+                                is_new = (
+                                    box.get("sched_state", "new") == "new"
+                                    and int(box.get("reviews", 0) or 0) == 0
+                                    and box.get("sm2_last_quality", -1) == -1
+                                )
+                                if getattr(self, "is_new_only", False):
+                                    if not is_new:
+                                        continue
+                                elif getattr(self, "_order_mode", "default") == "least_mature":
                                     if is_new:
                                         continue
                                 _due_result = is_due_today(box)
-                                if _due_result or getattr(self, "is_practice", False):
+                                if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False):
                                     self._items.append((card, ("group", gid), box))
                                     self._queued_ids.add(gid)  # O(1) track
                     else:
@@ -2380,12 +2399,19 @@ class ReviewScreen(QWidget):
                         item_key = (card_key, box_id)
                         if item_key not in seen_item_keys:
                             seen_item_keys.add(item_key)
-                            if getattr(self, "_order_mode", "default") == "least_mature":
-                                is_new = (box.get("sched_state", "new") == "new" and int(box.get("reviews", 0) or 0) == 0 and box.get("sm2_last_quality", -1) == -1)
+                            is_new = (
+                                box.get("sched_state", "new") == "new"
+                                and int(box.get("reviews", 0) or 0) == 0
+                                and box.get("sm2_last_quality", -1) == -1
+                            )
+                            if getattr(self, "is_new_only", False):
+                                if not is_new:
+                                    continue
+                            elif getattr(self, "_order_mode", "default") == "least_mature":
                                 if is_new:
                                     continue
                             _due_result = is_due_today(box)
-                            if _due_result or getattr(self, "is_practice", False):
+                            if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False):
                                 self._items.append((card, i, box))
                                 self._queued_ids.add(box_id)  # O(1) track
 
@@ -2413,7 +2439,7 @@ class ReviewScreen(QWidget):
                     c_order = 0
                 orig_idx = item_order_map.get(id(item), 0)
 
-                if getattr(self, "_order_mode", "default") == "least_mature":
+                if getattr(self, "_order_mode", "default") == "least_mature" and not getattr(self, "is_new_only", False):
                     mat = get_card_maturity_score(sm2_obj)
                     return (mat, c_order if c_order > 0 else 999999, orig_idx)
 
