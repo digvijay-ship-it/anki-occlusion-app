@@ -1925,9 +1925,23 @@ Output ONLY a strictly valid JSON object matching this exact structure:
         self._updated_count = len(updated_cards)
         self._skipped_duplicates_count = skipped_count
 
-        # Store source folder path on target deck for future 1-click sync
-        if getattr(self, "_selected_folder_path", None) and default_target_deck:
-            default_target_deck["source_folder_path"] = self._selected_folder_path
+        # Store source file and folder paths on all touched target decks for future 1-click sync
+        file_path = self.inp_file_path.text().strip() if hasattr(self, "inp_file_path") else ""
+        folder_path = getattr(self, "_selected_folder_path", None) or (self.inp_folder_path.text().strip() if hasattr(self, "inp_folder_path") else "")
+        
+        decks_to_link = set()
+        if default_target_deck and default_target_deck.get("_id") is not None:
+            decks_to_link.add(default_target_deck.get("_id"))
+        decks_to_link.update(target_deck_ids)
+
+        for did in decks_to_link:
+            d = find_deck_by_id(did, self._data.get("decks", []))
+            if d:
+                if file_path and os.path.isfile(file_path):
+                    d["source_file_path"] = os.path.normpath(file_path).replace("\\", "/")
+                    d["source_folder_path"] = os.path.dirname(os.path.normpath(file_path)).replace("\\", "/")
+                elif folder_path and os.path.isdir(folder_path):
+                    d["source_folder_path"] = os.path.normpath(folder_path).replace("\\", "/")
 
         from perf_utils import invalidate_deck_stats
         invalidate_deck_stats()
