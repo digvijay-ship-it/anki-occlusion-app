@@ -174,6 +174,8 @@ def card_has_due_today(card, exclude_new=False):
         return False
     boxes = card.get("boxes", [])
     if not boxes:
+        if card.get("pdf_path") or card.get("image_path"):
+            return False
         if exclude_new and (card.get("sched_state", "new") == "new" and int(card.get("reviews", 0) or 0) == 0 and card.get("sm2_last_quality", -1) == -1):
             return False
         return is_due_today(card)
@@ -197,6 +199,8 @@ def count_due_units_in_card(card):
         return 0
     boxes = card.get("boxes", [])
     if not boxes:
+        if card.get("pdf_path") or card.get("image_path"):
+            return 0
         return 1 if is_due_today(card) else 0
 
     seen_groups = set()
@@ -217,6 +221,8 @@ def count_new_units_in_card(card):
         return 0
     boxes = card.get("boxes", [])
     if not boxes:
+        if card.get("pdf_path") or card.get("image_path"):
+            return 0
         is_new = (
             int(card.get("reviews", 0) or 0) == 0
             and int(card.get("sm2_repetitions", 0) or 0) == 0

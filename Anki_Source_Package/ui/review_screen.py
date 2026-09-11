@@ -1123,11 +1123,12 @@ class TargetToastBanner(QFrame):
     closed = pyqtSignal()
     silenced = pyqtSignal()
 
-    def __init__(self, parent=None, target=50, done=0, duration_sec=None, is_daily=False):
+    def __init__(self, parent=None, target=50, done=0, duration_sec=None, is_daily=False, limit_type="total"):
         super().__init__(parent)
         self.target = target
         self.done = done
         self.is_daily = is_daily
+        self.limit_type = limit_type
         self.remaining_sec = None
         self.setMinimumWidth(520)
         self.setMaximumWidth(780)
@@ -1203,10 +1204,11 @@ class TargetToastBanner(QFrame):
 
         self._apply_styling_and_content()
 
-    def update_data(self, target=50, done=0, is_daily=False):
+    def update_data(self, target=50, done=0, is_daily=False, limit_type="total"):
         self.target = target
         self.done = done
         self.is_daily = is_daily
+        self.limit_type = limit_type
         self._apply_styling_and_content()
         self.adjustSize()
 
@@ -1215,6 +1217,7 @@ class TargetToastBanner(QFrame):
         diff = max(0, self.done - self.target)
 
         if self.is_daily:
+            ltype = getattr(self, "limit_type", "total")
             if is_exceeded:
                 self.setStyleSheet("""
                     QFrame#TargetToastBanner {
@@ -1224,12 +1227,25 @@ class TargetToastBanner(QFrame):
                     }
                 """)
                 self.lbl_icon.setText("🛑")
-                self.lbl_title.setText(f"🛑 डेली लिमिट पार हो गई है! ({self.done}/{self.target} कार्ड्स)")
+                if ltype == "new":
+                    self.lbl_title.setText(f"🛑 नए कार्ड्स की लिमिट पार! ({self.done}/{self.target} कार्ड्स)")
+                    self.lbl_msg.setText(
+                        "आपने आज नए कार्ड्स की निर्धारित दैनिक लिमिट पार कर ली है! ओवर-बर्नआउट से बचने के लिए थोड़ा ब्रेक लें, या ✕ दबाकर पढ़ाई जारी रखें।"
+                    )
+                    self.lbl_countdown.setText(f"🌱 NEW EXCEEDED (+{diff})")
+                elif ltype == "review":
+                    self.lbl_title.setText(f"🛑 रिवीजन लिमिट पार हो गई है! ({self.done}/{self.target} कार्ड्स)")
+                    self.lbl_msg.setText(
+                        "आपने आज रिवीजन (Due) कार्ड्स की निर्धारित दैनिक लिमिट पार कर ली है! थोड़ा ब्रेक लें, या ✕ दबाकर पढ़ाई जारी रखें।"
+                    )
+                    self.lbl_countdown.setText(f"📅 DUE EXCEEDED (+{diff})")
+                else:
+                    self.lbl_title.setText(f"🛑 डेली लिमिट पार हो गई है! ({self.done}/{self.target} कार्ड्स)")
+                    self.lbl_msg.setText(
+                        "आपने आज की निर्धारित डेली लिमिट पार कर ली है! ओवर-बर्नआउट से बचने के लिए थोड़ा ब्रेक लें, या ✕ दबाकर पढ़ाई जारी रखें।"
+                    )
+                    self.lbl_countdown.setText(f"⚠️ LIMIT EXCEEDED (+{diff})")
                 self.lbl_title.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 13.5px; background: transparent;")
-                self.lbl_msg.setText(
-                    "आपने आज की निर्धारित डेली लिमिट पार कर ली है! ओवर-बर्नआउट से बचने के लिए थोड़ा ब्रेक लें, या ✕ दबाकर पढ़ाई जारी रखें।"
-                )
-                self.lbl_countdown.setText(f"⚠️ LIMIT EXCEEDED (+{diff})")
                 self.lbl_countdown.setStyleSheet("""
                     background: rgba(255, 85, 85, 0.22);
                     color: #ff5555;
@@ -1263,12 +1279,25 @@ class TargetToastBanner(QFrame):
                     }
                 """)
                 self.lbl_icon.setText("🛑")
-                self.lbl_title.setText(f"🛑 आज का डेली टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
+                if ltype == "new":
+                    self.lbl_title.setText(f"🛑 नए कार्ड्स का डेली टारगेट पूरा! ({self.target} कार्ड्स)")
+                    self.lbl_msg.setText(
+                        "आज का नए कार्ड्स का कोटा समाप्त! ओवर-बर्नआउट से बचने के लिए थोड़ा आराम करें या ✕ दबाकर पढ़ाई जारी रखें।"
+                    )
+                    self.lbl_countdown.setText("🌱 NEW CARDS CAP")
+                elif ltype == "review":
+                    self.lbl_title.setText(f"🛑 रिवीजन का डेली टारगेट पूरा! ({self.target} कार्ड्स)")
+                    self.lbl_msg.setText(
+                        "आज का रिवीजन (Due) कोटा समाप्त! ओवर-बर्नआउट से बचने के लिए थोड़ा आराम करें या ✕ दबाकर पढ़ाई जारी रखें।"
+                    )
+                    self.lbl_countdown.setText("📅 DUE CARDS CAP")
+                else:
+                    self.lbl_title.setText(f"🛑 आज का डेली टारगेट पूरा हुआ! ({self.target} कार्ड्स)")
+                    self.lbl_msg.setText(
+                        "आज का पूरा डेली कोटा समाप्त! ओवर-बर्नआउट से बचने के लिए थोड़ा आराम करें या ✕ दबाकर पढ़ाई जारी रखें।"
+                    )
+                    self.lbl_countdown.setText("📌 DAILY CAP REACHED")
                 self.lbl_title.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 13.5px; background: transparent;")
-                self.lbl_msg.setText(
-                    "आज का पूरा डेली कोटा समाप्त! ओवर-बर्नआउट से बचने के लिए थोड़ा आराम करें या ✕ दबाकर पढ़ाई जारी रखें।"
-                )
-                self.lbl_countdown.setText("📌 DAILY CAP REACHED")
                 self.lbl_countdown.setStyleSheet("""
                     background: rgba(255, 184, 108, 0.2);
                     color: #ffb86c;
@@ -1277,6 +1306,21 @@ class TargetToastBanner(QFrame):
                     padding: 4px 10px;
                     border-radius: 4px;
                     border: 1px solid rgba(255, 184, 108, 0.6);
+                """)
+                self.btn_close.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255, 255, 255, 0.08);
+                        color: #ffb86c;
+                        font-weight: bold;
+                        font-size: 14px;
+                        border-radius: 14px;
+                        border: 1px solid rgba(255, 184, 108, 0.5);
+                    }
+                    QPushButton:hover {
+                        background: #ff5555;
+                        color: white;
+                        border: 1px solid #ff5555;
+                    }
                 """)
                 self.btn_close.setStyleSheet("""
                     QPushButton {
@@ -2090,6 +2134,8 @@ class ReviewScreen(QWidget):
         initial_session_done: int = None,
         initial_silenced: bool = False,
         default_daily_target: int = None,
+        default_daily_new_target: int = None,
+        default_daily_review_target: int = None,
         default_session_target: int = None,
         auto_exit_session: bool = None,
         deck_id: str = None,
@@ -2192,6 +2238,11 @@ class ReviewScreen(QWidget):
             saved_daily = str(settings.value("review/daily_target_goal", "") or "").strip()
             self._daily_target_goal = int(saved_daily) if (saved_daily and saved_daily.isdigit()) else 0
 
+        self._daily_new_target_goal = max(0, int(default_daily_new_target or 0))
+        self._daily_review_target_goal = max(0, int(default_daily_review_target or 0))
+        self._daily_new_done = 0
+        self._daily_review_done = 0
+
         self._session_completed_card_keys = set()
         self._daily_completed_card_keys = set()
         self._target_progress_undo_stack = []
@@ -2205,6 +2256,7 @@ class ReviewScreen(QWidget):
         self._daily_alerts_silenced = bool(initial_silenced)
 
         self._target_toast_banner = None
+        QTimer.singleShot(80, self._check_and_show_target_toast_reminder)
         from services.pdf_watcher import PdfWatcher
 
         self._pdf_watcher = PdfWatcher(self)
@@ -2342,11 +2394,13 @@ class ReviewScreen(QWidget):
             queue_t0 = time.perf_counter()
             total_boxes_seen = 0
             for card in cards:
-                boxes = card.get("boxes", [])
+                boxes = card.get("boxes") or []
                 total_boxes_seen += len(boxes)
                 card_key = id(card)
 
                 if len(boxes) == 0:
+                    if card.get("pdf_path") or card.get("image_path"):
+                        continue
                     item_key = (card_key, None)
                     if item_key not in seen_item_keys:
                         seen_item_keys.add(item_key)
@@ -4080,15 +4134,20 @@ class ReviewScreen(QWidget):
             db_today_count = 0
             if need_db_sync:
                 try:
-                    from services.activity_stats import get_deck_today_review_count, get_daily_activity_stats
+                    from services.activity_stats import get_deck_today_breakdown, get_daily_activity_stats
                     data_src = getattr(self, "_data", None)
                     if data_src is None and getattr(self, "mgr", None) is not None:
                         data_src = getattr(self.mgr, "data", None)
                     if self._deck_id or self._deck_name:
-                        db_today_count = get_deck_today_review_count(self._deck_id or self._deck_name, today_iso, data=data_src)
+                        breakdown = get_deck_today_breakdown(self._deck_id or self._deck_name, today_iso, data=data_src)
+                        self._daily_new_done = breakdown.get("new_done", 0)
+                        self._daily_review_done = breakdown.get("review_done", 0)
+                        db_today_count = breakdown.get("total_done", 0)
                     else:
                         stats = get_daily_activity_stats(today_iso, data=data_src)
                         db_today_count = int(stats.get("total", 0) or 0)
+                        self._daily_new_done = 0
+                        self._daily_review_done = db_today_count
                 except Exception:
                     db_today_count = 0
 
@@ -4348,13 +4407,26 @@ class ReviewScreen(QWidget):
             self.mgr._items = self._items
             self.mgr._rebuild_queue()
 
-    def _show_target_achieved_toast(self, is_daily: bool = False):
-        target_val = self._daily_target_goal if is_daily else self._session_target_goal
-        done_val = self._daily_reviews_done if is_daily else self._session_target_done
+    def _show_target_achieved_toast(self, is_daily: bool = False, limit_type: str = "total"):
+        if is_daily:
+            if limit_type == "new":
+                target_val = getattr(self, "_daily_new_target_goal", 0)
+                done_val = getattr(self, "_daily_new_done", 0)
+            elif limit_type == "review":
+                target_val = getattr(self, "_daily_review_target_goal", 0)
+                done_val = getattr(self, "_daily_review_done", 0)
+            else:
+                target_val = self._daily_target_goal
+                done_val = self._daily_reviews_done
+        else:
+            target_val = self._session_target_goal
+            done_val = self._session_target_done
 
         if getattr(self, "_target_toast_banner", None) is not None:
             try:
-                self._target_toast_banner.update_data(target=target_val, done=done_val, is_daily=is_daily)
+                self._target_toast_banner.update_data(
+                    target=target_val, done=done_val, is_daily=is_daily, limit_type=limit_type
+                )
                 self._reposition_target_toast()
                 self._target_toast_banner.show()
                 self._target_toast_banner.raise_()
@@ -4371,6 +4443,7 @@ class ReviewScreen(QWidget):
             target=target_val,
             done=done_val,
             is_daily=is_daily,
+            limit_type=limit_type,
         )
         self._target_toast_banner.closed.connect(self._on_target_toast_closed)
         self._target_toast_banner.silenced.connect(self._on_target_toast_silenced)
@@ -4409,9 +4482,25 @@ class ReviewScreen(QWidget):
 
     def _check_and_show_target_toast_reminder(self):
         """Checks if daily limit or session target is reached/exceeded and shows or refreshes the reminder banner."""
-        if self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal:
-            if not getattr(self, "_daily_alerts_silenced", False):
-                self._show_target_achieved_toast(is_daily=True)
+        if getattr(self, "_daily_alerts_silenced", False):
+            return
+
+        is_new_session = getattr(self, "is_new_only", False)
+
+        if (
+            is_new_session
+            and getattr(self, "_daily_new_target_goal", 0) > 0
+            and getattr(self, "_daily_new_done", 0) >= self._daily_new_target_goal
+        ):
+            self._show_target_achieved_toast(is_daily=True, limit_type="new")
+        elif (
+            not is_new_session
+            and getattr(self, "_daily_review_target_goal", 0) > 0
+            and getattr(self, "_daily_review_done", 0) >= self._daily_review_target_goal
+        ):
+            self._show_target_achieved_toast(is_daily=True, limit_type="review")
+        elif self._daily_target_goal > 0 and self._daily_reviews_done >= self._daily_target_goal:
+            self._show_target_achieved_toast(is_daily=True, limit_type="total")
         elif self._session_target_goal > 0 and self._session_target_done >= self._session_target_goal:
             if not getattr(self, "_session_alerts_silenced", False):
                 self._show_target_achieved_toast(is_daily=False)
@@ -5187,6 +5276,11 @@ class ReviewScreen(QWidget):
                     self.canvas.select_visible_only()
         sw = self.__dict__.get("_stacked_widget")
         if sw is not None and sw.currentIndex() == 2:
+            if key == Qt.Key_H and not (clean_mods & (Qt.ControlModifier | Qt.AltModifier)):
+                if self.__dict__.get("_mcq_review_widget") is not None:
+                    self._mcq_review_widget.toggle_options_hindi()
+                    e.accept()
+                    return
             if not self._rating_frame.isVisible() and self.__dict__.get("_mcq_review_widget") is not None:
                 key_map = {
                     Qt.Key_A: "A", Qt.Key_B: "B", Qt.Key_C: "C", Qt.Key_D: "D",

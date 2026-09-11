@@ -698,8 +698,79 @@ class DeckSettingsDialog(QDialog):
         cl_layout = QVBoxLayout(card_limit)
         cl_layout.setSpacing(10)
 
-        lbl_limit_title = QLabel("📅 Daily Review Target (डेली रिव्यू लिमिट):")
-        lbl_limit_title.setStyleSheet("font-size: 20px; font-weight: 800; color: #F8F8F2;")
+        # 1. Daily New Cards Limit
+        lbl_new_title = QLabel("🌱 Daily New Cards Limit (दैनिक नए कार्ड्स लिमिट):")
+        lbl_new_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #50FA7B;")
+        cl_layout.addWidget(lbl_new_title)
+
+        row_new = QHBoxLayout()
+        row_new.setSpacing(12)
+        self.inp_daily_new_limit = QLineEdit()
+        self.inp_daily_new_limit.setValidator(QIntValidator(0, 9999, self))
+        self.inp_daily_new_limit.setFixedWidth(140)
+        self.inp_daily_new_limit.setAlignment(Qt.AlignCenter)
+        curr_new = self.deck.get("daily_new_limit", 0) or 0
+        self.inp_daily_new_limit.setText(str(curr_new) if curr_new > 0 else "")
+        self.inp_daily_new_limit.setPlaceholderText("0 (Unlimited)")
+        row_new.addWidget(self.inp_daily_new_limit)
+
+        lbl_new_unit = QLabel("new cards / day (नए कार्ड्स प्रतिदिन)")
+        lbl_new_unit.setStyleSheet("font-size: 15px; font-weight: 600; color: #50FA7B;")
+        row_new.addWidget(lbl_new_unit)
+        row_new.addStretch()
+        cl_layout.addLayout(row_new)
+
+        lbl_new_desc = QLabel(
+            "प्रतिदिन अधिकतम कितने नए कार्ड्स पढ़ने हैं। 0 या खाली रखने पर Unlimited रहेगा।"
+        )
+        lbl_new_desc.setStyleSheet("font-size: 13px; color: #AAB1C4; line-height: 1.3;")
+        lbl_new_desc.setWordWrap(True)
+        cl_layout.addWidget(lbl_new_desc)
+
+        # Divider between new and review
+        div_new = QFrame()
+        div_new.setFrameShape(QFrame.HLine)
+        div_new.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 4px 0px;")
+        cl_layout.addWidget(div_new)
+
+        # 2. Daily Review / Due Limit
+        lbl_rev_title = QLabel("📅 Daily Review / Due Target (दैनिक रिवीजन लिमिट):")
+        lbl_rev_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #FFB86C;")
+        cl_layout.addWidget(lbl_rev_title)
+
+        row_rev = QHBoxLayout()
+        row_rev.setSpacing(12)
+        self.inp_daily_review_limit = QLineEdit()
+        self.inp_daily_review_limit.setValidator(QIntValidator(0, 9999, self))
+        self.inp_daily_review_limit.setFixedWidth(140)
+        self.inp_daily_review_limit.setAlignment(Qt.AlignCenter)
+        curr_rev = self.deck.get("daily_review_limit", 0) or 0
+        self.inp_daily_review_limit.setText(str(curr_rev) if curr_rev > 0 else "")
+        self.inp_daily_review_limit.setPlaceholderText("0 (Unlimited)")
+        row_rev.addWidget(self.inp_daily_review_limit)
+
+        lbl_rev_unit = QLabel("due cards / day (ड्यू कार्ड्स प्रतिदिन)")
+        lbl_rev_unit.setStyleSheet("font-size: 15px; font-weight: 600; color: #FFB86C;")
+        row_rev.addWidget(lbl_rev_unit)
+        row_rev.addStretch()
+        cl_layout.addLayout(row_rev)
+
+        lbl_rev_desc = QLabel(
+            "प्रतिदिन अधिकतम कितने Due / रिवीजन कार्ड्स हल करने हैं। 0 या खाली रखने पर Unlimited रहेगा।"
+        )
+        lbl_rev_desc.setStyleSheet("font-size: 13px; color: #AAB1C4; line-height: 1.3;")
+        lbl_rev_desc.setWordWrap(True)
+        cl_layout.addWidget(lbl_rev_desc)
+
+        # Divider between review and total cap
+        div_cap = QFrame()
+        div_cap.setFrameShape(QFrame.HLine)
+        div_cap.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 4px 0px;")
+        cl_layout.addWidget(div_cap)
+
+        # 3. Overall Total Daily Cap
+        lbl_limit_title = QLabel("🎯 Total Daily Cap (कुल दैनिक सीमा - New + Due):")
+        lbl_limit_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #F8F8F2;")
         cl_layout.addWidget(lbl_limit_title)
 
         input_row = QHBoxLayout()
@@ -711,20 +782,19 @@ class DeckSettingsDialog(QDialog):
         self.inp_daily_limit.setAlignment(Qt.AlignCenter)
         current_limit = self.deck.get("daily_limit", 0)
         self.inp_daily_limit.setText(str(current_limit) if current_limit > 0 else "")
-        self.inp_daily_limit.setPlaceholderText("0")
+        self.inp_daily_limit.setPlaceholderText("0 (Unlimited)")
         input_row.addWidget(self.inp_daily_limit)
 
-        lbl_unit = QLabel("cards / day (कार्ड्स प्रतिदिन)")
-        lbl_unit.setStyleSheet("font-size: 18px; font-weight: 600; color: #50FA7B;")
+        lbl_unit = QLabel("total cards / day (कुल कार्ड्स प्रतिदिन)")
+        lbl_unit.setStyleSheet("font-size: 15px; font-weight: 600; color: #8BE9FD;")
         input_row.addWidget(lbl_unit)
         input_row.addStretch()
         cl_layout.addLayout(input_row)
 
         lbl_limit_desc = QLabel(
-            "इस डेक से प्रतिदिन कितने कार्ड्स रिव्यू करने हैं। 0 या खाली रखने पर Unlimited रहेगा। "
-            "अगर लिमिट पूरी हो जाती है, तो भी आप अलर्ट साइलेंट करके पढ़ाई जारी रख सकते हैं।"
+            "इस डेक से प्रतिदिन अधिकतम कुल कार्ड्स (New + Due)। 0 या खाली रखने पर Unlimited रहेगा।"
         )
-        lbl_limit_desc.setStyleSheet("font-size: 14px; color: #AAB1C4; line-height: 1.4;")
+        lbl_limit_desc.setStyleSheet("font-size: 13px; color: #AAB1C4; line-height: 1.3;")
         lbl_limit_desc.setWordWrap(True)
         cl_layout.addWidget(lbl_limit_desc)
 
@@ -827,6 +897,20 @@ class DeckSettingsDialog(QDialog):
         main_layout.addLayout(btn_row)
 
     def _save_settings(self):
+        new_text = self.inp_daily_new_limit.text().strip()
+        try:
+            new_val = int(new_text) if new_text else 0
+        except ValueError:
+            new_val = 0
+        daily_new_val = max(0, new_val)
+
+        rev_text = self.inp_daily_review_limit.text().strip()
+        try:
+            rev_val = int(rev_text) if rev_text else 0
+        except ValueError:
+            rev_val = 0
+        daily_review_val = max(0, rev_val)
+
         text = self.inp_daily_limit.text().strip()
         try:
             val = int(text) if text else 0
@@ -849,6 +933,8 @@ class DeckSettingsDialog(QDialog):
         from data_manager import is_deck_effective_paused, cascade_deck_pause
         orig_paused = is_deck_effective_paused(self.deck, all_decks)
 
+        self.deck["daily_new_limit"] = daily_new_val
+        self.deck["daily_review_limit"] = daily_review_val
         self.deck["daily_limit"] = limit_val
         self.deck["session_limit"] = session_val
         self.deck["auto_exit_session"] = auto_exit_val

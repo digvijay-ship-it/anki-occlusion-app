@@ -1543,6 +1543,8 @@ class HomeScreen(QWidget):
         initial_session_done=None,
         initial_silenced=False,
         default_daily_target=None,
+        default_daily_new_target=None,
+        default_daily_review_target=None,
         default_session_target=None,
         auto_exit_session=None,
         deck_id=None,
@@ -1566,6 +1568,8 @@ class HomeScreen(QWidget):
             initial_session_done=initial_session_done,
             initial_silenced=initial_silenced,
             default_daily_target=default_daily_target,
+            default_daily_new_target=default_daily_new_target,
+            default_daily_review_target=default_daily_review_target,
             default_session_target=default_session_target,
             auto_exit_session=auto_exit_session,
             deck_id=deck_id,
@@ -1663,6 +1667,8 @@ class HomeScreen(QWidget):
         is_new_only=False,
         order_mode: str = "default",
         default_daily_target=None,
+        default_daily_new_target=None,
+        default_daily_review_target=None,
         default_session_target=None,
         auto_exit_session=None,
         deck_id=None,
@@ -1679,6 +1685,8 @@ class HomeScreen(QWidget):
                 is_new_only=is_new_only,
                 order_mode="least_mature",
                 default_daily_target=default_daily_target,
+                default_daily_new_target=default_daily_new_target,
+                default_daily_review_target=default_daily_review_target,
                 default_session_target=default_session_target,
                 auto_exit_session=auto_exit_session,
                 deck_id=deck_id,
@@ -1694,6 +1702,8 @@ class HomeScreen(QWidget):
         self._sequential_session_done = None
         self._sequential_alerts_silenced = False
         self._sequential_default_daily_target = default_daily_target
+        self._sequential_default_daily_new_target = default_daily_new_target
+        self._sequential_default_daily_review_target = default_daily_review_target
         self._sequential_default_session_target = default_session_target
         self._sequential_auto_exit_session = auto_exit_session
         self._sequential_deck_id = deck_id
@@ -1743,6 +1753,8 @@ class HomeScreen(QWidget):
                 initial_session_done=getattr(self, "_sequential_session_done", None),
                 initial_silenced=getattr(self, "_sequential_alerts_silenced", False),
                 default_daily_target=getattr(self, "_sequential_default_daily_target", None),
+                default_daily_new_target=getattr(self, "_sequential_default_daily_new_target", None),
+                default_daily_review_target=getattr(self, "_sequential_default_daily_review_target", None),
                 default_session_target=getattr(self, "_sequential_default_session_target", None),
                 auto_exit_session=getattr(self, "_sequential_auto_exit_session", None),
                 deck_id=getattr(self, "_sequential_deck_id", None),

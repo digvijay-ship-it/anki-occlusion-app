@@ -117,6 +117,8 @@ class ReviewSessionManager:
         # answerable even if the app is force-closed before the next autosave.
         _now = datetime.now().isoformat(timespec="seconds")
         sm2_obj["reviewed_at"] = _now
+        if not sm2_obj.get("first_reviewed_at"):
+            sm2_obj["first_reviewed_at"] = _now
         sm2_obj["last_quality"] = (
             quality  # convenience alias (sm2_last_quality is SM-2 internal)
         )
@@ -131,14 +133,20 @@ class ReviewSessionManager:
                     sched_update(box, quality)
                     # Propagate timestamp to every sibling so metadata is consistent
                     box["reviewed_at"] = _now
+                    if not box.get("first_reviewed_at"):
+                        box["first_reviewed_at"] = _now
                     box["last_quality"] = quality
 
         if box_idx is None:
             card["reviews"] = sm2_obj.get("reviews", 0)
             card["reviewed_at"] = _now  # card-level convenience field for no-box cards
+            if not card.get("first_reviewed_at"):
+                card["first_reviewed_at"] = _now
 
         # Always stamp the parent card with the latest review time
         card["last_reviewed_at"] = _now
+        if not card.get("first_reviewed_at"):
+            card["first_reviewed_at"] = _now
         if self.rs and getattr(self.rs, "_stimer", None):
             pdf_path = card.get("pdf_path", "")
             if pdf_path:

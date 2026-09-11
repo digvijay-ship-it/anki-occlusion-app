@@ -45,11 +45,16 @@ class AutoFitTextBrowser(ZoomableTextBrowser):
 
 class OptionButton(QPushButton):
     """Interactive Exam Option Button with Letter Badge and Status Pill."""
+    badge_clicked = pyqtSignal(str)
+    option_clicked = pyqtSignal(object)
+
     def __init__(self, label: str, text: str, index: int = 0, parent=None):
         super().__init__(parent)
         self.option_label = label  # e.g., 'A', 'B', 'C', 'D'
         self.option_text = text
         self.option_index = index
+        self.hindi_text = ""
+        self._show_hindi = False
         self.is_correct = False
         self.is_selected = False
         self.stat_text = ""
@@ -70,6 +75,40 @@ class OptionButton(QPushButton):
         self.setMinimumHeight(max(40, int(font_size * 2.4)))
         self._refresh_badge_and_text_styles()
 
+    def set_hindi_text(self, text: str):
+        text = (text or "").strip()
+        if text and text in self.option_text:
+            self.hindi_text = ""
+        else:
+            self.hindi_text = text
+        self._update_text_display()
+        if self.hindi_text:
+            self.setToolTip(f"Click to reveal Hindi meaning • Click [{self.option_label}] to select")
+        else:
+            self.setToolTip(f"Click to select Option {self.option_label}")
+
+    def show_hindi(self, show: bool = True):
+        self._show_hindi = bool(show)
+        self._update_text_display()
+
+    def toggle_hindi(self):
+        if getattr(self, "hindi_text", ""):
+            self.show_hindi(not getattr(self, "_show_hindi", False))
+
+    def _update_text_display(self):
+        if not hasattr(self, "lbl_text"):
+            return
+        if getattr(self, "_show_hindi", False) and getattr(self, "hindi_text", ""):
+            h_color = "#5A8F9E" if getattr(self, "_is_faded", False) else "#67E8F9"
+            raw_text = self.option_text
+            clean_text = raw_text if ("<span" in raw_text or "<b" in raw_text) else html.escape(raw_text)
+            clean_hindi = html.escape(self.hindi_text)
+            self.lbl_text.setText(
+                f'{clean_text}&nbsp;&nbsp;<span style="color: {h_color}; font-weight: bold;">({clean_hindi})</span>'
+            )
+        else:
+            self.lbl_text.setText(self.option_text)
+
     def _setup_ui(self):
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(12, 6, 12, 6)
@@ -79,21 +118,52 @@ class OptionButton(QPushButton):
         self.lbl_badge = QLabel(f"{self.option_label}")
         self.lbl_badge.setAlignment(Qt.AlignCenter)
         self.lbl_badge.setFixedSize(self._badge_size, self._badge_size)
+        self.lbl_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.layout.addWidget(self.lbl_badge)
 
         # 2. Option Text
         self.lbl_text = QLabel(self.option_text)
         self.lbl_text.setWordWrap(True)
         self.lbl_text.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.lbl_text.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.layout.addWidget(self.lbl_text, stretch=1)
 
         # 3. Status Pill / Icon (Hidden initially, shown after selection/reveal)
         self.lbl_status = QLabel("")
         self.lbl_status.setAlignment(Qt.AlignCenter)
         self.lbl_status.setFixedHeight(22)
+        self.lbl_status.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.lbl_status.hide()
         self.layout.addWidget(self.lbl_status)
         self.apply_idle_style()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.setDown(True)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.setDown(False)
+            pos = e.pos()
+            if self.rect().contains(pos):
+                badge_geo = self.lbl_badge.geometry().adjusted(-4, -4, 6, 6) if hasattr(self, "lbl_badge") else None
+                if badge_geo and badge_geo.contains(pos):
+                    self.badge_clicked.emit(self.option_label)
+                else:
+                    self.option_clicked.emit(self)
+                e.accept()
+                return
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.badge_clicked.emit(self.option_label)
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
 
     @property
     def label(self):
@@ -153,6 +223,7 @@ class OptionButton(QPushButton):
                 font-weight: bold;
                 font-size: {badge_font_size}px;
             """)
+        self._update_text_display()
 
     def apply_idle_style(self, theme="classic"):
         self._is_faded = False
@@ -822,6 +893,79 @@ class MCQReviewWidget(QWidget):
         # Scroll to top
         self.scroll_area.verticalScrollBar().setValue(0)
 
+    def _extract_options_hindi(self, card: dict) -> dict:
+        """
+        Extracts a dictionary mapping option label ('A', 'B', 'C', 'D') -> Hindi meaning.
+        Sources inspected in order:
+        1. card['options'] dicts with 'hindi' / 'meaning' / 'hindi_meaning'
+        2. card['solution_data']['key_points']
+        3. card['notes'] (Options Breakdown)
+        4. card['solution_data']['statement'] / card['answer']
+        """
+        hindi_map = {}
+        if not isinstance(card, dict):
+            return hindi_map
+
+        # 1. From options list if already present
+        for opt in card.get("options", []) or []:
+            if isinstance(opt, dict):
+                lbl = (opt.get("label") or "").strip().upper()
+                h = opt.get("hindi") or opt.get("meaning") or opt.get("hindi_meaning")
+                if h and lbl:
+                    hindi_map[lbl] = str(h).strip()
+
+        # 2. From solution_data.key_points
+        kp = card.get("solution_data", {})
+        if isinstance(kp, dict):
+            kp_pts = kp.get("key_points") or []
+        else:
+            kp_pts = []
+
+        if isinstance(kp_pts, str):
+            kp_pts = [kp_pts]
+        elif not isinstance(kp_pts, list):
+            kp_pts = []
+
+        for item in kp_pts:
+            if not isinstance(item, str):
+                continue
+            # Pattern: 🅰️ **(A) <span ...>Word</span> (POS)**: <span ...>हिंदी अर्थ</span>
+            m = re.search(r'\(([A-Da-d])\)\s*(?:<[^>]+>)*\s*([^*<]+?)\s*(?:<[^>]+>)*(?:\s*\([^)]+\))?\s*\*\*:\s*(?:<span[^>]*>)?([^<—–\n]+)', item)
+            if m:
+                lbl = m.group(1).upper()
+                h_text = re.sub(r'<[^>]+>', '', m.group(3)).strip()
+                if lbl not in hindi_map and h_text:
+                    hindi_map[lbl] = h_text
+
+        # 3. From notes (Options Breakdown)
+        notes = card.get("notes", "")
+        if isinstance(notes, str) and notes:
+            matches = re.finditer(r'(?:•|-|\*)\s*\*\*\(([A-Da-d])\)[^:]*\*\*:\s*(?:<span[^>]*>)?([^<—–\n]+)', notes)
+            for m in matches:
+                lbl = m.group(1).upper()
+                h_text = re.sub(r'<[^>]+>', '', m.group(2)).strip()
+                if lbl not in hindi_map and h_text:
+                    hindi_map[lbl] = h_text
+
+        # 4. Fallback for correct option from solution_data.statement
+        c_lbl = None
+        c_opt = card.get("correct_option")
+        if isinstance(c_opt, dict):
+            c_lbl = (c_opt.get("label") or "").strip().upper()
+        elif isinstance(c_opt, str):
+            c_lbl = c_opt.strip().upper()
+
+        if c_lbl and c_lbl not in hindi_map:
+            stmt = card.get("solution_data", {}).get("statement", "") if isinstance(card.get("solution_data"), dict) else ""
+            if isinstance(stmt, str) and stmt:
+                m_stmt = re.search(r'\(([^)]+)\s*—', stmt)
+                if m_stmt:
+                    h_text = re.sub(r'<[^>]+>', '', m_stmt.group(1)).strip()
+                    if h_text:
+                        hindi_map[c_lbl] = h_text
+
+        return hindi_map
+
     def _build_options(self, card: dict):
         # Clear existing buttons
         while self.options_layout.count():
@@ -831,6 +975,7 @@ class MCQReviewWidget(QWidget):
                 widget.deleteLater()
 
         self._option_buttons = []
+        self._options_hindi_visible = False
         options = card.get("options", []) or []
 
         # Find correct option label
@@ -840,6 +985,8 @@ class MCQReviewWidget(QWidget):
             correct_lbl = c_opt.get("label")
         elif isinstance(c_opt, str):
             correct_lbl = c_opt.strip()
+
+        hindi_map = self._extract_options_hindi(card)
 
         for idx, opt in enumerate(options):
             if isinstance(opt, dict):
@@ -856,11 +1003,41 @@ class MCQReviewWidget(QWidget):
             btn = OptionButton(label, text, idx, parent=self.options_container)
             btn.is_correct = is_correct
             btn.stat_text = card.get("percent_answered_correctly", "")
-            btn.clicked.connect(lambda checked, l=label, b=btn: self.select_option(l))
+
+            # Attach Hindi translation if available
+            h_val = hindi_map.get(label.upper(), "")
+            if not h_val and isinstance(opt, dict):
+                opt_txt = opt.get("text", "")
+                if opt_txt in hindi_map:
+                    h_val = hindi_map[opt_txt]
+            if h_val:
+                btn.set_hindi_text(h_val)
+
+            btn.badge_clicked.connect(self.select_option)
+            btn.option_clicked.connect(self._on_option_clicked)
             self.options_layout.addWidget(btn)
             self._option_buttons.append(btn)
 
         self._update_options_font()
+
+    def _on_option_clicked(self, btn: OptionButton):
+        """
+        Handle user clicking on an option row/text.
+        - If the option has a Hindi translation:
+          Disclose / toggle Hindi meaning one-by-one for active recall practice.
+        - If the option has NO Hindi translation (e.g., standard GK/Math question):
+          Directly select the option as the answer.
+        - If already revealed:
+          Allow toggling Hindi meaning if available.
+        """
+        if not self.is_revealed:
+            if getattr(btn, "hindi_text", ""):
+                btn.toggle_hindi()
+            else:
+                self.select_option(btn.option_label)
+        else:
+            if getattr(btn, "hindi_text", ""):
+                btn.toggle_hindi()
 
     def select_option(self, label: str):
         """User chose an option button or pressed keyboard key A/B/C/D."""
@@ -888,17 +1065,19 @@ class MCQReviewWidget(QWidget):
         self.answer_submitted.emit()
 
     def reveal_answer(self):
-        """Reveal solution and show correct option highlight."""
+        """Reveal solution, show correct option highlight, and auto-display Hindi meanings on options."""
         if self.is_revealed:
             return
         self.is_revealed = True
+        self._options_hindi_visible = True
 
-        # Ensure correct option is highlighted if user didn't pick an option
+        # Ensure correct option is highlighted and auto-reveal Hindi meanings on all options
         for btn in self._option_buttons:
             if btn.is_correct:
                 btn.apply_correct_style(btn.stat_text)
             elif not btn.is_selected:
                 btn.apply_faded_style()
+            btn.show_hindi(True)
 
         # Render Solution HTML
         self._render_solution_html()
@@ -908,21 +1087,34 @@ class MCQReviewWidget(QWidget):
             self.scratchpad.raise_()
 
     def hide_answer(self):
-        """Hide solution and reset options to idle unrevealed state."""
+        """Hide solution, reset options to idle unrevealed state, and hide Hindi meanings."""
         if not self.is_revealed:
             return
         self.is_revealed = False
         self.selected_label = None
+        self._options_hindi_visible = False
 
         theme = getattr(QApplication.instance(), "_active_theme", "classic")
         for btn in self._option_buttons:
             btn.is_selected = False
+            btn.show_hindi(False)
             btn.apply_idle_style(theme)
 
         self.solution_container.hide()
         self.sol_browser.clear()
         if hasattr(self, "scratchpad"):
             self.scratchpad.sync_geometry_with_parent()
+
+    def show_options_hindi(self, show: bool = True):
+        """Explicitly show or hide Hindi meanings on all option buttons."""
+        self._options_hindi_visible = bool(show)
+        for btn in self._option_buttons:
+            btn.show_hindi(show)
+
+    def toggle_options_hindi(self):
+        """Toggle Hindi meaning visibility on all option buttons."""
+        any_visible = any(getattr(btn, "_show_hindi", False) for btn in self._option_buttons)
+        self.show_options_hindi(not any_visible)
 
     def _on_open_mindmap(self, tag=None):
         p = self.parent()
@@ -965,6 +1157,20 @@ class MCQReviewWidget(QWidget):
 
         # 3. Keyboard Option shortcuts: A, B, C, D or 1, 2, 3, 4
         if not self.is_revealed:
+            # Shift + A/B/C/D or Shift + 1/2/3/4: per-option Hindi discovery toggle
+            if e.modifiers() & Qt.ShiftModifier:
+                shift_map = {
+                    Qt.Key_A: "A", Qt.Key_B: "B", Qt.Key_C: "C", Qt.Key_D: "D",
+                    Qt.Key_1: "A", Qt.Key_2: "B", Qt.Key_3: "C", Qt.Key_4: "D"
+                }
+                if e.key() in shift_map:
+                    target_lbl = shift_map[e.key()]
+                    for btn in self._option_buttons:
+                        if btn.option_label.upper() == target_lbl.upper():
+                            btn.toggle_hindi()
+                            e.accept()
+                            return
+
             key_map = {
                 Qt.Key_A: "A",
                 Qt.Key_B: "B",
@@ -975,11 +1181,17 @@ class MCQReviewWidget(QWidget):
                 Qt.Key_3: "C",
                 Qt.Key_4: "D",
             }
-            if e.key() in key_map:
+            if e.key() in key_map and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
                 lbl = key_map[e.key()]
                 self.select_option(lbl)
                 e.accept()
                 return
+
+        # 4. Keyboard Hindi Toggle shortcut: 'H' key
+        if e.key() == Qt.Key_H and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            self.toggle_options_hindi()
+            e.accept()
+            return
 
         # Forward space and rating keys to review_screen
         p = self.parent()
@@ -989,6 +1201,15 @@ class MCQReviewWidget(QWidget):
             p.keyPressEvent(e)
         else:
             super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        p = self.parent()
+        while p and not hasattr(p, "_reveal_current") and not hasattr(p, "_rate"):
+            p = p.parent()
+        if p and hasattr(p, "keyReleaseEvent"):
+            p.keyReleaseEvent(e)
+        else:
+            super().keyReleaseEvent(e)
 
     def _scale_images_in_html(self, html_text: str, zoom_factor: float = 1.0) -> str:
         """Scales all img tags (including Base64 and local paths) bounded by available content width."""

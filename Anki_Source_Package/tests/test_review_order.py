@@ -200,6 +200,8 @@ class TestReviewOrder(unittest.TestCase):
             is_new_only=False,
             order_mode="least_mature",
             default_daily_target=None,
+            default_daily_new_target=None,
+            default_daily_review_target=None,
             default_session_target=None,
             auto_exit_session=None,
             deck_id="parent_id",

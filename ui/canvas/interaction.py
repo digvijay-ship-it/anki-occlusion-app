@@ -1031,6 +1031,18 @@ class CanvasInteractionMixin:
                 parent = parent.parent()
             e.ignore()
             return
+
+    def keyReleaseEvent(self, e):
+        if self._mode == "review":
+            parent = self.parent()
+            while parent is not None:
+                if parent.__class__.__name__ == "ReviewScreen":
+                    parent.keyReleaseEvent(e)
+                    return
+                parent = parent.parent()
+            e.ignore()
+            return
+        super().keyReleaseEvent(e)
         if key == Qt.Key_Delete:
             self.delete_selected_boxes()
         elif mods & Qt.ControlModifier and key == Qt.Key_Z:

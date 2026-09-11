@@ -1141,6 +1141,15 @@ class TextReviewWidget(QWidget):
             p.keyPressEvent(e)
         else:
             super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        p = self.parent()
+        while p and not hasattr(p, "_reveal_current") and not hasattr(p, "_rate"):
+            p = p.parent()
+        if p and hasattr(p, "keyReleaseEvent"):
+            p.keyReleaseEvent(e)
+        else:
+            super().keyReleaseEvent(e)
         
     def _on_open_mindmap(self, tag=None):
         p = self.parent()
@@ -1991,6 +2000,15 @@ class ScratchpadOverlay(QWidget):
             p.keyPressEvent(e)
         else:
             super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        p = self.parent()
+        while p and not hasattr(p, "keyReleaseEvent"):
+            p = p.parent()
+        if p and hasattr(p, "keyReleaseEvent"):
+            p.keyReleaseEvent(e)
+        else:
+            super().keyReleaseEvent(e)
         
     def set_pen_active(self, active, mode="pen"):
         self.mode = mode

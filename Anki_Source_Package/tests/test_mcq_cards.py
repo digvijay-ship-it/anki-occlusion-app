@@ -263,6 +263,109 @@ class TestMCQCards(unittest.TestCase):
         self.assertEqual(len(data['decks']), 1)
         self.assertEqual(data['decks'][0]['name'], 'SSC CGL 2025 (HELD ON: 12 SEPT, 2025 SHIFT 1)')
 
+    def test_mcq_zoom_persistence(self):
+        # Reset and verify default
+        MCQReviewWidget.save_zoom_factor(1.0)
+        widget1 = MCQReviewWidget()
+        self.assertAlmostEqual(widget1._zoom_factor, 1.0)
+
+        # Zoom in twice (1.0 -> 1.1 -> 1.2)
+        widget1.zoom_in()
+        widget1.zoom_in()
+        self.assertAlmostEqual(widget1._zoom_factor, 1.2)
+        self.assertAlmostEqual(MCQReviewWidget.get_saved_zoom_factor(), 1.2)
+
+        # Create a new widget (simulating new session or deck switch)
+        widget2 = MCQReviewWidget()
+        self.assertAlmostEqual(widget2._zoom_factor, 1.2)
+
+        cards, _ = parse_testbook_or_mcq_json(SAMPLE_TESTBOOK_JSON)
+        widget2.load_card(cards[0])
+        self.assertAlmostEqual(widget2._zoom_factor, 1.2)
+
+        # Reset zoom
+        widget2.zoom_reset()
+        self.assertAlmostEqual(widget2._zoom_factor, 1.0)
+        self.assertAlmostEqual(MCQReviewWidget.get_saved_zoom_factor(), 1.0)
+
+    def test_mcq_review_widget_hide_answer_toggle(self):
+        cards, _ = parse_testbook_or_mcq_json(SAMPLE_TESTBOOK_JSON)
+        widget = MCQReviewWidget()
+        widget.load_card(cards[0])
+        self.assertFalse(widget.is_revealed)
+        self.assertTrue(widget.solution_container.isHidden())
+
+        # 1. Select option A (reveals solution)
+        widget.select_option('A')
+        self.assertTrue(widget.is_revealed)
+        self.assertFalse(widget.solution_container.isHidden())
+
+        # 2. Hide (toggle back on space)
+        widget.hide_answer()
+        self.assertFalse(widget.is_revealed)
+        self.assertTrue(widget.solution_container.isHidden())
+        self.assertIsNone(widget.selected_label)
+        self.assertEqual(widget.sol_browser.toPlainText().strip(), "")
+
+        # 3. Reveal again via reveal_answer()
+        widget.reveal_answer()
+        self.assertTrue(widget.is_revealed)
+        self.assertFalse(widget.solution_container.isHidden())
+
+    def test_mcq_options_hindi_auto_reveal(self):
+        sample_card = {
+            'card_type': 'mcq',
+            'question': 'A publication containing annual calendar (पंचांग)',
+            'options': [
+                {'label': 'A', 'text': 'Alliteration', 'is_correct': False},
+                {'label': 'B', 'text': 'Alluvium', 'is_correct': False},
+                {'label': 'C', 'text': 'Alma Mater', 'is_correct': False},
+                {'label': 'D', 'text': 'Almanac', 'is_correct': True}
+            ],
+            'correct_option': {'label': 'D', 'text': 'Almanac'},
+            'solution_data': {
+                'statement': 'Option D: Almanac (पंचांग — calendar)',
+                'key_points': [
+                    '🅰️ **(A) <span style="...">Alliteration</span> (N.)**: <span style="...">अनुप्रास अलंकार</span> — Repetition',
+                    '🅱️ **(B) <span style="...">Alluvium</span> (N.)**: <span style="...">मिट्टी</span> — Soil',
+                    '🅲 **(C) <span style="...">Alma Mater</span> (N.)**: <span style="...">संस्था</span> — School',
+                    '🅳 **(D) <span style="...">Almanac</span> (N.)**: <span style="...">पंचांग</span> — Calendar'
+                ]
+            }
+        }
+        widget = MCQReviewWidget()
+        widget.load_card(sample_card)
+
+        # Before reveal: options must not show Hindi
+        self.assertFalse(widget.is_revealed)
+        for btn in widget._option_buttons:
+            self.assertFalse(btn._show_hindi)
+            self.assertEqual(btn.lbl_text.text(), btn.option_text)
+            self.assertNotIn('पंचांग', btn.lbl_text.text())
+
+        # Reveal answer (Spacebar action)
+        widget.reveal_answer()
+        self.assertTrue(widget.is_revealed)
+        for btn in widget._option_buttons:
+            self.assertTrue(btn._show_hindi)
+        self.assertIn('अनुप्रास अलंकार', widget._option_buttons[0].lbl_text.text())
+        self.assertIn('पंचांग', widget._option_buttons[3].lbl_text.text())
+
+        # Hide answer (Spacebar toggle back)
+        widget.hide_answer()
+        self.assertFalse(widget.is_revealed)
+        for btn in widget._option_buttons:
+            self.assertFalse(btn._show_hindi)
+            self.assertEqual(btn.lbl_text.text(), btn.option_text)
+
+        # Manual toggle ('H' shortcut)
+        widget.toggle_options_hindi()
+        self.assertTrue(widget._option_buttons[3]._show_hindi)
+        self.assertIn('पंचांग', widget._option_buttons[3].lbl_text.text())
+
+        widget.toggle_options_hindi()
+        self.assertFalse(widget._option_buttons[3]._show_hindi)
+
 
 if __name__ == '__main__':
     unittest.main()

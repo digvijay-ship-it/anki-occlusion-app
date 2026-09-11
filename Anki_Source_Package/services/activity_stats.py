@@ -474,6 +474,106 @@ def get_deck_today_review_count(deck_identifier: Any, date_str: str, data: Optio
     return total_reviews
 
 
+def get_deck_today_breakdown(deck_identifier: Any, date_str: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+    """
+    Counts today's breakdown of reviews for a deck and all of its child subdecks:
+    Returns dict:
+      {
+          'new_done': int,      # Brand-new cards/boxes whose first review was today
+          'review_done': int,   # Mature/learning cards/boxes reviewed today
+          'total_done': int     # Total cards/boxes reviewed today
+      }
+    """
+    if data is None:
+        try:
+            from data_manager import store
+            data = store.get()
+        except Exception:
+            data = {}
+
+    target_deck = None
+    if isinstance(deck_identifier, dict):
+        target_deck = deck_identifier
+    else:
+        ident = str(deck_identifier or "").strip().lower()
+        if not ident:
+            return {"new_done": 0, "review_done": 0, "total_done": 0}
+
+        def _find(d):
+            did = str(d.get("_id") or d.get("id") or "").strip().lower()
+            dname = str(d.get("name") or "").strip().lower()
+            if did == ident or dname == ident:
+                return d
+            for c in d.get("children", []) or d.get("subdecks", []) or []:
+                if isinstance(c, dict):
+                    res = _find(c)
+                    if res:
+                        return res
+            return None
+
+        for root in data.get("decks", []) or []:
+            if isinstance(root, dict):
+                target_deck = _find(root)
+                if target_deck:
+                    break
+
+    if not target_deck:
+        return {"new_done": 0, "review_done": 0, "total_done": 0}
+
+    new_done = 0
+    review_done = 0
+
+    def _is_new_study(obj):
+        first_rat = obj.get("first_reviewed_at")
+        if first_rat:
+            return str(first_rat).startswith(date_str)
+        rev_count = int(obj.get("reviews", 0) or 0)
+        reps = int(obj.get("sm2_repetitions", 0) or obj.get("reps", 0) or 0)
+        return rev_count <= 1 or reps <= 1
+
+    def _count(d):
+        nonlocal new_done, review_done
+        for card in d.get("cards", []) or []:
+            if not isinstance(card, dict):
+                continue
+            boxes = card.get("boxes", []) or []
+            if not boxes:
+                rat = card.get("reviewed_at")
+                if rat and str(rat).startswith(date_str):
+                    if _is_new_study(card):
+                        new_done += 1
+                    else:
+                        review_done += 1
+
+            seen_grps = set()
+            for box in boxes:
+                if not isinstance(box, dict):
+                    continue
+                brat = box.get("reviewed_at")
+                if brat and str(brat).startswith(date_str):
+                    gid = box.get("group_id", "")
+                    if gid:
+                        if gid in seen_grps:
+                            continue
+                        seen_grps.add(gid)
+                    if _is_new_study(box):
+                        new_done += 1
+                    else:
+                        review_done += 1
+
+        for child in d.get("children", []) or d.get("subdecks", []) or []:
+            if isinstance(child, dict):
+                _count(child)
+
+    _count(target_deck)
+    return {
+        "new_done": new_done,
+        "review_done": review_done,
+        "total_done": new_done + review_done
+    }
+
+
+
 def get_daily_focus_seconds(date_str: str) -> int:
     """
     Retrieves the total focus seconds recorded for the given date.

@@ -626,6 +626,147 @@ class SelectiveStudyDialog(QDialog):
         self.accept()
 
 
+class PreFlightLimitDialog(QDialog):
+    """
+    Prominent Pre-Flight Confirmation Dialog displayed when the user attempts
+    to start a study session after having already completed or exceeded today's daily limit.
+    """
+    def __init__(
+        self,
+        parent=None,
+        title="🛑 दैनिक लक्ष्य पूर्ण!",
+        deck_name="",
+        details=None,
+        new_done=0,
+        new_limit=0,
+        review_done=0,
+        review_limit=0,
+        total_done=0,
+        total_limit=0,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("🛑 Daily Limit Completed")
+        self.setFixedWidth(460)
+        self.setStyleSheet("""
+            QDialog {
+                background: #181926;
+                color: #CAD3F5;
+                border: 2px solid #FF5555;
+                border-radius: 12px;
+            }
+            QLabel {
+                background: transparent;
+            }
+            QPushButton#btn_continue {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF5555, stop:1 #FF79C6);
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 10px 18px;
+                border-radius: 8px;
+                border: none;
+            }
+            QPushButton#btn_continue:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF6E6E, stop:1 #FF92D0);
+            }
+            QPushButton#btn_cancel {
+                background: #24273A;
+                border: 1px solid #494D64;
+                color: #CAD3F5;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 10px 18px;
+                border-radius: 8px;
+            }
+            QPushButton#btn_cancel:hover {
+                background: #363A4F;
+                border-color: #8BE9FD;
+                color: #FFFFFF;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(14)
+
+        # Header Row
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+        lbl_icon = QLabel("🛑")
+        lbl_icon.setStyleSheet("font-size: 28px;")
+        header_row.addWidget(lbl_icon)
+
+        v_head = QVBoxLayout()
+        v_head.setSpacing(2)
+        lbl_h1 = QLabel(title)
+        lbl_h1.setStyleSheet("font-size: 16px; font-weight: 800; color: #FF5555;")
+        v_head.addWidget(lbl_h1)
+
+        lbl_h2 = QLabel(f"डेक: {deck_name}" if deck_name else "दैनिक अध्ययन लक्ष्य")
+        lbl_h2.setStyleSheet("font-size: 12px; font-weight: bold; color: #8BE9FD;")
+        v_head.addWidget(lbl_h2)
+        header_row.addLayout(v_head, stretch=1)
+        layout.addLayout(header_row)
+
+        # Progress / Stats Box
+        stats_frame = QFrame()
+        stats_frame.setStyleSheet("""
+            QFrame {
+                background: #1E1F29;
+                border: 1px solid #363A4F;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        sf_layout = QVBoxLayout(stats_frame)
+        sf_layout.setSpacing(6)
+
+        stats_rows = []
+        if new_limit > 0:
+            stats_rows.append(f"🌱 <b>नए कार्ड्स (New):</b> {new_done} / {new_limit} पढ़े गए")
+        if review_limit > 0:
+            stats_rows.append(f"📅 <b>रिवीजन (Due):</b> {review_done} / {review_limit} हल किए गए")
+        if total_limit > 0:
+            stats_rows.append(f"🎯 <b>कुल अध्ययन (Total):</b> {total_done} / {total_limit} कार्ड्स")
+        elif not stats_rows:
+            stats_rows.append(f"🎯 <b>आज का कुल अध्ययन:</b> {total_done} कार्ड्स")
+
+        for r_text in stats_rows:
+            lbl_row = QLabel(r_text)
+            lbl_row.setStyleSheet("font-size: 12.5px; color: #F8F8F2;")
+            sf_layout.addWidget(lbl_row)
+
+        layout.addWidget(stats_frame)
+
+        # Description / Question
+        lbl_desc = QLabel(
+            "आपने आज का निर्धारित दैनिक कोटा पूरा कर लिया है!\n"
+            "बर्नआउट से बचने के लिए ब्रेक लेने की सलाह दी जाती है। क्या आप अतिरिक्त पढ़ाई जारी रखना चाहते हैं?"
+        )
+        lbl_desc.setStyleSheet("font-size: 12px; color: #A5ADCB; line-height: 1.4;")
+        lbl_desc.setWordWrap(True)
+        layout.addWidget(lbl_desc)
+
+        # Buttons Row
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+        btn_row.addStretch()
+
+        self.btn_cancel = QPushButton("↩️ वापस जाएं (Cancel)")
+        self.btn_cancel.setObjectName("btn_cancel")
+        self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self.btn_cancel)
+
+        self.btn_continue = QPushButton("🚀 पढ़ाई जारी रखें (Continue)")
+        self.btn_continue.setObjectName("btn_continue")
+        self.btn_continue.setCursor(Qt.PointingHandCursor)
+        self.btn_continue.clicked.connect(self.accept)
+        btn_row.addWidget(self.btn_continue)
+
+        layout.addLayout(btn_row)
+
+
 #  DECK VIEW
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1899,6 +2040,8 @@ class DeckView(QWidget):
             did = d.get("_id")
             for card in d.get("cards", []):
                 if not card.get("is_formula", False):
+                    if (card.get("pdf_path") or card.get("image_path")) and not card.get("boxes"):
+                        continue
                     asset = (
                         card.get("pdf_path") or card.get("image_path") or "__text__"
                     )
@@ -1927,6 +2070,163 @@ class DeckView(QWidget):
             return None  # User canceled
         return cards
 
+    def _resolve_deck_limits(self, deck=None):
+        """
+        Resolves limits for the deck by checking the deck itself, and if not set,
+        inheriting from its ancestor decks up to the root deck.
+        Returns dict:
+          {
+              'daily_limit': int,
+              'daily_new_limit': int,
+              'daily_review_limit': int,
+              'session_limit': int,
+              'auto_exit_session': bool,
+              'owner_deck': dict
+          }
+        """
+        target = deck or self.deck
+        if not target:
+            return {
+                'daily_limit': 0,
+                'daily_new_limit': 0,
+                'daily_review_limit': 0,
+                'session_limit': 25,
+                'auto_exit_session': True,
+                'owner_deck': None
+            }
+
+        all_decks = (self._data.get("decks", []) if getattr(self, "_data", None) else None) or []
+        target_id = str(target.get("_id") or target.get("id") or "")
+
+        def _find_path(d, path):
+            cur_id = str(d.get("_id") or d.get("id") or "")
+            new_path = path + [d]
+            if (cur_id and cur_id == target_id) or d is target:
+                return new_path
+            for c in d.get("children", []) or d.get("subdecks", []) or []:
+                if isinstance(c, dict):
+                    res = _find_path(c, new_path)
+                    if res:
+                        return res
+            return None
+
+        chain = []
+        for root in all_decks:
+            if isinstance(root, dict):
+                res = _find_path(root, [])
+                if res:
+                    chain = res
+                    break
+
+        if not chain:
+            chain = [target]
+
+        daily_limit = 0
+        daily_new_limit = 0
+        daily_review_limit = 0
+        session_limit = 25
+        auto_exit_session = True
+        owner_deck = target
+
+        for d in reversed(chain):
+            dl = int(d.get("daily_limit", 0) or 0)
+            dnl = int(d.get("daily_new_limit", 0) or 0)
+            drl = int(d.get("daily_review_limit", 0) or 0)
+            if dl > 0 and daily_limit == 0:
+                daily_limit = dl
+                owner_deck = d
+            if dnl > 0 and daily_new_limit == 0:
+                daily_new_limit = dnl
+                if daily_limit == 0:
+                    owner_deck = d
+            if drl > 0 and daily_review_limit == 0:
+                daily_review_limit = drl
+                if daily_limit == 0:
+                    owner_deck = d
+            if "session_limit" in d and d.get("session_limit"):
+                session_limit = int(d.get("session_limit"))
+            if "auto_exit_session" in d:
+                auto_exit_session = bool(d.get("auto_exit_session"))
+
+        return {
+            'daily_limit': daily_limit,
+            'daily_new_limit': daily_new_limit,
+            'daily_review_limit': daily_review_limit,
+            'session_limit': session_limit,
+            'auto_exit_session': auto_exit_session,
+            'owner_deck': owner_deck
+        }
+
+    def _prompt_limit_exceeded(self, limits, mode="due"):
+        """
+        Pre-flight check: if today's study count for the deck (or ancestor deck)
+        has already reached or exceeded the daily limit, prompt the user.
+        Returns:
+            True: proceed to study
+            False: cancel study
+        """
+        daily_limit = limits.get("daily_limit", 0)
+        daily_new_limit = limits.get("daily_new_limit", 0)
+        daily_review_limit = limits.get("daily_review_limit", 0)
+        owner_deck = limits.get("owner_deck") or self.deck
+
+        if not owner_deck or (daily_limit <= 0 and daily_new_limit <= 0 and daily_review_limit <= 0):
+            return True
+
+        from datetime import date
+        today_iso = date.today().isoformat()
+        from services.activity_stats import get_deck_today_breakdown
+        breakdown = get_deck_today_breakdown(owner_deck, today_iso, data=self._data)
+        new_done = breakdown.get("new_done", 0)
+        review_done = breakdown.get("review_done", 0)
+        total_done = breakdown.get("total_done", 0)
+
+        is_exceeded = False
+        reason_title = ""
+        reason_details = []
+
+        if mode == "new":
+            if daily_new_limit > 0 and new_done >= daily_new_limit:
+                is_exceeded = True
+                reason_title = "🌱 नए कार्ड्स की दैनिक सीमा पूर्ण!"
+                reason_details.append(f"आज पढ़े गए नए कार्ड: {new_done} / {daily_new_limit}")
+            elif daily_limit > 0 and total_done >= daily_limit:
+                is_exceeded = True
+                reason_title = "🎯 कुल दैनिक सीमा पूर्ण!"
+                reason_details.append(f"आज का कुल अध्ययन: {total_done} / {daily_limit} कार्ड्स")
+        elif mode == "due":
+            if daily_review_limit > 0 and review_done >= daily_review_limit:
+                is_exceeded = True
+                reason_title = "📅 रिवीजन (Due) कार्ड्स की दैनिक सीमा पूर्ण!"
+                reason_details.append(f"आज रिवाइज किए गए कार्ड: {review_done} / {daily_review_limit}")
+            elif daily_limit > 0 and total_done >= daily_limit:
+                is_exceeded = True
+                reason_title = "🎯 कुल दैनिक सीमा पूर्ण!"
+                reason_details.append(f"आज का कुल अध्ययन: {total_done} / {daily_limit} कार्ड्स")
+        else:  # all
+            if daily_limit > 0 and total_done >= daily_limit:
+                is_exceeded = True
+                reason_title = "🎯 कुल दैनिक सीमा पूर्ण!"
+                reason_details.append(f"आज का कुल अध्ययन: {total_done} / {daily_limit} कार्ड्स")
+
+        if not is_exceeded:
+            return True
+
+        dlg = PreFlightLimitDialog(
+            parent=self,
+            title=reason_title,
+            deck_name=str(owner_deck.get("name", "Deck")),
+            details=reason_details,
+            new_done=new_done,
+            new_limit=daily_new_limit,
+            review_done=review_done,
+            review_limit=daily_review_limit,
+            total_done=total_done,
+            total_limit=daily_limit,
+        )
+        res = dlg.exec_()
+        return res == QDialog.Accepted
+
     @trace_perf
     def _review_due(self, *args, order_mode=None):
         if not self.deck:
@@ -1937,6 +2237,20 @@ class DeckView(QWidget):
             pass
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
+
+        limits = self._resolve_deck_limits()
+        if not self._prompt_limit_exceeded(limits, mode="due"):
+            return
+
+        daily_limit = limits.get("daily_limit", 0)
+        daily_new_limit = limits.get("daily_new_limit", 0)
+        daily_review_limit = limits.get("daily_review_limit", 0)
+        session_limit = limits.get("session_limit", 25)
+        auto_exit = limits.get("auto_exit_session", True)
+        owner_deck = limits.get("owner_deck") or self.deck
+        deck_id = owner_deck.get("_id")
+        deck_name = owner_deck.get("name")
+
         if self.deck.get("children"):
             if order_mode == "least_mature":
                 groups = self._collect_due_by_pdf(self.deck, exclude_new=True)
@@ -1959,16 +2273,13 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
-                session_limit = int(self.deck.get("session_limit", 25) or 25)
-                auto_exit = bool(self.deck.get("auto_exit_session", True))
-                deck_id = self.deck.get("_id")
-                deck_name = self.deck.get("name")
                 home.show_review_sequential(
                     groups,
                     self._data,
                     order_mode=order_mode,
                     default_daily_target=daily_limit,
+                    default_daily_new_target=daily_new_limit,
+                    default_daily_review_target=daily_review_limit,
                     default_session_target=session_limit,
                     auto_exit_session=auto_exit,
                     deck_id=deck_id,
@@ -2002,6 +2313,20 @@ class DeckView(QWidget):
             return
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
+
+        limits = self._resolve_deck_limits()
+        if not self._prompt_limit_exceeded(limits, mode="all"):
+            return
+
+        daily_limit = limits.get("daily_limit", 0)
+        daily_new_limit = limits.get("daily_new_limit", 0)
+        daily_review_limit = limits.get("daily_review_limit", 0)
+        session_limit = limits.get("session_limit", 25)
+        auto_exit = limits.get("auto_exit_session", True)
+        owner_deck = limits.get("owner_deck") or self.deck
+        deck_id = owner_deck.get("_id")
+        deck_name = owner_deck.get("name")
+
         if self.deck.get("children"):
             if order_mode == "least_mature":
                 groups = self._collect_all_by_pdf(self.deck)
@@ -2019,16 +2344,13 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
-                session_limit = int(self.deck.get("session_limit", 25) or 25)
-                auto_exit = bool(self.deck.get("auto_exit_session", True))
-                deck_id = self.deck.get("_id")
-                deck_name = self.deck.get("name")
                 home.show_review_sequential(
                     groups,
                     self._data,
                     order_mode=order_mode,
                     default_daily_target=daily_limit,
+                    default_daily_new_target=daily_new_limit,
+                    default_daily_review_target=daily_review_limit,
                     default_session_target=session_limit,
                     auto_exit_session=auto_exit,
                     deck_id=deck_id,
@@ -2097,6 +2419,8 @@ class DeckView(QWidget):
             return False
         boxes = card.get("boxes", [])
         if not boxes:
+            if card.get("pdf_path") or card.get("image_path"):
+                return False
             return (
                 int(card.get("reviews", 0) or 0) == 0
                 and int(card.get("sm2_repetitions", 0) or 0) == 0
@@ -2150,6 +2474,20 @@ class DeckView(QWidget):
             return
         if order_mode is None:
             order_mode = self.deck.get("review_order", "default")
+
+        limits = self._resolve_deck_limits()
+        if not self._prompt_limit_exceeded(limits, mode="new"):
+            return
+
+        daily_limit = limits.get("daily_limit", 0)
+        daily_new_limit = limits.get("daily_new_limit", 0)
+        daily_review_limit = limits.get("daily_review_limit", 0)
+        session_limit = limits.get("session_limit", 25)
+        auto_exit = limits.get("auto_exit_session", True)
+        owner_deck = limits.get("owner_deck") or self.deck
+        deck_id = owner_deck.get("_id")
+        deck_name = owner_deck.get("name")
+
         if self.deck.get("children"):
             groups = self._collect_new_by_pdf(self.deck)
             if not groups:
@@ -2167,11 +2505,6 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
-                session_limit = int(self.deck.get("session_limit", 25) or 25)
-                auto_exit = bool(self.deck.get("auto_exit_session", True))
-                deck_id = self.deck.get("_id")
-                deck_name = self.deck.get("name")
                 home.show_review_sequential(
                     groups,
                     self._data,
@@ -2179,6 +2512,8 @@ class DeckView(QWidget):
                     is_new_only=True,
                     order_mode=order_mode,
                     default_daily_target=daily_limit,
+                    default_daily_new_target=daily_new_limit,
+                    default_daily_review_target=daily_review_limit,
                     default_session_target=session_limit,
                     auto_exit_session=auto_exit,
                     deck_id=deck_id,
@@ -2211,11 +2546,15 @@ class DeckView(QWidget):
         if home:
             if order_mode is None:
                 order_mode = self.deck.get("review_order", "default") if self.deck else "default"
-            daily_limit = int(self.deck.get("daily_limit", 0) or 0) if self.deck else 0
-            session_limit = int(self.deck.get("session_limit", 25) or 25) if self.deck else 25
-            auto_exit = bool(self.deck.get("auto_exit_session", True)) if self.deck else True
-            deck_id = self.deck.get("_id") if self.deck else None
-            deck_name = self.deck.get("name") if self.deck else None
+            limits = self._resolve_deck_limits()
+            daily_limit = limits.get("daily_limit", 0)
+            daily_new_limit = limits.get("daily_new_limit", 0)
+            daily_review_limit = limits.get("daily_review_limit", 0)
+            session_limit = limits.get("session_limit", 25)
+            auto_exit = limits.get("auto_exit_session", True)
+            owner_deck = limits.get("owner_deck") or self.deck
+            deck_id = owner_deck.get("_id") if owner_deck else None
+            deck_name = owner_deck.get("name") if owner_deck else None
             home.show_review(
                 cards,
                 self._data,
@@ -2223,6 +2562,8 @@ class DeckView(QWidget):
                 is_new_only=is_new_only,
                 order_mode=order_mode,
                 default_daily_target=daily_limit,
+                default_daily_new_target=daily_new_limit,
+                default_daily_review_target=daily_review_limit,
                 default_session_target=session_limit,
                 auto_exit_session=auto_exit,
                 deck_id=deck_id,
