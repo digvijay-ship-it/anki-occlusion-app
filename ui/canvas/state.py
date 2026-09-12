@@ -528,6 +528,85 @@ class CanvasStateMixin:
 
         return _rect_for(self._target_idx, self._target_group_id)
 
+    def get_target_box_rect(self):
+        def _rect_for(idx: int, gid: str):
+            if gid:
+                rects = [
+                    b["rect"]
+                    for b in self._boxes
+                    if b.get("group_id", "") == gid
+                ]
+                if rects:
+                    x1, y1 = min(r.left() for r in rects), min(r.top() for r in rects)
+                    x2, y2 = max(r.right() for r in rects), max(
+                        r.bottom() for r in rects
+                    )
+                    return QRectF(x1, y1, x2 - x1, y2 - y1)
+            elif 0 <= idx < len(self._boxes):
+                return QRectF(self._boxes[idx]["rect"])
+            return None
+
+        if self._peek_active:
+            peek_r = _rect_for(self._peek_target_idx, self._peek_target_group_id)
+            if peek_r is not None:
+                return peek_r
+
+        return _rect_for(self._target_idx, self._target_group_id)
+
+    def get_target_question_pixmap(self, padding: int = 15):
+        from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
+        from PyQt5.QtCore import Qt, QRectF
+
+        target_rect = self.get_target_box_rect()
+        if target_rect is None or target_rect.width() <= 0 or target_rect.height() <= 0:
+            return None
+
+        pad = max(0, int(padding))
+        x0 = max(0, int(target_rect.x()) - pad)
+        y0 = max(0, int(target_rect.y()) - pad)
+
+        max_w = getattr(self, "_total_w", 0) or (self._px.width() if getattr(self, "_px", None) else 4000)
+        max_h = getattr(self, "_total_h", 0) or (self._px.height() if getattr(self, "_px", None) else 4000)
+
+        x1 = min(max_w, int(target_rect.right()) + pad)
+        y1 = min(max_h, int(target_rect.bottom()) + pad)
+
+        crop_w = max(10, x1 - x0)
+        crop_h = max(10, y1 - y0)
+
+        cropped = QPixmap(crop_w, crop_h)
+        from theme_manager import get_palette
+        theme = getattr(QApplication.instance(), "_active_theme", "classic")
+        palette = get_palette(theme)
+        bg_color = QColor(palette.get("C_BG", "#1E1E2E"))
+        cropped.fill(bg_color)
+
+        p = QPainter(cropped)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.translate(-x0, -y0)
+
+        if getattr(self, "_px", None) and not self._px.isNull():
+            p.drawPixmap(0, 0, self._px)
+        elif getattr(self, "_pages", None):
+            for i, page_px in enumerate(self._pages):
+                if not page_px or page_px.isNull():
+                    continue
+                p_top = self._page_tops[i] if (hasattr(self, "_page_tops") and i < len(self._page_tops)) else 0
+                p_bot = p_top + page_px.height()
+                if p_bot < y0 or p_top > y1:
+                    continue
+                p.drawPixmap(0, p_top, page_px)
+
+        # Draw a stylish subtle green border matching the occlusion target box
+        border_pen = QPen(QColor("#4CAF50"), 2)
+        p.setPen(border_pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(target_rect)
+        p.end()
+
+        return cropped
+
     def _is_current_target(self, i: int, b: dict) -> bool:
         return (i == self._target_idx) or (
             bool(self._target_group_id)
