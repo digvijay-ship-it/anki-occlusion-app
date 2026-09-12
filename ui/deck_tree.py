@@ -568,8 +568,9 @@ class DeckSettingsDialog(QDialog):
         deck_title = str(self.deck.get("name", "Deck"))
         self.setWindowTitle(f"⚙️ Deck Settings — {deck_title}")
         self.setModal(True)
-        self.setMinimumWidth(640)
-        self.setMinimumHeight(640)
+        self.setMinimumWidth(860)
+        self.setMinimumHeight(740)
+        self.resize(920, 800)
         self.setStyleSheet("""
             QDialog {
                 background-color: #151821;
@@ -580,18 +581,39 @@ class DeckSettingsDialog(QDialog):
                 color: #F8F8F2;
                 background: transparent;
             }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #12141A;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #3D4457;
+                border-radius: 5px;
+                min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #50FA7B;
+            }
             QFrame#cardFrame {
                 background-color: #1E222D;
                 border: 1px solid #2D3342;
-                border-radius: 8px;
-                padding: 16px;
+                border-radius: 10px;
+                padding: 22px;
+            }
+            QFrame#bottomBar {
+                background-color: #101218;
+                border-top: 1px solid #2D3342;
             }
             QLineEdit {
                 background-color: #12141A;
                 color: #50FA7B;
                 border: 2px solid #3D4457;
                 border-radius: 6px;
-                font-size: 22px;
+                font-size: 24px;
                 font-weight: bold;
                 padding: 8px 14px;
             }
@@ -604,9 +626,9 @@ class DeckSettingsDialog(QDialog):
                 color: #F8F8F2;
                 border: 2px solid #3D4457;
                 border-radius: 6px;
-                font-size: 18px;
+                font-size: 20px;
                 font-weight: 600;
-                padding: 8px 14px;
+                padding: 10px 16px;
             }
             QComboBox:focus {
                 border-color: #BD93F9;
@@ -616,19 +638,19 @@ class DeckSettingsDialog(QDialog):
                 color: #F8F8F2;
                 selection-background-color: #BD93F9;
                 selection-color: #151821;
-                font-size: 18px;
-                padding: 6px;
+                font-size: 19px;
+                padding: 8px;
             }
             QCheckBox {
                 color: #F8F8F2;
-                font-size: 19px;
-                font-weight: 600;
-                spacing: 12px;
+                font-size: 21px;
+                font-weight: 700;
+                spacing: 14px;
             }
             QCheckBox::indicator {
-                width: 24px;
-                height: 24px;
-                border-radius: 4px;
+                width: 28px;
+                height: 28px;
+                border-radius: 5px;
                 border: 2px solid #3D4457;
                 background-color: #12141A;
             }
@@ -642,9 +664,9 @@ class DeckSettingsDialog(QDialog):
                 font-size: 20px;
                 font-weight: 900;
                 border: none;
-                border-radius: 6px;
-                padding: 12px 28px;
-                min-width: 140px;
+                border-radius: 8px;
+                padding: 14px 32px;
+                min-width: 220px;
             }
             QPushButton#btnSave:hover {
                 background-color: #69FF91;
@@ -655,8 +677,9 @@ class DeckSettingsDialog(QDialog):
                 font-size: 18px;
                 font-weight: 700;
                 border: 1px solid #3D4457;
-                border-radius: 6px;
-                padding: 12px 24px;
+                border-radius: 8px;
+                padding: 14px 28px;
+                min-width: 140px;
             }
             QPushButton#btnCancel:hover {
                 background-color: rgba(255, 255, 255, 0.05);
@@ -667,47 +690,60 @@ class DeckSettingsDialog(QDialog):
         self._setup_ui()
 
     def _setup_ui(self):
-        from PyQt5.QtGui import QIntValidator
+        from PyQt5.QtGui import QIntValidator, QKeySequence
+        from PyQt5.QtWidgets import QScrollArea, QShortcut
+
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(28, 28, 28, 28)
-        main_layout.setSpacing(18)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Scroll Area for all settings content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(32, 24, 32, 24)
+        scroll_layout.setSpacing(20)
 
         # Header
         header_layout = QHBoxLayout()
         icon_lbl = QLabel("🏯")
-        icon_lbl.setStyleSheet("font-size: 32px;")
+        icon_lbl.setStyleSheet("font-size: 36px;")
         header_layout.addWidget(icon_lbl)
 
         title_layout = QVBoxLayout()
-        title_layout.setSpacing(2)
+        title_layout.setSpacing(4)
         deck_name = str(self.deck.get("name", "Deck"))
         lbl_title = QLabel(deck_name.upper())
-        lbl_title.setStyleSheet("font-size: 24px; font-weight: 900; color: #50FA7B; letter-spacing: 1px;")
+        lbl_title.setStyleSheet("font-size: 28px; font-weight: 900; color: #50FA7B; letter-spacing: 1px;")
         lbl_sub = QLabel("DECK CONFIGURATION & STUDY LIMITS / डेक सेटिंग्स")
-        lbl_sub.setStyleSheet("font-size: 13px; font-weight: bold; color: #8F9BB3; letter-spacing: 1px;")
+        lbl_sub.setStyleSheet("font-size: 16px; font-weight: bold; color: #8F9BB3; letter-spacing: 1px;")
         title_layout.addWidget(lbl_title)
         title_layout.addWidget(lbl_sub)
 
         header_layout.addLayout(title_layout)
         header_layout.addStretch()
-        main_layout.addLayout(header_layout)
+        scroll_layout.addLayout(header_layout)
 
         # Card: Daily Review Limit
         card_limit = QFrame()
         card_limit.setObjectName("cardFrame")
         cl_layout = QVBoxLayout(card_limit)
-        cl_layout.setSpacing(10)
+        cl_layout.setSpacing(14)
 
         # 1. Daily New Cards Limit
         lbl_new_title = QLabel("🌱 Daily New Cards Limit (दैनिक नए कार्ड्स लिमिट):")
-        lbl_new_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #50FA7B;")
+        lbl_new_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #50FA7B;")
         cl_layout.addWidget(lbl_new_title)
 
         row_new = QHBoxLayout()
-        row_new.setSpacing(12)
+        row_new.setSpacing(16)
         self.inp_daily_new_limit = QLineEdit()
         self.inp_daily_new_limit.setValidator(QIntValidator(0, 9999, self))
-        self.inp_daily_new_limit.setFixedWidth(140)
+        self.inp_daily_new_limit.setFixedWidth(220)
         self.inp_daily_new_limit.setAlignment(Qt.AlignCenter)
         curr_new = self.deck.get("daily_new_limit", 0) or 0
         self.inp_daily_new_limit.setText(str(curr_new) if curr_new > 0 else "")
@@ -715,7 +751,7 @@ class DeckSettingsDialog(QDialog):
         row_new.addWidget(self.inp_daily_new_limit)
 
         lbl_new_unit = QLabel("new cards / day (नए कार्ड्स प्रतिदिन)")
-        lbl_new_unit.setStyleSheet("font-size: 15px; font-weight: 600; color: #50FA7B;")
+        lbl_new_unit.setStyleSheet("font-size: 19px; font-weight: 600; color: #50FA7B;")
         row_new.addWidget(lbl_new_unit)
         row_new.addStretch()
         cl_layout.addLayout(row_new)
@@ -723,26 +759,26 @@ class DeckSettingsDialog(QDialog):
         lbl_new_desc = QLabel(
             "प्रतिदिन अधिकतम कितने नए कार्ड्स पढ़ने हैं। 0 या खाली रखने पर Unlimited रहेगा।"
         )
-        lbl_new_desc.setStyleSheet("font-size: 13px; color: #AAB1C4; line-height: 1.3;")
+        lbl_new_desc.setStyleSheet("font-size: 18px; color: #CDD6F4; line-height: 1.4;")
         lbl_new_desc.setWordWrap(True)
         cl_layout.addWidget(lbl_new_desc)
 
         # Divider between new and review
         div_new = QFrame()
         div_new.setFrameShape(QFrame.HLine)
-        div_new.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 4px 0px;")
+        div_new.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 6px 0px;")
         cl_layout.addWidget(div_new)
 
         # 2. Daily Review / Due Limit
         lbl_rev_title = QLabel("📅 Daily Review / Due Target (दैनिक रिवीजन लिमिट):")
-        lbl_rev_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #FFB86C;")
+        lbl_rev_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFB86C;")
         cl_layout.addWidget(lbl_rev_title)
 
         row_rev = QHBoxLayout()
-        row_rev.setSpacing(12)
+        row_rev.setSpacing(16)
         self.inp_daily_review_limit = QLineEdit()
         self.inp_daily_review_limit.setValidator(QIntValidator(0, 9999, self))
-        self.inp_daily_review_limit.setFixedWidth(140)
+        self.inp_daily_review_limit.setFixedWidth(220)
         self.inp_daily_review_limit.setAlignment(Qt.AlignCenter)
         curr_rev = self.deck.get("daily_review_limit", 0) or 0
         self.inp_daily_review_limit.setText(str(curr_rev) if curr_rev > 0 else "")
@@ -750,7 +786,7 @@ class DeckSettingsDialog(QDialog):
         row_rev.addWidget(self.inp_daily_review_limit)
 
         lbl_rev_unit = QLabel("due cards / day (ड्यू कार्ड्स प्रतिदिन)")
-        lbl_rev_unit.setStyleSheet("font-size: 15px; font-weight: 600; color: #FFB86C;")
+        lbl_rev_unit.setStyleSheet("font-size: 19px; font-weight: 600; color: #FFB86C;")
         row_rev.addWidget(lbl_rev_unit)
         row_rev.addStretch()
         cl_layout.addLayout(row_rev)
@@ -758,27 +794,27 @@ class DeckSettingsDialog(QDialog):
         lbl_rev_desc = QLabel(
             "प्रतिदिन अधिकतम कितने Due / रिवीजन कार्ड्स हल करने हैं। 0 या खाली रखने पर Unlimited रहेगा।"
         )
-        lbl_rev_desc.setStyleSheet("font-size: 13px; color: #AAB1C4; line-height: 1.3;")
+        lbl_rev_desc.setStyleSheet("font-size: 18px; color: #CDD6F4; line-height: 1.4;")
         lbl_rev_desc.setWordWrap(True)
         cl_layout.addWidget(lbl_rev_desc)
 
         # Divider between review and total cap
         div_cap = QFrame()
         div_cap.setFrameShape(QFrame.HLine)
-        div_cap.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 4px 0px;")
+        div_cap.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 6px 0px;")
         cl_layout.addWidget(div_cap)
 
         # 3. Overall Total Daily Cap
         lbl_limit_title = QLabel("🎯 Total Daily Cap (कुल दैनिक सीमा - New + Due):")
-        lbl_limit_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #F8F8F2;")
+        lbl_limit_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #8BE9FD;")
         cl_layout.addWidget(lbl_limit_title)
 
         input_row = QHBoxLayout()
-        input_row.setSpacing(12)
+        input_row.setSpacing(16)
 
         self.inp_daily_limit = QLineEdit()
         self.inp_daily_limit.setValidator(QIntValidator(0, 9999, self))
-        self.inp_daily_limit.setFixedWidth(140)
+        self.inp_daily_limit.setFixedWidth(220)
         self.inp_daily_limit.setAlignment(Qt.AlignCenter)
         current_limit = self.deck.get("daily_limit", 0)
         self.inp_daily_limit.setText(str(current_limit) if current_limit > 0 else "")
@@ -786,7 +822,7 @@ class DeckSettingsDialog(QDialog):
         input_row.addWidget(self.inp_daily_limit)
 
         lbl_unit = QLabel("total cards / day (कुल कार्ड्स प्रतिदिन)")
-        lbl_unit.setStyleSheet("font-size: 15px; font-weight: 600; color: #8BE9FD;")
+        lbl_unit.setStyleSheet("font-size: 19px; font-weight: 600; color: #8BE9FD;")
         input_row.addWidget(lbl_unit)
         input_row.addStretch()
         cl_layout.addLayout(input_row)
@@ -794,27 +830,27 @@ class DeckSettingsDialog(QDialog):
         lbl_limit_desc = QLabel(
             "इस डेक से प्रतिदिन अधिकतम कुल कार्ड्स (New + Due)। 0 या खाली रखने पर Unlimited रहेगा।"
         )
-        lbl_limit_desc.setStyleSheet("font-size: 13px; color: #AAB1C4; line-height: 1.3;")
+        lbl_limit_desc.setStyleSheet("font-size: 18px; color: #CDD6F4; line-height: 1.4;")
         lbl_limit_desc.setWordWrap(True)
         cl_layout.addWidget(lbl_limit_desc)
 
         # Divider
         div_line = QFrame()
         div_line.setFrameShape(QFrame.HLine)
-        div_line.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 6px 0px;")
+        div_line.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 8px 0px;")
         cl_layout.addWidget(div_line)
 
-        # Session Target
-        lbl_sess_title = QLabel("🎯 Session Review Target (प्रति सेशन टारगेट):")
-        lbl_sess_title.setStyleSheet("font-size: 20px; font-weight: 800; color: #F8F8F2;")
+        # 4. Session Target
+        lbl_sess_title = QLabel("⏱️ Session Review Target (प्रति सेशन टारगेट):")
+        lbl_sess_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #BD93F9;")
         cl_layout.addWidget(lbl_sess_title)
 
         sess_row = QHBoxLayout()
-        sess_row.setSpacing(12)
+        sess_row.setSpacing(16)
 
         self.inp_session_limit = QLineEdit()
         self.inp_session_limit.setValidator(QIntValidator(1, 9999, self))
-        self.inp_session_limit.setFixedWidth(140)
+        self.inp_session_limit.setFixedWidth(220)
         self.inp_session_limit.setAlignment(Qt.AlignCenter)
         current_sess = self.deck.get("session_limit", 25)
         self.inp_session_limit.setText(str(current_sess) if current_sess > 0 else "25")
@@ -822,31 +858,31 @@ class DeckSettingsDialog(QDialog):
         sess_row.addWidget(self.inp_session_limit)
 
         lbl_sess_unit = QLabel("cards / session (कार्ड्स प्रति सेशन)")
-        lbl_sess_unit.setStyleSheet("font-size: 18px; font-weight: 600; color: #BD93F9;")
+        lbl_sess_unit.setStyleSheet("font-size: 19px; font-weight: 600; color: #BD93F9;")
         sess_row.addWidget(lbl_sess_unit)
         sess_row.addStretch()
         cl_layout.addLayout(sess_row)
 
-        self.chk_auto_exit = QCheckBox("⏸️ Take Break on Target (टारगेट पूरा होने पर ब्रेक लें और बाहर आएं)")
+        self.chk_auto_exit = QCheckBox("Take Break on Target (टारगेट पूरा होने पर ब्रेक लें और बाहर आएं)")
         self.chk_auto_exit.setChecked(bool(self.deck.get("auto_exit_session", True)))
         cl_layout.addWidget(self.chk_auto_exit)
 
         lbl_auto_exit_desc = QLabel(
             "जैसे ही 25 (या तय किए गए) कार्ड्स पूरे होंगे, ऐप आपको ब्रेक लेने का विकल्प देगा और रिव्यू स्क्रीन से बाहर ले आएगा ताकि आप दूसरा विषय पढ़ सकें।"
         )
-        lbl_auto_exit_desc.setStyleSheet("font-size: 14px; color: #8F9BB3; margin-left: 36px; line-height: 1.3;")
+        lbl_auto_exit_desc.setStyleSheet("font-size: 18px; color: #CDD6F4; margin-left: 42px; line-height: 1.4;")
         lbl_auto_exit_desc.setWordWrap(True)
         cl_layout.addWidget(lbl_auto_exit_desc)
 
-        main_layout.addWidget(card_limit)
+        scroll_layout.addWidget(card_limit)
 
         # Card: Pause Status & Review Order
         card_opts = QFrame()
         card_opts.setObjectName("cardFrame")
         co_layout = QVBoxLayout(card_opts)
-        co_layout.setSpacing(14)
+        co_layout.setSpacing(16)
 
-        self.chk_pause = QCheckBox("⏸️ Pause Deck (डेक पॉज / फ्रीज करें)")
+        self.chk_pause = QCheckBox("Pause Deck (डेक पॉज / फ्रीज करें)")
         from data_manager import is_deck_effective_paused
         all_decks = (self._data.get("decks", []) if getattr(self, "_data", None) else None) or (self.parent()._data.get("decks", []) if hasattr(self.parent(), "_data") else None)
         self.chk_pause.setChecked(is_deck_effective_paused(self.deck, all_decks))
@@ -856,12 +892,12 @@ class DeckSettingsDialog(QDialog):
             "पॉज करने पर नए अनदेखे कार्ड्स आना रुक जाएंगे। जो कार्ड्स पहले से Due हैं, "
             "उन्हें आप 'Start Training' से कभी भी पढ़ सकते हैं।"
         )
-        lbl_pause_desc.setStyleSheet("font-size: 14px; color: #FFB86C; margin-left: 36px; line-height: 1.3;")
+        lbl_pause_desc.setStyleSheet("font-size: 18px; color: #FFB86C; margin-left: 42px; line-height: 1.4;")
         lbl_pause_desc.setWordWrap(True)
         co_layout.addWidget(lbl_pause_desc)
 
         lbl_order = QLabel("🔀 Review Order (प्राथमिकता क्रम):")
-        lbl_order.setStyleSheet("font-size: 19px; font-weight: 700; color: #F8F8F2; margin-top: 4px;")
+        lbl_order.setStyleSheet("font-size: 22px; font-weight: 700; color: #F8F8F2; margin-top: 6px;")
         co_layout.addWidget(lbl_order)
 
         self.combo_order = QComboBox()
@@ -874,27 +910,43 @@ class DeckSettingsDialog(QDialog):
             self.combo_order.setCurrentIndex(idx)
         co_layout.addWidget(self.combo_order)
 
-        main_layout.addWidget(card_opts)
-        main_layout.addStretch()
+        scroll_layout.addWidget(card_opts)
+        scroll_layout.addStretch()
 
-        # Buttons
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(14)
-        btn_row.addStretch()
+        scroll_area.setWidget(scroll_content)
+        main_layout.addWidget(scroll_area, stretch=1)
 
-        self.btn_cancel = QPushButton("✕ CANCEL")
+        # Pinned Bottom Action Bar (always 100% visible at bottom)
+        bottom_bar = QFrame()
+        bottom_bar.setObjectName("bottomBar")
+        bottom_layout = QHBoxLayout(bottom_bar)
+        bottom_layout.setContentsMargins(32, 14, 32, 14)
+        bottom_layout.setSpacing(16)
+
+        lbl_tip = QLabel("💡 Tip: Press Enter or Ctrl+S to save immediately")
+        lbl_tip.setStyleSheet("font-size: 16px; color: #8F9BB3; font-weight: 500;")
+        bottom_layout.addWidget(lbl_tip)
+        bottom_layout.addStretch()
+
+        self.btn_cancel = QPushButton("✕ CANCEL (Esc)")
         self.btn_cancel.setObjectName("btnCancel")
         self.btn_cancel.setCursor(Qt.PointingHandCursor)
         self.btn_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(self.btn_cancel)
+        bottom_layout.addWidget(self.btn_cancel)
 
-        self.btn_save = QPushButton("💾 SAVE SETTINGS")
+        self.btn_save = QPushButton("💾 SAVE SETTINGS (Enter)")
         self.btn_save.setObjectName("btnSave")
         self.btn_save.setCursor(Qt.PointingHandCursor)
         self.btn_save.clicked.connect(self._save_settings)
-        btn_row.addWidget(self.btn_save)
+        bottom_layout.addWidget(self.btn_save)
 
-        main_layout.addLayout(btn_row)
+        main_layout.addWidget(bottom_bar, stretch=0)
+
+        # Shortcuts
+        QShortcut(QKeySequence("Ctrl+S"), self, self._save_settings)
+        QShortcut(QKeySequence("Return"), self, self._save_settings)
+        QShortcut(QKeySequence("Enter"), self, self._save_settings)
+        QShortcut(QKeySequence("Esc"), self, self.reject)
 
     def _save_settings(self):
         new_text = self.inp_daily_new_limit.text().strip()
