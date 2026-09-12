@@ -43,9 +43,6 @@ def open_annotation_beta(self):
                 doc.save(pdf_abs_path)
                 doc.close()
                 
-                card["pdf_path"] = pdf_rel_path
-                data_manager.store.mark_dirty()
-                data_manager.store.save_force(async_save=True)
                 path = pdf_abs_path
             except Exception as e:
                 print(f"[ERROR][annotation_handler] Failed to convert image to PDF: {e}")
@@ -375,9 +372,6 @@ def open_annotation_for_deck(deck_or_card, parent_window=None):
                 doc.save(pdf_abs_path)
                 doc.close()
 
-                card["pdf_path"] = pdf_rel_path
-                data_manager.store.mark_dirty()
-                data_manager.store.save_force(async_save=True)
                 path = pdf_abs_path
             except Exception as e:
                 print(f"[open_annotation_for_deck] Failed to convert image to PDF: {e}")

@@ -1141,7 +1141,7 @@ class CardEditorDialog(QDialog):
             "Duplicate Card Detected",
             msg,
             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-            QMessageBox.Cancel
+            QMessageBox.Yes
         )
         
         if reply == QMessageBox.Yes:
@@ -2008,6 +2008,8 @@ class CardEditorDialog(QDialog):
         pdf_path = self._resolve_source_path(card.get("pdf_path", ""))
 
         if card.get("image_path") and os.path.exists(image_path):
+            self.card.pop("pdf_path", None)
+            self.card.pop("_pdf_box_render_zoom", None)
             print(
                 "[DEBUG][editor_card] load "
                 f"source=image boxes={len(current_boxes or [])} "
@@ -2217,9 +2219,6 @@ class CardEditorDialog(QDialog):
                     doc.save(pdf_abs_path)
                     doc.close()
                     
-                    self.card["pdf_path"] = pdf_rel_path
-                    data_manager.store.mark_dirty()
-                    data_manager.store.save_force(async_save=True)
                     path = pdf_abs_path
                 except Exception as e:
                     print(f"[ERROR][editor_dialog] Failed to convert image to PDF: {e}")
@@ -2413,7 +2412,10 @@ class CardEditorDialog(QDialog):
                 "is_formula": self.chk_formula.isChecked(),
             }
         )
-        if self.card.get("pdf_path"):
+        if self.card.get("image_path") and not getattr(self, "_pdf_pages", None):
+            self.card.pop("pdf_path", None)
+            self.card.pop("_pdf_box_render_zoom", None)
+        elif self.card.get("pdf_path"):
             self.card["_pdf_box_render_zoom"] = float(
                 self._pdf_render_zoom or PDF_LEGACY_BOX_ZOOM
             )

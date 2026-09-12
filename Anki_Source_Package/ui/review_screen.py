@@ -9224,7 +9224,7 @@ class ReviewScreen(QWidget):
 
         # ── 1. IMAGE CARD ─────────────────────────────────────────────────────
         image_path = resolve_asset_path(card.get("image_path", ""))
-        if card.get("image_path") and not card.get("pdf_path") and os.path.exists(image_path):
+        if card.get("image_path") and os.path.exists(image_path):
             px = QPixmap(image_path)
             if px and not px.isNull():
                 self._apply_canvas(card, box_idx, px)
