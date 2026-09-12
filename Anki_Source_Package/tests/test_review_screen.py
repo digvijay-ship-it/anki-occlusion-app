@@ -2998,12 +2998,21 @@ class UniqueCardProgressTrackingTests(unittest.TestCase):
         ink_px = QPixmap(400, 200)
         ink_px.fill(QColor("blue"))
 
-        combined = combine_question_and_ink_pixmaps(q_px, ink_px)
-        self.assertFalse(combined.isNull())
-        # Width should fit max(qw, iw) + 2*padding (400 + 32 = 432)
-        self.assertEqual(combined.width(), 432)
-        # Height should be 16 + 150 + 14 + 2 + 14 + 200 + 16 = 412
-        self.assertEqual(combined.height(), 412)
+        # Default is horizontal layout: side by side
+        combined_h = combine_question_and_ink_pixmaps(q_px, ink_px)
+        self.assertFalse(combined_h.isNull())
+        # Width: 16 + 300 + 14 + 2 + 14 + 400 + 16 = 762
+        self.assertEqual(combined_h.width(), 762)
+        # Height: max(150, 200) + 32 = 232
+        self.assertEqual(combined_h.height(), 232)
+
+        # Vertical layout
+        combined_v = combine_question_and_ink_pixmaps(q_px, ink_px, orientation="vertical")
+        self.assertFalse(combined_v.isNull())
+        # Width: max(300, 400) + 32 = 432
+        self.assertEqual(combined_v.width(), 432)
+        # Height: 16 + 150 + 14 + 2 + 14 + 200 + 16 = 412
+        self.assertEqual(combined_v.height(), 412)
 
         # Fallback tests
         self.assertEqual(combine_question_and_ink_pixmaps(None, ink_px), ink_px)
