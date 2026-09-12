@@ -693,7 +693,7 @@ def render_cropped_strokes(strokes, crop_rect, ink_width):
     return px
 
 
-def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None):
+def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None, orientation="horizontal"):
     from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
     from PyQt5.QtCore import Qt
 
@@ -711,33 +711,65 @@ def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None):
     qw, qh = question_px.width(), question_px.height()
     iw, ih = ink_px.width(), ink_px.height()
 
-    max_content_w = max(qw, iw)
-    total_w = max_content_w + (padding * 2)
-    total_h = padding + qh + divider_gap + divider_thickness + divider_gap + ih + padding
+    if orientation == "vertical":
+        max_content_w = max(qw, iw)
+        total_w = max_content_w + (padding * 2)
+        total_h = padding + qh + divider_gap + divider_thickness + divider_gap + ih + padding
 
-    combined = QPixmap(total_w, total_h)
-    bg = QColor(bg_color) if bg_color else QColor("#181825")
-    combined.fill(bg)
+        combined = QPixmap(total_w, total_h)
+        bg = QColor(bg_color) if bg_color else QColor("#181825")
+        combined.fill(bg)
 
-    p = QPainter(combined)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p = QPainter(combined)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
 
-    # 1. Draw Question (centered horizontally)
-    qx = padding + (max_content_w - qw) // 2
-    qy = padding
-    p.drawPixmap(qx, qy, question_px)
+        # 1. Draw Question (centered horizontally)
+        qx = padding + (max_content_w - qw) // 2
+        qy = padding
+        p.drawPixmap(qx, qy, question_px)
 
-    # 2. Draw Divider
-    div_y = qy + qh + divider_gap
-    p.setPen(QPen(QColor("#45475A"), divider_thickness))
-    p.drawLine(padding, div_y, total_w - padding, div_y)
+        # 2. Draw Divider
+        div_y = qy + qh + divider_gap
+        p.setPen(QPen(QColor("#45475A"), divider_thickness))
+        p.drawLine(padding, div_y, total_w - padding, div_y)
 
-    # 3. Draw Ink Solution (centered horizontally)
-    ix = padding + (max_content_w - iw) // 2
-    iy = div_y + divider_thickness + divider_gap
-    p.drawPixmap(ix, iy, ink_px)
+        # 3. Draw Ink Solution (centered horizontally)
+        ix = padding + (max_content_w - iw) // 2
+        iy = div_y + divider_thickness + divider_gap
+        p.drawPixmap(ix, iy, ink_px)
 
-    p.end()
-    return combined
+        p.end()
+        return combined
+    else:
+        # Horizontal layout: Question on Left, Ink Solution on Right
+        max_content_h = max(qh, ih)
+        total_w = padding + qw + divider_gap + divider_thickness + divider_gap + iw + padding
+        total_h = max_content_h + (padding * 2)
+
+        combined = QPixmap(total_w, total_h)
+        bg = QColor(bg_color) if bg_color else QColor("#181825")
+        combined.fill(bg)
+
+        p = QPainter(combined)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        # 1. Draw Question on Left (vertically centered)
+        qx = padding
+        qy = padding + (max_content_h - qh) // 2
+        p.drawPixmap(qx, qy, question_px)
+
+        # 2. Draw Vertical Divider
+        div_x = qx + qw + divider_gap
+        p.setPen(QPen(QColor("#45475A"), divider_thickness))
+        p.drawLine(div_x, padding, div_x, total_h - padding)
+
+        # 3. Draw Ink Solution on Right (vertically centered)
+        ix = div_x + divider_thickness + divider_gap
+        iy = padding + (max_content_h - ih) // 2
+        p.drawPixmap(ix, iy, ink_px)
+
+        p.end()
+        return combined
 
