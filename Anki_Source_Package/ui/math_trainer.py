@@ -178,6 +178,20 @@ class MathScratchpad(QWidget):
         else:
             super().mousePressEvent(e)
 
+    def keyPressEvent(self, e):
+        if (e.key() in (Qt.Key_Z, Qt.Key_Delete)) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)) and not e.isAutoRepeat():
+            self.clear()
+            self._clear_on_next_press = False
+            p = self.parent()
+            while p:
+                if hasattr(p, "_on_clear_clicked"):
+                    p._on_clear_clicked()
+                    break
+                p = p.parent()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.LeftButton:
             self.clear()
@@ -950,6 +964,11 @@ class MathTrainerPage(QWidget):
                 self.go_back()
             e.accept()
             return
+        elif (e.key() in (Qt.Key_Z, Qt.Key_Delete)) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)) and not e.isAutoRepeat():
+            if hasattr(self, "_p2") and not self._p2.isHidden():
+                self._on_clear_clicked()
+                e.accept()
+                return
         elif e.key() == Qt.Key_QuoteLeft:
             self._toggle_pen()
             e.accept()
@@ -978,7 +997,11 @@ class MathTrainerPage(QWidget):
 
     def eventFilter(self, obj, e):
         if e.type() == QEvent.KeyPress:
-            if e.key() == Qt.Key_C and (e.modifiers() & Qt.ControlModifier):
+            if (e.key() in (Qt.Key_Z, Qt.Key_Delete)) and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)) and not e.isAutoRepeat():
+                if hasattr(self, "_p2") and not self._p2.isHidden():
+                    self._on_clear_clicked()
+                    return True
+            elif e.key() == Qt.Key_C and (e.modifiers() & Qt.ControlModifier):
                 self._copy_misread_to_clipboard()
                 return True
             elif e.key() == Qt.Key_R and (e.modifiers() & Qt.ControlModifier):
@@ -1719,16 +1742,17 @@ class MathTrainerPage(QWidget):
         # Scratchpad toolbar
         self._sp_bar = QHBoxLayout()
         self._sp_bar.setContentsMargins(0, 4, 0, 2)
-        sp_hint_lbl = QLabel("✏ DRAW HERE (DBL-CLICK OR ESC TO CLEAR)")
+        sp_hint_lbl = QLabel("✏ DRAW HERE (Z / DBL-CLICK / ESC TO CLEAR)")
         sp_hint_lbl.setFont(QFont(self._hf, 8, QFont.Bold))
         sp_hint_lbl.setStyleSheet(f"color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};background:transparent;letter-spacing:1px;")
         self._sp_bar.addWidget(sp_hint_lbl)
         self._sp_bar.addStretch(1)
 
-        self._clear_btn = QPushButton("CLEAR ⌫ (Esc)")
+        self._clear_btn = QPushButton("CLEAR ⌫ (Z / Esc)")
         self._clear_btn.setFixedHeight(26)
         self._clear_btn.setFont(QFont(self._hf, 8, QFont.Bold))
         self._clear_btn.setCursor(Qt.PointingHandCursor)
+        self._clear_btn.setToolTip("Clear drawing board and input (Z or Esc)")
         self._clear_btn.setStyleSheet(
             f"QPushButton{{font-family: {self._hf}; font-size: 8px; font-weight: bold; background:transparent;"
             f"border:1px solid {self._p.get('C_BORDER', _h(BORDER))};color:{self._p.get('C_SUBTEXT', _h(SUBTEXT))};"

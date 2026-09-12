@@ -299,6 +299,45 @@ class MathTrainerVerificationTests(unittest.TestCase):
             page.deleteLater()
             QApplication.processEvents()
 
+    def test_z_key_clears_drawing_board(self):
+        from ui.math_trainer import MathTrainerPage
+        from PyQt5.QtTest import QTest
+        page = MathTrainerPage()
+        try:
+            page._mode = 3
+            page._start_practice()
+
+            # 1. Add strokes to BOTH scratchpads and text to input box
+            p1 = QPointF(10, 10)
+            p2 = QPointF(20, 20)
+            page._scratchpad._strokes = [[p1, p2]]
+            page._side_scratchpad._strokes = [[p1, p2]]
+            page._ans_in.setText("9999")
+
+            # Press 'Z' key while focused on answer box
+            page._ans_in.setFocus()
+            QTest.keyClick(page._ans_in, Qt.Key_Z)
+
+            # Both pads and input must be cleared
+            self.assertEqual(len(page._scratchpad._strokes), 0)
+            self.assertEqual(len(page._side_scratchpad._strokes), 0)
+            self.assertEqual(page._ans_in.text(), "")
+
+            # 2. Add strokes to main scratchpad and test pressing 'Z' directly on scratchpad
+            page._scratchpad._strokes = [[p1, p2]]
+            page._scratchpad.setFocus()
+            QTest.keyClick(page._scratchpad, Qt.Key_Z)
+            self.assertEqual(len(page._scratchpad._strokes), 0)
+
+            # 3. Add strokes and test pressing 'Z' on page directly
+            page._scratchpad._strokes = [[p1, p2]]
+            page.setFocus()
+            QTest.keyClick(page, Qt.Key_Z)
+            self.assertEqual(len(page._scratchpad._strokes), 0)
+        finally:
+            page.deleteLater()
+            QApplication.processEvents()
+
     def test_per_item_streak_retirement_and_celebration(self):
         from ui.math_trainer import MathTrainerPage
         page = MathTrainerPage()
