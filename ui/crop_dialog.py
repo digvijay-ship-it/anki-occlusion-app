@@ -692,3 +692,52 @@ def render_cropped_strokes(strokes, crop_rect, ink_width):
     p.end()
     return px
 
+
+def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None):
+    from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
+    from PyQt5.QtCore import Qt
+
+    if (not question_px or question_px.isNull()) and (not ink_px or ink_px.isNull()):
+        return QPixmap()
+    if not question_px or question_px.isNull():
+        return ink_px
+    if not ink_px or ink_px.isNull():
+        return question_px
+
+    padding = 16
+    divider_gap = 14
+    divider_thickness = 2
+
+    qw, qh = question_px.width(), question_px.height()
+    iw, ih = ink_px.width(), ink_px.height()
+
+    max_content_w = max(qw, iw)
+    total_w = max_content_w + (padding * 2)
+    total_h = padding + qh + divider_gap + divider_thickness + divider_gap + ih + padding
+
+    combined = QPixmap(total_w, total_h)
+    bg = QColor(bg_color) if bg_color else QColor("#181825")
+    combined.fill(bg)
+
+    p = QPainter(combined)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+    # 1. Draw Question (centered horizontally)
+    qx = padding + (max_content_w - qw) // 2
+    qy = padding
+    p.drawPixmap(qx, qy, question_px)
+
+    # 2. Draw Divider
+    div_y = qy + qh + divider_gap
+    p.setPen(QPen(QColor("#45475A"), divider_thickness))
+    p.drawLine(padding, div_y, total_w - padding, div_y)
+
+    # 3. Draw Ink Solution (centered horizontally)
+    ix = padding + (max_content_w - iw) // 2
+    iy = div_y + divider_thickness + divider_gap
+    p.drawPixmap(ix, iy, ink_px)
+
+    p.end()
+    return combined
+
