@@ -837,8 +837,8 @@ class MainWindow(QMainWindow):
             self.change_font_size(-1)
         elif mods & Qt.ControlModifier and key == Qt.Key_0:
             self.change_font_size(0)
-        elif mods & Qt.ControlModifier and key == Qt.Key_C:
-            # Ctrl+C → RAM cache clear (disk untouched)
+        elif (mods & (Qt.ControlModifier | Qt.ShiftModifier) == (Qt.ControlModifier | Qt.ShiftModifier)) and key == Qt.Key_C:
+            # Ctrl+Shift+C → RAM cache clear (disk untouched)
             home = self.centralWidget()
             if home is not None and hasattr(home, "_clear_home_ram_caches"):
                 home._clear_home_ram_caches()

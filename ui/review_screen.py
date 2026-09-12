@@ -5522,6 +5522,42 @@ class ReviewScreen(QWidget):
             super().keyPressEvent(e)
 
     def _copy_current_card_text(self):
+        # 1. First priority: Check if active focused widget (or child text browser) has selected text
+        fw = QApplication.focusWidget()
+        if fw and hasattr(fw, "textCursor") and fw.textCursor().hasSelection():
+            fw.copy()
+            sel_text = fw.textCursor().selectedText().strip()
+            if hasattr(self.canvas, "_show_toast"):
+                snip = (sel_text[:50] + "...") if len(sel_text) > 50 else sel_text
+                self.canvas._show_toast(f"📋 Copied: {snip}")
+            return
+
+        # Check stacked widget child text browsers for active selection
+        sw = getattr(self, "_stacked_widget", None)
+        if sw is not None:
+            cw = sw.currentWidget()
+            if cw == getattr(self, "_mcq_review_widget", None):
+                mcq = self._mcq_review_widget
+                for tb in (getattr(mcq, "sol_browser", None), getattr(mcq, "q_browser", None)):
+                    if tb and hasattr(tb, "textCursor") and tb.textCursor().hasSelection():
+                        tb.copy()
+                        sel_text = tb.textCursor().selectedText().strip()
+                        if hasattr(self.canvas, "_show_toast"):
+                            snip = (sel_text[:50] + "...") if len(sel_text) > 50 else sel_text
+                            self.canvas._show_toast(f"📋 Copied: {snip}")
+                        return
+            elif cw == getattr(self, "_text_review_widget", None):
+                trw = self._text_review_widget
+                for tb in (getattr(trw, "ans_browser", None), getattr(trw, "q_browser", None), getattr(trw, "text_browser", None)):
+                    if tb and hasattr(tb, "textCursor") and tb.textCursor().hasSelection():
+                        tb.copy()
+                        sel_text = tb.textCursor().selectedText().strip()
+                        if hasattr(self.canvas, "_show_toast"):
+                            snip = (sel_text[:50] + "...") if len(sel_text) > 50 else sel_text
+                            self.canvas._show_toast(f"📋 Copied: {snip}")
+                        return
+
+        # 2. Fallback: Copy entire card question / answer if no text is specifically selected
         if not (0 <= self._idx < len(self._items)):
             return
         card, box_idx, _ = self._items[self._idx]
@@ -5538,6 +5574,20 @@ class ReviewScreen(QWidget):
                 text_to_copy = f"{q} — {a}" if q else a
             else:
                 text_to_copy = q if q else a
+        elif card.get("card_type") in ("mcq", "testbook_mcq") or card.get("is_mcq"):
+            clean_q = re.sub(r'<[^>]+>', '', q).strip()
+            ans = ""
+            c_opt = card.get("correct_option")
+            if isinstance(c_opt, dict):
+                ans = f"({c_opt.get('label', '')}) {c_opt.get('text', '')}"
+            elif isinstance(c_opt, str):
+                ans = c_opt
+            if not ans:
+                ans = re.sub(r'<[^>]+>', '', a).strip()
+            if is_revealed and ans:
+                text_to_copy = f"{clean_q} — {ans}"
+            else:
+                text_to_copy = clean_q
         else:
             text_to_copy = card.get("title", "") or card.get("name", "")
             

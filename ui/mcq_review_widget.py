@@ -1193,6 +1193,14 @@ class MCQReviewWidget(QWidget):
             e.accept()
             return
 
+        # 5. Keyboard Copy shortcut: Ctrl+C checks text browsers for active selection
+        if (e.modifiers() & Qt.ControlModifier) and e.key() == Qt.Key_C:
+            for tb in (getattr(self, "sol_browser", None), getattr(self, "q_browser", None)):
+                if tb and hasattr(tb, "textCursor") and tb.textCursor().hasSelection():
+                    tb.copy()
+                    e.accept()
+                    return
+
         # Forward space and rating keys to review_screen
         p = self.parent()
         while p and not hasattr(p, "_reveal_current") and not hasattr(p, "_rate"):

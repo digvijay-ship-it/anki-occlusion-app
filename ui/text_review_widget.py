@@ -260,7 +260,11 @@ class ZoomableTextBrowser(QTextBrowser):
 
     def keyPressEvent(self, e):
         # Allow Ctrl+C for copying selected text
-        if e.matches(QKeySequence.Copy):
+        if e.matches(QKeySequence.Copy) or ((e.modifiers() & Qt.ControlModifier) and e.key() == Qt.Key_C):
+            if self.textCursor().hasSelection():
+                self.copy()
+                e.accept()
+                return
             super().keyPressEvent(e)
             return
 

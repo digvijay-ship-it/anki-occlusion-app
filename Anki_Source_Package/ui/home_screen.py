@@ -1404,7 +1404,7 @@ class HomeScreen(QWidget):
         from PyQt5.QtGui import QKeySequence
         from PyQt5.QtWidgets import QShortcut
 
-        self._clear_home_ram_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
+        self._clear_home_ram_shortcut = QShortcut(QKeySequence("Ctrl+Shift+C"), self)
         self._clear_home_ram_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._clear_home_ram_shortcut.activated.connect(self._clear_home_ram_caches)
 
