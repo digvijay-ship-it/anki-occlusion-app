@@ -2989,6 +2989,84 @@ class UniqueCardProgressTrackingTests(unittest.TestCase):
         self.assertFalse(screen._session_break_prompted)
         self.assertFalse(screen._session_target_notified)
 
+    def test_combine_question_and_ink_pixmaps(self):
+        from PyQt5.QtGui import QPixmap, QColor
+        from ui.crop_dialog import combine_question_and_ink_pixmaps
+
+        q_px = QPixmap(300, 150)
+        q_px.fill(QColor("black"))
+        ink_px = QPixmap(400, 200)
+        ink_px.fill(QColor("blue"))
+
+        combined = combine_question_and_ink_pixmaps(q_px, ink_px)
+        self.assertFalse(combined.isNull())
+        # Width should fit max(qw, iw) + 2*padding (400 + 32 = 432)
+        self.assertEqual(combined.width(), 432)
+        # Height should be 16 + 150 + 14 + 2 + 14 + 200 + 16 = 412
+        self.assertEqual(combined.height(), 412)
+
+        # Fallback tests
+        self.assertEqual(combine_question_and_ink_pixmaps(None, ink_px), ink_px)
+        self.assertEqual(combine_question_and_ink_pixmaps(q_px, None), q_px)
+        self.assertTrue(combine_question_and_ink_pixmaps(None, None).isNull())
+
+    def test_get_target_question_pixmap_canvas(self):
+        from PyQt5.QtGui import QPixmap, QColor
+        from PyQt5.QtCore import QRectF
+        from ui.canvas.core import OcclusionCanvas
+
+        canvas = OcclusionCanvas()
+        base_px = QPixmap(500, 500)
+        base_px.fill(QColor("white"))
+        canvas._px = base_px
+        canvas._boxes = [
+            {"rect": QRectF(50, 50, 100, 80), "group_id": ""}
+        ]
+        canvas.set_target_box(0)
+
+        q_px = canvas.get_target_question_pixmap(padding=10)
+        self.assertIsNotNone(q_px)
+        self.assertFalse(q_px.isNull())
+        self.assertEqual(q_px.width(), 100 + 20)
+        self.assertEqual(q_px.height(), 80 + 20)
+
+    def test_save_review_ink_combines_question_on_ctrl_shift_a(self):
+        from PyQt5.QtGui import QPixmap, QColor
+        from PyQt5.QtCore import QSize, QPointF, QRectF
+        from ui.review_screen import ReviewScreen
+
+        with patch("PyQt5.QtWidgets.QApplication.clipboard") as mock_clipboard_func:
+            mock_clipboard = MagicMock()
+            mock_clipboard_func.return_value = mock_clipboard
+
+            screen = ReviewScreen.__new__(ReviewScreen)
+            QWidget.__init__(screen)
+            screen._show_review_toast = MagicMock()
+            screen.__init__([])
+
+            mock_card = {"_id": 1, "card_type": "image"}
+            mock_box = {"note": ""}
+            screen._items = [(mock_card, 0, mock_box)]
+            screen._idx = 0
+
+            # Set up canvas with valid pixmap and target box
+            base_px = QPixmap(800, 600)
+            base_px.fill(QColor("black"))
+            screen.canvas._px = base_px
+            screen.canvas._ink_width = 3.0
+            screen.canvas._ink_strokes = [
+                ["#FF0000", QPointF(10, 20), QPointF(30, 40)]
+            ]
+            screen.canvas._boxes = [{"rect": QRectF(50, 50, 200, 100), "group_id": ""}]
+            screen.canvas.set_target_box(0)
+
+            # Test Ctrl+Shift+A (clear_ink=False)
+            screen._save_review_ink_to_note(clear_ink=False)
+
+            self.assertEqual(mock_clipboard.setPixmap.call_count, 1)
+            # Should show Question + Solution combined toast
+            screen._show_review_toast.assert_called_with("📋 Copied Question + Solution to clipboard (canvas kept)!")
+
 
 if __name__ == "__main__":
     unittest.main()
