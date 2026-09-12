@@ -3133,11 +3133,56 @@ class ReviewScreen(QWidget):
         self._review_toast_label.raise_()
         self._review_toast_timer.start(2000)
 
+    def _get_current_question_pixmap(self):
+        """
+        Extracts a clean crop of the current question.
+        - For Image/PDF Occlusion: extracts the active unmasked target box/group from canvas.
+        - For Text cards: grabs the text card frame.
+        - For MCQ cards: grabs the mcq card widget.
+        """
+        try:
+            from PyQt5.QtGui import QPixmap
+            text_widget = getattr(self, "_text_review_widget", None)
+            mcq_widget = getattr(self, "_mcq_review_widget", None)
+            stacked = getattr(self, "_stacked_widget", None)
+
+            if stacked is not None:
+                curr_w = stacked.currentWidget()
+                if curr_w == text_widget and text_widget is not None:
+                    card_frame = getattr(text_widget, "card_frame", None)
+                    if card_frame is not None and hasattr(card_frame, "grab"):
+                        px = card_frame.grab()
+                        if isinstance(px, QPixmap) and not px.isNull():
+                            return px
+                    if hasattr(text_widget, "grab"):
+                        px = text_widget.grab()
+                        if isinstance(px, QPixmap) and not px.isNull():
+                            return px
+                elif curr_w == mcq_widget and mcq_widget is not None:
+                    if hasattr(mcq_widget, "grab"):
+                        px = mcq_widget.grab()
+                        if isinstance(px, QPixmap) and not px.isNull():
+                            return px
+
+            canvas = getattr(self, "canvas", None)
+            if canvas is not None and hasattr(canvas, "get_target_question_pixmap"):
+                q_px = canvas.get_target_question_pixmap()
+                if isinstance(q_px, QPixmap) and not q_px.isNull():
+                    return q_px
+        except Exception:
+            pass
+        return None
+
     def _save_review_ink_to_note(self, clear_ink=True):
         from PyQt5.QtCore import QSize
         from PyQt5.QtWidgets import QDialog, QApplication
-        from PyQt5.QtGui import QColor
-        from ui.crop_dialog import CropInkDialog, get_auto_crop_rect, render_cropped_strokes
+        from PyQt5.QtGui import QColor, QPixmap
+        from ui.crop_dialog import (
+            CropInkDialog,
+            get_auto_crop_rect,
+            render_cropped_strokes,
+            combine_question_and_ink_pixmaps,
+        )
 
         is_text_mode = False
         text_widget = getattr(self, "_text_review_widget", None)
@@ -3188,10 +3233,15 @@ class ReviewScreen(QWidget):
             ink_width = self.canvas._ink_width
             was_active = getattr(self, "_was_ink_active_before_ctrl", False) or getattr(self.canvas, "_ink_active", False)
 
+        has_combined = False
         if not clear_ink:
             # INSTANT COPY (no prompting dialog)
             crop_rect = get_auto_crop_rect(ink_strokes, canvas_size, card_img_size)
             px = render_cropped_strokes(ink_strokes, crop_rect, ink_width)
+            question_px = self._get_current_question_pixmap()
+            if question_px is not None and isinstance(question_px, QPixmap) and not question_px.isNull():
+                px = combine_question_and_ink_pixmaps(question_px, px)
+                has_combined = True
         else:
             dialog = CropInkDialog(
                 ink_strokes,
@@ -3324,7 +3374,10 @@ class ReviewScreen(QWidget):
             else:
                 self._show_review_toast("📋 Copied drawing to clipboard!")
         else:
-            self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
+            if has_combined:
+                self._show_review_toast("📋 Copied Question + Solution to clipboard (canvas kept)!")
+            else:
+                self._show_review_toast("📋 Copied drawing to clipboard (canvas kept)!")
 
         # Restore or keep ink state active
         if was_active:
