@@ -4692,6 +4692,13 @@ class ReviewScreen(QWidget):
             if self._concept_hub_drawer.isVisible():
                 self._concept_hub_drawer.raise_()
 
+        # Reposition Socratic AI Buddy Drawer
+        if getattr(self, "_ai_buddy_drawer", None) is not None:
+            if hasattr(self._ai_buddy_drawer, "update_geometry"):
+                self._ai_buddy_drawer.update_geometry()
+            if self._ai_buddy_drawer.isVisible():
+                self._ai_buddy_drawer.raise_()
+
         self._reposition_target_toast()
 
     def _reposition_overlays(self):
@@ -5012,6 +5019,11 @@ class ReviewScreen(QWidget):
         card, box_idx, sm2_obj = self._items[self._idx]
         if getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
             self._concept_hub_drawer.open_drawer(card)
+        if getattr(self, "_ai_buddy_drawer", None) is not None:
+            active_b = card
+            if isinstance(box_idx, int) and hasattr(self, "canvas") and 0 <= box_idx < len(getattr(self.canvas, "_boxes", [])):
+                active_b = self.canvas._boxes[box_idx]
+            self._ai_buddy_drawer.set_current_card(card, active_box=active_b, sm2_obj=sm2_obj)
         try:
             home = self._find_home()
             if home is not None and hasattr(home, "save_last_review_session") and self._items and not self.is_practice:
@@ -5417,8 +5429,19 @@ class ReviewScreen(QWidget):
                 e.accept()
                 return
 
-        if key == Qt.Key_Escape and getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
-            self._concept_hub_drawer.close_drawer()
+        if key == Qt.Key_Escape:
+            if getattr(self, "_ai_buddy_drawer", None) is not None and self._ai_buddy_drawer.isVisible():
+                self._ai_buddy_drawer.close_drawer()
+                e.accept()
+                return
+            if getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
+                self._concept_hub_drawer.close_drawer()
+                e.accept()
+                return
+
+        # Alt+D toggle for AI Study Buddy
+        if key == Qt.Key_D and (mods & Qt.AltModifier):
+            self._toggle_ai_buddy()
             e.accept()
             return
 
@@ -6994,6 +7017,26 @@ class ReviewScreen(QWidget):
         self.btn_concept_hub.clicked.connect(self._toggle_concept_hub)
         row2.addWidget(self.btn_concept_hub)
 
+        # ── Group 5.1: Socratic AI Study Buddy ──────────────────────────────
+        self.btn_ai_buddy = QPushButton("🤖 AI Buddy")
+        self.btn_ai_buddy.setToolTip("Open Socratic AI Study Buddy (Alt+D)")
+        if dojo:
+            self.btn_ai_buddy.setStyleSheet(
+                f"QPushButton{{background:rgba(203,166,247,0.18);color:#CBA6F7;"
+                f"border:1px solid #CBA6F7;border-radius:2px;padding:3px 10px;"
+                f"font-size:9px;font-weight:bold;font-family:{font};}}"
+                f"QPushButton:hover{{background:rgba(203,166,247,0.35);border:1px solid #CBA6F7;}}"
+            )
+        else:
+            self.btn_ai_buddy.setStyleSheet(
+                "QPushButton{background:rgba(203,166,247,0.18);color:#CBA6F7;"
+                "border:1px solid #CBA6F7;border-radius:6px;padding:4px 12px;"
+                "font-size:11px;font-weight:bold;}"
+                "QPushButton:hover{background:rgba(203,166,247,0.32);border:1px solid #B4BEFE;}"
+            )
+        self.btn_ai_buddy.clicked.connect(self._toggle_ai_buddy)
+        row2.addWidget(self.btn_ai_buddy)
+
         # ── Group 6: Live Sync Deck from Source ────────────────────────────
         self.btn_sync_deck = QPushButton("🔄 Sync Deck")
         self.btn_sync_deck.setToolTip("Sync & reload current deck from source file/folder (F5 / Alt+R)")
@@ -7889,6 +7932,10 @@ class ReviewScreen(QWidget):
         from ui.review.concept_hub_drawer import ConceptHubDrawer
         self._concept_hub_drawer = ConceptHubDrawer(self, self)
 
+        # Socratic AI Study Buddy Drawer
+        from ui.review.ai_buddy_drawer import AIBuddyDrawer
+        self._ai_buddy_drawer = AIBuddyDrawer(self, self)
+
     def _toggle_concept_hub(self):
         if hasattr(self, "_concept_hub_drawer"):
             self._concept_hub_drawer.toggle_drawer()
@@ -7896,6 +7943,14 @@ class ReviewScreen(QWidget):
     def _open_concept_hub(self, tag=None):
         if hasattr(self, "_concept_hub_drawer"):
             self._concept_hub_drawer.open_drawer(tag_filter=tag)
+
+    def _toggle_ai_buddy(self):
+        if hasattr(self, "_ai_buddy_drawer"):
+            self._ai_buddy_drawer.toggle_drawer()
+
+    def _open_ai_buddy(self):
+        if hasattr(self, "_ai_buddy_drawer"):
+            self._ai_buddy_drawer.open_drawer()
 
     def _update_ink_hint(self):
         """Canvas toasts handle the visible pen status in review mode."""

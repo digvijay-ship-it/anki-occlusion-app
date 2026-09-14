@@ -20,6 +20,13 @@ Draw masks over parts of your PDF notes to hide answers, import entire vocabular
 - **Retroactive Rescheduler** — Recalculates intervals and schedules for cards based on active retention overrides on demand with detailed execution metrics.
 - **Dual Engine Toggle** — Switch between next-gen FSRS and battle-tested SM-2 instantly with 100% backward compatibility.
 
+### 🤖 Socratic AI Study Buddy (Live Peer Discussion Mode • `Alt+D`)
+- **Real-Time Peer Discussion Drawer** — Slide-out Socratic discussion buddy powered by Google Gemini (default: **Gemini 2.0 Flash**). Reads the full context of every card (questions, options, explanations, handwritten notes, tags).
+- **Voice Recall Assessment (Push-to-Talk)** — Speak your recall or explanation into your microphone (`hi-IN` Hindi/Hinglish or `en-IN` English). AI evaluates what you remembered correctly and what crucial keywords or exam traps you missed.
+- **SSC Examiner Trap & 360° Link Chips** — One-click prompt chips to discover examiner trap points (`🎯 SSC Trap`), memorable mnemonics (`💡 Memory Trick`), and multi-disciplinary subject interlinks (`🔗 360° Link`).
+- **Always-On Mode** — Keep the AI Buddy drawer open throughout your review session. Automatically prepares context and optionally listens for your spoken answer on every card transition.
+- **100% Free Tier Supported** — Seamlessly integrates with Google AI Studio's free API key with 1,500 daily requests. Quick in-drawer settings (⚙️) dialog.
+
 ### 📋 Instant Question & Solution Capture (`Ctrl+Shift+A` & `Ctrl+A`)
 - **`Ctrl+Shift+A` (Instant Copy)** — Non-blocking, instant capture to system clipboard. If ink is drawn on the screen, combines the question and handwritten solution. If no ink is drawn, copies the clean question crop directly. Zero dialogs, zero interruptions — ideal for sharing questions with peers on Telegram or WhatsApp.
 - **`Ctrl+A` (Save to Note)** — Saves drawings directly into card or mask notes and clears the canvas for the next question.
@@ -170,6 +177,7 @@ python "C:\path\to\Anki gs3236208\anki_occlusion_v19.py"
 | `Del` | Clear review pen marks |
 | `Ctrl+Shift+A` | Instant Copy Question / Question+Ink to clipboard |
 | `Ctrl+A` | Save Ink to Card Note & Clear Canvas |
+| `Alt+D` | Toggle Socratic AI Study Buddy Drawer (Live Discussion) |
 | `F11` | Toggle Fullscreen |
 | `Ctrl+?` | Open Keyboard Shortcut Cheat Sheet |
 | `Esc` | Return to Deck View / Home Screen |
