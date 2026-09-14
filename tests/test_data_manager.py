@@ -27,7 +27,7 @@ class DirtyStoreTests(unittest.TestCase):
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
             loaded = store.load()
 
-        self.assertEqual(loaded, {"decks": []})
+        self.assertEqual(loaded, {"decks": [], "_scheduler_type": "fsrs", "_request_retention": 0.9})
         self.assertFalse(store.is_dirty())
 
     def test_load_invalid_json_falls_back_to_default(self):
@@ -37,11 +37,11 @@ class DirtyStoreTests(unittest.TestCase):
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
             loaded = store.load()
 
-        self.assertEqual(loaded, {"decks": []})
+        self.assertEqual(loaded, {"decks": [], "_scheduler_type": "fsrs", "_request_retention": 0.9})
         self.assertFalse(store.is_dirty())
 
     def test_load_accepts_utf8_bom_files(self):
-        payload = {"decks": [{"_id": 1, "name": "Safe"}]}
+        payload = {"decks": [{"_id": 1, "name": "Safe"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
         self.data_file.write_text(json.dumps(payload), encoding="utf-8-sig")
         store = data_manager.DirtyStore()
 
@@ -53,7 +53,7 @@ class DirtyStoreTests(unittest.TestCase):
 
     def test_save_if_dirty_writes_json_and_clears_dirty_flag(self):
         store = data_manager.DirtyStore()
-        payload = {"decks": [{"_id": 1, "name": "Biology"}]}
+        payload = {"decks": [{"_id": 1, "name": "Biology"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
 
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
             store.set(payload)
@@ -65,7 +65,7 @@ class DirtyStoreTests(unittest.TestCase):
 
     def test_save_creates_timestamped_backup_before_replacing_existing_data(self):
         existing = {"decks": [{"_id": 1, "name": "Old"}]}
-        payload = {"decks": [{"_id": 2, "name": "New"}]}
+        payload = {"decks": [{"_id": 2, "name": "New"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
         self.data_file.write_text(json.dumps(existing), encoding="utf-8")
         store = data_manager.DirtyStore()
 
@@ -82,8 +82,8 @@ class DirtyStoreTests(unittest.TestCase):
 
     def test_save_backups_are_throttled_for_rapid_review_saves(self):
         existing = {"decks": [{"_id": 1, "name": "Old"}]}
-        first_payload = {"decks": [{"_id": 2, "name": "First"}]}
-        second_payload = {"decks": [{"_id": 3, "name": "Second"}]}
+        first_payload = {"decks": [{"_id": 2, "name": "First"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
+        second_payload = {"decks": [{"_id": 3, "name": "Second"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
         self.data_file.write_text(json.dumps(existing), encoding="utf-8")
         store = data_manager.DirtyStore()
 
@@ -129,7 +129,7 @@ class DirtyStoreTests(unittest.TestCase):
 
     def test_save_if_dirty_uses_snapshot_to_prevent_race_conditions(self):
         store = data_manager.DirtyStore()
-        payload = {"decks": [{"_id": 1, "name": "Biology"}]}
+        payload = {"decks": [{"_id": 1, "name": "Biology"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
 
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
             import copy
@@ -202,8 +202,8 @@ class DirtyStoreTests(unittest.TestCase):
 
     def test_newer_save_request_prevents_older_snapshot_from_writing_last(self):
         store = data_manager.DirtyStore()
-        old_payload = {"decks": [{"_id": 1, "name": "Old"}]}
-        new_payload = {"decks": [{"_id": 2, "name": "New"}]}
+        old_payload = {"decks": [{"_id": 1, "name": "Old"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
+        new_payload = {"decks": [{"_id": 2, "name": "New"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
 
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
             store._write_lock.acquire()
@@ -239,8 +239,8 @@ class DirtyStoreTests(unittest.TestCase):
 
     def test_save_soon_flushes_mutation_made_during_active_save(self):
         store = data_manager.DirtyStore()
-        old_payload = {"decks": [{"_id": 1, "name": "Old"}]}
-        new_payload = {"decks": [{"_id": 2, "name": "New"}]}
+        old_payload = {"decks": [{"_id": 1, "name": "Old"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
+        new_payload = {"decks": [{"_id": 2, "name": "New"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
 
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)):
             store._write_lock.acquire()
@@ -337,7 +337,7 @@ class WrapperAndHelperTests(unittest.TestCase):
 
     def test_load_data_and_save_data_wrappers_use_singleton_store(self):
         replacement_store = data_manager.DirtyStore()
-        payload = {"decks": [{"_id": 4, "name": "Physics"}]}
+        payload = {"decks": [{"_id": 4, "name": "Physics"}], "_scheduler_type": "fsrs", "_request_retention": 0.9}
 
         with patch.object(data_manager, "DATA_FILE", str(self.data_file)), \
              patch.object(data_manager, "store", replacement_store):
