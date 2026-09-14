@@ -119,7 +119,9 @@ class AISettingsDialog(QDialog):
         # Model Selector
         L.addWidget(QLabel("🧠 AI मॉडल इंजन:"))
         self.combo_model = QComboBox()
-        self.combo_model.addItem("Gemini 2.0 Flash (सुपरफ़ास्ट, स्मार्ट • अनुशंसित)", "gemini-2.0-flash")
+        self.combo_model.addItem("Gemini 2.5 Flash (सुपरफ़ास्ट, स्मार्ट • अनुशंसित)", "gemini-2.5-flash")
+        self.combo_model.addItem("Gemini 3.6 Flash (लेटेस्ट नेक्स्ट-जेन)", "gemini-3.6-flash")
+        self.combo_model.addItem("Gemini 2.0 Flash (क्लासिक)", "gemini-2.0-flash")
         self.combo_model.addItem("Gemini 1.5 Flash (क्लासिक स्टेबल)", "gemini-1.5-flash")
         idx = self.combo_model.findData(cfg["model_name"])
         if idx >= 0:

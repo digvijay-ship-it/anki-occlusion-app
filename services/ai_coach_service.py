@@ -20,8 +20,8 @@ KEY_MODEL_NAME = "gemini_model_name"
 KEY_AUTO_LISTEN = "auto_listen_enabled"
 KEY_VOICE_LANG = "voice_language"
 
-DEFAULT_MODEL = "gemini-2.0-flash"
-FALLBACK_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
+FALLBACK_MODEL = "gemini-3.6-flash"
 
 
 def parse_api_keys(raw) -> list[str]:
@@ -337,10 +337,10 @@ class AICoachWorker(QThread):
                     self.error_occurred.emit("⚠️ AI ने कोई जवाब नहीं भेजा। कृपया दोबारा प्रयास करें।")
                     return
 
-                elif resp.status_code == 400:
+                elif resp.status_code in (400, 404):
                     err_data = resp.json().get("error", {})
-                    msg = err_data.get("message", "Invalid request")
-                    if "model" in msg.lower() and model_name == DEFAULT_MODEL:
+                    msg = err_data.get("message", "Invalid request or model not found")
+                    if ("model" in msg.lower() or resp.status_code == 404) and model_name != FALLBACK_MODEL:
                         fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/{FALLBACK_MODEL}:generateContent?key={current_api_key}"
                         resp2 = requests.post(fallback_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
                         if resp2.status_code == 200:
@@ -355,9 +355,9 @@ class AICoachWorker(QThread):
                         curr_idx = (curr_idx + 1) % total_keys
                         attempts += 1
                         set_active_key_index(curr_idx)
-                        self.key_switched.emit(curr_idx + 1, total_keys, f"Invalid Request (400) -> Key {curr_idx + 1}")
+                        self.key_switched.emit(curr_idx + 1, total_keys, f"Request Error ({resp.status_code}) -> Key {curr_idx + 1}")
                         continue
-                    self.error_occurred.emit(f"⚠️ **Google API Error (400):** {msg}")
+                    self.error_occurred.emit(f"⚠️ **Google API Error ({resp.status_code}):** {msg}")
                     return
 
                 elif resp.status_code in (429, 403):
