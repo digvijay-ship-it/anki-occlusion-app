@@ -45,6 +45,14 @@ coverage.xml
 
 # Environments (If you use virtualenv)
 .env
+.env*
+
+# Local API Secrets & Keys (Never commit sensitive credentials)
+secrets.json
+secrets.*.json
+*secrets*.json
+!secrets.example.json
+api_keys.json
 .venv
 env/
 venv/

@@ -24,27 +24,35 @@ DEFAULT_MODEL = "gemini-2.0-flash"
 FALLBACK_MODEL = "gemini-1.5-flash"
 
 
-def parse_api_keys(raw: str) -> list[str]:
+def parse_api_keys(raw) -> list[str]:
     """
     Parse comma, semicolon, newline, or whitespace separated API keys into a clean unique list.
     """
-    if not raw:
-        return []
-    parts = re.split(r'[\r\n,;\s]+', str(raw).strip())
-    keys = []
-    seen = set()
-    for p in parts:
-        cleaned = p.strip().strip("'\"")
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            keys.append(cleaned)
-    return keys
+    try:
+        from services.secrets_manager import parse_api_keys as _sm_parse
+        return _sm_parse(raw)
+    except Exception:
+        if not raw:
+            return []
+        parts = re.split(r'[\r\n,;\s]+', str(raw).strip())
+        keys = []
+        seen = set()
+        for p in parts:
+            cleaned = p.strip().strip("'\"")
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                keys.append(cleaned)
+        return keys
 
 
 def get_api_key_pool() -> list[str]:
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
-    raw = s.value(KEY_API_KEY, "", type=str)
-    return parse_api_keys(raw)
+    try:
+        from services.secrets_manager import get_gemini_api_keys
+        return get_gemini_api_keys()
+    except Exception:
+        s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+        raw = s.value(KEY_API_KEY, "", type=str)
+        return parse_api_keys(raw)
 
 
 def get_active_key_index() -> int:
@@ -90,9 +98,11 @@ def cycle_next_key() -> tuple[int, int, str]:
 
 
 def get_ai_settings():
+    pool = get_api_key_pool()
     s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
     raw_key = s.value(KEY_API_KEY, "", type=str)
-    pool = parse_api_keys(raw_key)
+    if not raw_key and pool:
+        raw_key = "\n".join(pool)
     active_idx = get_active_key_index()
     active_key = pool[active_idx] if pool else ""
     model_name = s.value(KEY_MODEL_NAME, DEFAULT_MODEL, type=str)
@@ -100,7 +110,7 @@ def get_ai_settings():
     voice_lang = s.value(KEY_VOICE_LANG, "hi-IN", type=str)
     return {
         "api_key": active_key,
-        "api_key_raw": raw_key.strip() if raw_key else "",
+        "api_key_raw": raw_key.strip() if raw_key else ("\n".join(pool) if pool else ""),
         "api_key_pool": pool,
         "active_key_index": active_idx,
         "total_keys": len(pool),
@@ -113,7 +123,13 @@ def get_ai_settings():
 def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: bool = None, voice_lang: str = None, active_key_index: int = None):
     s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
     if api_key is not None:
-        s.setValue(KEY_API_KEY, str(api_key).strip())
+        cleaned_key = str(api_key).strip()
+        s.setValue(KEY_API_KEY, cleaned_key)
+        try:
+            from services.secrets_manager import save_gemini_api_keys
+            save_gemini_api_keys(cleaned_key)
+        except Exception:
+            pass
     if model_name is not None:
         s.setValue(KEY_MODEL_NAME, str(model_name).strip())
     if auto_listen is not None:

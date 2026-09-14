@@ -180,6 +180,17 @@ class GDriveService:
                 "client_secret": os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
             }
 
+        # Also check secrets_manager (secrets.json) if client_secret or custom client_id is defined
+        try:
+            from services.secrets_manager import get_gdrive_secrets
+            sec_id, sec_secret = get_gdrive_secrets()
+            if sec_id:
+                self._config["client_id"] = sec_id
+            if sec_secret:
+                self._config["client_secret"] = sec_secret
+        except Exception:
+            pass
+
         # Check if secret is empty and log it once per process
         if not self._config.get("client_secret"):
             with _SYNC_DISABLED_LOGGED_LOCK:
@@ -198,6 +209,11 @@ class GDriveService:
                 json.dump(self._config, f, indent=2)
         except Exception as e:
             print(f"[GDriveService] Failed to save config: {e}")
+        try:
+            from services.secrets_manager import save_gdrive_secrets
+            save_gdrive_secrets(client_id, client_secret)
+        except Exception:
+            pass
 
     def get_config(self):
         return self._config
