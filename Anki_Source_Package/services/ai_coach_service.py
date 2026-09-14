@@ -360,8 +360,8 @@ class AICoachWorker(QThread):
                     self.error_occurred.emit(f"⚠️ **Google API Error ({resp.status_code}):** {msg}")
                     return
 
-                elif resp.status_code in (429, 403):
-                    reason_name = "दर सीमा (Rate Limit 429)" if resp.status_code == 429 else "अमान्य/कोटा समाप्त (403)"
+                elif resp.status_code in (429, 403, 503):
+                    reason_name = "दर सीमा (Rate Limit 429)" if resp.status_code == 429 else ("सर्वर व्यस्त (503)" if resp.status_code == 503 else "अमान्य/कोटा समाप्त (403)")
                     if total_keys > 1 and attempts < total_keys - 1:
                         # Auto-failover to next key in pool
                         curr_idx = (curr_idx + 1) % total_keys
@@ -370,11 +370,25 @@ class AICoachWorker(QThread):
                         self.key_switched.emit(curr_idx + 1, total_keys, reason_name)
                         continue
                     else:
+                        # If 503 on model, try silent fallback to gemini-3.6-flash
+                        if resp.status_code == 503 and model_name != "gemini-3.6-flash":
+                            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={current_api_key}"
+                            resp2 = requests.post(fallback_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+                            if resp2.status_code == 200:
+                                data2 = resp2.json()
+                                parts2 = data2.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                                if parts2:
+                                    self.response_ready.emit(parts2[0].get("text", "").strip())
+                                    return
                         if resp.status_code == 429:
                             self.error_occurred.emit(
                                 f"⏳ **दर सीमा समाप्त (Rate Limit 429)!**\n\n"
                                 f"पूल में मौजूद सभी {total_keys} API Keys का तात्कालिक कोटा पूरा हो गया है।\n"
                                 "कृपया 1 मिनट प्रतीक्षा करें या ⚙️ सेटिंग्स में एक और अकाउंट की मुफ़्त API Key जोड़ें।"
+                            )
+                        elif resp.status_code == 503:
+                            self.error_occurred.emit(
+                                "⚠️ **Google सर्वर व्यस्त (503):** मॉडल पर अस्थायी रूप से लोड ज़्यादा है। कृपया 10 सेकंड बाद पुनः प्रयास करें।"
                             )
                         else:
                             self.error_occurred.emit(
