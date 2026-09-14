@@ -176,3 +176,11 @@ Must print `OK` with 0 errors.
 - [ ] No task refactored beyond its stated scope.
 
 When all are done, hand the diff back for a quick re-review.
+
+---
+
+## UI Typography & Font Size Architecture (Mandatory Rule)
+- **Absolute ban on small fonts (< 18pt / 24px in dialogs)**: Explanations, Hindi text, and tips MUST be at least 17pt - 19pt (`QFont("Segoe UI", 17..19)`).
+- **Explicit `widget.setFont(QFont("Segoe UI", ...))`**: Never rely solely on CSS `font-size: 14px` due to Windows 125% DPI scaling.
+- **NoWheelSlider**: Any `QSlider` inside a `QScrollArea` must ignore wheel events to prevent mouse wheel hijacking.
+- **Zero Horizontal Scrollbar**: All labels must have `setWordWrap(True)` and `scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)`.

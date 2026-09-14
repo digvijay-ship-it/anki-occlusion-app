@@ -437,8 +437,8 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("About Anki Occlusion")
-        self.setFixedSize(480, 560)
-        from PyQt5.QtWidgets import QApplication
+        self.setFixedSize(540, 680)
+        from PyQt5.QtWidgets import QApplication, QScrollArea
 
         app = QApplication.instance()
         theme = getattr(app, "_active_theme", "classic")
@@ -448,7 +448,7 @@ class AboutDialog(QDialog):
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(0)
         header = QFrame()
-        header.setFixedHeight(140)
+        header.setFixedHeight(135)
         header.setStyleSheet(
             f"QFrame{{background:{p.get('C_SURFACE', C_SURFACE)};border-radius:0px;}}"
         )
@@ -456,7 +456,7 @@ class AboutDialog(QDialog):
         hl.setAlignment(Qt.AlignCenter)
         icon_lbl = QLabel()
         icon_lbl.setAlignment(Qt.AlignCenter)
-        icon_px = make_app_icon().pixmap(72, 72)
+        icon_px = make_app_icon().pixmap(64, 64)
         icon_lbl.setPixmap(icon_px)
         hl.addWidget(icon_lbl)
         hf = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
@@ -468,18 +468,23 @@ class AboutDialog(QDialog):
         )
         name_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(name_lbl)
-        ver_lbl = QLabel("Version 1.0  •  Desktop Edition")
+        ver_lbl = QLabel("Version 2.0  •  AI FSRS & High-Performance Edition")
         ver_lbl.setStyleSheet(
             f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:11px;background:transparent;font-family:{bf};"
         )
         ver_lbl.setAlignment(Qt.AlignCenter)
         hl.addWidget(ver_lbl)
         L.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+
         body = QWidget()
         body.setStyleSheet(f"background:{p.get('C_BG', C_BG)};")
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(32, 24, 32, 24)
-        bl.setSpacing(16)
+        bl.setContentsMargins(28, 18, 28, 18)
+        bl.setSpacing(14)
 
         def _section(title, text):
             t = QLabel(title)
@@ -487,7 +492,7 @@ class AboutDialog(QDialog):
             t.setStyleSheet(f"color:{p.get('C_TEXT', C_TEXT)};")
             d = QLabel(text)
             d.setStyleSheet(
-                f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;font-family:{bf};"
+                f"color:{p.get('C_SUBTEXT', C_SUBTEXT)};font-size:12px;font-family:{bf};line-height:1.4;"
             )
             d.setWordWrap(True)
             bl.addWidget(t)
@@ -495,16 +500,36 @@ class AboutDialog(QDialog):
 
         _section(
             "What it does",
-            "Draw rectangular masks over your PDF notes and images, "
-            "then study them with a full Anki-style spaced repetition "
-            "scheduler — learning steps, review intervals, ease factors.",
+            "A high-performance flashcard suite combining PDF/Image Occlusion, "
+            "Rich Text & Vocabulary decks, and Testbook MCQ exam practice with "
+            "next-generation AI FSRS-4.5 / 5.0 and classic SM-2 spaced repetition.",
+        )
+        _section(
+            "⚡ FSRS AI & Dynamic Deck Retention",
+            "Features the Free Spaced Repetition Scheduler (FSRS) with Stability "
+            "and Difficulty memory modeling. Customize individual target retention (80%–95%) "
+            "per deck with parent hierarchy inheritance, recursive card aggregation, "
+            "and retroactive rescheduling.",
+        )
+        _section(
+            "📋 Instant Question & Solution Capture",
+            "Ctrl+Shift+A — Instantly copy the clean question image to clipboard (if no ink drawn) "
+            "or combine question + handwritten solution ink. Instant sharing with zero interruptions.\n"
+            "Ctrl+A — Save drawing directly into card/mask notes and clear canvas.",
+        )
+        _section(
+            "🧹 Auto Memory Flush & Compaction",
+            "Automated background RAM cache garbage collection and PyMuPDF store shrinkage "
+            "(fitz.TOOLS.store_shrink) on dialog close and home navigation for zero memory leaks.",
         )
         _section(
             "Keyboard shortcuts",
             "F11 — fullscreen        Ctrl+Z / Y — undo / redo\n"
             "Space — reveal answer   1/2/3/4/5 — rate Again/Hard/Good/Easy/Perfect\n"
+            "Ctrl+Shift+A — instant copy question / ink to clipboard\n"
+            "Ctrl+A — save ink to note & clear canvas\n"
             "V=Select  R=Rect  E=Ellipse  T=Label  Del=delete selected\n"
-            "Ctrl+A — select all     Ctrl+Scroll — zoom\n"
+            "Ctrl+Scroll — zoom      Ctrl++ / Ctrl+- — zoom in / out\n"
             "Alt+Click — multi-select   Hold Alt — temp select tool\n"
             "C — center on mask      Drag ↻ handle — rotate shape\n"
             "Space+drag — pan canvas  H — toggle pan lock\n"
@@ -512,14 +537,22 @@ class AboutDialog(QDialog):
         )
         _section("Data location", f"{current_data_file()}")
         bl.addStretch()
+
+        scroll.setWidget(body)
+        L.addWidget(scroll)
+
+        footer = QFrame()
+        footer.setStyleSheet(f"background:{p.get('C_SURFACE', C_SURFACE)};border-top:1px solid rgba(255,255,255,0.05);")
+        fl = QHBoxLayout(footer)
+        fl.setContentsMargins(20, 10, 20, 10)
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet(
             f"background:{p.get('C_ACCENT', C_ACCENT)};color:{p.get('C_BG', 'white')};border:none;border-radius:8px;"
-            f"padding:8px 32px;font-weight:bold;font-size:13px;font-family:{hf};"
+            f"padding:8px 36px;font-weight:bold;font-size:13px;font-family:{hf};"
         )
         close_btn.clicked.connect(self.accept)
-        bl.addWidget(close_btn, alignment=Qt.AlignCenter)
-        L.addWidget(body)
+        fl.addWidget(close_btn, alignment=Qt.AlignCenter)
+        L.addWidget(footer)
 
 
 class OnboardingDialog(QDialog):
@@ -1204,7 +1237,27 @@ class HomeScreen(QWidget):
         self._restore_in_progress = False
         self._prune_in_progress = False
         self._setup_ui()
+
         self._check_resume_button_state()
+        self._home_flush_timer = QTimer(self)
+        self._home_flush_timer.setInterval(30000)
+        self._home_flush_timer.timeout.connect(self._auto_flush_if_home_idle)
+        self._home_flush_timer.start()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(250, self._auto_flush_if_home_idle)
+
+    def _auto_flush_if_home_idle(self):
+        """Automatically reclaims process RAM when the user is on the Home Screen and not actively reviewing."""
+        if getattr(self, "_active_review", None) is None:
+            self._clear_home_ram_caches()
+            try:
+                from perf_utils import flush_process_memory
+                flush_process_memory("Home Screen Auto Flush")
+            except Exception:
+                pass
+
 
     @property
     def _classic_settings_panel(self):
@@ -1265,6 +1318,8 @@ class HomeScreen(QWidget):
         btn_math = _topbtn("🧮 MATH TRAINER", "Practice Tables, Squares & Cubes")
         btn_journal = _topbtn("📓 JOURNAL", "Open Daily Journal")
         btn_report = _topbtn("📊 REPORT", "Open Daily Mission Report Card")
+        btn_fsrs = _topbtn("⚡ FSRS AI", "Open FSRS Memory, Retention Sliders & Optimizer")
+        btn_fsrs.clicked.connect(self._show_fsrs_center)
         self._btn_resume = _topbtn("⚡ RESUME LAST MISSION", "Resume last review session (R)")
         self._btn_save = _topbtn("💾 SAVE", "Save now  Ctrl+S")
         self._btn_settings = _topbtn("⚙ SETTINGS", "Visual scale and Mission Archive")
@@ -1315,6 +1370,7 @@ class HomeScreen(QWidget):
 
         tl.addWidget(btn_math)
         tl.addWidget(btn_journal)
+        tl.addWidget(btn_fsrs)
         tl.addWidget(btn_report)
         tl.addWidget(self._btn_resume)
         tl.addWidget(self._btn_save)
@@ -1549,6 +1605,9 @@ class HomeScreen(QWidget):
         auto_exit_session=None,
         deck_id=None,
         deck_name=None,
+        learning_window_limit=None,
+        scheduler_type=None,
+        request_retention=None,
         target_card_id=None,
         target_box_idx=None,
         target_box_id=None,
@@ -1574,6 +1633,9 @@ class HomeScreen(QWidget):
             auto_exit_session=auto_exit_session,
             deck_id=deck_id,
             deck_name=deck_name,
+            learning_window_limit=learning_window_limit,
+            scheduler_type=scheduler_type,
+            request_retention=request_retention,
             target_card_id=target_card_id,
             target_box_idx=target_box_idx,
             target_box_id=target_box_id,
@@ -1671,6 +1733,9 @@ class HomeScreen(QWidget):
         default_daily_review_target=None,
         default_session_target=None,
         auto_exit_session=None,
+        learning_window_limit=None,
+        scheduler_type=None,
+        request_retention=None,
         deck_id=None,
         deck_name=None,
     ):
@@ -1678,6 +1743,13 @@ class HomeScreen(QWidget):
         After each group finishes: clear RAM + masks + pixmap, then load next group."""
         if str(order_mode or "default") == "least_mature":
             all_cards = [c for grp in groups for c in grp]
+            kw = {}
+            if learning_window_limit is not None:
+                kw["learning_window_limit"] = learning_window_limit
+            if scheduler_type is not None:
+                kw["scheduler_type"] = scheduler_type
+            if request_retention is not None:
+                kw["request_retention"] = request_retention
             return self.show_review(
                 all_cards,
                 data,
@@ -1691,6 +1763,7 @@ class HomeScreen(QWidget):
                 auto_exit_session=auto_exit_session,
                 deck_id=deck_id,
                 deck_name=deck_name,
+                **kw,
             )
         self._sequential_groups = list(groups)
         self._past_sequential_sessions = []
@@ -1706,6 +1779,9 @@ class HomeScreen(QWidget):
         self._sequential_default_daily_review_target = default_daily_review_target
         self._sequential_default_session_target = default_session_target
         self._sequential_auto_exit_session = auto_exit_session
+        self._sequential_learning_window_limit = learning_window_limit
+        self._sequential_scheduler_type = scheduler_type
+        self._sequential_request_retention = request_retention
         self._sequential_deck_id = deck_id
         self._sequential_deck_name = deck_name
 
@@ -1757,6 +1833,9 @@ class HomeScreen(QWidget):
                 default_daily_review_target=getattr(self, "_sequential_default_daily_review_target", None),
                 default_session_target=getattr(self, "_sequential_default_session_target", None),
                 auto_exit_session=getattr(self, "_sequential_auto_exit_session", None),
+                learning_window_limit=getattr(self, "_sequential_learning_window_limit", None),
+                scheduler_type=getattr(self, "_sequential_scheduler_type", None),
+                request_retention=getattr(self, "_sequential_request_retention", None),
                 deck_id=getattr(self, "_sequential_deck_id", None),
                 deck_name=getattr(self, "_sequential_deck_name", None),
             )
@@ -1799,6 +1878,7 @@ class HomeScreen(QWidget):
             default_daily_target=getattr(self, "_sequential_default_daily_target", None),
             default_session_target=getattr(self, "_sequential_default_session_target", None),
             auto_exit_session=getattr(self, "_sequential_auto_exit_session", None),
+            learning_window_limit=getattr(self, "_sequential_learning_window_limit", None),
             deck_id=getattr(self, "_sequential_deck_id", None),
             deck_name=getattr(self, "_sequential_deck_name", None),
         )
@@ -1869,6 +1949,12 @@ class HomeScreen(QWidget):
         self.refresh()
         self._check_resume_button_state()
         QTimer.singleShot(100, self._clear_home_ram_caches)
+        try:
+            from perf_utils import flush_process_memory
+            flush_process_memory("Review Exit")
+        except Exception:
+            pass
+
 
     def _get_splitter(self):
         """Return the main QSplitter child."""
@@ -2166,6 +2252,18 @@ class HomeScreen(QWidget):
                 split.setSizes(sizes)
         self.refresh()
         self._clear_home_ram_caches()
+
+    def _show_fsrs_center(self):
+        try:
+            from ui.fsrs_center_dialog import FSRSCenterDialog
+            dlg = FSRSCenterDialog(parent=self)
+            dlg.exec_()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Failed to open FSRSCenterDialog: %s", e, exc_info=True)
+
+    def show_fsrs_center(self):
+        self._show_fsrs_center()
 
     def _show_math_trainer(self):
         if getattr(self, "_math_trainer", None) is not None:
@@ -2711,6 +2809,61 @@ class HomeScreen(QWidget):
         window_layout.addWidget(self._cb_keep_fullscreen, 0, Qt.AlignRight)
         layout.addWidget(window_box)
 
+        # Spaced Repetition Engine Settings
+        sr_title = QLabel("SPACED REPETITION ENGINE")
+        sr_title.setStyleSheet(
+            f"color:{C_ACCENT};font-weight:bold;font-size:11px;letter-spacing:1px;"
+        )
+        layout.addWidget(sr_title)
+
+        sr_box = QFrame()
+        sr_box.setStyleSheet(
+            f"background:{C_CARD};border:1px solid {C_BORDER};border-radius:8px;"
+        )
+        sr_layout = QVBoxLayout(sr_box)
+        sr_layout.setContentsMargins(10, 8, 10, 8)
+        sr_layout.setSpacing(8)
+
+        # Row 1: Algorithm
+        row_algo = QHBoxLayout()
+        row_algo.setSpacing(8)
+        algo_label = QLabel("Scheduler Algorithm")
+        algo_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        row_algo.addWidget(algo_label, 1)
+
+        self._combo_global_scheduler = QComboBox()
+        self._combo_global_scheduler.addItem("⚡ FSRS AI (Recommended)", "fsrs")
+        self._combo_global_scheduler.addItem("🕰️ SM-2 Classic (Traditional Anki)", "sm2")
+        self._combo_global_scheduler.setCursor(Qt.PointingHandCursor)
+        curr_sched = self._data.get("_scheduler_type", "fsrs") or "fsrs"
+        idx = self._combo_global_scheduler.findData(curr_sched)
+        self._combo_global_scheduler.setCurrentIndex(idx if idx >= 0 else 0)
+        self._combo_global_scheduler.currentIndexChanged.connect(self._on_global_scheduler_changed)
+        row_algo.addWidget(self._combo_global_scheduler, 0, Qt.AlignRight)
+        sr_layout.addLayout(row_algo)
+
+        # Row 2: Target Retention
+        row_ret = QHBoxLayout()
+        row_ret.setSpacing(8)
+        ret_label = QLabel("Target Retention")
+        ret_label.setStyleSheet(f"color:{C_SUBTEXT};font-size:12px;")
+        row_ret.addWidget(ret_label, 1)
+
+        self._combo_global_retention = QComboBox()
+        self._combo_global_retention.addItem("90% — Recommended (Balanced)", 0.90)
+        self._combo_global_retention.addItem("85% — Fewer Reviews", 0.85)
+        self._combo_global_retention.addItem("92% — High Recall", 0.92)
+        self._combo_global_retention.addItem("95% — Exam Cramming", 0.95)
+        self._combo_global_retention.setCursor(Qt.PointingHandCursor)
+        curr_ret = float(self._data.get("_request_retention", 0.90) or 0.90)
+        idx = self._combo_global_retention.findData(curr_ret)
+        self._combo_global_retention.setCurrentIndex(idx if idx >= 0 else 0)
+        self._combo_global_retention.currentIndexChanged.connect(self._on_global_retention_changed)
+        row_ret.addWidget(self._combo_global_retention, 0, Qt.AlignRight)
+        sr_layout.addLayout(row_ret)
+
+        layout.addWidget(sr_box)
+
         # Numpad Quick Revision Setting
         numpad_title = QLabel("KEYBOARD & SHORTCUTS")
         numpad_title.setStyleSheet(
@@ -2959,6 +3112,20 @@ class HomeScreen(QWidget):
         store.mark_dirty()
         store.save_soon(delay_from_now=True)
 
+    def _on_global_scheduler_changed(self, _index):
+        if hasattr(self, "_combo_global_scheduler") and self._combo_global_scheduler:
+            val = self._combo_global_scheduler.currentData() or "fsrs"
+            self._data["_scheduler_type"] = val
+            store.get()["_scheduler_type"] = val
+            store.mark_dirty()
+
+    def _on_global_retention_changed(self, _index):
+        if hasattr(self, "_combo_global_retention") and self._combo_global_retention:
+            val = float(self._combo_global_retention.currentData() or 0.90)
+            self._data["_request_retention"] = val
+            store.get()["_request_retention"] = val
+            store.mark_dirty()
+
     def _refresh_classic_archive_display(self):
         if self._classic_archive_value is None:
             return
@@ -3001,6 +3168,18 @@ class HomeScreen(QWidget):
             self._cb_numpad_revision.blockSignals(True)
             self._cb_numpad_revision.setChecked(store.get().get("_numpad_custom_revision", False))
             self._cb_numpad_revision.blockSignals(False)
+        if hasattr(self, "_combo_global_scheduler") and self._combo_global_scheduler:
+            self._combo_global_scheduler.blockSignals(True)
+            curr_sched = self._data.get("_scheduler_type", "fsrs") or "fsrs"
+            s_idx = self._combo_global_scheduler.findData(curr_sched)
+            self._combo_global_scheduler.setCurrentIndex(s_idx if s_idx >= 0 else 0)
+            self._combo_global_scheduler.blockSignals(False)
+        if hasattr(self, "_combo_global_retention") and self._combo_global_retention:
+            self._combo_global_retention.blockSignals(True)
+            curr_ret = float(self._data.get("_request_retention", 0.90) or 0.90)
+            r_idx = self._combo_global_retention.findData(curr_ret)
+            self._combo_global_retention.setCurrentIndex(r_idx if r_idx >= 0 else 0)
+            self._combo_global_retention.blockSignals(False)
         self._refresh_classic_archive_display()
         self._refresh_gdrive_display()
         # Reset constraints first to get true size hint

@@ -2,7 +2,7 @@
 
 **Offline desktop image occlusion for PDFs, notes, vocabulary, exam papers, and serious revision.**
 
-**Anki Occlusion** is a high-performance Python + PyQt5 desktop flashcard application that combines Anki's Image Occlusion workflow with native Text/Vocabulary flashcards, Testbook/Exam MCQ practice, and a full SM-2 spaced-repetition scheduler.
+**Anki Occlusion** is a high-performance Python + PyQt5 desktop flashcard application combining Anki's Image Occlusion workflow with native Text/Vocabulary flashcards, Testbook/Exam MCQ practice, modern next-generation **FSRS-4.5/5.0 AI Spaced Repetition**, and classic SM-2 scheduling.
 
 Draw masks over parts of your PDF notes to hide answers, import entire vocabulary directory trees with automatic sub-decks, solve interactive 4-option MCQs with detailed explanations, and review with **Again / Hard / Good / Easy / Perfect**. Everything is stored locally on your machine with zero cloud dependency and non-destructive spaced repetition sync.
 
@@ -12,7 +12,28 @@ Draw masks over parts of your PDF notes to hide answers, import entire vocabular
 
 ## ✨ Key Features
 
-### 🧠 Study Core & Spaced Repetition (SM-2)
+### ⚡ Next-Gen FSRS AI & SM-2 Dual Scheduling Engine
+- **FSRS 4.5 / 5.0 Core** — Modern Free Spaced Repetition Scheduler tracking memory Stability ($S$) and Difficulty ($D$) with 17 optimized weight parameters.
+- **Global Requested Retention Slider** — Tune master recall probability (80% to 95%, default 90%) to balance review volume and long-term retention.
+- **Dynamic Pre-Made Deck Retention Overrides** — Select any deck from your database (191+ decks) to set custom target recall rates (e.g. 85% for Math to prevent burnout, 92% for high-yield GK).
+- **Hierarchical Inheritance & Recursive Aggregation** — Sub-decks automatically inherit parent retention settings unless individually overridden. Dropdown displays true recursive card counts across all nested child decks (e.g. `📁 Math: 2,201 cards`).
+- **Retroactive Rescheduler** — Recalculates intervals and schedules for cards based on active retention overrides on demand with detailed execution metrics.
+- **Dual Engine Toggle** — Switch between next-gen FSRS and battle-tested SM-2 instantly with 100% backward compatibility.
+
+### 📋 Instant Question & Solution Capture (`Ctrl+Shift+A` & `Ctrl+A`)
+- **`Ctrl+Shift+A` (Instant Copy)** — Non-blocking, instant capture to system clipboard. If ink is drawn on the screen, combines the question and handwritten solution. If no ink is drawn, copies the clean question crop directly. Zero dialogs, zero interruptions — ideal for sharing questions with peers on Telegram or WhatsApp.
+- **`Ctrl+A` (Save to Note)** — Saves drawings directly into card or mask notes and clears the canvas for the next question.
+
+### 🧹 Auto Memory Flush & Compaction
+- **Automatic Compaction** — Triggers `fitz.TOOLS.store_shrink(100)` and Python garbage collection `gc.collect()` whenever review screens, modals, or editors close.
+- **Home Screen Auto-Flush** — Background RAM cache safely evacuated when returning to the Home Screen.
+- **Unlimited RAM Page Limit Support** — High-page PDFs run ultra-smoothly with zero memory creep.
+
+### 📐 High-DPI UI Ergonomics & Scroll Anti-Hijack
+- **Header Bar Space Optimization** — Donatello rotating quote avatar button frees up ~400px of header width, ensuring center navigation buttons (`🧮 MATH TRAINER`, `⚡ FSRS AI`) render without text clipping on any resolution or scale (up to 1.82x scale).
+- **Scroll Anti-Hijack (`NoWheelComboBox`)** — Prevents dropdown selectors from hijacking mouse wheel scrolling when moving down the page.
+
+### 🧠 Study Core & Spaced Repetition (SM-2 & FSRS)
 - **PDF & Image Occlusion** — Load a PDF or image, draw masks over answers, and turn your own notes into review cards.
 - **Smart Grouped Masks (1 Group = 1 Card)** — Link multiple masks into a group (e.g. an 8-cell table). Reviewed and rated together as **1 single card review unit** so daily performance statistics reflect true study effort without exaggeration.
 - **SM-2 Engine** — Cards transition through `new → learning → review → relearn` states with configurable intraday learning steps, ease-factor updates, interval fuzzing, and a 365-day interval cap.
@@ -147,7 +168,8 @@ python "C:\path\to\Anki gs3236208\anki_occlusion_v19.py"
 | `X` | Cycle Pen Color |
 | `+` / `-` | Adjust Pen Width |
 | `Del` | Clear review pen marks |
-| `Alt+T` | Toggle floating study timer |
+| `Ctrl+Shift+A` | Instant Copy Question / Question+Ink to clipboard |
+| `Ctrl+A` | Save Ink to Card Note & Clear Canvas |
 | `F11` | Toggle Fullscreen |
 | `Ctrl+?` | Open Keyboard Shortcut Cheat Sheet |
 | `Esc` | Return to Deck View / Home Screen |
