@@ -874,6 +874,42 @@ class DeckSettingsDialog(QDialog):
         lbl_auto_exit_desc.setWordWrap(True)
         cl_layout.addWidget(lbl_auto_exit_desc)
 
+        # Divider between session target and learning window
+        div_win = QFrame()
+        div_win.setFrameShape(QFrame.HLine)
+        div_win.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 8px 0px;")
+        cl_layout.addWidget(div_win)
+
+        # 5. Active Learning Batch Window
+        lbl_win_title = QLabel("🔄 Active Learning Batch Window (लर्निंग बैच सीमा):")
+        lbl_win_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FF79C6;")
+        cl_layout.addWidget(lbl_win_title)
+
+        win_row = QHBoxLayout()
+        win_row.setSpacing(16)
+
+        self.inp_learning_window_limit = QLineEdit()
+        self.inp_learning_window_limit.setValidator(QIntValidator(1, 99, self))
+        self.inp_learning_window_limit.setFixedWidth(220)
+        self.inp_learning_window_limit.setAlignment(Qt.AlignCenter)
+        curr_win = self.deck.get("learning_window_limit", 10)
+        self.inp_learning_window_limit.setText(str(curr_win) if curr_win > 0 else "10")
+        self.inp_learning_window_limit.setPlaceholderText("10")
+        win_row.addWidget(self.inp_learning_window_limit)
+
+        lbl_win_unit = QLabel("cards in learning loop (लर्निंग लूप में कार्ड्स)")
+        lbl_win_unit.setStyleSheet("font-size: 19px; font-weight: 600; color: #FF79C6;")
+        win_row.addWidget(lbl_win_unit)
+        win_row.addStretch()
+        cl_layout.addLayout(win_row)
+
+        lbl_win_desc = QLabel(
+            "एक साथ कितने कार्ड्स सीखने के दौर (5m/10m) में रखे जाएं। नए कार्ड्स तब तक आते रहेंगे जब तक यह सीमा नहीं भर जाती। सीमा भरते ही पहले इन कार्ड्स को पक्का (Graduate) कराया जाएगा। (डिफ़ॉल्ट: 10)"
+        )
+        lbl_win_desc.setStyleSheet("font-size: 18px; color: #CDD6F4; line-height: 1.4;")
+        lbl_win_desc.setWordWrap(True)
+        cl_layout.addWidget(lbl_win_desc)
+
         scroll_layout.addWidget(card_limit)
 
         # Card: Pause Status & Review Order
@@ -909,6 +945,53 @@ class DeckSettingsDialog(QDialog):
         if idx >= 0:
             self.combo_order.setCurrentIndex(idx)
         co_layout.addWidget(self.combo_order)
+
+        # Divider between review order and algorithm
+        div_algo = QFrame()
+        div_algo.setFrameShape(QFrame.HLine)
+        div_algo.setStyleSheet("background-color: #2D3342; max-height: 1px; margin: 8px 0px;")
+        co_layout.addWidget(div_algo)
+
+        lbl_algo = QLabel("🧠 Spaced Repetition Algorithm (शेड्यूलिंग इंजन):")
+        lbl_algo.setStyleSheet("font-size: 22px; font-weight: 700; color: #50FA7B; margin-top: 6px;")
+        co_layout.addWidget(lbl_algo)
+
+        self.combo_scheduler = QComboBox()
+        self.combo_scheduler.addItem("🌐 Default (Follow Main Settings / ग्लोबल सेटिंग)", "")
+        self.combo_scheduler.addItem("⚡ FSRS AI (Machine Learning — 30% Fewer Reviews)", "fsrs")
+        self.combo_scheduler.addItem("🕰️ SM-2 Classic (Traditional Rule-Based Anki)", "sm2")
+        curr_sched = self.deck.get("scheduler_type", "")
+        s_idx = self.combo_scheduler.findData(curr_sched)
+        if s_idx >= 0:
+            self.combo_scheduler.setCurrentIndex(s_idx)
+        else:
+            self.combo_scheduler.setCurrentIndex(0)
+        co_layout.addWidget(self.combo_scheduler)
+
+        lbl_algo_desc = QLabel(
+            "FSRS आपके दिमाग की मेमोरी और भूलने की रफ़्तार (Forgetting Curve) के आधार पर कार्ड्स शेड्यूल करता है, जिससे समान याददाश्त के साथ ~30% कम रिव्यूज करने पड़ते हैं।"
+        )
+        lbl_algo_desc.setStyleSheet("font-size: 18px; color: #CDD6F4; line-height: 1.4;")
+        lbl_algo_desc.setWordWrap(True)
+        co_layout.addWidget(lbl_algo_desc)
+
+        lbl_retention = QLabel("🎯 Target Retention (लक्ष्य याददाश्त दर):")
+        lbl_retention.setStyleSheet("font-size: 22px; font-weight: 700; color: #8BE9FD; margin-top: 6px;")
+        co_layout.addWidget(lbl_retention)
+
+        self.combo_retention = QComboBox()
+        self.combo_retention.addItem("🌐 Default (Follow Main Settings / ग्लोबल सेटिंग)", 0.0)
+        self.combo_retention.addItem("90% — Recommended (सर्वोत्तम संतुलन)", 0.90)
+        self.combo_retention.addItem("85% — Fewer Reviews (कम रिव्यूज, समय बचाएं)", 0.85)
+        self.combo_retention.addItem("92% — High Recall (गहन याददाश्त)", 0.92)
+        self.combo_retention.addItem("95% — Ultra-Strict (कठिन परीक्षा के लिए)", 0.95)
+        curr_ret = float(self.deck.get("request_retention", 0.0) or 0.0)
+        r_idx = self.combo_retention.findData(curr_ret)
+        if r_idx >= 0:
+            self.combo_retention.setCurrentIndex(r_idx)
+        else:
+            self.combo_retention.setCurrentIndex(0)
+        co_layout.addWidget(self.combo_retention)
 
         scroll_layout.addWidget(card_opts)
         scroll_layout.addStretch()
@@ -977,6 +1060,13 @@ class DeckSettingsDialog(QDialog):
             sess_val = 25
         session_val = max(1, sess_val)
 
+        win_text = self.inp_learning_window_limit.text().strip()
+        try:
+            win_val = int(win_text) if win_text else 10
+        except ValueError:
+            win_val = 10
+        learning_win_val = max(1, min(99, win_val))
+
         is_paused_val = self.chk_pause.isChecked()
         auto_exit_val = self.chk_auto_exit.isChecked()
         order_val = self.combo_order.currentData() or "default"
@@ -989,6 +1079,19 @@ class DeckSettingsDialog(QDialog):
         self.deck["daily_review_limit"] = daily_review_val
         self.deck["daily_limit"] = limit_val
         self.deck["session_limit"] = session_val
+        self.deck["learning_window_limit"] = learning_win_val
+        chosen_sched = self.combo_scheduler.currentData() or ""
+        if chosen_sched:
+            self.deck["scheduler_type"] = chosen_sched
+        else:
+            self.deck.pop("scheduler_type", None)
+
+        chosen_ret = float(self.combo_retention.currentData() or 0.0)
+        if chosen_ret > 0.0:
+            self.deck["request_retention"] = chosen_ret
+        else:
+            self.deck.pop("request_retention", None)
+
         self.deck["auto_exit_session"] = auto_exit_val
         self.deck["is_paused"] = is_paused_val
         self.deck["review_order"] = order_val

@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from sm2_engine import sched_update, sm2_init, is_due_today
+from sm2_engine import sched_update, sm2_init, is_due_today, sched_update_adaptive
 from PyQt5.QtWidgets import QListWidgetItem, QListWidget
 from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import Qt
@@ -13,7 +13,7 @@ REVIEW_SAVE_MIN_INTERVAL = 8.0
 from data_manager import store
 from services import recovery_manager
 
-# SM-2 fields snapshotted for undo/redo — defined once at module level
+# SM-2 and FSRS fields snapshotted for undo/redo — defined once at module level
 _SM2_KEYS = (
     "sched_state",
     "sched_step",
@@ -26,6 +26,12 @@ _SM2_KEYS = (
     "reviewed_at",
     "last_quality",
     "pause_exempt_due",
+    "fsrs_stability",
+    "fsrs_difficulty",
+    "fsrs_due",
+    "fsrs_last_review",
+    "fsrs_reps",
+    "fsrs_lapses",
 )
 
 
@@ -59,6 +65,9 @@ class ReviewSessionManager:
         self._items = []
         self._idx = 0
         self._done = 0
+        self.learning_window_limit = 10
+        self.scheduler_type = "fsrs"
+        self.request_retention = 0.90
         self._queued_ids = set()
         self._deleted_ids = set()
         self._queue_needs_full_rebuild = True
@@ -107,7 +116,12 @@ class ReviewSessionManager:
             self.rs._load_item()
             return
 
-        sched_update(sm2_obj, quality)
+        sched_update_adaptive(
+            sm2_obj,
+            quality,
+            scheduler_type=getattr(self, "scheduler_type", "sm2"),
+            request_retention=getattr(self, "request_retention", 0.90),
+        )
         from perf_utils import invalidate_deck_stats
 
         invalidate_deck_stats()
@@ -130,7 +144,12 @@ class ReviewSessionManager:
             gid = box_idx[1]
             for box in card.get("boxes", []):
                 if box.get("group_id") == gid and box is not sm2_obj:
-                    sched_update(box, quality)
+                    sched_update_adaptive(
+                        box,
+                        quality,
+                        scheduler_type=getattr(self, "scheduler_type", "sm2"),
+                        request_retention=getattr(self, "request_retention", 0.90),
+                    )
                     # Propagate timestamp to every sibling so metadata is consistent
                     box["reviewed_at"] = _now
                     if not box.get("first_reviewed_at"):
@@ -183,16 +202,103 @@ class ReviewSessionManager:
         self.rs._load_item()
 
     def _insert_delayed_learning_item(self, item):
-        due_str = item[2].get("sm2_due", "")
-        insert_at = len(self._items)
-        for j in range(self._idx, len(self._items)):
-            other_due = self._items[j][2].get("sm2_due", "")
-            if other_due >= due_str:
-                insert_at = j
-                break
-        if self._idx < len(self._items):
-            insert_at = max(insert_at, self._idx + 1)
-        self._items.insert(insert_at, item)
+        insert_idx = min(self._idx, len(self._items))
+        self._items.insert(insert_idx, item)
+        self._reorganize_upcoming_queue(self._idx)
+
+    def _reorganize_upcoming_queue(self, insert_pos=None):
+        """
+        Reorganize upcoming items starting at insert_pos (default self._idx):
+        1. Expired learning items (sched_state in ('learning', 'relearn') and sm2_due <= now)
+           have TOP PRIORITY: placed at the front, sorted by earliest sm2_due.
+        2. If active unexpired learning items count < learning_window_limit:
+           untouched cards (new / due review) come next (preserving their original relative order),
+           followed by unexpired learning items (sorted by sm2_due).
+        3. If active unexpired learning items count >= learning_window_limit (batch window cap reached):
+           fresh/untouched cards are PAUSED until items graduate; unexpired learning items come
+           before untouched cards (sorted by sm2_due).
+        """
+        if insert_pos is None:
+            insert_pos = self._idx
+        if insert_pos >= len(self._items):
+            return
+
+        from datetime import datetime as _dt
+        now_str = _dt.now().isoformat(timespec="seconds")
+        limit = max(1, getattr(self, "learning_window_limit", 10) or 10)
+
+        upcoming = self._items[insert_pos:]
+        expired_learning = []
+        unexpired_learning = []
+        untouched = []
+
+        for it in upcoming:
+            sm2_obj = it[2] if len(it) > 2 and isinstance(it[2], dict) else {}
+            state = sm2_obj.get("sched_state", "new")
+            if state in ("learning", "relearn"):
+                due = sm2_obj.get("sm2_due", "")
+                if due and due <= now_str:
+                    expired_learning.append(it)
+                else:
+                    unexpired_learning.append(it)
+            else:
+                untouched.append(it)
+
+        expired_learning.sort(key=lambda it: it[2].get("sm2_due", "") if isinstance(it[2], dict) else "")
+        unexpired_learning.sort(key=lambda it: it[2].get("sm2_due", "") if isinstance(it[2], dict) else "")
+
+        if len(unexpired_learning) < limit:
+            new_upcoming = expired_learning + untouched + unexpired_learning
+        else:
+            new_upcoming = expired_learning + unexpired_learning + untouched
+
+        if self._items[insert_pos:] != new_upcoming:
+            self._items[insert_pos:] = new_upcoming
+            self._queue_needs_full_rebuild = True
+
+    def _should_wait_for_learning_card(self):
+        """
+        Check if the card at self._idx is an unexpired learning card and should trigger
+        the waiting countdown instead of prematurely displaying to the user.
+        """
+        if not (0 <= self._idx < len(self._items)):
+            return False
+        item = self._items[self._idx]
+        sm2_obj = item[2] if len(item) > 2 and isinstance(item[2], dict) else {}
+        state = sm2_obj.get("sched_state")
+        if state not in ("learning", "relearn"):
+            return False
+        from datetime import datetime as _dt
+        now_str = _dt.now().isoformat(timespec="seconds")
+        due = sm2_obj.get("sm2_due", "")
+        # Expired timer: review immediately
+        if not due or due <= now_str:
+            return False
+        limit = max(1, getattr(self, "learning_window_limit", 10) or 10)
+        unexpired_count = sum(
+            1 for it in self._items[self._idx:]
+            if it[2].get("sched_state") in ("learning", "relearn") and it[2].get("sm2_due", "") > now_str
+        )
+        if unexpired_count >= limit:
+            # Active window is full; user actively loops learning cards to graduate them
+            return False
+        # Window is not full. Check if there are untouched cards remaining:
+        has_untouched = any(
+            it[2].get("sched_state") not in ("learning", "relearn")
+            for it in self._items[self._idx:]
+        )
+        if has_untouched:
+            self._reorganize_upcoming_queue(self._idx)
+            new_item = self._items[self._idx]
+            new_sm2 = new_item[2] if len(new_item) > 2 and isinstance(new_item[2], dict) else {}
+            if new_sm2.get("sched_state") not in ("learning", "relearn"):
+                return False
+            return True
+
+        # When all fresh/untouched cards are finished, do NOT stall or force the user to wait!
+        # Immediately serve the remaining learning cards in order of least cooldown time.
+        self._reorganize_upcoming_queue(self._idx)
+        return False
 
     def _review_undo(self):
         """
@@ -580,23 +686,7 @@ class ReviewSessionManager:
         self.rs._load_item()
 
     def _promote_expired_learning(self, insert_pos):
-        from datetime import datetime as _dt
-
-        now_str = _dt.now().isoformat(timespec="seconds")
-
-        to_promote = [
-            j
-            for j in range(insert_pos, len(self._items))
-            if self._items[j][2].get("sched_state") in ("learning", "relearn")
-            and self._items[j][2].get("sm2_due", "") <= now_str
-        ]
-
-        for offset, j in enumerate(to_promote):
-            real_j = j - offset
-            item = self._items.pop(real_j)
-            self._items.insert(insert_pos + offset, item)
-        if to_promote:
-            self._queue_needs_full_rebuild = True
+        self._reorganize_upcoming_queue(insert_pos)
 
     def _queue_state_for_index(self, index, peek_idx=None):
         if peek_idx is not None and index == peek_idx:
@@ -755,7 +845,9 @@ class ReviewSessionManager:
         due_now = [(i, obj) for i, obj in pending if obj.get("sm2_due", "") <= now_str]
         if due_now:
             earliest_idx = min(due_now, key=lambda x: x[1].get("sm2_due", ""))[0]
-            self._idx = earliest_idx
+            if self._idx >= len(self._items):
+                self._idx = earliest_idx
+            self._reorganize_upcoming_queue(self._idx)
             self.rs._wait_bar.hide()
             self.rs._show_overlay(self.rs._reveal_bar)
             self.rs._load_item()

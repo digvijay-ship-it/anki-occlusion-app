@@ -137,15 +137,15 @@ class PracticeModeTests(unittest.TestCase):
             "_id": 1,
             "name": "Parent",
             "cards": [
-                {"title": "Card 1", "pdf_path": "docA.pdf"},
-                {"title": "Card 2", "pdf_path": "docA.pdf"},
+                {"title": "Card 1", "pdf_path": "docA.pdf", "boxes": [{"box_id": "b1"}]},
+                {"title": "Card 2", "pdf_path": "docA.pdf", "boxes": [{"box_id": "b2"}]},
             ],
             "children": [
                 {
                     "_id": 2,
                     "name": "Child",
                     "cards": [
-                        {"title": "Card 3", "pdf_path": "docB.pdf"},
+                        {"title": "Card 3", "pdf_path": "docB.pdf", "boxes": [{"box_id": "b3"}]},
                         {"title": "Card Formula", "is_formula": True},
                     ],
                     "children": []
@@ -205,7 +205,7 @@ class PracticeModeTests(unittest.TestCase):
                 {
                     "_id": 101,
                     "name": "Polity Subdeck",
-                    "cards": [{"title": "Emergency", "pdf_path": "law.pdf"}],
+                    "cards": [{"title": "Emergency", "pdf_path": "law.pdf", "boxes": [{"box_id": "b_em"}]}],
                     "children": []
                 }
             ]

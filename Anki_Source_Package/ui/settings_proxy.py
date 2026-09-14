@@ -1,7 +1,8 @@
 TRACKED_KEYS = [
     "_font_size", "_theme", "_keep_fullscreen", 
     "_volume", "_onboarding_done", "_invert_pdf", 
-    "_home_animations", "_auto_reveal", "_scroll_speed"
+    "_home_animations", "_auto_reveal", "_scroll_speed",
+    "_scheduler_type", "_request_retention"
 ]
 
 class SettingsProxyDict(dict):
@@ -34,10 +35,22 @@ class SettingsProxyDict(dict):
                         val = int(val)
                     except (ValueError, TypeError):
                         pass
+                elif k in ["_request_retention"]:
+                    try:
+                        val = float(val)
+                    except (ValueError, TypeError):
+                        val = 0.90
+                elif k in ["_scheduler_type"]:
+                    val = str(val) if val in ("fsrs", "sm2") else "fsrs"
                 super().__setitem__(k, val)
             elif k in self:
                 # Sync from DB to QSettings if not already set (e.g. initial migration)
                 settings.setValue(f"settings/{k}", self[k])
+
+        if "_scheduler_type" not in self:
+            super().__setitem__("_scheduler_type", "fsrs")
+        if "_request_retention" not in self:
+            super().__setitem__("_request_retention", 0.90)
 
     def __setitem__(self, key, value):
         super().__setitem__(key, value)

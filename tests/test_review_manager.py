@@ -246,33 +246,103 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
         self.assertEqual(manager._idx, 0)
         rs._load_item.assert_called_once_with()
 
-    def test_delayed_learning_insert_keeps_due_order_after_the_forced_swap(self):
+    def test_delayed_learning_insert_keeps_due_order_among_learning_cards(self):
+        """When remaining cards are in learning, delayed card slots in sm2_due order."""
         rs = MagicMock()
         manager = ReviewSessionManager(rs)
         manager._idx = 0
-        delayed = ({"title": "M3"}, None, {"sched_state": "learning", "sm2_due": "2026-05-23T00:15:00"})
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        t10 = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
+        t15 = (now + timedelta(minutes=15)).isoformat(timespec="seconds")
+        t20 = (now + timedelta(minutes=20)).isoformat(timespec="seconds")
+
+        delayed = ({"title": "M3"}, None, {"sched_state": "learning", "sm2_due": t15})
         manager._items = [
-            ({"title": "M1"}, None, {"sched_state": "review", "sm2_due": "2026-05-23T00:10:00"}),
-            ({"title": "M2"}, None, {"sched_state": "review", "sm2_due": "2026-05-23T00:20:00"}),
+            ({"title": "M1"}, None, {"sched_state": "learning", "sm2_due": t10}),
+            ({"title": "M2"}, None, {"sched_state": "learning", "sm2_due": t20}),
         ]
 
         manager._insert_delayed_learning_item(delayed)
 
         self.assertEqual([item[0]["title"] for item in manager._items], ["M1", "M3", "M2"])
 
-    def test_delayed_learning_insert_stays_after_all_shorter_remaining_times(self):
+    def test_delayed_learning_unexpired_stays_behind_untouched_cards(self):
+        """When under window limit, unexpired learning cards stay behind untouched cards."""
         rs = MagicMock()
         manager = ReviewSessionManager(rs)
+        manager.learning_window_limit = 10
         manager._idx = 0
-        delayed = ({"title": "M3"}, None, {"sched_state": "learning", "sm2_due": "2026-05-23T00:30:00"})
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        t15 = (now + timedelta(minutes=15)).isoformat(timespec="seconds")
+
+        delayed = ({"title": "M3"}, None, {"sched_state": "learning", "sm2_due": t15})
         manager._items = [
-            ({"title": "M1"}, None, {"sched_state": "review", "sm2_due": "2026-05-23T00:10:00"}),
-            ({"title": "M2"}, None, {"sched_state": "review", "sm2_due": "2026-05-23T00:20:00"}),
+            ({"title": "M1"}, None, {"sched_state": "new"}),
+            ({"title": "M2"}, None, {"sched_state": "new"}),
         ]
 
         manager._insert_delayed_learning_item(delayed)
 
+        # Untouched cards come first, unexpired learning card stays behind
         self.assertEqual([item[0]["title"] for item in manager._items], ["M1", "M2", "M3"])
+
+    def test_delayed_learning_window_limit_pauses_untouched_cards(self):
+        """When active learning count reaches limit, fresh cards are paused and learning cards come first."""
+        rs = MagicMock()
+        manager = ReviewSessionManager(rs)
+        manager.learning_window_limit = 1
+        manager._idx = 0
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        t15 = (now + timedelta(minutes=15)).isoformat(timespec="seconds")
+
+        delayed = ({"title": "M3"}, None, {"sched_state": "learning", "sm2_due": t15})
+        manager._items = [
+            ({"title": "M1"}, None, {"sched_state": "new"}),
+            ({"title": "M2"}, None, {"sched_state": "new"}),
+        ]
+
+        manager._insert_delayed_learning_item(delayed)
+
+        # Window is full (1 >= 1) -> M3 pauses fresh cards M1, M2 and comes to front
+        self.assertEqual([item[0]["title"] for item in manager._items], ["M3", "M1", "M2"])
+
+    def test_expired_learning_card_has_top_priority_over_untouched_cards(self):
+        """When a learning card's timer expires (sm2_due <= now), it bubbles to the front of the queue."""
+        rs = MagicMock()
+        manager = ReviewSessionManager(rs)
+        manager.learning_window_limit = 10
+        manager._idx = 0
+        from datetime import datetime, timedelta
+        past_time = (datetime.now() - timedelta(minutes=2)).isoformat(timespec="seconds")
+
+        delayed = ({"title": "M3"}, None, {"sched_state": "learning", "sm2_due": past_time})
+        manager._items = [
+            ({"title": "M1"}, None, {"sched_state": "new"}),
+            ({"title": "M2"}, None, {"sched_state": "new"}),
+        ]
+
+        manager._insert_delayed_learning_item(delayed)
+
+        # Expired card M3 has top priority and appears before fresh cards
+        self.assertEqual([item[0]["title"] for item in manager._items], ["M3", "M1", "M2"])
+
+    def test_should_wait_for_learning_card_when_all_untouched_finished(self):
+        """When all fresh cards are done, _should_wait_for_learning_card returns False so user reviews least cooldown card immediately."""
+        rs = MagicMock()
+        manager = ReviewSessionManager(rs)
+        manager.learning_window_limit = 10
+        manager._idx = 0
+        from datetime import datetime, timedelta
+        future_time = (datetime.now() + timedelta(minutes=5)).isoformat(timespec="seconds")
+
+        manager._items = [
+            ({"title": "M1"}, None, {"sched_state": "learning", "sm2_due": future_time}),
+        ]
+
+        self.assertFalse(manager._should_wait_for_learning_card())
 
     def test_skip_session_pops_item_and_can_be_undone(self):
         rs = MagicMock()
@@ -676,6 +746,40 @@ class ReviewSessionManagerPersistenceTests(unittest.TestCase):
         # Check that they have collapsed into a single item in the review queue
         self.assertEqual(len(manager._items), 1)
         self.assertEqual(manager._items[0][1], ("group", "g1"))
+
+    def test_fsrs_rating_and_undo_restoration(self):
+        rs = MagicMock()
+        card = {
+            "title": "FSRS Card",
+            "sched_state": "review",
+            "sched_step": 0,
+            "fsrs_stability": 5.0,
+            "fsrs_difficulty": 4.5,
+            "fsrs_due": "2026-05-20T00:00:00",
+            "fsrs_last_review": "2026-05-15T00:00:00",
+            "reviews": 3,
+        }
+        manager = ReviewSessionManager(rs)
+        manager.scheduler_type = "fsrs"
+        manager.request_retention = 0.90
+        manager._items = [(card, None, card)]
+
+        with patch("services.review_manager.store.mark_dirty"), patch(
+            "services.review_manager.store.save_soon"
+        ), patch("services.review_manager.store.save_force"):
+            manager._rate(4)  # Good
+
+            # Stability should increase
+            self.assertGreater(card["fsrs_stability"], 5.0)
+            rated_stability = card["fsrs_stability"]
+
+            # Undo should restore original stability
+            manager._review_undo()
+            self.assertEqual(card["fsrs_stability"], 5.0)
+
+            # Redo should restore rated stability
+            manager._review_redo()
+            self.assertEqual(card["fsrs_stability"], rated_stability)
 
 
 if __name__ == "__main__":

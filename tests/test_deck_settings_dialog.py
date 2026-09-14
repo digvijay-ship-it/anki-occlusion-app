@@ -53,6 +53,7 @@ class DeckSettingsDialogTests(unittest.TestCase):
             self.dialog.inp_daily_review_limit,
             self.dialog.inp_daily_limit,
             self.dialog.inp_session_limit,
+            self.dialog.inp_learning_window_limit,
         ]:
             self.assertIsInstance(inp, QLineEdit)
             self.assertGreaterEqual(inp.width(), 200)
@@ -63,11 +64,20 @@ class DeckSettingsDialogTests(unittest.TestCase):
         self.dialog.inp_daily_review_limit.setText("80")
         self.dialog.inp_daily_limit.setText("105")
         self.dialog.inp_session_limit.setText("35")
+        self.dialog.inp_learning_window_limit.setText("12")
         self.dialog.chk_pause.setChecked(True)
         
         least_mature_idx = self.dialog.combo_order.findData("least_mature")
         self.assertGreaterEqual(least_mature_idx, 0)
         self.dialog.combo_order.setCurrentIndex(least_mature_idx)
+
+        fsrs_idx = self.dialog.combo_scheduler.findData("fsrs")
+        self.assertGreaterEqual(fsrs_idx, 0)
+        self.dialog.combo_scheduler.setCurrentIndex(fsrs_idx)
+
+        ret_idx = self.dialog.combo_retention.findData(0.95)
+        self.assertGreaterEqual(ret_idx, 0)
+        self.dialog.combo_retention.setCurrentIndex(ret_idx)
 
         with patch("services.review_manager.store.save_force") as mock_save:
             with patch.object(self.dialog, "accept") as mock_accept:
@@ -76,10 +86,54 @@ class DeckSettingsDialogTests(unittest.TestCase):
                 self.assertEqual(self.deck["daily_review_limit"], 80)
                 self.assertEqual(self.deck["daily_limit"], 105)
                 self.assertEqual(self.deck["session_limit"], 35)
+                self.assertEqual(self.deck["learning_window_limit"], 12)
+                self.assertEqual(self.deck["scheduler_type"], "fsrs")
+                self.assertEqual(self.deck["request_retention"], 0.95)
                 self.assertTrue(self.deck["is_paused"])
                 self.assertEqual(self.deck["review_order"], "least_mature")
                 mock_save.assert_called_once_with(async_save=True)
                 mock_accept.assert_called_once()
+
+    def test_default_selection_clears_override_to_inherit_global(self):
+        """Selecting 'Default (Follow Main Settings)' clears deck-level override."""
+        self.deck["scheduler_type"] = "sm2"
+        self.deck["request_retention"] = 0.85
+        dlg = DeckSettingsDialog(deck=self.deck)
+
+        # Select index 0 ("Default (Follow Main Settings)")
+        dlg.combo_scheduler.setCurrentIndex(0)
+        dlg.combo_retention.setCurrentIndex(0)
+
+        with patch("services.review_manager.store.save_force"):
+            dlg._save_settings()
+
+        self.assertNotIn("scheduler_type", self.deck)
+        self.assertNotIn("request_retention", self.deck)
+        dlg.deleteLater()
+
+    def test_deck_view_resolves_global_defaults_when_unset(self):
+        """DeckView._resolve_deck_limits returns global defaults when deck has no override."""
+        from ui.deck_view import DeckView
+        dv = DeckView()
+        deck = {"_id": 1, "name": "Test", "cards": []}
+        data = {
+            "decks": [deck],
+            "_scheduler_type": "sm2",
+            "_request_retention": 0.92,
+        }
+        dv.deck = deck
+        dv._data = data
+
+        limits = dv._resolve_deck_limits()
+        self.assertEqual(limits["scheduler_type"], "sm2")
+        self.assertEqual(limits["request_retention"], 0.92)
+
+        # If deck explicitly overrides, override takes precedence:
+        deck["scheduler_type"] = "fsrs"
+        deck["request_retention"] = 0.95
+        limits_override = dv._resolve_deck_limits()
+        self.assertEqual(limits_override["scheduler_type"], "fsrs")
+        self.assertEqual(limits_override["request_retention"], 0.95)
 
 
 if __name__ == "__main__":

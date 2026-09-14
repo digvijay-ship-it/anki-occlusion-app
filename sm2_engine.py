@@ -451,6 +451,29 @@ def _fmt_due_interval(c):
     return previews
 
 
+def sched_update_adaptive(c, quality: int, scheduler_type: str = "fsrs", request_retention: float = 0.90):
+    """
+    Adaptive scheduler dispatcher.
+    If scheduler_type is 'fsrs', routes to FSRS engine. Otherwise routes to standard SM-2.
+    """
+    s_type = str(scheduler_type or "fsrs").lower().strip()
+    if s_type == "fsrs":
+        import fsrs_engine
+        return fsrs_engine.fsrs_update(c, quality, request_retention=request_retention)
+    return sched_update(c, quality)
+
+
+def fmt_due_interval_adaptive(c, scheduler_type: str = "fsrs", request_retention: float = 0.90):
+    """
+    Adaptive button interval preview dispatcher.
+    """
+    s_type = str(scheduler_type or "fsrs").lower().strip()
+    if s_type == "fsrs":
+        import fsrs_engine
+        return fsrs_engine.fsrs_fmt_due_interval(c, request_retention=request_retention)
+    return _fmt_due_interval(c)
+
+
 def sm2_simulate(c, q):
     previews = _fmt_due_interval(c)
     return previews.get(q, "?")

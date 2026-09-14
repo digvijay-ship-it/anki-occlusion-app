@@ -2126,7 +2126,49 @@ class DeckView(QWidget):
         daily_review_limit = 0
         session_limit = 25
         auto_exit_session = True
+        learning_window_limit = 10
         owner_deck = target
+
+        # Resolve global defaults from self._data or store
+        global_scheduler = "fsrs"
+        global_retention = 0.90
+        if getattr(self, "_data", None) and isinstance(self._data, dict):
+            global_scheduler = self._data.get("_scheduler_type", "fsrs") or "fsrs"
+            try:
+                global_retention = float(self._data.get("_request_retention", 0.90) or 0.90)
+            except Exception:
+                global_retention = 0.90
+        else:
+            try:
+                from data_manager import store
+                global_scheduler = store.get().get("_scheduler_type", "fsrs") or "fsrs"
+                global_retention = float(store.get().get("_request_retention", 0.90) or 0.90)
+            except Exception:
+                pass
+
+        scheduler_type = global_scheduler
+        request_retention = global_retention
+
+        # Resolve deck-specific retention from _deck_retention map or deck attributes
+        try:
+            deck_ret_map = {}
+            if getattr(self, "_data", None) and isinstance(self._data, dict):
+                deck_ret_map = self._data.get("_deck_retention", {}) or {}
+            if not deck_ret_map:
+                from data_manager import store
+                deck_ret_map = store.get().get("_deck_retention", {}) or {}
+
+            # Check target deck and ancestor chain (child inherits from parent if parent is configured)
+            for d in reversed(chain):
+                d_id = str(d.get("_id") or d.get("id") or "")
+                if d_id and d_id in deck_ret_map:
+                    request_retention = float(deck_ret_map[d_id])
+                    break
+                elif d.get("request_retention"):
+                    request_retention = float(d.get("request_retention"))
+                    break
+        except Exception:
+            pass
 
         for d in reversed(chain):
             dl = int(d.get("daily_limit", 0) or 0)
@@ -2147,6 +2189,15 @@ class DeckView(QWidget):
                 session_limit = int(d.get("session_limit"))
             if "auto_exit_session" in d:
                 auto_exit_session = bool(d.get("auto_exit_session"))
+            if "learning_window_limit" in d and d.get("learning_window_limit"):
+                learning_window_limit = int(d.get("learning_window_limit"))
+            if d.get("scheduler_type"):
+                scheduler_type = str(d.get("scheduler_type"))
+            if d.get("request_retention"):
+                try:
+                    request_retention = float(d.get("request_retention"))
+                except Exception:
+                    pass
 
         return {
             'daily_limit': daily_limit,
@@ -2154,6 +2205,9 @@ class DeckView(QWidget):
             'daily_review_limit': daily_review_limit,
             'session_limit': session_limit,
             'auto_exit_session': auto_exit_session,
+            'learning_window_limit': learning_window_limit,
+            'scheduler_type': scheduler_type,
+            'request_retention': request_retention,
             'owner_deck': owner_deck
         }
 
@@ -2247,6 +2301,9 @@ class DeckView(QWidget):
         daily_review_limit = limits.get("daily_review_limit", 0)
         session_limit = limits.get("session_limit", 25)
         auto_exit = limits.get("auto_exit_session", True)
+        learning_window_limit = limits.get("learning_window_limit", 10)
+        scheduler_type = limits.get("scheduler_type", "fsrs")
+        request_retention = limits.get("request_retention", 0.90)
         owner_deck = limits.get("owner_deck") or self.deck
         deck_id = owner_deck.get("_id")
         deck_name = owner_deck.get("name")
@@ -2282,6 +2339,9 @@ class DeckView(QWidget):
                     default_daily_review_target=daily_review_limit,
                     default_session_target=session_limit,
                     auto_exit_session=auto_exit,
+                    learning_window_limit=learning_window_limit,
+                    scheduler_type=scheduler_type,
+                    request_retention=request_retention,
                     deck_id=deck_id,
                     deck_name=deck_name,
                 )
@@ -2323,6 +2383,9 @@ class DeckView(QWidget):
         daily_review_limit = limits.get("daily_review_limit", 0)
         session_limit = limits.get("session_limit", 25)
         auto_exit = limits.get("auto_exit_session", True)
+        learning_window_limit = limits.get("learning_window_limit", 10)
+        scheduler_type = limits.get("scheduler_type", "fsrs")
+        request_retention = limits.get("request_retention", 0.90)
         owner_deck = limits.get("owner_deck") or self.deck
         deck_id = owner_deck.get("_id")
         deck_name = owner_deck.get("name")
@@ -2353,6 +2416,9 @@ class DeckView(QWidget):
                     default_daily_review_target=daily_review_limit,
                     default_session_target=session_limit,
                     auto_exit_session=auto_exit,
+                    learning_window_limit=learning_window_limit,
+                    scheduler_type=scheduler_type,
+                    request_retention=request_retention,
                     deck_id=deck_id,
                     deck_name=deck_name,
                 )
@@ -2389,9 +2455,13 @@ class DeckView(QWidget):
                 return
             home = self._find_home()
             if home:
-                daily_limit = int(self.deck.get("daily_limit", 0) or 0)
-                session_limit = int(self.deck.get("session_limit", 25) or 25)
-                auto_exit = bool(self.deck.get("auto_exit_session", True))
+                limits = self._resolve_deck_limits()
+                daily_limit = limits.get("daily_limit", 0)
+                session_limit = limits.get("session_limit", 25)
+                auto_exit = limits.get("auto_exit_session", True)
+                learning_window_limit = limits.get("learning_window_limit", 10)
+                scheduler_type = limits.get("scheduler_type", "fsrs")
+                request_retention = limits.get("request_retention", 0.90)
                 deck_id = self.deck.get("_id")
                 deck_name = self.deck.get("name")
                 home.show_review_sequential(
@@ -2402,6 +2472,9 @@ class DeckView(QWidget):
                     default_daily_target=daily_limit,
                     default_session_target=session_limit,
                     auto_exit_session=auto_exit,
+                    learning_window_limit=learning_window_limit,
+                    scheduler_type=scheduler_type,
+                    request_retention=request_retention,
                     deck_id=deck_id,
                     deck_name=deck_name,
                 )
@@ -2484,6 +2557,9 @@ class DeckView(QWidget):
         daily_review_limit = limits.get("daily_review_limit", 0)
         session_limit = limits.get("session_limit", 25)
         auto_exit = limits.get("auto_exit_session", True)
+        learning_window_limit = limits.get("learning_window_limit", 10)
+        scheduler_type = limits.get("scheduler_type", "fsrs")
+        request_retention = limits.get("request_retention", 0.90)
         owner_deck = limits.get("owner_deck") or self.deck
         deck_id = owner_deck.get("_id")
         deck_name = owner_deck.get("name")
@@ -2516,6 +2592,9 @@ class DeckView(QWidget):
                     default_daily_review_target=daily_review_limit,
                     default_session_target=session_limit,
                     auto_exit_session=auto_exit,
+                    learning_window_limit=learning_window_limit,
+                    scheduler_type=scheduler_type,
+                    request_retention=request_retention,
                     deck_id=deck_id,
                     deck_name=deck_name,
                 )
@@ -2552,6 +2631,9 @@ class DeckView(QWidget):
             daily_review_limit = limits.get("daily_review_limit", 0)
             session_limit = limits.get("session_limit", 25)
             auto_exit = limits.get("auto_exit_session", True)
+            learning_window_limit = limits.get("learning_window_limit", 10)
+            scheduler_type = limits.get("scheduler_type", "fsrs")
+            request_retention = limits.get("request_retention", 0.90)
             owner_deck = limits.get("owner_deck") or self.deck
             deck_id = owner_deck.get("_id") if owner_deck else None
             deck_name = owner_deck.get("name") if owner_deck else None
@@ -2566,6 +2648,9 @@ class DeckView(QWidget):
                 default_daily_review_target=daily_review_limit,
                 default_session_target=session_limit,
                 auto_exit_session=auto_exit,
+                learning_window_limit=learning_window_limit,
+                scheduler_type=scheduler_type,
+                request_retention=request_retention,
                 deck_id=deck_id,
                 deck_name=deck_name,
             )
