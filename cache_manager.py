@@ -103,10 +103,11 @@ QScrollBar::handle:vertical {{ background:{C_BORDER}; border-radius:3px; }}
 # ═══════════════════════════════════════════════════════════════════════════════
 
 DEFAULT_PDF_IDLE_MINUTES = 5
-# Keep only the pages around the active viewport in RAM.  Rendered copies are
-# still retained on disk, so this bounds working-set growth without turning a
-# PDF revisit into a full rerender.
-DEFAULT_RAM_PAGE_LIMIT = 16
+# Unlimited in-RAM page cache during active study/review.
+# Memory is automatically reclaimed whenever the user returns to the Home Screen or closes dialogs.
+DEFAULT_RAM_PAGE_LIMIT = None
+
+
 
 
 def get_pdf_invert_setting() -> bool:

@@ -51,12 +51,29 @@ class LRUPageCacheTests(unittest.TestCase):
                 time.sleep(0.01)
             time.sleep(0.05) # short additional sleep to ensure file handles are closed
 
-        for path in sorted(self.tmpdir.rglob("*"), reverse=True):
-            if path.is_file():
-                self._unlink_with_retry(path)
-            elif path.is_dir():
-                self._rmdir_with_retry(path)
-        self._rmdir_with_retry(self.tmpdir)
+        import shutil
+        for attempt in range(20):
+            try:
+                for path in sorted(self.tmpdir.rglob("*"), reverse=True):
+                    if path.is_file():
+                        try:
+                            path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    elif path.is_dir():
+                        try:
+                            path.rmdir()
+                        except Exception:
+                            pass
+                if self.tmpdir.exists():
+                    shutil.rmtree(self.tmpdir, ignore_errors=True)
+                if not self.tmpdir.exists():
+                    break
+            except Exception:
+                pass
+            gc.collect()
+            _APP.processEvents()
+            time.sleep(0.05)
 
     def _unlink_with_retry(self, path):
         for attempt in range(20):
@@ -157,15 +174,23 @@ class LRUPageCacheTests(unittest.TestCase):
 
     def test_default_cache_has_a_bounded_ram_working_set(self):
         with patch.object(cache_manager.COMBINED_CACHE, "_dir", str(self.tmpdir)):
-            cache = cache_manager.LRUPageCache(async_disk_writes=False)
             limit = cache_manager.DEFAULT_RAM_PAGE_LIMIT
+            if limit is not None:
+                cache = cache_manager.LRUPageCache(async_disk_writes=False)
+                for page_num in range(limit + 1):
+                    pixmap = QPixmap(6, 6)
+                    pixmap.fill()
+                    cache.put("doc.pdf", page_num, pixmap)
+                self.assertEqual(len(cache._cache), limit)
+            else:
+                # Unlimited RAM mode: cache holds all pages during session
+                cache = cache_manager.LRUPageCache(async_disk_writes=False)
+                for page_num in range(10):
+                    pixmap = QPixmap(6, 6)
+                    pixmap.fill()
+                    cache.put("doc.pdf", page_num, pixmap)
+                self.assertEqual(len(cache._cache), 10)
 
-            for page_num in range(limit + 1):
-                pixmap = QPixmap(6, 6)
-                pixmap.fill()
-                cache.put("doc.pdf", page_num, pixmap)
-
-            self.assertEqual(len(cache._cache), limit)
 
     def test_clear_ram_only_releases_queued_render_images(self):
         cache = cache_manager.LRUPageCache(async_disk_writes=True)

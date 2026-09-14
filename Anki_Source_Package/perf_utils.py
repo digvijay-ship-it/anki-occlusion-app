@@ -414,3 +414,39 @@ def log_memory(label=""):
     print(f"[MEMORY_TRACE] {label} - Process RAM: {mem:.2f} MB", flush=True)
 
 
+def flush_process_memory(label=""):
+    """
+    Automatic Process Memory Flush:
+    - Shrinks PyMuPDF internal buffer store (fitz.TOOLS.store_shrink(100)).
+    - Clears QPixmapCache to free unreferenced graphical pixmaps.
+    - Forces Python garbage collector to break cyclic object references.
+    - Traces memory usage reduction to stdout.
+    """
+    before = get_process_memory_mb()
+    try:
+        import fitz
+        fitz.TOOLS.store_shrink(100)
+    except Exception:
+        pass
+
+    try:
+        from PyQt5.QtGui import QPixmapCache
+        QPixmapCache.clear()
+    except Exception:
+        pass
+
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+    after = get_process_memory_mb()
+    freed = max(0.0, before - after)
+    print(
+        f"[MEMORY_TRACE] 🧹 Flush ({label}) - Before: {before:.1f}MB -> After: {after:.1f}MB (Freed: {freed:.1f}MB)",
+        flush=True,
+    )
+
+
+
