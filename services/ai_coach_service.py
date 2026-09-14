@@ -20,8 +20,8 @@ KEY_MODEL_NAME = "gemini_model_name"
 KEY_AUTO_LISTEN = "auto_listen_enabled"
 KEY_VOICE_LANG = "voice_language"
 
-DEFAULT_MODEL = "gemini-2.5-flash"
-FALLBACK_MODEL = "gemini-3.6-flash"
+DEFAULT_MODEL = "gemini-3.6-flash"
+FALLBACK_MODEL = "gemini-2.5-flash"
 
 
 def parse_api_keys(raw) -> list[str]:
