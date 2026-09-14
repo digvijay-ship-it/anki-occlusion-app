@@ -13,8 +13,10 @@ Layout (matches HTML):
   │  Search        │  3 stat cards          │  System Status      │
   │  Deck list     │  Mission banner        │  Dojo Resources     │
   │  + NEW DOJO    │  Card list area        │  Fuel Up tip        │
-   │  + SUB         │  Edit / Delete bar     │                     │
-   └─────────────────┴────────────────────────┴─────────────────────┘
+   │  + SUB         │  Edit / Delete bar     │                     │
+
+   └─────────────────┴────────────────────────┴─────────────────────┘
+
 """
 
 import importlib.util
@@ -3350,7 +3352,7 @@ class TMNTTopBar(QFrame):
         L.setSpacing(_px(14, self._scale))
 
         left = QWidget()
-        left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        left.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         left_l = QHBoxLayout(left)
         left_l.setContentsMargins(0, 0, 0, 0)
         left_l.setSpacing(0)
@@ -3395,7 +3397,7 @@ class TMNTTopBar(QFrame):
 
         left_l.addWidget(self.brand_name, 0, Qt.AlignVCenter)
         left_l.addStretch()
-        L.addWidget(left, 1)
+        L.addWidget(left, 0)
 
         btn_math = self._make_nav_button("🧮 MATH TRAINER", "Math Trainer")
         btn_journal = self._make_nav_button("📓", "Daily Journal")
@@ -3421,6 +3423,31 @@ class TMNTTopBar(QFrame):
             )
         )
         btn_report = self._make_nav_button("📊", "Mission Report Card")
+        btn_fsrs = self._make_nav_button("⚡ FSRS AI", "FSRS Memory, Subject Retention Sliders & Optimizer")
+        btn_fsrs.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: rgba(102, 252, 241, 0.10);
+                    color: {T_NEON};
+                    border: 1px solid rgba(102, 252, 241, 0.45);
+                    border-radius: 4px;
+                    font-family: 'Segoe UI Emoji', 'Segoe UI Symbol', {T_MONO};
+                    font-size: 11px;
+                    font-weight: bold;
+                    padding: 5px 12px;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(102, 252, 241, 0.28);
+                    border: 1px solid {T_NEON};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        btn_fsrs.clicked.connect(self._open_fsrs_center)
         btn_report.setStyleSheet(
             _scale_ss(
                 f"""
@@ -3454,18 +3481,19 @@ class TMNTTopBar(QFrame):
         )
 
         center = QWidget()
-        center.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
+        center.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         center_l = QHBoxLayout(center)
         center_l.setContentsMargins(0, 0, 0, 0)
         center_l.setSpacing(_px(10, self._scale))
         center_l.addStretch()
-        for b in (btn_math, btn_journal, btn_report, self._more_btn):
+        for b in (btn_math, btn_fsrs, btn_journal, btn_report, self._more_btn):
+            b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             center_l.addWidget(b, 0, Qt.AlignCenter)
         center_l.addStretch()
         L.addWidget(center, 1)
 
         right = QWidget()
-        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        right.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         right_l = QHBoxLayout(right)
         right_l.setContentsMargins(0, 0, 0, 0)
         right_l.setSpacing(_px(10, self._scale))
@@ -3480,20 +3508,6 @@ class TMNTTopBar(QFrame):
         self._save_btn.setToolTip("Save now")
         self._save_btn.clicked.connect(self._emit_save)
         right_l.addWidget(self._save_btn, 0, Qt.AlignVCenter)
-
-        self._settings_btn = self._make_square_action(
-            "⚙",
-            T_SUBTEXT,
-            hover_color=T_NEON,
-        )
-        self._settings_btn.installEventFilter(self)
-        self._settings_panel = self._build_settings_panel()
-        self._settings_btn.clicked.connect(
-            lambda: self._toggle_panel(
-                self._settings_panel, self._settings_btn, "right"
-            )
-        )
-        right_l.addWidget(self._settings_btn, 0, Qt.AlignVCenter)
 
         self.bgm_widget = TMNTBgmWidget(
             data=self._data,
@@ -3518,7 +3532,20 @@ class TMNTTopBar(QFrame):
             )
         )
         self.bgm_widget.clicked.connect(self.bgm_toggle)
-        right_l.addWidget(self.bgm_widget, 0, Qt.AlignVCenter)
+
+        self._settings_btn = self._make_square_action(
+            "⚙",
+            T_SUBTEXT,
+            hover_color=T_NEON,
+        )
+        self._settings_btn.installEventFilter(self)
+        self._settings_panel = self._build_settings_panel()
+        self._settings_btn.clicked.connect(
+            lambda: self._toggle_panel(
+                self._settings_panel, self._settings_btn, "right"
+            )
+        )
+        right_l.addWidget(self._settings_btn, 0, Qt.AlignVCenter)
 
         app = QApplication.instance()
         theme_name = getattr(app, "_active_theme", "tmnt")
@@ -3530,65 +3557,19 @@ class TMNTTopBar(QFrame):
             self.quote_lbl = mentor.quote_lbl
             self.name_lbl = mentor.name_lbl
         else:
-            mentor = QFrame()
-            mentor.setFixedSize(_px(244, self._scale), _px(42, self._scale))
-            mentor.setStyleSheet(
-                _scale_ss(
-                    f"""
-                QFrame {{
-                    background: {T_PANEL};
-                    border: 1px solid {T_PURPLE};
-                    border-radius: 4px;
-                }}
-                QLabel {{ background: transparent; border: none; }}
-            """,
-                    self._scale,
-                )
+            mentor = self._make_square_action(
+                "◎",
+                T_PURPLE,
+                hover_color=T_PURPLE,
+                hover_fill="rgba(176,136,249,0.20)",
             )
-            ml = QHBoxLayout(mentor)
-            ml.setContentsMargins(
-                _px(8, self._scale),
-                _px(4, self._scale),
-                _px(8, self._scale),
-                _px(4, self._scale),
-            )
-            ml.setSpacing(_px(8, self._scale))
-
-            av = QLabel("◎")
-            av.setFixedSize(_px(28, self._scale), _px(28, self._scale))
-            av.setAlignment(Qt.AlignCenter)
-            av.setStyleSheet(
-                _scale_ss(
-                    f"font-size: 16px; color: {T_PURPLE}; background: rgba(176,136,249,0.10); "
-                    f"border: 1px solid #5b616d; border-radius: 14px;",
-                    self._scale,
-                )
-            )
-            ml.addWidget(av)
-
+            mentor.setToolTip(f"{MENTOR_QUOTES[0][0]}\n{MENTOR_QUOTES[0][1]}")
+            mentor.clicked.connect(self._rotate_quote)
+            self.mentor = mentor
             self.quote_lbl = QLabel(MENTOR_QUOTES[0][0])
-            self.quote_lbl.setStyleSheet(
-                _scale_ss(
-                    f"color: {T_PURPLE}; font-size: 8px; font-weight: 900; "
-                    f"font-family: {T_MONO};",
-                    self._scale,
-                )
-            )
             self.name_lbl = QLabel(MENTOR_QUOTES[0][1])
-            self.name_lbl.setStyleSheet(
-                _scale_ss(
-                    f"color: {T_SUBTEXT}; font-size: 9px; font-family: {T_MONO};",
-                    self._scale,
-                )
-            )
-            q_col = QVBoxLayout()
-            q_col.setContentsMargins(0, 0, 0, 0)
-            q_col.setSpacing(_px(1, self._scale))
-            q_col.addWidget(self.quote_lbl)
-            q_col.addWidget(self.name_lbl)
-            ml.addLayout(q_col)
         right_l.addWidget(mentor, 0, Qt.AlignVCenter)
-        L.addWidget(right, 1)
+        L.addWidget(right, 0)
 
     def _make_nav_button(self, text, tip, color=None):
         button = QPushButton(text)
@@ -3602,7 +3583,7 @@ class TMNTTopBar(QFrame):
                     color: {T_SUBTEXT};
                     border: none;
                     border-bottom: 2px solid transparent;
-                    font-family: {T_MONO};
+                    font-family: 'Segoe UI Emoji', 'Segoe UI Symbol', {T_MONO};
                     font-size: 12px;
                     font-weight: bold;
                     padding: 6px 8px;
@@ -4023,6 +4004,32 @@ class TMNTTopBar(QFrame):
         volume_layout.addWidget(btn_inc)
         panel_l.addWidget(volume_box)
 
+        # ── BGM CONTROLS IN SETTINGS (Shifted from Top Bar) ──
+        bgm_panel_lbl = QLabel("BACKGROUND AUDIO")
+        bgm_panel_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 11px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(bgm_panel_lbl)
+
+        bgm_panel_box = QFrame()
+        bgm_panel_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px; padding: 4px;",
+                self._scale,
+            )
+        )
+        bgm_panel_l = QHBoxLayout(bgm_panel_box)
+        bgm_panel_l.setContentsMargins(_px(8, self._scale), _px(6, self._scale), _px(8, self._scale), _px(6, self._scale))
+        bgm_title = QLabel("BGM PLAYER")
+        bgm_title.setStyleSheet(_scale_ss(f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 11px; font-weight: bold;", self._scale))
+        bgm_panel_l.addWidget(bgm_title)
+        bgm_panel_l.addStretch()
+        bgm_panel_l.addWidget(self.bgm_widget)
+        panel_l.addWidget(bgm_panel_box)
+
         scroll_lbl = QLabel("SCROLL SPEED")
         scroll_lbl.setStyleSheet(
             _scale_ss(
@@ -4255,6 +4262,157 @@ class TMNTTopBar(QFrame):
         self._cb_keep_fullscreen.stateChanged.connect(self._on_tmnt_fullscreen_changed)
         window_layout.addWidget(self._cb_keep_fullscreen)
         panel_l.addWidget(window_box)
+
+        # Spaced Repetition Settings
+        sr_lbl = QLabel("SPACED REPETITION")
+        sr_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_NEON}; font-family: {T_MONO}; font-size: 9px; font-weight: bold; letter-spacing: 2px;",
+                self._scale,
+            )
+        )
+        panel_l.addWidget(sr_lbl)
+
+        sr_box = QFrame()
+        sr_box.setStyleSheet(
+            _scale_ss(
+                f"background: {T_BG}; border: 1px solid {T_BORDER}; border-radius: 4px;",
+                self._scale,
+            )
+        )
+        sr_l = QVBoxLayout(sr_box)
+        sr_l.setContentsMargins(
+            _px(8, self._scale),
+            _px(6, self._scale),
+            _px(8, self._scale),
+            _px(6, self._scale),
+        )
+        sr_l.setSpacing(_px(6, self._scale))
+
+        # Row 1: Algorithm
+        algo_row = QHBoxLayout()
+        algo_row.setSpacing(_px(6, self._scale))
+        algo_lbl = QLabel("ALGORITHM")
+        algo_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        algo_row.addWidget(algo_lbl)
+        algo_row.addStretch()
+
+        self._combo_tmnt_scheduler = QComboBox()
+        self._combo_tmnt_scheduler.addItem("⚡ FSRS AI (RECOMMENDED)", "fsrs")
+        self._combo_tmnt_scheduler.addItem("🕰️ SM-2 CLASSIC", "sm2")
+        self._combo_tmnt_scheduler.setCursor(Qt.PointingHandCursor)
+        self._combo_tmnt_scheduler.setStyleSheet(
+            _scale_ss(
+                f"""
+                QComboBox {{
+                    background: {T_BG};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                    color: {T_PURPLE};
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {T_PANEL};
+                    color: {T_PURPLE};
+                    border: 1px solid {T_BORDER};
+                    selection-background-color: {T_BG};
+                    selection-color: {T_NEON};
+                }}
+                """,
+                self._scale,
+            )
+        )
+        curr_sched = self._data.get("_scheduler_type", "fsrs") or "fsrs"
+        s_idx = self._combo_tmnt_scheduler.findData(curr_sched)
+        self._combo_tmnt_scheduler.setCurrentIndex(s_idx if s_idx >= 0 else 0)
+        self._combo_tmnt_scheduler.currentIndexChanged.connect(self._on_tmnt_scheduler_changed)
+        algo_row.addWidget(self._combo_tmnt_scheduler)
+        sr_l.addLayout(algo_row)
+
+        # Row 2: Retention
+        ret_row = QHBoxLayout()
+        ret_row.setSpacing(_px(6, self._scale))
+        ret_lbl = QLabel("RETENTION")
+        ret_lbl.setStyleSheet(
+            _scale_ss(
+                f"color: {T_SUBTEXT}; font-family: {T_MONO}; font-size: 9px;",
+                self._scale,
+            )
+        )
+        ret_row.addWidget(ret_lbl)
+        ret_row.addStretch()
+
+        self._combo_tmnt_retention = QComboBox()
+        self._combo_tmnt_retention.addItem("90% — RECOMMENDED", 0.90)
+        self._combo_tmnt_retention.addItem("85% — FEWER REVIEWS", 0.85)
+        self._combo_tmnt_retention.addItem("92% — HIGH RECALL", 0.92)
+        self._combo_tmnt_retention.addItem("95% — STRICT CRAMMING", 0.95)
+        self._combo_tmnt_retention.setCursor(Qt.PointingHandCursor)
+        self._combo_tmnt_retention.setStyleSheet(
+            _scale_ss(
+                f"""
+                QComboBox {{
+                    background: {T_BG};
+                    border: 1px solid {T_BORDER};
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                    color: {T_PURPLE};
+                    font-family: {T_MONO};
+                    font-size: 9px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {T_PANEL};
+                    color: {T_PURPLE};
+                    border: 1px solid {T_BORDER};
+                    selection-background-color: {T_BG};
+                    selection-color: {T_NEON};
+                }}
+                """,
+                self._scale,
+            )
+        )
+        curr_ret = float(self._data.get("_request_retention", 0.90) or 0.90)
+        r_idx = self._combo_tmnt_retention.findData(curr_ret)
+        self._combo_tmnt_retention.setCurrentIndex(r_idx if r_idx >= 0 else 0)
+        self._combo_tmnt_retention.currentIndexChanged.connect(self._on_tmnt_retention_changed)
+        ret_row.addWidget(self._combo_tmnt_retention)
+        sr_l.addLayout(ret_row)
+
+        btn_open_fsrs = QPushButton("⚡ OPEN FSRS RETENTION & OPTIMIZER")
+        btn_open_fsrs.setCursor(Qt.PointingHandCursor)
+        btn_open_fsrs.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: rgba(102, 252, 241, 0.12);
+                    color: {T_NEON};
+                    border: 1px solid {T_NEON};
+                    border-radius: 4px;
+                    padding: 6px;
+                    font-family: {T_MONO};
+                    font-size: 10px;
+                    font-weight: bold;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{
+                    background: {T_NEON};
+                    color: {T_BG};
+                }}
+                """,
+                self._scale,
+            )
+        )
+        btn_open_fsrs.clicked.connect(self._open_fsrs_center)
+        sr_l.addWidget(btn_open_fsrs)
+
+        panel_l.addWidget(sr_box)
 
         fx_lbl = QLabel("VISUAL FX / ANIMATIONS")
         fx_lbl.setStyleSheet(
@@ -4841,6 +4999,18 @@ class TMNTTopBar(QFrame):
                 self._cb_numpad_revision.blockSignals(True)
                 self._cb_numpad_revision.setChecked(store.get().get("_numpad_custom_revision", False))
                 self._cb_numpad_revision.blockSignals(False)
+            if hasattr(self, "_combo_tmnt_scheduler") and self._combo_tmnt_scheduler:
+                self._combo_tmnt_scheduler.blockSignals(True)
+                curr_sched = self._data.get("_scheduler_type", "fsrs") or "fsrs"
+                s_idx = self._combo_tmnt_scheduler.findData(curr_sched)
+                self._combo_tmnt_scheduler.setCurrentIndex(s_idx if s_idx >= 0 else 0)
+                self._combo_tmnt_scheduler.blockSignals(False)
+            if hasattr(self, "_combo_tmnt_retention") and self._combo_tmnt_retention:
+                self._combo_tmnt_retention.blockSignals(True)
+                curr_ret = float(self._data.get("_request_retention", 0.90) or 0.90)
+                r_idx = self._combo_tmnt_retention.findData(curr_ret)
+                self._combo_tmnt_retention.setCurrentIndex(r_idx if r_idx >= 0 else 0)
+                self._combo_tmnt_retention.blockSignals(False)
             self._refresh_gdrive_display()
         
         # Reset constraints first to get true size hint
@@ -4943,6 +5113,20 @@ class TMNTTopBar(QFrame):
         store.mark_dirty()
         store.save_soon(delay_from_now=True)
 
+    def _on_tmnt_scheduler_changed(self, _index):
+        if hasattr(self, "_combo_tmnt_scheduler") and self._combo_tmnt_scheduler:
+            val = self._combo_tmnt_scheduler.currentData() or "fsrs"
+            self._data["_scheduler_type"] = val
+            store.get()["_scheduler_type"] = val
+            store.mark_dirty()
+
+    def _on_tmnt_retention_changed(self, _index):
+        if hasattr(self, "_combo_tmnt_retention") and self._combo_tmnt_retention:
+            val = float(self._combo_tmnt_retention.currentData() or 0.90)
+            self._data["_request_retention"] = val
+            store.get()["_request_retention"] = val
+            store.mark_dirty()
+
     def _reset_brand_glitch(self):
         self.brand_name.setText("ANKI OCCLUSION")
         self.brand_name.setStyleSheet(self._brand_name_ss())
@@ -4958,6 +5142,15 @@ class TMNTTopBar(QFrame):
         if hasattr(self, "ghost_r"):
             self.ghost_r.hide()
             self.ghost_c.hide()
+
+    def _open_fsrs_center(self):
+        try:
+            from ui.fsrs_center_dialog import FSRSCenterDialog
+            dlg = FSRSCenterDialog(parent=self.window())
+            dlg.exec_()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Failed to open FSRSCenterDialog: %s", e, exc_info=True)
 
     def _advance_brand_glitch(self):
         strengths = [7, 5, 8, 4, 6, 7]
@@ -5009,8 +5202,12 @@ class TMNTTopBar(QFrame):
             return
         self._quote_idx = (self._quote_idx + 1) % len(MENTOR_QUOTES)
         q, n = MENTOR_QUOTES[self._quote_idx]
-        self.quote_lbl.setText(q)
-        self.name_lbl.setText(n)
+        if hasattr(self, "quote_lbl") and self.quote_lbl:
+            self.quote_lbl.setText(q)
+        if hasattr(self, "name_lbl") and self.name_lbl:
+            self.name_lbl.setText(n)
+        if hasattr(self, "mentor") and self.mentor:
+            self.mentor.setToolTip(f"{q}\n{n}")
 
     def set_bgm_state(self, playing):
         self.bgm_widget.set_playing(playing)
