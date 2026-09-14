@@ -27,6 +27,21 @@ class TestAICoachService(unittest.TestCase):
         self.assertNotIn("<p>", res)
         self.assertNotIn("<b>", res)
 
+        # Test list input (the root cause of the previous TypeError)
+        list_input = ["<p>Point 1</p>", "<b>Point 2</b>", "Point 3"]
+        list_res = strip_html_tags(list_input)
+        self.assertIn("Point 1", list_res)
+        self.assertIn("Point 2", list_res)
+        self.assertIn("Point 3", list_res)
+        self.assertNotIn("<p>", list_res)
+
+        # Test dict and non-string inputs
+        dict_input = {"note1": "<b>Detail A</b>", "note2": "Detail B"}
+        dict_res = strip_html_tags(dict_input)
+        self.assertIn("note1: Detail A", dict_res)
+        self.assertEqual(strip_html_tags(12345), "12345")
+        self.assertEqual(strip_html_tags(None), "")
+
     def test_build_card_context_text_card(self):
         card = {
             "card_type": "text",
@@ -56,14 +71,15 @@ class TestAICoachService(unittest.TestCase):
             "correct_option": "C",
             "solution_data": {
                 "statement": "Article 360 deals with Financial Emergency in India.",
-                "key_points": "Never invoked so far in India."
+                "key_points": ["Never invoked so far in India.", "Declared by the President."]
             }
         }
         ctx = build_card_context(card, deck_name="Polity")
         self.assertEqual(ctx["card_type"], "mcq")
         self.assertEqual(ctx["correct_answer"], "C")
         self.assertEqual(len(ctx["options"]), 4)
-        self.assertIn("Never invoked", ctx["key_points"])
+        self.assertIn("Never invoked so far in India.", ctx["key_points"])
+        self.assertIn("Declared by the President.", ctx["key_points"])
 
     def test_save_and_get_ai_settings(self):
         save_ai_settings(api_key="test_fake_key_123", model_name="gemini-2.0-flash", auto_listen=True, voice_lang="hi-IN")

@@ -459,11 +459,16 @@ class AIBuddyDrawer(QFrame):
         """Called automatically whenever the ReviewScreen transitions to a new card."""
         self._current_card = card
         self._active_box = active_box
-        deck_name = getattr(self.rs, "deck_name", "") or (card.get("deck_name", "") if card else "")
-        self._current_context = build_card_context(card, active_box, deck_name)
+        try:
+            deck_name = getattr(self.rs, "deck_name", "") or (card.get("deck_name", "") if card else "")
+            self._current_context = build_card_context(card, active_box, deck_name)
+        except Exception as e:
+            self._current_context = {"summary": "Card context unavailable.", "error": str(e), "question": ""}
 
         # Reset chat view with welcoming prompt for this card
         q_text = self._current_context.get("question", "")
+        if not isinstance(q_text, str):
+            q_text = str(q_text or "")
         if len(q_text) > 80:
             q_text = q_text[:77] + "..."
         welcome_html = f"""

@@ -140,10 +140,18 @@ def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: b
         s.setValue(KEY_ACTIVE_KEY_INDEX, int(active_key_index))
 
 
-def strip_html_tags(text: str) -> str:
-    """Strip HTML markup to pass clean text to the AI model."""
+def strip_html_tags(text) -> str:
+    """Strip HTML markup to pass clean text to the AI model. Safely handles lists, dicts, and non-string types."""
     if not text:
         return ""
+    if isinstance(text, (list, tuple, set)):
+        cleaned_items = [strip_html_tags(item) for item in text if item]
+        return "\n".join(item for item in cleaned_items if item)
+    if isinstance(text, dict):
+        cleaned_items = [f"{k}: {strip_html_tags(v)}" for k, v in text.items() if v]
+        return "\n".join(cleaned_items)
+    if not isinstance(text, str):
+        text = str(text)
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'</p>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
@@ -162,66 +170,87 @@ def build_card_context(card: dict, active_box=None, deck_name: str = "") -> dict
     if not card:
         return {"summary": "No active card context."}
 
-    card_type = card.get("card_type", "")
-    context_anchor = card.get("context_anchor", "")
-    tags = card.get("tags", [])
-    if isinstance(tags, str):
-        tags = [tags]
+    try:
+        card_type = card.get("card_type", "")
+        context_anchor = card.get("context_anchor", "")
+        tags = card.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
 
-    ctx = {
-        "deck_name": deck_name or card.get("deck_name", ""),
-        "card_type": card_type,
-        "topic_anchor": context_anchor,
-        "tags": tags,
-    }
+        ctx = {
+            "deck_name": deck_name or card.get("deck_name", ""),
+            "card_type": card_type,
+            "topic_anchor": context_anchor,
+            "tags": tags,
+        }
 
-    if card_type == "mcq":
-        ctx["question"] = strip_html_tags(card.get("question", ""))
-        options_raw = card.get("options", [])
-        opts_list = []
-        for opt in options_raw:
-            if isinstance(opt, dict):
-                lbl = opt.get("label", "")
-                txt = opt.get("text", "")
-                eng = opt.get("english_word", "")
-                hnd = opt.get("hindi", "")
-                opts_list.append(f"{lbl}: {txt} {f'({eng})' if eng else ''} {f'- {hnd}' if hnd else ''}".strip())
-            else:
-                opts_list.append(str(opt))
-        ctx["options"] = opts_list
-        ctx["correct_answer"] = card.get("correct_option", "")
-        sol_data = card.get("solution_data", {})
-        if isinstance(sol_data, dict):
-            ctx["solution_statement"] = strip_html_tags(sol_data.get("statement", ""))
-            ctx["key_points"] = strip_html_tags(sol_data.get("key_points", ""))
-            ctx["additional_info"] = strip_html_tags(sol_data.get("additional_information", ""))
-        ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
+        if card_type == "mcq":
+            ctx["question"] = strip_html_tags(card.get("question", ""))
+            options_raw = card.get("options", [])
+            opts_list = []
+            if isinstance(options_raw, dict):
+                for lbl, val in options_raw.items():
+                    if isinstance(val, dict):
+                        txt = val.get("text", "")
+                        eng = val.get("english_word", "")
+                        hnd = val.get("hindi", "")
+                        opts_list.append(f"{lbl}: {txt} {f'({eng})' if eng else ''} {f'- {hnd}' if hnd else ''}".strip())
+                    else:
+                        opts_list.append(f"{lbl}: {val}".strip())
+            elif isinstance(options_raw, (list, tuple)):
+                for opt in options_raw:
+                    if isinstance(opt, dict):
+                        lbl = opt.get("label", "")
+                        txt = opt.get("text", "")
+                        eng = opt.get("english_word", "")
+                        hnd = opt.get("hindi", "")
+                        opts_list.append(f"{lbl}: {txt} {f'({eng})' if eng else ''} {f'- {hnd}' if hnd else ''}".strip())
+                    else:
+                        opts_list.append(str(opt))
+            ctx["options"] = opts_list
+            ctx["correct_answer"] = card.get("correct_option", "")
+            sol_data = card.get("solution_data", {})
+            if isinstance(sol_data, dict):
+                ctx["solution_statement"] = strip_html_tags(sol_data.get("statement", ""))
+                ctx["key_points"] = strip_html_tags(sol_data.get("key_points", ""))
+                ctx["additional_info"] = strip_html_tags(sol_data.get("additional_information", ""))
+            elif isinstance(sol_data, (str, list, tuple)):
+                ctx["solution_statement"] = strip_html_tags(sol_data)
+            ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
 
-    elif card_type == "text":
-        ctx["question"] = strip_html_tags(card.get("question", ""))
-        ctx["answer"] = strip_html_tags(card.get("answer", ""))
-        ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
-        if card.get("mnemonics"):
-            ctx["mnemonic"] = strip_html_tags(card.get("mnemonics"))
-        if card.get("related_concepts"):
-            ctx["related_concepts"] = card.get("related_concepts")
+        elif card_type == "text":
+            ctx["question"] = strip_html_tags(card.get("question", ""))
+            ctx["answer"] = strip_html_tags(card.get("answer", ""))
+            ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
+            if card.get("mnemonics"):
+                ctx["mnemonic"] = strip_html_tags(card.get("mnemonics"))
+            if card.get("related_concepts"):
+                rel = card.get("related_concepts")
+                ctx["related_concepts"] = [str(r) for r in rel] if isinstance(rel, (list, tuple)) else str(rel)
 
-    else:
-        # Occlusion / Image / PDF
-        box_note = ""
-        box_label = ""
-        if active_box:
-            if isinstance(active_box, dict):
-                box_note = active_box.get("note", "") or active_box.get("notes", "")
-                box_label = active_box.get("label", "")
-            else:
-                box_note = getattr(active_box, "note", "") or getattr(active_box, "notes", "")
-                box_label = getattr(active_box, "label", "")
-        ctx["question"] = f"Masked Target Box: {box_label}" if box_label else "Image/PDF Occlusion Question"
-        ctx["answer"] = strip_html_tags(box_note) if box_note else "Check underlying image note."
-        ctx["card_notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
+        else:
+            # Occlusion / Image / PDF
+            box_note = ""
+            box_label = ""
+            if active_box:
+                if isinstance(active_box, dict):
+                    box_note = active_box.get("note", "") or active_box.get("notes", "")
+                    box_label = active_box.get("label", "")
+                else:
+                    box_note = getattr(active_box, "note", "") or getattr(active_box, "notes", "")
+                    box_label = getattr(active_box, "label", "")
+            ctx["question"] = f"Masked Target Box: {box_label}" if box_label else "Image/PDF Occlusion Question"
+            ctx["answer"] = strip_html_tags(box_note) if box_note else "Check underlying image note."
+            ctx["card_notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
 
-    return ctx
+        return ctx
+    except Exception as err:
+        return {
+            "summary": "Card context extraction error",
+            "error": str(err),
+            "deck_name": deck_name or (card.get("deck_name", "") if isinstance(card, dict) else ""),
+            "question": strip_html_tags(card.get("question", "")) if isinstance(card, dict) else ""
+        }
 
 
 SOCRATIC_SYSTEM_PROMPT = """You are "Study Buddy" (सहपाठी), an ultra-smart, encouraging, and witty peer study partner helping the student prepare for India's premier government exams (SSC CGL, CHSL, MTS, CPO, NTPC, Railways).
