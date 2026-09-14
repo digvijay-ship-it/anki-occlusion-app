@@ -174,22 +174,27 @@ class GDriveService:
                 pass
         
         if not has_loaded:
-            # Fall back to default placeholders
             self._config = {
-                "client_id": "205261143452-r2tv7nc4ndp2s4ncd4u6n2tfl4a4hjcb.apps.googleusercontent.com",
-                "client_secret": os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
+                "client_id": "",
+                "client_secret": ""
             }
 
-        # Also check secrets_manager (secrets.json) if client_secret or custom client_id is defined
+        # Check secrets_manager (secrets.json) for client_id and client_secret
         try:
             from services.secrets_manager import get_gdrive_secrets
             sec_id, sec_secret = get_gdrive_secrets()
-            if sec_id:
+            if sec_id and not self._config.get("client_id"):
                 self._config["client_id"] = sec_id
-            if sec_secret:
+            if sec_secret and not self._config.get("client_secret"):
                 self._config["client_secret"] = sec_secret
         except Exception:
             pass
+
+        # Environment variable fallbacks
+        if not self._config.get("client_id"):
+            self._config["client_id"] = os.environ.get("ANKI_GDRIVE_CLIENT_ID", "")
+        if not self._config.get("client_secret"):
+            self._config["client_secret"] = os.environ.get("ANKI_GDRIVE_CLIENT_SECRET", "")
 
         # Check if secret is empty and log it once per process
         if not self._config.get("client_secret"):
