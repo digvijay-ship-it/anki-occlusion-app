@@ -683,6 +683,12 @@ class CanvasInteractionMixin:
             w = w.parent()
         return w
 
+    def toggle_pan_mode(self):
+        sc = self._scroll_area()
+        if sc and hasattr(sc, "toggle_pan_mode"):
+            return sc.toggle_pan_mode()
+        return False
+
     def mousePressEvent(self, e):
         if not self.has_content():
             return
@@ -738,17 +744,20 @@ class CanvasInteractionMixin:
         if self._mode != "edit" or e.button() != Qt.LeftButton:
             return
 
-        idx, hit_h = self._find_handle_hit(sp)
-        if idx is not None and hit_h:
-            if self._selected_idx != idx:
-                self._select_box(idx)
-            op, hi = hit_h
-            self._drag_op = op
-            self._drag_handle = hi
-            self._drag_start_pos = sp
-            self._drag_orig_box = self._clone_box(self._boxes[idx])
-            self._push_undo()
-            return
+        is_multi = bool(mods & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier))
+
+        if not is_multi:
+            idx, hit_h = self._find_handle_hit(sp)
+            if idx is not None and hit_h:
+                if self._selected_idx != idx:
+                    self._select_box(idx)
+                op, hi = hit_h
+                self._drag_op = op
+                self._drag_handle = hi
+                self._drag_start_pos = sp
+                self._drag_orig_box = self._clone_box(self._boxes[idx])
+                self._push_undo()
+                return
 
         hit = self._hit_box(ip)
         if hit >= 0:
@@ -757,12 +766,11 @@ class CanvasInteractionMixin:
                 self.update()
             else:
                 self._selection_scope = ""
-                # solo=True on plain click — move single box even inside a group
-                is_plain_click = not bool(mods & Qt.ControlModifier)
+                is_multi = bool(mods & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier))
                 self._select_box(
                     hit,
-                    add_to_selection=bool(mods & Qt.ControlModifier),
-                    solo=is_plain_click,
+                    add_to_selection=is_multi,
+                    solo=not is_multi,
                 )
             self._drag_op = "move"
             self._drag_start_pos = sp
@@ -1032,6 +1040,94 @@ class CanvasInteractionMixin:
             e.ignore()
             return
 
+        if key in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.delete_selected_boxes()
+            e.accept()
+            return
+        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
+            self.undo()
+            e.accept()
+            return
+        elif mods & Qt.ControlModifier and key == Qt.Key_Y:
+            self.redo()
+            e.accept()
+            return
+        elif mods & Qt.ControlModifier and key == Qt.Key_A:
+            if mods & Qt.AltModifier:
+                self.select_all_on_pdf()
+            elif mods & Qt.ShiftModifier:
+                self.select_all_in_view()
+            else:
+                self.select_visible_only()
+            e.accept()
+            return
+        elif key == Qt.Key_G and not (mods & Qt.ControlModifier):
+            if mods & Qt.ShiftModifier:
+                self.ungroup_selected()
+            else:
+                self.group_selected()
+            e.accept()
+            return
+        elif key == Qt.Key_H and not (mods & Qt.ControlModifier):
+            self.toggle_pan_mode()
+            e.accept()
+            return
+        elif key in (Qt.Key_Plus, Qt.Key_Equal) and not (mods & Qt.AltModifier):
+            self.zoom_in()
+            e.accept()
+            return
+        elif key == Qt.Key_Minus and not (mods & Qt.AltModifier):
+            self.zoom_out()
+            e.accept()
+            return
+        elif key == Qt.Key_0 and not (mods & Qt.AltModifier):
+            parent = self.parent()
+            while parent is not None:
+                if hasattr(parent, "_zoom_fit"):
+                    parent._zoom_fit()
+                    e.accept()
+                    return
+                parent = parent.parent()
+            sc = self._scroll_area()
+            if sc:
+                self.zoom_fit(sc.viewport().width(), sc.viewport().height())
+                e.accept()
+                return
+        elif key == Qt.Key_Escape:
+            if getattr(self, "_drawing", False):
+                self._drawing = False
+                self._live_rect = QRectF()
+                self.update()
+                e.accept()
+                return
+            if self._selected_idx >= 0 or bool(getattr(self, "_selected_indices", set())):
+                self._select_box(-1)
+                e.accept()
+                return
+            super().keyPressEvent(e)
+            return
+        elif key in (Qt.Key_V, Qt.Key_R, Qt.Key_E, Qt.Key_T) and not (mods & (Qt.ControlModifier | Qt.AltModifier)):
+            tool_map = {
+                Qt.Key_V: "select",
+                Qt.Key_R: "rect",
+                Qt.Key_E: "ellipse",
+                Qt.Key_T: "text",
+            }
+            parent = self.parent()
+            found_dlg = False
+            while parent is not None:
+                if hasattr(parent, "toolbar") and hasattr(parent.toolbar, "select_tool"):
+                    parent.toolbar.select_tool(tool_map[key])
+                    found_dlg = True
+                    break
+                parent = parent.parent()
+            if not found_dlg:
+                self.set_tool(tool_map[key])
+            e.accept()
+            return
+        else:
+            super().keyPressEvent(e)
+
     def keyReleaseEvent(self, e):
         if self._mode == "review":
             parent = self.parent()
@@ -1043,27 +1139,6 @@ class CanvasInteractionMixin:
             e.ignore()
             return
         super().keyReleaseEvent(e)
-        if key == Qt.Key_Delete:
-            self.delete_selected_boxes()
-        elif mods & Qt.ControlModifier and key == Qt.Key_Z:
-            self.undo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_Y:
-            self.redo()
-        elif mods & Qt.ControlModifier and key == Qt.Key_A:
-            if mods & Qt.AltModifier:
-                self.select_all_on_pdf()
-            elif mods & Qt.ShiftModifier:
-                self.select_all_in_view()
-            else:
-                self.select_visible_only()
-        elif key == Qt.Key_G and not (mods & Qt.ControlModifier):
-            (
-                self.ungroup_selected()
-                if mods & Qt.ShiftModifier
-                else self.group_selected()
-            )
-        else:
-            super().keyPressEvent(e)
 
     def leaveEvent(self, e):
         self._ink_erasing = False

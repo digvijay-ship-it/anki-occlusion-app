@@ -1609,6 +1609,28 @@ class ReviewScreen(QWidget):
             "rating_spacing": cls._scaled_px(8, cls.RATING_BUTTON_SCALE),
         }
 
+    def closeEvent(self, event):
+        try:
+            if hasattr(self, "canvas") and self.canvas is not None:
+                self.canvas._pages = []
+                self.canvas._px = None
+                if hasattr(self.canvas, "_spx_cache"):
+                    self.canvas._spx_cache.clear()
+                if hasattr(self.canvas, "_mask_cache"):
+                    self.canvas._mask_cache = None
+            self._current_pixmap = None
+            if hasattr(self, "_pdf_cache"):
+                self._pdf_cache.clear()
+        except Exception:
+            pass
+        try:
+            from perf_utils import flush_process_memory
+            flush_process_memory("ReviewScreen Closed")
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
     def _review_verbose_debug_enabled(self) -> bool:
         try:
             if not isinstance(self, type):
@@ -1704,6 +1726,52 @@ class ReviewScreen(QWidget):
         if mgr is not None:
             try:
                 mgr.is_practice = bool(val)
+            except Exception:
+                pass
+
+    @property
+    def learning_window_limit(self):
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is None:
+            return 10
+        val = getattr(mgr, "learning_window_limit", 10)
+        return int(val) if val else 10
+
+    @learning_window_limit.setter
+    def learning_window_limit(self, val):
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is not None:
+            try:
+                mgr.learning_window_limit = max(1, int(val))
+            except Exception:
+                pass
+
+    @property
+    def scheduler_type(self):
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is None:
+            return "fsrs"
+        return getattr(mgr, "scheduler_type", "fsrs")
+
+    @scheduler_type.setter
+    def scheduler_type(self, val):
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is not None:
+            mgr.scheduler_type = str(val or "fsrs")
+
+    @property
+    def request_retention(self):
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is None:
+            return 0.90
+        return getattr(mgr, "request_retention", 0.90)
+
+    @request_retention.setter
+    def request_retention(self, val):
+        mgr = self.__dict__.get("mgr", None)
+        if mgr is not None:
+            try:
+                mgr.request_retention = float(val or 0.90)
             except Exception:
                 pass
 
@@ -2140,6 +2208,9 @@ class ReviewScreen(QWidget):
         auto_exit_session: bool = None,
         deck_id: str = None,
         deck_name: str = None,
+        learning_window_limit: int = None,
+        scheduler_type: str = None,
+        request_retention: float = None,
         target_card_id=None,
         target_box_idx=None,
         target_box_id=None,
@@ -2150,6 +2221,15 @@ class ReviewScreen(QWidget):
 
         self.mgr = ReviewSessionManager(self)
         self.mgr.is_practice = bool(is_practice)
+        if learning_window_limit is not None:
+            self.mgr.learning_window_limit = max(1, int(learning_window_limit))
+        if scheduler_type is not None:
+            self.mgr.scheduler_type = str(scheduler_type)
+        if request_retention is not None:
+            try:
+                self.mgr.request_retention = float(request_retention)
+            except Exception:
+                pass
         self.is_practice = bool(is_practice)
         self.is_new_only = bool(is_new_only)
         self._initial_idx = int(initial_idx or 0)
@@ -3165,10 +3245,17 @@ class ReviewScreen(QWidget):
                             return px
 
             canvas = getattr(self, "canvas", None)
-            if canvas is not None and hasattr(canvas, "get_target_question_pixmap"):
-                q_px = canvas.get_target_question_pixmap()
-                if isinstance(q_px, QPixmap) and not q_px.isNull():
-                    return q_px
+            if canvas is not None:
+                if hasattr(canvas, "get_target_question_pixmap"):
+                    q_px = canvas.get_target_question_pixmap()
+                    if isinstance(q_px, QPixmap) and not q_px.isNull():
+                        return q_px
+                if hasattr(canvas, "grab"):
+                    c_px = canvas.grab()
+                    if isinstance(c_px, QPixmap) and not c_px.isNull():
+                        return c_px
+                if getattr(canvas, "_px", None) and isinstance(canvas._px, QPixmap) and not canvas._px.isNull():
+                    return canvas._px
         except Exception:
             pass
         return None
@@ -3187,16 +3274,35 @@ class ReviewScreen(QWidget):
         is_text_mode = False
         text_widget = getattr(self, "_text_review_widget", None)
         active_scratchpad = None
-        if hasattr(self, "_stacked_widget") and self._stacked_widget.currentWidget() == text_widget:
+        if getattr(self, "_stacked_widget", None) is not None and self._stacked_widget.currentWidget() == text_widget:
             if text_widget is not None and hasattr(text_widget, "scratchpad"):
                 active_scratchpad = text_widget.scratchpad
                 is_text_mode = True
 
+        strokes_raw = getattr(active_scratchpad, "strokes", []) if is_text_mode else []
+        canvas = getattr(self, "canvas", None)
+        canvas_ink = getattr(canvas, "_ink_strokes", []) if (canvas is not None and not is_text_mode) else []
+        has_ink = bool(strokes_raw) if is_text_mode else bool(canvas_ink)
+
+        if not has_ink:
+            if not clear_ink:
+                # INSTANT COPY (Ctrl+Shift+A) with NO ink:
+                # Capture and copy clean question image directly to clipboard!
+                question_px = self._get_current_question_pixmap()
+                if (question_px is None or question_px.isNull()) and canvas is not None and hasattr(canvas, "grab"):
+                    question_px = canvas.grab()
+                if (question_px is None or question_px.isNull()) and hasattr(self, "grab"):
+                    question_px = self.grab()
+
+                if question_px is not None and isinstance(question_px, QPixmap) and not question_px.isNull():
+                    clipboard = QApplication.clipboard()
+                    clipboard.setPixmap(question_px)
+                    self._show_review_toast("📋 Copied Question to clipboard!")
+                    return
+            self._show_review_toast("⚠️ No drawings to save!")
+            return
+
         if is_text_mode:
-            strokes_raw = getattr(active_scratchpad, "strokes", [])
-            if not strokes_raw:
-                self._show_review_toast("⚠️ No drawings to save!")
-                return
             class StrokeList(list):
                 pass
 
@@ -3219,9 +3325,6 @@ class ReviewScreen(QWidget):
                 and not active_scratchpad.testAttribute(Qt.WA_TransparentForMouseEvents)
             )
         else:
-            if not getattr(self, "canvas", None) or not self.canvas._ink_strokes:
-                self._show_review_toast("⚠️ No drawings to save!")
-                return
             ink_strokes = self.canvas._ink_strokes
             sc = getattr(self.canvas, "_scale", 1.0) or 1.0
             canvas_size = QSize(int(self.canvas.width() / sc), int(self.canvas.height() / sc))
@@ -4901,6 +5004,11 @@ class ReviewScreen(QWidget):
             self._finish()
             return
 
+        if hasattr(self, "mgr") and self.mgr is not None and not self.is_practice:
+            if self.mgr._should_wait_for_learning_card() is True:
+                self._finish()
+                return
+
         card, box_idx, sm2_obj = self._items[self._idx]
         if getattr(self, "_concept_hub_drawer", None) is not None and self._concept_hub_drawer.isVisible():
             self._concept_hub_drawer.open_drawer(card)
@@ -5005,7 +5113,10 @@ class ReviewScreen(QWidget):
                 icon = parts[1] if len(parts) > 1 else ""
                 btn.setText(f"{parts[0]} {icon}  {color_lbl}")
         else:
-            previews = _fmt_due_interval(sm2_obj)
+            from sm2_engine import fmt_due_interval_adaptive
+            sched_t = getattr(getattr(self, "mgr", None), "scheduler_type", "fsrs")
+            req_r = getattr(getattr(self, "mgr", None), "request_retention", 0.90)
+            previews = fmt_due_interval_adaptive(sm2_obj, scheduler_type=sched_t, request_retention=req_r)
             for (btn, q), (orig_lbl, _, _), color_lbl in zip(
                 self._prev_lbls, self.RATINGS, self.RATING_LABELS
             ):
@@ -5339,28 +5450,33 @@ class ReviewScreen(QWidget):
                     self.canvas.select_visible_only()
         sw = self.__dict__.get("_stacked_widget")
         if sw is not None and sw.currentIndex() == 2:
+            fw = self.focusWidget()
+            from PyQt5.QtWidgets import QLineEdit
+            if fw and isinstance(fw, QLineEdit):
+                if key == Qt.Key_Escape:
+                    fw.clearFocus()
+                    e.accept()
+                    return
+                if key == Qt.Key_Space:
+                    fw.clearFocus()
+                    if self._rating_frame.isVisible():
+                        self._hide_current()
+                    else:
+                        self._reveal_current()
+                    e.accept()
+                    return
+                super().keyPressEvent(e)
+                return
             if key == Qt.Key_H and not (clean_mods & (Qt.ControlModifier | Qt.AltModifier)):
                 if self.__dict__.get("_mcq_review_widget") is not None:
                     self._mcq_review_widget.toggle_options_hindi()
                     e.accept()
                     return
             if not self._rating_frame.isVisible() and self.__dict__.get("_mcq_review_widget") is not None:
-                key_map = {
-                    Qt.Key_A: "A", Qt.Key_B: "B", Qt.Key_C: "C", Qt.Key_D: "D",
-                    Qt.Key_1: "A", Qt.Key_2: "B", Qt.Key_3: "C", Qt.Key_4: "D"
-                }
-                if key in key_map:
-                    if clean_mods & Qt.ShiftModifier:
-                        target_lbl = key_map[key]
-                        for btn in getattr(self._mcq_review_widget, "_option_buttons", []):
-                            if btn.option_label.upper() == target_lbl.upper():
-                                btn.toggle_hindi()
-                                e.accept()
-                                return
-                    else:
-                        self._mcq_review_widget.select_option(key_map[key])
-                        e.accept()
-                        return
+                # Before reveal: A, B, C, D and 1, 2, 3, 4 do NOT trigger accidental option selection
+                if key in (Qt.Key_A, Qt.Key_B, Qt.Key_C, Qt.Key_D, Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4):
+                    e.accept()
+                    return
 
         if shortcut_manager.event_matches(e, "review.fullscreen"):
             win = self.window()
@@ -9255,7 +9371,7 @@ class ReviewScreen(QWidget):
 
         # ── 1. IMAGE CARD ─────────────────────────────────────────────────────
         image_path = resolve_asset_path(card.get("image_path", ""))
-        if card.get("image_path") and os.path.exists(image_path):
+        if card.get("image_path") and not (card.get("pdf_path") and PDF_SUPPORT) and os.path.exists(image_path):
             px = QPixmap(image_path)
             if px and not px.isNull():
                 self._apply_canvas(card, box_idx, px)
@@ -10827,23 +10943,11 @@ class ReviewScreen(QWidget):
             earliest_idx, earliest_obj = min(
                 pending_learning, key=lambda x: x[1].get("sm2_due", "")
             )
-            due_str = earliest_obj.get("sm2_due", "")
-            try:
-                from datetime import datetime as _dt
-
-                due_dt = _dt.fromisoformat(due_str)
-                wait_ms = max(0, int((_dt.now() - due_dt).total_seconds() * -1000))
-            except Exception:
-                wait_ms = 0
-            if wait_ms > 0:
-                # Show waiting state — re-check when earliest card becomes due
-                self._show_waiting_state(wait_ms, len(pending_learning))
-                return
-            else:
-                # Due time already passed — jump to that item directly
-                self._idx = earliest_idx
-                self._load_item()
-                return
+            # User-first flow: Never block with a cooldown wait screen when finishing cards.
+            # Directly load the item with the least remaining cooldown time.
+            self._idx = earliest_idx
+            self._load_item()
+            return
 
         try:
             from services.pen_profiler import pen_profiler

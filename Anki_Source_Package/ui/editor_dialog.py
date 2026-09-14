@@ -1018,7 +1018,21 @@ class CardEditorDialog(QDialog):
         key = e.key()
         mods = e.modifiers()
         clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
-        
+
+        # Focus guard: if the user is typing inside a text input field, do not hijack single-key shortcuts.
+        focus_w = self.focusWidget()
+        if isinstance(focus_w, (QLineEdit, QTextEdit)):
+            if (clean_mods & Qt.ControlModifier) and key == Qt.Key_S:
+                self._save(keep_open=False)
+                e.accept()
+                return
+            if key == Qt.Key_Escape:
+                focus_w.clearFocus()
+                e.accept()
+                return
+            super().keyPressEvent(e)
+            return
+
         # Ctrl+? toggle to open shortcuts dialog
         is_ctrl_question = (
             (clean_mods & Qt.ControlModifier) and
@@ -1038,10 +1052,16 @@ class CardEditorDialog(QDialog):
                 self.showMaximized()
             else:
                 self.showFullScreen()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.undo"):
             self.canvas.undo()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.redo"):
             self.canvas.redo()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "home.save"):
             self._save(keep_open=False)
             e.accept()
@@ -1049,28 +1069,109 @@ class CardEditorDialog(QDialog):
 
         elif shortcut_manager.event_matches(e, "review.open_pdf"):
             self._open_in_reader()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.open_folder"):
             self._reveal_current_pdf_in_folder()
-        elif shortcut_manager.event_matches(e, "review.annotate"):
+            e.accept()
+            return
+        elif (clean_mods & Qt.ControlModifier) and key == Qt.Key_T:
             self._open_annotation_beta()
-        elif mods & Qt.ControlModifier and key == Qt.Key_V:
+            e.accept()
+            return
+        elif (clean_mods & Qt.ControlModifier) and key == Qt.Key_V:
             self._paste_image()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.copy_pdf") and not e.isAutoRepeat():
             self._copy_current_pdf_file_to_clipboard()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.prev_page") and not e.isAutoRepeat():
             self._go_prev_page()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.next_page") and not e.isAutoRepeat():
             self._go_next_page()
+            e.accept()
+            return
         elif shortcut_manager.event_matches(e, "review.pdf_contrast") and not e.isAutoRepeat():
             self._toggle_pdf_contrast()
-        elif key == Qt.Key_V:
-            self.toolbar.select_tool("select")
-        elif key == Qt.Key_R:
-            self.toolbar.select_tool("rect")
-        elif key == Qt.Key_E:
-            self.toolbar.select_tool("ellipse")
-        elif key == Qt.Key_T:
-            self.toolbar.select_tool("text")
+            e.accept()
+            return
+
+        # Canvas actions
+        elif key in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.canvas.delete_selected_boxes()
+            e.accept()
+            return
+        elif (clean_mods & Qt.ControlModifier) and key == Qt.Key_A:
+            if clean_mods & Qt.AltModifier:
+                self.canvas.select_all_on_pdf()
+            elif clean_mods & Qt.ShiftModifier:
+                self.canvas.select_all_in_view()
+            else:
+                self.canvas.select_visible_only()
+            e.accept()
+            return
+        elif key == Qt.Key_G and not (clean_mods & Qt.ControlModifier):
+            if clean_mods & Qt.ShiftModifier:
+                self.canvas.ungroup_selected()
+            else:
+                self.canvas.group_selected()
+            e.accept()
+            return
+        elif key == Qt.Key_H and not (clean_mods & Qt.ControlModifier):
+            if hasattr(self, "_sc") and hasattr(self._sc, "toggle_pan_mode"):
+                self._sc.toggle_pan_mode()
+            e.accept()
+            return
+        elif key in (Qt.Key_Plus, Qt.Key_Equal) and not (clean_mods & Qt.AltModifier):
+            self.canvas.zoom_in()
+            e.accept()
+            return
+        elif key == Qt.Key_Minus and not (clean_mods & Qt.AltModifier):
+            self.canvas.zoom_out()
+            e.accept()
+            return
+        elif key == Qt.Key_0 and not (clean_mods & Qt.AltModifier):
+            self._zoom_fit()
+            e.accept()
+            return
+        elif key == Qt.Key_Escape:
+            if getattr(self.canvas, "_drawing", False):
+                self.canvas._drawing = False
+                self.canvas._live_rect = QRectF()
+                self.canvas.update()
+                e.accept()
+                return
+            if self.canvas._selected_idx >= 0 or bool(getattr(self.canvas, "_selected_indices", set())):
+                self.canvas._select_box(-1)
+                e.accept()
+                return
+            super().keyPressEvent(e)
+            return
+
+        # Tool selection (single keys V, R, E, T without Control/Alt)
+        elif not (clean_mods & (Qt.ControlModifier | Qt.AltModifier)):
+            if key == Qt.Key_V:
+                self.toolbar.select_tool("select")
+                e.accept()
+                return
+            elif key == Qt.Key_R:
+                self.toolbar.select_tool("rect")
+                e.accept()
+                return
+            elif key == Qt.Key_E:
+                self.toolbar.select_tool("ellipse")
+                e.accept()
+                return
+            elif key == Qt.Key_T:
+                self.toolbar.select_tool("text")
+                e.accept()
+                return
+            else:
+                super().keyPressEvent(e)
         else:
             super().keyPressEvent(e)
 
@@ -2599,15 +2700,11 @@ class CardEditorDialog(QDialog):
             except Exception:
                 pass
         try:
-            from PyQt5.QtGui import QPixmapCache
-            QPixmapCache.clear()
-            import fitz
-            fitz.TOOLS.store_shrink(100)
+            from perf_utils import flush_process_memory
+            flush_process_memory("Card Editor Exit")
         except Exception:
             pass
-        import gc
-        gc.collect()
-        log_memory("Card Editor Exit (Memory Reclaimed)")
+
 
     @trace_perf
     def closeEvent(self, e):

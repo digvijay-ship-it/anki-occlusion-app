@@ -775,7 +775,7 @@ class CanvasStateMixin:
             self.boxes_changed.emit(self.get_boxes())
 
     def group_selected(self):
-        indices = self._get_all_selected()
+        indices = [i for i in self._get_all_selected() if 0 <= i < len(self._boxes)]
         if len(indices) < 2:
             self._show_toast("⚠ Select 2+ masks to group")
             return
@@ -795,7 +795,7 @@ class CanvasStateMixin:
         self._show_toast(f"⛓ {len(indices)} masks grouped")
 
     def ungroup_selected(self):
-        indices = self._get_all_selected()
+        indices = [i for i in self._get_all_selected() if 0 <= i < len(self._boxes)]
         if not indices:
             return
         self._push_undo()

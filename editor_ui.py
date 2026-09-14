@@ -74,6 +74,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QLineEdit,
     QListWidget,
+    QAbstractItemView,
     QFrame,
     QScrollArea,
     QAbstractScrollArea,
@@ -595,13 +596,17 @@ class MaskPanel(QWidget):
         self._canvas = canvas
         self._canvas.boxes_changed.connect(self._refresh)
         self._setup_ui()
+        self._refresh(canvas.get_boxes())
 
     def _setup_ui(self):
         L = QVBoxLayout(self)
         L.setContentsMargins(6, 6, 6, 6)
         L.setSpacing(4)
         self.list_w = QListWidget()
+        self.list_w.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list_w.currentRowChanged.connect(self._on_select)
+        self.list_w.itemSelectionChanged.connect(self._on_selection_changed)
+        self.list_w.installEventFilter(self)
         L.addWidget(self.list_w, stretch=1)
         
         lbl_e = QLabel("Label:")
@@ -634,59 +639,24 @@ class MaskPanel(QWidget):
         btn_row.addWidget(b_clr)
         L.addLayout(btn_row)
 
-    def _refresh(self, boxes):
-        self.list_w.blockSignals(True)
-        self.list_w.clear()
-        for i, b in enumerate(boxes):
-            mask_num = b.get("mask_num") or (i + 1)
-            lbl = b.get("label") or f"Mask #{mask_num}"
-            gid = b.get("group_id", "")
-            icon = "🔵" if gid else "🟧"
-            badge = f" [{gid[:4]}]" if gid else ""
-            self.list_w.addItem(f"  {icon} {lbl}{badge}")
-        sel = self._canvas._selected_idx
-        if 0 <= sel < self.list_w.count():
-            self.list_w.setCurrentRow(sel)
-            box = self._canvas._boxes[sel]
-            
-            mask_num = box.get("mask_num") or (sel + 1)
-            self.inp_label.setPlaceholderText(f"e.g. Mask #{mask_num}")
-            new_label = box.get("label", "")
-            if self.inp_label.text() != new_label:
-                self.inp_label.blockSignals(True)
-                self.inp_label.setText(new_label)
-                self.inp_label.blockSignals(False)
-            
-            new_note = box.get("note", "")
-            if self.inp_note.toPlainText() != new_note and self.inp_note.toHtml() != new_note:
-                self.inp_note.blockSignals(True)
-                if "<img" in new_note or "<html>" in new_note or "<p>" in new_note:
-                    self.inp_note.setHtml(new_note)
+    def eventFilter(self, obj, e):
+        if obj == self.list_w and e.type() == QEvent.KeyPress:
+            key = e.key()
+            mods = e.modifiers()
+            if key in (Qt.Key_Delete, Qt.Key_Backspace):
+                self._delete_selected()
+                return True
+            if key == Qt.Key_G and not (mods & Qt.ControlModifier):
+                if mods & Qt.ShiftModifier:
+                    self._canvas.ungroup_selected()
                 else:
-                    self.inp_note.setPlainText(new_note)
-                self.inp_note.blockSignals(False)
-            
-            self.inp_label.setEnabled(True)
-            self.inp_note.setEnabled(True)
-        else:
-            self.inp_label.setPlaceholderText("e.g. Mitochondria")
-            self.inp_label.blockSignals(True)
-            self.inp_label.clear()
-            self.inp_label.blockSignals(False)
-            
-            self.inp_note.blockSignals(True)
-            self.inp_note.clear()
-            self.inp_note.blockSignals(False)
-            
-            self.inp_label.setEnabled(False)
-            self.inp_note.setEnabled(False)
-        self.list_w.blockSignals(False)
+                    self._canvas.group_selected()
+                return True
+        return super().eventFilter(obj, e)
 
-    def _on_select(self, row):
-        self._canvas.highlight(row)
+    def _update_details(self, row):
         if 0 <= row < len(self._canvas._boxes):
             box = self._canvas._boxes[row]
-            
             mask_num = box.get("mask_num") or (row + 1)
             self.inp_label.setPlaceholderText(f"e.g. Mask #{mask_num}")
             new_label = box.get("label", "")
@@ -707,17 +677,73 @@ class MaskPanel(QWidget):
             self.inp_label.setEnabled(True)
             self.inp_note.setEnabled(True)
         else:
-            self.inp_label.setPlaceholderText("e.g. Mitochondria")
-            self.inp_label.blockSignals(True)
-            self.inp_label.clear()
-            self.inp_label.blockSignals(False)
-            
-            self.inp_note.blockSignals(True)
-            self.inp_note.clear()
-            self.inp_note.blockSignals(False)
-            
-            self.inp_label.setEnabled(False)
-            self.inp_note.setEnabled(False)
+            self._clear_details()
+
+    def _clear_details(self):
+        self.inp_label.setPlaceholderText("e.g. Mitochondria")
+        self.inp_label.blockSignals(True)
+        self.inp_label.clear()
+        self.inp_label.blockSignals(False)
+        
+        self.inp_note.blockSignals(True)
+        self.inp_note.clear()
+        self.inp_note.blockSignals(False)
+        
+        self.inp_label.setEnabled(False)
+        self.inp_note.setEnabled(False)
+
+    def _refresh(self, boxes):
+        self.list_w.blockSignals(True)
+        self.list_w.clear()
+        for i, b in enumerate(boxes):
+            mask_num = b.get("mask_num") or (i + 1)
+            lbl = b.get("label") or f"Mask #{mask_num}"
+            gid = b.get("group_id", "")
+            icon = "🔵" if gid else "🟧"
+            badge = f" [{gid[:4]}]" if gid else ""
+            self.list_w.addItem(f"  {icon} {lbl}{badge}")
+
+        selected_indices = getattr(self._canvas, "_selected_indices", set()) or set()
+        sel = self._canvas._selected_idx
+        if len(selected_indices) > 1:
+            for idx in selected_indices:
+                if 0 <= idx < self.list_w.count():
+                    self.list_w.item(idx).setSelected(True)
+            if 0 <= sel < self.list_w.count():
+                self.list_w.setCurrentRow(sel)
+            self._update_details(sel)
+        elif 0 <= sel < self.list_w.count():
+            self.list_w.setCurrentRow(sel)
+            self._update_details(sel)
+        else:
+            self._clear_details()
+        self.list_w.blockSignals(False)
+
+    def _on_select(self, row):
+        selected_rows = {self.list_w.row(item) for item in self.list_w.selectedItems()}
+        if len(selected_rows) <= 1:
+            self._canvas.highlight(row)
+            self._update_details(row)
+
+    def _on_selection_changed(self):
+        selected_rows = {self.list_w.row(item) for item in self.list_w.selectedItems()}
+        if not selected_rows:
+            self._canvas._selected_idx = -1
+            self._canvas._selected_indices = set()
+            self._canvas.update()
+            self._clear_details()
+            return
+        if len(selected_rows) == 1:
+            row = next(iter(selected_rows))
+            self._canvas.highlight(row)
+            self._canvas._selected_indices = {row}
+            self._update_details(row)
+        else:
+            self._canvas._selected_indices = set(selected_rows)
+            cur = self.list_w.currentRow()
+            self._canvas._selected_idx = cur if cur in selected_rows else max(selected_rows)
+            self._canvas.update()
+            self._update_details(self._canvas._selected_idx)
 
     def _on_label_change(self, text):
         row = self.list_w.currentRow()
@@ -740,6 +766,10 @@ class MaskPanel(QWidget):
             self._canvas.update_note(row, text)
 
     def _delete_selected(self):
+        indices = getattr(self._canvas, "_get_all_selected", lambda: [])()
+        if indices:
+            self._canvas.delete_selected_boxes()
+            return
         row = self.list_w.currentRow()
         if row >= 0:
             self._canvas.delete_box(row)
@@ -974,13 +1004,17 @@ class _ZoomableScrollArea(QScrollArea):
 
         super().wheelEvent(e)
 
+    def toggle_pan_mode(self):
+        self._pan_mode = not self._pan_mode
+        if self._pan_mode:
+            self._enter_pan_cursor()
+        else:
+            self._exit_pan_cursor()
+        return self._pan_mode
+
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_H and not e.isAutoRepeat():
-            self._pan_mode = not self._pan_mode
-            if self._pan_mode:
-                self._enter_pan_cursor()
-            else:
-                self._exit_pan_cursor()
+            self.toggle_pan_mode()
             e.accept()
             return
         super().keyPressEvent(e)
