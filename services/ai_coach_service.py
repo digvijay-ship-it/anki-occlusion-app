@@ -19,6 +19,10 @@ KEY_ACTIVE_KEY_INDEX = "gemini_active_key_index"
 KEY_MODEL_NAME = "gemini_model_name"
 KEY_AUTO_LISTEN = "auto_listen_enabled"
 KEY_VOICE_LANG = "voice_language"
+KEY_AUTO_SPEAK = "auto_speak_enabled"
+KEY_TTS_VOICE = "tts_voice_name"
+KEY_TTS_SPEED = "tts_voice_speed"
+DEFAULT_TTS_VOICE = "hi-IN-MadhurNeural"
 
 DEFAULT_MODEL = "gemini-3.6-flash"
 FALLBACK_MODEL = "gemini-2.5-flash"
@@ -108,6 +112,9 @@ def get_ai_settings():
     model_name = s.value(KEY_MODEL_NAME, DEFAULT_MODEL, type=str)
     auto_listen = s.value(KEY_AUTO_LISTEN, False, type=bool)
     voice_lang = s.value(KEY_VOICE_LANG, "hi-IN", type=str)
+    auto_speak = s.value(KEY_AUTO_SPEAK, True, type=bool)
+    tts_voice = s.value(KEY_TTS_VOICE, DEFAULT_TTS_VOICE, type=str)
+    tts_speed = s.value(KEY_TTS_SPEED, "+0%", type=str)
     return {
         "api_key": active_key,
         "api_key_raw": raw_key.strip() if raw_key else ("\n".join(pool) if pool else ""),
@@ -117,10 +124,22 @@ def get_ai_settings():
         "model_name": model_name.strip() if model_name else DEFAULT_MODEL,
         "auto_listen": auto_listen,
         "voice_lang": voice_lang or "hi-IN",
+        "auto_speak": auto_speak,
+        "tts_voice": tts_voice or DEFAULT_TTS_VOICE,
+        "tts_speed": tts_speed or "+0%",
     }
 
 
-def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: bool = None, voice_lang: str = None, active_key_index: int = None):
+def save_ai_settings(
+    api_key: str = None,
+    model_name: str = None,
+    auto_listen: bool = None,
+    voice_lang: str = None,
+    active_key_index: int = None,
+    auto_speak: bool = None,
+    tts_voice: str = None,
+    tts_speed: str = None
+):
     s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
     if api_key is not None:
         cleaned_key = str(api_key).strip()
@@ -138,6 +157,12 @@ def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: b
         s.setValue(KEY_VOICE_LANG, str(voice_lang).strip())
     if active_key_index is not None:
         s.setValue(KEY_ACTIVE_KEY_INDEX, int(active_key_index))
+    if auto_speak is not None:
+        s.setValue(KEY_AUTO_SPEAK, bool(auto_speak))
+    if tts_voice is not None:
+        s.setValue(KEY_TTS_VOICE, str(tts_voice).strip())
+    if tts_speed is not None:
+        s.setValue(KEY_TTS_SPEED, str(tts_speed).strip())
 
 
 def strip_html_tags(text) -> str:

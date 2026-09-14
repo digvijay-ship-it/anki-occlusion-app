@@ -1,7 +1,8 @@
 """
 Socratic AI Study Buddy Drawer for ReviewScreen.
 Provides live peer discussion, voice-to-text recall evaluation,
-SSC exam trap analysis, and memory anchoring via Google Gemini 2.0 Flash.
+high-fidelity text-to-speech (TTS) spoken discussion, SSC exam trap analysis,
+and memory anchoring via Google Gemini with dynamic font scaling.
 """
 
 from PyQt5.QtWidgets import (
@@ -9,16 +10,19 @@ from PyQt5.QtWidgets import (
     QLineEdit, QTextBrowser, QScrollArea, QDialog, QComboBox, QCheckBox,
     QApplication, QGraphicsDropShadowEffect
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QTimer
-from PyQt5.QtGui import QColor, QFont, QCursor
+from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QTimer, QUrl, QEvent
+from PyQt5.QtGui import QColor, QFont, QCursor, QDesktopServices
 from theme_manager import get_palette
 import html
+import re
 
 from services.ai_coach_service import (
     get_ai_settings, save_ai_settings, build_card_context, AICoachWorker,
-    DEFAULT_MODEL, FALLBACK_MODEL
+    cycle_next_key, parse_api_keys, DEFAULT_MODEL, FALLBACK_MODEL,
+    DEFAULT_TTS_VOICE
 )
 from services.voice_input_service import VoiceInputWorker
+from services.tts_service import TTSEngine, AVAILABLE_VOICES
 
 
 class AISettingsDialog(QDialog):
@@ -28,7 +32,7 @@ class AISettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("AI Study Buddy — सेटिंग्स")
-        self.setFixedSize(500, 480)
+        self.setFixedSize(520, 560)
         self.setStyleSheet("""
             QDialog {
                 background-color: #181825;
@@ -76,7 +80,7 @@ class AISettingsDialog(QDialog):
     def _init_ui(self):
         L = QVBoxLayout(self)
         L.setContentsMargins(24, 18, 24, 18)
-        L.setSpacing(12)
+        L.setSpacing(10)
 
         title = QLabel("⚙️ AI Study Buddy सेटिंग्स")
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #CBA6F7;")
@@ -102,7 +106,7 @@ class AISettingsDialog(QDialog):
             "AIzaSy... (Account 3)\n\n"
             "(अलग-अलग Google खातों की Keys नई लाइन या अल्पविराम से दर्ज करें)"
         )
-        self.edit_keys.setFixedHeight(75)
+        self.edit_keys.setFixedHeight(65)
         self.edit_keys.setStyleSheet("font-family: monospace; font-size: 12px; line-height: 1.3;")
         L.addWidget(self.edit_keys)
 
@@ -128,8 +132,31 @@ class AISettingsDialog(QDialog):
             self.combo_model.setCurrentIndex(idx)
         L.addWidget(self.combo_model)
 
-        # Voice Language
-        L.addWidget(QLabel("🎙️ माइक वॉइस भाषा:"))
+        # TTS & Voice Row
+        L.addWidget(QLabel("🔊 AI स्पीच (बोलकर सुनाने की आवाज़):"))
+        tts_row = QHBoxLayout()
+        tts_row.setSpacing(8)
+
+        self.combo_tts_voice = QComboBox()
+        for v_label, v_val in AVAILABLE_VOICES:
+            self.combo_tts_voice.addItem(v_label, v_val)
+        v_idx = self.combo_tts_voice.findData(cfg.get("tts_voice", DEFAULT_TTS_VOICE))
+        if v_idx >= 0:
+            self.combo_tts_voice.setCurrentIndex(v_idx)
+        tts_row.addWidget(self.combo_tts_voice, stretch=2)
+
+        self.combo_tts_speed = QComboBox()
+        self.combo_tts_speed.addItem("सामान्य (1.0x)", "+0%")
+        self.combo_tts_speed.addItem("थोड़ा तेज़ (1.15x)", "+15%")
+        self.combo_tts_speed.addItem("काफ़ी तेज़ (1.3x)", "+30%")
+        sp_idx = self.combo_tts_speed.findData(cfg.get("tts_speed", "+0%"))
+        if sp_idx >= 0:
+            self.combo_tts_speed.setCurrentIndex(sp_idx)
+        tts_row.addWidget(self.combo_tts_speed, stretch=1)
+        L.addLayout(tts_row)
+
+        # Mic Language
+        L.addWidget(QLabel("🎙️ माइक वॉइस भाषा (सुनने हेतु):"))
         self.combo_lang = QComboBox()
         self.combo_lang.addItem("हिंदी व हिंग्लिश (hi-IN • डिफ़ॉल्ट)", "hi-IN")
         self.combo_lang.addItem("English (en-IN)", "en-IN")
@@ -138,10 +165,16 @@ class AISettingsDialog(QDialog):
             self.combo_lang.setCurrentIndex(l_idx)
         L.addWidget(self.combo_lang)
 
+        # Auto-Speak checkbox
+        self.chk_auto_speak = QCheckBox("🔊 AI उत्तर बोलकर सुनाए (Auto Speak / Voice Discussion)")
+        self.chk_auto_speak.setChecked(cfg.get("auto_speak", True))
+        self.chk_auto_speak.setStyleSheet("color: #A6E3A1; font-weight: bold; font-size: 12px; margin-top: 2px;")
+        L.addWidget(self.chk_auto_speak)
+
         # Auto-Listen checkbox
         self.chk_auto = QCheckBox("कार्ड बदलते ही अपने आप सुनना शुरू करें (Auto Push-to-Talk)")
         self.chk_auto.setChecked(cfg["auto_listen"])
-        self.chk_auto.setStyleSheet("color: #CDD6F4; font-size: 12px; margin-top: 2px;")
+        self.chk_auto.setStyleSheet("color: #CDD6F4; font-size: 12px;")
         L.addWidget(self.chk_auto)
 
         L.addStretch()
@@ -180,7 +213,18 @@ class AISettingsDialog(QDialog):
         model = self.combo_model.currentData()
         lang = self.combo_lang.currentData()
         auto_l = self.chk_auto.isChecked()
-        save_ai_settings(api_key=raw_keys, model_name=model, auto_listen=auto_l, voice_lang=lang)
+        auto_sp = self.chk_auto_speak.isChecked()
+        tts_v = self.combo_tts_voice.currentData()
+        tts_sp = self.combo_tts_speed.currentData()
+        save_ai_settings(
+            api_key=raw_keys,
+            model_name=model,
+            auto_listen=auto_l,
+            voice_lang=lang,
+            auto_speak=auto_sp,
+            tts_voice=tts_v,
+            tts_speed=tts_sp
+        )
         self.settings_saved.emit()
         self.accept()
 
@@ -189,15 +233,20 @@ class AIBuddyDrawer(QFrame):
     """
     Slide-out Socratic AI Study Buddy Drawer on ReviewScreen.
     Displays:
-    1. Status header with active card summary & settings.
+    1. Status header with active card summary, TTS toggle, font zoom & settings.
     2. Quick Prompt Chips (Recall, Trap, Mnemonic, 360° Link).
-    3. Rich conversational history with formatting.
+    3. Rich conversational history with dynamic font scaling and audio replay.
     4. Voice (Push-to-Talk) & text input bar.
     """
     SETTINGS_WIDTH_KEY = "review/ai_buddy_width"
-    DEFAULT_WIDTH = 480
-    MIN_WIDTH = 340
+    SETTINGS_FONT_SIZE_KEY = "review/ai_buddy_font_size"
+    DEFAULT_WIDTH = 540
+    MIN_WIDTH = 380
     RESIZE_MARGIN = 8
+
+    DEFAULT_FONT_SIZE = 16
+    MIN_FONT_SIZE = 13
+    MAX_FONT_SIZE = 28
 
     def __init__(self, review_screen, parent=None):
         super().__init__(parent or review_screen)
@@ -218,6 +267,20 @@ class AIBuddyDrawer(QFrame):
         saved_w = settings.value(self.SETTINGS_WIDTH_KEY, self.DEFAULT_WIDTH, type=int)
         self._drawer_width = max(self.MIN_WIDTH, saved_w if isinstance(saved_w, int) and saved_w > 0 else self.DEFAULT_WIDTH)
 
+        saved_fs = settings.value(self.SETTINGS_FONT_SIZE_KEY, self.DEFAULT_FONT_SIZE, type=int)
+        self._font_size = max(self.MIN_FONT_SIZE, min(self.MAX_FONT_SIZE, saved_fs if isinstance(saved_fs, int) and saved_fs > 0 else self.DEFAULT_FONT_SIZE))
+
+        # Message history: list of {"id": int, "role": str, "text": str, "raw_text": str}
+        self._messages = []
+        self._msg_counter = 0
+
+        # TTS Engine
+        self.tts_engine = TTSEngine(self)
+        self.tts_engine.speech_started.connect(self._on_speech_started)
+        self.tts_engine.speech_finished.connect(self._on_speech_finished)
+        self.tts_engine.speech_stopped.connect(self._on_speech_stopped)
+        self.tts_engine.error_occurred.connect(self._on_tts_error)
+
         self.setMouseTracking(True)
         self.setFixedWidth(self._drawer_width)
         self._setup_ui()
@@ -232,7 +295,6 @@ class AIBuddyDrawer(QFrame):
         bg = p.get("C_SURFACE", "#1A1A24")
         border = p.get("C_BORDER", "#2E2E3E")
         text = p.get("C_TEXT", "#FFFFFF")
-        subtext = p.get("C_SUBTEXT", "#A0AEC0")
         accent = "#CBA6F7"
 
         self.setStyleSheet(f"""
@@ -252,8 +314,8 @@ class AIBuddyDrawer(QFrame):
                 color: #CDD6F4;
                 border: 1px solid #313244;
                 border-radius: 6px;
-                padding: 9px 12px;
-                font-size: 13px;
+                padding: 10px 14px;
+                font-size: 14px;
             }}
             QLineEdit:focus {{
                 border: 1px solid {accent};
@@ -263,8 +325,8 @@ class AIBuddyDrawer(QFrame):
                 color: #CBA6F7;
                 border: 1px solid rgba(203, 166, 247, 0.35);
                 border-radius: 12px;
-                padding: 4px 10px;
-                font-size: 11px;
+                padding: 5px 12px;
+                font-size: 12px;
                 font-weight: bold;
             }}
             QPushButton#btn_chip:hover {{
@@ -277,7 +339,7 @@ class AIBuddyDrawer(QFrame):
                 border: 1.5px solid #45475A;
                 border-radius: 6px;
                 padding: 6px 12px;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
             }}
             QPushButton#btn_mic_active {{
@@ -286,7 +348,7 @@ class AIBuddyDrawer(QFrame):
                 border: 1.5px solid #F38BA8;
                 border-radius: 6px;
                 padding: 6px 12px;
-                font-size: 14px;
+                font-size: 15px;
                 font-weight: bold;
             }}
             QPushButton#btn_send {{
@@ -294,9 +356,9 @@ class AIBuddyDrawer(QFrame):
                 color: #11111B;
                 border: none;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 8px 18px;
                 font-weight: bold;
-                font-size: 13px;
+                font-size: 14px;
             }}
             QPushButton#btn_send:hover {{
                 background: #B4BEFE;
@@ -312,7 +374,7 @@ class AIBuddyDrawer(QFrame):
         hdr.setSpacing(8)
 
         icon_lbl = QLabel("🤖")
-        icon_lbl.setStyleSheet("font-size: 20px;")
+        icon_lbl.setStyleSheet("font-size: 22px;")
         hdr.addWidget(icon_lbl)
 
         v_title = QVBoxLayout()
@@ -321,12 +383,87 @@ class AIBuddyDrawer(QFrame):
         self.lbl_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #CBA6F7;")
         v_title.addWidget(self.lbl_title)
 
-        self.lbl_status = QLabel("🟢 Gemini 2.0 Flash • तैयार")
+        self.lbl_status = QLabel("🟢 Gemini • तैयार")
         self.lbl_status.setStyleSheet("font-size: 11px; color: #A6ADC8;")
         v_title.addWidget(self.lbl_status)
         hdr.addLayout(v_title)
 
         hdr.addStretch()
+
+        # Audio Mute/Unmute Toggle
+        cfg = get_ai_settings()
+        self.btn_audio_toggle = QPushButton("🔊" if cfg.get("auto_speak", True) else "🔇")
+        self.btn_audio_toggle.setFixedSize(28, 28)
+        self.btn_audio_toggle.setObjectName("btn_audio_toggle")
+        self.btn_audio_toggle.setToolTip("AI आवाज़ बोलना चालू/बंद करें (Alt+S)")
+        self.btn_audio_toggle.setStyleSheet("""
+            QPushButton#btn_audio_toggle {
+                background: #313244;
+                color: #CDD6F4;
+                border: 1px solid #45475A;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+            QPushButton#btn_audio_toggle:hover {
+                background: #45475A;
+                border-color: #89B4FA;
+            }
+        """)
+        self.btn_audio_toggle.clicked.connect(self._toggle_auto_speak)
+        hdr.addWidget(self.btn_audio_toggle)
+
+        # Stop Speaking Button (visible only when speaking)
+        self.btn_audio_stop = QPushButton("⏹️")
+        self.btn_audio_stop.setFixedSize(28, 28)
+        self.btn_audio_stop.setObjectName("btn_audio_stop")
+        self.btn_audio_stop.setToolTip("बोलना तुरंत रोकें")
+        self.btn_audio_stop.setStyleSheet("""
+            QPushButton#btn_audio_stop {
+                background: #F38BA8;
+                color: #11111B;
+                border: none;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton#btn_audio_stop:hover {
+                background: #EBA0AC;
+            }
+        """)
+        self.btn_audio_stop.clicked.connect(self._stop_speech)
+        self.btn_audio_stop.hide()
+        hdr.addWidget(self.btn_audio_stop)
+
+        # Font Zoom Controls
+        zoom_frame = QFrame()
+        zoom_frame.setStyleSheet("background: #1E1E2E; border: 1px solid #313244; border-radius: 5px;")
+        zoom_layout = QHBoxLayout(zoom_frame)
+        zoom_layout.setContentsMargins(4, 2, 4, 2)
+        zoom_layout.setSpacing(2)
+
+        self.btn_font_minus = QPushButton("A-")
+        self.btn_font_minus.setFixedSize(24, 24)
+        self.btn_font_minus.setToolTip("फ़ॉन्ट छोटा करें (Ctrl + -)")
+        self.btn_font_minus.setStyleSheet("background: transparent; color: #CDD6F4; border: none; font-size: 11px; font-weight: bold;")
+        self.btn_font_minus.clicked.connect(self.zoom_out)
+        zoom_layout.addWidget(self.btn_font_minus)
+
+        self.lbl_font_size = QLabel(f"{self._font_size}px")
+        self.lbl_font_size.setFixedWidth(34)
+        self.lbl_font_size.setAlignment(Qt.AlignCenter)
+        self.lbl_font_size.setToolTip("क्लिक करके डिफ़ॉल्ट साइज़ (16px) पर रीसेट करें")
+        self.lbl_font_size.setStyleSheet("font-size: 11px; color: #CBA6F7; font-weight: bold; border: none;")
+        self.lbl_font_size.setCursor(QCursor(Qt.PointingHandCursor))
+        self.lbl_font_size.mousePressEvent = lambda e: self.reset_font_size()
+        zoom_layout.addWidget(self.lbl_font_size)
+
+        self.btn_font_plus = QPushButton("A+")
+        self.btn_font_plus.setFixedSize(24, 24)
+        self.btn_font_plus.setToolTip("फ़ॉन्ट बड़ा करें (Ctrl + +)")
+        self.btn_font_plus.setStyleSheet("background: transparent; color: #CDD6F4; border: none; font-size: 11px; font-weight: bold;")
+        self.btn_font_plus.clicked.connect(self.zoom_in)
+        zoom_layout.addWidget(self.btn_font_plus)
+        hdr.addWidget(zoom_frame)
 
         # Key Switcher Button
         self.btn_key_toggle = QPushButton("🔑 1/1")
@@ -353,7 +490,7 @@ class AIBuddyDrawer(QFrame):
 
         # Settings Button
         self.btn_settings = QPushButton("⚙️")
-        self.btn_settings.setFixedSize(30, 30)
+        self.btn_settings.setFixedSize(28, 28)
         self.btn_settings.setToolTip("AI सेटिंग्स व API Key")
         self.btn_settings.setStyleSheet("background:#313244;color:#CDD6F4;border:none;border-radius:4px;font-size:14px;")
         self.btn_settings.clicked.connect(self._open_settings)
@@ -361,7 +498,7 @@ class AIBuddyDrawer(QFrame):
 
         # Close Button
         self.btn_close = QPushButton("✕")
-        self.btn_close.setFixedSize(30, 30)
+        self.btn_close.setFixedSize(28, 28)
         self.btn_close.setToolTip("ड्रॉअर बंद करें (Alt+D या Esc)")
         self.btn_close.setStyleSheet("background:#313244;color:#CDD6F4;border:none;border-radius:4px;font-size:14px;font-weight:bold;")
         self.btn_close.clicked.connect(self.close_drawer)
@@ -401,17 +538,17 @@ class AIBuddyDrawer(QFrame):
 
         # ── 3. CHAT DISPLAY ───────────────────────────────────────────────────
         self.chat_view = QTextBrowser()
-        self.chat_view.setOpenExternalLinks(True)
+        self.chat_view.setOpenExternalLinks(False)
+        self.chat_view.anchorClicked.connect(self._on_anchor_clicked)
+        self.chat_view.installEventFilter(self)
         self.chat_view.setStyleSheet("""
             QTextBrowser {
                 background-color: #11111B;
                 border: 1px solid #313244;
                 border-radius: 8px;
-                padding: 12px;
+                padding: 10px;
                 color: #CDD6F4;
                 font-family: 'Segoe UI', sans-serif;
-                font-size: 13px;
-                line-height: 1.5;
             }
         """)
         L.addWidget(self.chat_view, stretch=1)
@@ -423,21 +560,21 @@ class AIBuddyDrawer(QFrame):
         # Voice Input Button
         self.btn_mic = QPushButton("🎙️")
         self.btn_mic.setObjectName("btn_mic")
-        self.btn_mic.setFixedSize(38, 38)
+        self.btn_mic.setFixedSize(40, 40)
         self.btn_mic.setToolTip("माइक ऑन/ऑफ करें (Push to Talk • Alt+V)")
         self.btn_mic.clicked.connect(self._toggle_voice_input)
         input_row.addWidget(self.btn_mic)
 
         # Text input
         self.edit_input = QLineEdit()
-        self.edit_input.setPlaceholderText("अपना रिकॉल बोलें या यहाँ टाइप करें...")
+        self.edit_input.setPlaceholderText("अपना उत्तर बोलें (Alt+V) या यहाँ टाइप करें...")
         self.edit_input.returnPressed.connect(self._on_send_clicked)
         input_row.addWidget(self.edit_input, stretch=1)
 
         # Send Button
         self.btn_send = QPushButton("भेजें")
         self.btn_send.setObjectName("btn_send")
-        self.btn_send.setFixedHeight(38)
+        self.btn_send.setFixedHeight(40)
         self.btn_send.clicked.connect(self._on_send_clicked)
         input_row.addWidget(self.btn_send)
 
@@ -445,39 +582,257 @@ class AIBuddyDrawer(QFrame):
 
         self._refresh_status_label()
 
-    def _refresh_status_label(self):
-        cfg = get_ai_settings()
-        m = cfg["model_name"]
-        if not cfg["api_key"]:
-            self.lbl_status.setText("⚠️ API Key नहीं मिली (⚙️ सेटिंग्स में डालें)")
-            self.lbl_status.setStyleSheet("font-size: 11px; color: #F38BA8; font-weight: bold;")
-        else:
-            self.lbl_status.setText(f"🟢 {m} • तैयार")
-            self.lbl_status.setStyleSheet("font-size: 11px; color: #A6ADC8;")
+    # ── FONT ZOOM LOGIC ───────────────────────────────────────────────────────
+    def zoom_in(self):
+        if self._font_size < self.MAX_FONT_SIZE:
+            self._font_size += 1
+            self._apply_font_size()
 
+    def zoom_out(self):
+        if self._font_size > self.MIN_FONT_SIZE:
+            self._font_size -= 1
+            self._apply_font_size()
+
+    def reset_font_size(self):
+        self._font_size = self.DEFAULT_FONT_SIZE
+        self._apply_font_size()
+
+    def _apply_font_size(self):
+        self.lbl_font_size.setText(f"{self._font_size}px")
+        s = QSettings("AnkiOcclusion", "App")
+        s.setValue(self.SETTINGS_FONT_SIZE_KEY, self._font_size)
+        self._render_chat()
+
+    def eventFilter(self, obj, event):
+        if obj == self.chat_view and event.type() == QEvent.Wheel:
+            if event.modifiers() & Qt.ControlModifier:
+                if event.angleDelta().y() > 0:
+                    self.zoom_in()
+                else:
+                    self.zoom_out()
+                return True
+        return super().eventFilter(obj, event)
+
+    # ── CHAT RENDERING ────────────────────────────────────────────────────────
+    def _render_chat(self):
+        fs = self._font_size
+        css = f"""
+        <style>
+            body {{
+                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+                font-size: {fs}px;
+                line-height: 1.6;
+                color: #CDD6F4;
+                margin: 0;
+                padding: 4px;
+            }}
+            .welcome-box {{
+                background: #181825;
+                border-left: 3.5px solid #89B4FA;
+                border-radius: 6px;
+                padding: 10px 14px;
+                margin-bottom: 12px;
+                font-size: {max(13, fs - 1)}px;
+                color: #BAC2DE;
+            }}
+            .user-row {{
+                margin: 10px 0;
+                text-align: right;
+            }}
+            .user-bubble {{
+                display: inline-block;
+                background: #313244;
+                color: #CDD6F4;
+                padding: 10px 16px;
+                border-radius: 14px;
+                border-bottom-right-radius: 2px;
+                max-width: 86%;
+                text-align: left;
+                font-size: {fs}px;
+            }}
+            .ai-row {{
+                margin: 12px 0;
+            }}
+            .ai-bubble {{
+                background: rgba(203, 166, 247, 0.09);
+                border-left: 3.5px solid #CBA6F7;
+                color: #CDD6F4;
+                padding: 12px 16px;
+                border-radius: 10px;
+                font-size: {fs}px;
+            }}
+            .ai-header {{
+                margin-bottom: 6px;
+                color: #CBA6F7;
+                font-weight: bold;
+                font-size: {max(13, fs)}px;
+            }}
+            .replay-btn {{
+                color: #89B4FA;
+                text-decoration: none;
+                font-size: {max(11, fs - 4)}px;
+                background: #1E1E2E;
+                border: 1px solid #45475A;
+                padding: 2px 8px;
+                border-radius: 4px;
+                margin-left: 8px;
+            }}
+            .system-bubble {{
+                background: rgba(243, 139, 168, 0.12);
+                border: 1px solid #F38BA8;
+                color: #F38BA8;
+                padding: 8px 12px;
+                border-radius: 6px;
+                font-size: {max(12, fs - 2)}px;
+                margin: 6px 0;
+            }}
+            .failover-bubble {{
+                background: rgba(249, 226, 175, 0.15);
+                border: 1px solid rgba(249, 226, 175, 0.4);
+                color: #F9E2AF;
+                padding: 5px 12px;
+                border-radius: 10px;
+                font-size: {max(11, fs - 3)}px;
+                text-align: center;
+                margin: 6px 0;
+            }}
+        </style>
+        """
+
+        html_body = []
+        for msg in self._messages:
+            m_role = msg["role"]
+            m_text = msg["text"]
+            m_id = msg.get("id", 0)
+
+            if m_role == "welcome":
+                html_body.append(f"<div class='welcome-box'>{m_text}</div>")
+
+            elif m_role == "user":
+                esc = html.escape(m_text).replace("\n", "<br>")
+                html_body.append(f"""
+                <div class='user-row'>
+                    <div class='user-bubble'>
+                        🗣️ <b>आप:</b><br>{esc}
+                    </div>
+                </div>
+                """)
+
+            elif m_role == "ai":
+                formatted = html.escape(m_text)
+                formatted = formatted.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+                formatted = re.sub(r'\*\*(.+?)\*\*', r'<b style="color: #CBA6F7;">\1</b>', formatted)
+                formatted = formatted.replace("\n", "<br>")
+
+                replay_link = f"<a class='replay-btn' href='speak:{m_id}'>🔊 फिर से सुनें</a>"
+                html_body.append(f"""
+                <div class='ai-row'>
+                    <div class='ai-bubble'>
+                        <div class='ai-header'>
+                            🤖 <b>Study Buddy (सहपाठी):</b> {replay_link}
+                        </div>
+                        {formatted}
+                    </div>
+                </div>
+                """)
+
+            elif m_role == "failover":
+                html_body.append(f"<div class='failover-bubble'>{m_text}</div>")
+
+            elif m_role == "system":
+                html_body.append(f"<div class='system-bubble'>{m_text}</div>")
+
+        full_html = css + "".join(html_body)
+        self.chat_view.setHtml(full_html)
+        self._scroll_chat_to_bottom()
+
+    def _scroll_chat_to_bottom(self):
+        sb = self.chat_view.verticalScrollBar()
+        if sb:
+            sb.setValue(sb.maximum())
+
+    def _on_anchor_clicked(self, url: QUrl):
+        s = url.toString()
+        if s.startswith("speak:"):
+            try:
+                m_id = int(s.split(":")[1])
+                for m in self._messages:
+                    if m.get("id") == m_id:
+                        cfg = get_ai_settings()
+                        self.tts_engine.speak(m.get("raw_text", m["text"]), voice=cfg["tts_voice"], rate=cfg["tts_speed"])
+                        break
+            except Exception:
+                pass
+        elif s.startswith("http"):
+            QDesktopServices.openUrl(url)
+
+    # ── TTS CONTROLS ──────────────────────────────────────────────────────────
+    def _toggle_auto_speak(self):
+        cfg = get_ai_settings()
+        new_val = not cfg.get("auto_speak", True)
+        save_ai_settings(auto_speak=new_val)
+        self.btn_audio_toggle.setText("🔊" if new_val else "🔇")
+        if not new_val:
+            self.tts_engine.stop()
+            self._show_toast("🔇 AI वॉइस म्यूट (अब केवल टेक्स्ट दिखेगा)")
+        else:
+            self._show_toast("🔊 AI वॉइस सक्रिय (AI उत्तर बोलकर सुनाएगा)")
+
+    def _stop_speech(self):
+        self.tts_engine.stop()
+
+    def _on_speech_started(self, file_path: str):
+        self.btn_audio_stop.show()
+        self.lbl_status.setText("🔊 बोल रहा हूँ...")
+        self.lbl_status.setStyleSheet("font-size: 11px; color: #A6E3A1; font-weight: bold;")
+
+    def _on_speech_finished(self):
+        self.btn_audio_stop.hide()
+        self._refresh_status_label()
+
+    def _on_speech_stopped(self):
+        self.btn_audio_stop.hide()
+        self._refresh_status_label()
+
+    def _on_tts_error(self, err: str):
+        self.btn_audio_stop.hide()
+        self._refresh_status_label()
+
+    # ── CARD TRANSITION ───────────────────────────────────────────────────────
     def set_current_card(self, card: dict, active_box=None, sm2_obj=None):
         """Called automatically whenever the ReviewScreen transitions to a new card."""
         self._current_card = card
         self._active_box = active_box
+        self._stop_speech()
+
         try:
             deck_name = getattr(self.rs, "deck_name", "") or (card.get("deck_name", "") if card else "")
             self._current_context = build_card_context(card, active_box, deck_name)
         except Exception as e:
             self._current_context = {"summary": "Card context unavailable.", "error": str(e), "question": ""}
 
-        # Reset chat view with welcoming prompt for this card
+        # Reset chat history for this active card
+        self._messages = []
+        self._msg_counter = 0
+
         q_text = self._current_context.get("question", "")
         if not isinstance(q_text, str):
             q_text = str(q_text or "")
-        if len(q_text) > 80:
-            q_text = q_text[:77] + "..."
-        welcome_html = f"""
-        <div style='color: #A6ADC8; margin-bottom: 12px; font-size: 12px; border-bottom: 1px solid #313244; padding-bottom: 8px;'>
+        if len(q_text) > 120:
+            q_text = q_text[:117] + "..."
+
+        welcome_text = f"""
             📌 <b>सक्रिय प्रश्न:</b> {html.escape(q_text)}<br>
-            <i>माइक का बटन 🎙️ दबाकर अपना जवाब बोलें, या नीचे से सवाल पूछें।</i>
-        </div>
+            <i>माइक का बटन 🎙️ (या <b>Alt+V</b>) दबाकर अपना जवाब बोलें, या नीचे सवाल पूछें।</i>
         """
-        self.chat_view.setHtml(welcome_html)
+        self._msg_counter += 1
+        self._messages.append({
+            "id": self._msg_counter,
+            "role": "welcome",
+            "text": welcome_text,
+            "raw_text": ""
+        })
+        self._render_chat()
 
         cfg = get_ai_settings()
         if cfg["auto_listen"] and self.isVisible():
@@ -485,8 +840,13 @@ class AIBuddyDrawer(QFrame):
 
     def _open_settings(self):
         dlg = AISettingsDialog(self)
-        dlg.settings_saved.connect(self._refresh_status_label)
+        dlg.settings_saved.connect(self._on_settings_saved)
         dlg.exec_()
+
+    def _on_settings_saved(self):
+        cfg = get_ai_settings()
+        self.btn_audio_toggle.setText("🔊" if cfg.get("auto_speak", True) else "🔇")
+        self._refresh_status_label()
 
     def toggle_drawer(self):
         if self.isVisible():
@@ -502,6 +862,7 @@ class AIBuddyDrawer(QFrame):
         self.edit_input.setFocus()
 
     def close_drawer(self):
+        self._stop_speech()
         if self._voice_worker and self._voice_worker.isRunning():
             self._voice_worker.cancel()
         self.hide()
@@ -513,7 +874,7 @@ class AIBuddyDrawer(QFrame):
         dw = getattr(self, "_drawer_width", self.DEFAULT_WIDTH)
         self.setGeometry(p.width() - dw, 0, dw, p.height())
 
-    # ── 5. VOICE INPUT HANDLING ───────────────────────────────────────────────
+    # ── VOICE INPUT HANDLING ──────────────────────────────────────────────────
     def _toggle_voice_input(self):
         if self._is_listening:
             self._stop_voice_input()
@@ -521,6 +882,7 @@ class AIBuddyDrawer(QFrame):
             self._start_voice_input()
 
     def _start_voice_input(self):
+        self._stop_speech()  # Stop AI talking when student begins speaking
         if self._voice_worker and self._voice_worker.isRunning():
             return
         cfg = get_ai_settings()
@@ -558,11 +920,13 @@ class AIBuddyDrawer(QFrame):
     def _on_voice_error(self, err_msg: str):
         self._append_system_bubble(err_msg)
 
-    # ── 6. QUERY & CHAT HANDLING ──────────────────────────────────────────────
+    # ── QUERY & CHAT HANDLING ─────────────────────────────────────────────────
     def _send_quick_prompt(self, mode: str):
+        self._stop_speech()
         self._dispatch_ai_query(user_text="", mode=mode)
 
     def _on_send_clicked(self):
+        self._stop_speech()
         text = self.edit_input.text().strip()
         if not text:
             return
@@ -594,58 +958,45 @@ class AIBuddyDrawer(QFrame):
         self._refresh_status_label()
         self._append_ai_bubble(reply_text)
 
+        cfg = get_ai_settings()
+        if cfg.get("auto_speak", True):
+            self.tts_engine.speak(reply_text, voice=cfg["tts_voice"], rate=cfg["tts_speed"])
+
     def _on_ai_error(self, err_msg: str):
         self._refresh_status_label()
         self._append_system_bubble(err_msg)
 
     def _append_user_bubble(self, text: str):
-        esc_text = html.escape(text).replace("\n", "<br>")
-        bubble_html = f"""
-        <div style='margin-top: 10px; margin-bottom: 10px; text-align: right;'>
-            <div style='display: inline-block; background: #313244; color: #CDD6F4; padding: 8px 14px; border-radius: 12px; border-bottom-right-radius: 2px; max-width: 85%; text-align: left;'>
-                🗣️ <b>आप:</b><br>{esc_text}
-            </div>
-        </div>
-        """
-        self.chat_view.append(bubble_html)
-        self._scroll_chat_to_bottom()
+        self._msg_counter += 1
+        self._messages.append({
+            "id": self._msg_counter,
+            "role": "user",
+            "text": text,
+            "raw_text": text
+        })
+        self._render_chat()
 
     def _append_ai_bubble(self, text: str):
-        # Format markdown bold and bullets
-        formatted = html.escape(text)
-        formatted = formatted.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
-        # Bold **text**
-        import re
-        formatted = re.sub(r'\*\*(.+?)\*\*', r'<b style="color: #CBA6F7;">\1</b>', formatted)
-        formatted = formatted.replace("\n", "<br>")
-
-        bubble_html = f"""
-        <div style='margin-top: 10px; margin-bottom: 10px;'>
-            <div style='background: rgba(203, 166, 247, 0.08); border-left: 3px solid #CBA6F7; color: #CDD6F4; padding: 10px 14px; border-radius: 8px;'>
-                🤖 <b>Study Buddy (सहपाठी):</b><br>{formatted}
-            </div>
-        </div>
-        """
-        self.chat_view.append(bubble_html)
-        self._scroll_chat_to_bottom()
+        self._msg_counter += 1
+        self._messages.append({
+            "id": self._msg_counter,
+            "role": "ai",
+            "text": text,
+            "raw_text": text
+        })
+        self._render_chat()
 
     def _append_system_bubble(self, text: str):
-        bubble_html = f"""
-        <div style='margin-top: 6px; margin-bottom: 6px;'>
-            <div style='background: rgba(243, 139, 168, 0.12); border: 1px solid #F38BA8; color: #F38BA8; padding: 6px 12px; border-radius: 6px; font-size: 12px;'>
-                {text.replace("\n", "<br>")}
-            </div>
-        </div>
-        """
-        self.chat_view.append(bubble_html)
-        self._scroll_chat_to_bottom()
+        self._msg_counter += 1
+        self._messages.append({
+            "id": self._msg_counter,
+            "role": "system",
+            "text": text,
+            "raw_text": ""
+        })
+        self._render_chat()
 
-    def _scroll_chat_to_bottom(self):
-        sb = self.chat_view.verticalScrollBar()
-        if sb:
-            sb.setValue(sb.maximum())
-
-    # ── 6b. MULTI-KEY POOL & ROTATION ─────────────────────────────────────────
+    # ── MULTI-KEY POOL & ROTATION ─────────────────────────────────────────────
     def cycle_api_key(self):
         """Manually cycle to the next API key in the pool and show toast/status."""
         new_idx, total, new_key = cycle_next_key()
@@ -679,46 +1030,66 @@ class AIBuddyDrawer(QFrame):
             self.lbl_status.setStyleSheet("font-size: 11px; color: #F38BA8;")
 
     def _refresh_status_label(self):
-        self.update_key_status()
+        if self.tts_engine.is_speaking():
+            self.lbl_status.setText("🔊 बोल रहा हूँ...")
+            self.lbl_status.setStyleSheet("font-size: 11px; color: #A6E3A1; font-weight: bold;")
+        else:
+            self.update_key_status()
 
     def _on_key_switched(self, new_idx: int, total: int, reason: str):
         self.update_key_status()
-        bubble_html = f"""
-        <div style='margin-top: 6px; margin-bottom: 6px; text-align: center;'>
-            <div style='display: inline-block; background: rgba(249, 226, 175, 0.15); border: 1px solid rgba(249, 226, 175, 0.4); color: #F9E2AF; padding: 4px 12px; border-radius: 10px; font-size: 11px;'>
-                🔄 <b>[ऑटो-फ़ेलओवर]:</b> {reason} — बिना रुकावट <b>Key {new_idx}/{total}</b> पर स्विच किया गया!
-            </div>
-        </div>
-        """
-        self.chat_view.append(bubble_html)
-        self._scroll_chat_to_bottom()
+        self._msg_counter += 1
+        msg = f"🔄 <b>[ऑटो-फ़ेलओवर]:</b> {reason} — बिना रुकावट <b>Key {new_idx}/{total}</b> पर स्विच किया गया!"
+        self._messages.append({
+            "id": self._msg_counter,
+            "role": "failover",
+            "text": msg,
+            "raw_text": ""
+        })
+        self._render_chat()
 
     def _show_toast(self, message: str):
         if hasattr(self.rs, "_show_review_toast"):
             self.rs._show_review_toast(message)
         else:
-            bubble_html = f"""
-            <div style='margin-top: 4px; margin-bottom: 4px; text-align: center;'>
-                <div style='display: inline-block; background: #313244; color: #CDD6F4; padding: 3px 10px; border-radius: 8px; font-size: 11px;'>
-                    {message}
-                </div>
-            </div>
-            """
-            self.chat_view.append(bubble_html)
-            self._scroll_chat_to_bottom()
+            self._append_system_bubble(message)
 
     def keyPressEvent(self, e):
-        if e.modifiers() == Qt.AltModifier and e.key() == Qt.Key_K:
+        mods = e.modifiers()
+        key = e.key()
+
+        if mods == Qt.AltModifier and key == Qt.Key_K:
             self.cycle_api_key()
             e.accept()
             return
-        if e.key() == Qt.Key_Escape:
+
+        if mods == Qt.AltModifier and key == Qt.Key_S:
+            self._toggle_auto_speak()
+            e.accept()
+            return
+
+        if mods == Qt.ControlModifier:
+            if key in (Qt.Key_Plus, Qt.Key_Equal):
+                self.zoom_in()
+                e.accept()
+                return
+            elif key == Qt.Key_Minus:
+                self.zoom_out()
+                e.accept()
+                return
+            elif key == Qt.Key_0:
+                self.reset_font_size()
+                e.accept()
+                return
+
+        if key == Qt.Key_Escape:
             self.close_drawer()
             e.accept()
             return
+
         super().keyPressEvent(e)
 
-    # ── 7. RESIZE HANDLING ────────────────────────────────────────────────────
+    # ── RESIZE HANDLING ───────────────────────────────────────────────────────
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and e.pos().x() <= self.RESIZE_MARGIN:
             self._resizing = True
@@ -734,7 +1105,7 @@ class AIBuddyDrawer(QFrame):
             new_w = max(self.MIN_WIDTH, self._drag_start_w - delta_x)
             p = self.parentWidget() or self.rs
             if p:
-                new_w = min(new_w, int(p.width() * 0.75))
+                new_w = min(new_w, int(p.width() * 0.85))
             self._drawer_width = new_w
             self.setFixedWidth(new_w)
             self.update_geometry()
