@@ -99,6 +99,83 @@ class TestAICoachService(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("शाबाश भाई", results[0])
 
+    def test_parse_api_keys(self):
+        from services.ai_coach_service import parse_api_keys
+        raw = "AIzaSyKey1, AIzaSyKey2\nAIzaSyKey3; 'AIzaSyKey1'\nAIzaSyKey4"
+        keys = parse_api_keys(raw)
+        self.assertEqual(len(keys), 4)
+        self.assertEqual(keys, ["AIzaSyKey1", "AIzaSyKey2", "AIzaSyKey3", "AIzaSyKey4"])
+
+    def test_multi_key_rotation_and_cycling(self):
+        from services.ai_coach_service import (
+            save_ai_settings, get_ai_settings, cycle_next_key,
+            get_api_key_pool, set_active_key_index
+        )
+        save_ai_settings(api_key="KEY_A, KEY_B, KEY_C")
+        pool = get_api_key_pool()
+        self.assertEqual(pool, ["KEY_A", "KEY_B", "KEY_C"])
+
+        set_active_key_index(0)
+        idx, total, new_k = cycle_next_key()
+        self.assertEqual(idx, 2)
+        self.assertEqual(total, 3)
+        self.assertEqual(new_k, "KEY_B")
+
+        idx2, total2, new_k2 = cycle_next_key()
+        self.assertEqual(idx2, 3)
+        self.assertEqual(new_k2, "KEY_C")
+
+        # Wraps around
+        idx3, total3, new_k3 = cycle_next_key()
+        self.assertEqual(idx3, 1)
+        self.assertEqual(new_k3, "KEY_A")
+
+    @patch("requests.post")
+    def test_ai_coach_worker_multi_key_failover_on_429(self, mock_post):
+        """Verify worker automatically fails over to Key 2 when Key 1 gets 429 rate limit."""
+        save_ai_settings(api_key="EXHAUSTED_KEY_1, WORKING_KEY_2")
+        from services.ai_coach_service import set_active_key_index
+        set_active_key_index(0)
+
+        # First call (EXHAUSTED_KEY_1) returns 429
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+
+        # Second call (WORKING_KEY_2) returns 200
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "🟢 जवाब सफल रहा!"}]
+                    }
+                }
+            ]
+        }
+
+        mock_post.side_effect = [resp_429, resp_200]
+
+        ctx = {"question": "Test Q", "answer": "Test A"}
+        worker = AICoachWorker(ctx, user_message="टेस्ट", prompt_mode="recall")
+
+        switches = []
+        replies = []
+        worker.key_switched.connect(lambda n, t, r: switches.append((n, t, r)))
+        worker.response_ready.connect(replies.append)
+
+        worker.run()
+
+        # Should have switched once to key 2/2
+        self.assertEqual(len(switches), 1)
+        self.assertEqual(switches[0][0], 2)
+        self.assertEqual(switches[0][1], 2)
+        # Should have obtained the reply from Key 2
+        self.assertEqual(len(replies), 1)
+        self.assertIn("जवाब सफल रहा", replies[0])
+        # Two POST requests were made
+        self.assertEqual(mock_post.call_count, 2)
+
     def test_ai_buddy_drawer_init(self):
         parent_w = QWidget()
         parent_w.resize(1000, 700); parent_w.show()

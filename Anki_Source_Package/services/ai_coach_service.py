@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Coach Service for Anki Occlusion.
 Provides Socratic peer study buddy capabilities using Google Gemini (default: gemini-2.0-flash).
 Extracts card context, evaluates student recall, highlights missing SSC exam traps,
@@ -15,6 +15,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, QSettings
 SETTINGS_GROUP = "AnkiOcclusion"
 SETTINGS_SECTION = "AISettings"
 KEY_API_KEY = "gemini_api_key"
+KEY_ACTIVE_KEY_INDEX = "gemini_active_key_index"
 KEY_MODEL_NAME = "gemini_model_name"
 KEY_AUTO_LISTEN = "auto_listen_enabled"
 KEY_VOICE_LANG = "voice_language"
@@ -23,21 +24,93 @@ DEFAULT_MODEL = "gemini-2.0-flash"
 FALLBACK_MODEL = "gemini-1.5-flash"
 
 
+def parse_api_keys(raw: str) -> list[str]:
+    """
+    Parse comma, semicolon, newline, or whitespace separated API keys into a clean unique list.
+    """
+    if not raw:
+        return []
+    parts = re.split(r'[\r\n,;\s]+', str(raw).strip())
+    keys = []
+    seen = set()
+    for p in parts:
+        cleaned = p.strip().strip("'\"")
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            keys.append(cleaned)
+    return keys
+
+
+def get_api_key_pool() -> list[str]:
+    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    raw = s.value(KEY_API_KEY, "", type=str)
+    return parse_api_keys(raw)
+
+
+def get_active_key_index() -> int:
+    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    idx = s.value(KEY_ACTIVE_KEY_INDEX, 0, type=int)
+    pool = get_api_key_pool()
+    if not pool:
+        return 0
+    return max(0, min(idx, len(pool) - 1))
+
+
+def set_active_key_index(idx: int) -> int:
+    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    pool = get_api_key_pool()
+    if not pool:
+        s.setValue(KEY_ACTIVE_KEY_INDEX, 0)
+        return 0
+    safe_idx = idx % len(pool)
+    s.setValue(KEY_ACTIVE_KEY_INDEX, safe_idx)
+    return safe_idx
+
+
+def get_active_api_key() -> str:
+    pool = get_api_key_pool()
+    if not pool:
+        return ""
+    idx = get_active_key_index()
+    return pool[idx]
+
+
+def cycle_next_key() -> tuple[int, int, str]:
+    """
+    Cycle to the next API key in the pool.
+    Returns (1-based_active_idx, total_keys, new_key).
+    """
+    pool = get_api_key_pool()
+    if not pool:
+        return (0, 0, "")
+    curr = get_active_key_index()
+    next_idx = (curr + 1) % len(pool)
+    set_active_key_index(next_idx)
+    return (next_idx + 1, len(pool), pool[next_idx])
+
+
 def get_ai_settings():
     s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
-    api_key = s.value(KEY_API_KEY, "", type=str)
+    raw_key = s.value(KEY_API_KEY, "", type=str)
+    pool = parse_api_keys(raw_key)
+    active_idx = get_active_key_index()
+    active_key = pool[active_idx] if pool else ""
     model_name = s.value(KEY_MODEL_NAME, DEFAULT_MODEL, type=str)
     auto_listen = s.value(KEY_AUTO_LISTEN, False, type=bool)
     voice_lang = s.value(KEY_VOICE_LANG, "hi-IN", type=str)
     return {
-        "api_key": api_key.strip() if api_key else "",
+        "api_key": active_key,
+        "api_key_raw": raw_key.strip() if raw_key else "",
+        "api_key_pool": pool,
+        "active_key_index": active_idx,
+        "total_keys": len(pool),
         "model_name": model_name.strip() if model_name else DEFAULT_MODEL,
         "auto_listen": auto_listen,
         "voice_lang": voice_lang or "hi-IN",
     }
 
 
-def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: bool = None, voice_lang: str = None):
+def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: bool = None, voice_lang: str = None, active_key_index: int = None):
     s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
     if api_key is not None:
         s.setValue(KEY_API_KEY, str(api_key).strip())
@@ -47,6 +120,8 @@ def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: b
         s.setValue(KEY_AUTO_LISTEN, bool(auto_listen))
     if voice_lang is not None:
         s.setValue(KEY_VOICE_LANG, str(voice_lang).strip())
+    if active_key_index is not None:
+        s.setValue(KEY_ACTIVE_KEY_INDEX, int(active_key_index))
 
 
 def strip_html_tags(text: str) -> str:
@@ -153,11 +228,13 @@ Formatting: Use clean bullets (•), emojis (🟢, ⚠️, 💡), and bold text 
 
 class AICoachWorker(QThread):
     """
-    Non-blocking background worker to execute Socratic AI requests via Gemini REST API.
+    Non-blocking background worker to execute Socratic AI requests via Gemini REST API
+    with automatic multi-key rotation and rate-limit (429) failover pool.
     """
     started_query = pyqtSignal()
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    key_switched = pyqtSignal(int, int, str)  # (new_idx_1_based, total_keys, reason)
 
     def __init__(self, card_context: dict, user_message: str, prompt_mode: str = "recall", parent=None):
         super().__init__(parent)
@@ -168,10 +245,11 @@ class AICoachWorker(QThread):
     def run(self):
         self.started_query.emit()
         cfg = get_ai_settings()
-        api_key = cfg["api_key"]
+        key_pool = cfg["api_key_pool"]
+        total_keys = len(key_pool)
         model_name = cfg["model_name"] or DEFAULT_MODEL
 
-        if not api_key:
+        if not key_pool:
             self.error_occurred.emit(
                 "⚠️ **Gemini API Key missing!**\n\n"
                 "कृपया ड्रॉअर में ऊपर ⚙️ सेटिंग्स बटन पर क्लिक करके अपनी मुफ़्त Google Gemini API Key दर्ज करें।"
@@ -201,7 +279,6 @@ class AICoachWorker(QThread):
                 f"Student's Recall / Question:\n\"{self.user_message or 'मैंने यह कार्ड देखा, इसके मुख्य पॉइंट्स पर मुझसे चर्चा करो!'}\""
             )
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         payload = {
             "contents": [
                 {
@@ -218,42 +295,100 @@ class AICoachWorker(QThread):
             }
         }
 
-        try:
-            resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    first_cand = candidates[0]
-                    content = first_cand.get("content", {})
-                    parts = content.get("parts", [])
-                    if parts:
-                        reply_text = parts[0].get("text", "").strip()
-                        self.response_ready.emit(reply_text)
-                        return
-                self.error_occurred.emit("⚠️ AI ने कोई जवाब नहीं भेजा। कृपया दोबारा प्रयास करें।")
-            elif resp.status_code == 400:
-                err_data = resp.json().get("error", {})
-                msg = err_data.get("message", "Invalid request")
-                if "model" in msg.lower() and model_name == DEFAULT_MODEL:
-                    fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/{FALLBACK_MODEL}:generateContent?key={api_key}"
-                    resp2 = requests.post(fallback_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
-                    if resp2.status_code == 200:
-                        data2 = resp2.json()
-                        parts2 = data2.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                        if parts2:
-                            self.response_ready.emit(parts2[0].get("text", "").strip())
+        start_idx = cfg["active_key_index"]
+        curr_idx = start_idx
+        attempts = 0
+
+        while attempts < total_keys:
+            current_api_key = key_pool[curr_idx]
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_api_key}"
+
+            try:
+                resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        first_cand = candidates[0]
+                        content = first_cand.get("content", {})
+                        parts = content.get("parts", [])
+                        if parts:
+                            reply_text = parts[0].get("text", "").strip()
+                            if curr_idx != start_idx:
+                                set_active_key_index(curr_idx)
+                            self.response_ready.emit(reply_text)
                             return
-                self.error_occurred.emit(f"⚠️ **Google API Error (400):** {msg}")
-            elif resp.status_code == 403:
-                self.error_occurred.emit("⚠️ **Invalid API Key (403):** कृपया ⚙️ सेटिंग्स में अपनी सही Gemini API Key चेक करें।")
-            elif resp.status_code == 429:
-                self.error_occurred.emit("⏳ **Rate Limit Exceeded (429):** कृपया कुछ सेकंड इंतज़ार करके दोबारा पूछें।")
-            else:
-                self.error_occurred.emit(f"⚠️ **API Error ({resp.status_code}):** {resp.text[:150]}")
-        except requests.exceptions.Timeout:
-            self.error_occurred.emit("⏱️ **रिक्वेस्ट टाइमआउट:** सर्वर से जवाब आने में 15 सेकंड से अधिक समय लग गया। कृपया इंटरनेट कनेक्शन जांचें।")
-        except requests.exceptions.ConnectionError:
-            self.error_occurred.emit("🌐 **इंटरनेट कनेक्शन नहीं मिला:** कृपया अपना इंटरनेट चालू करें।")
-        except Exception as e:
-            self.error_occurred.emit(f"⚠️ **अज्ञात त्रुटि:** {str(e)}")
+                    self.error_occurred.emit("⚠️ AI ने कोई जवाब नहीं भेजा। कृपया दोबारा प्रयास करें।")
+                    return
+
+                elif resp.status_code == 400:
+                    err_data = resp.json().get("error", {})
+                    msg = err_data.get("message", "Invalid request")
+                    if "model" in msg.lower() and model_name == DEFAULT_MODEL:
+                        fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/{FALLBACK_MODEL}:generateContent?key={current_api_key}"
+                        resp2 = requests.post(fallback_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+                        if resp2.status_code == 200:
+                            data2 = resp2.json()
+                            parts2 = data2.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                            if parts2:
+                                if curr_idx != start_idx:
+                                    set_active_key_index(curr_idx)
+                                self.response_ready.emit(parts2[0].get("text", "").strip())
+                                return
+                    if total_keys > 1 and attempts < total_keys - 1:
+                        curr_idx = (curr_idx + 1) % total_keys
+                        attempts += 1
+                        set_active_key_index(curr_idx)
+                        self.key_switched.emit(curr_idx + 1, total_keys, f"Invalid Request (400) -> Key {curr_idx + 1}")
+                        continue
+                    self.error_occurred.emit(f"⚠️ **Google API Error (400):** {msg}")
+                    return
+
+                elif resp.status_code in (429, 403):
+                    reason_name = "दर सीमा (Rate Limit 429)" if resp.status_code == 429 else "अमान्य/कोटा समाप्त (403)"
+                    if total_keys > 1 and attempts < total_keys - 1:
+                        # Auto-failover to next key in pool
+                        curr_idx = (curr_idx + 1) % total_keys
+                        attempts += 1
+                        set_active_key_index(curr_idx)
+                        self.key_switched.emit(curr_idx + 1, total_keys, reason_name)
+                        continue
+                    else:
+                        if resp.status_code == 429:
+                            self.error_occurred.emit(
+                                f"⏳ **दर सीमा समाप्त (Rate Limit 429)!**\n\n"
+                                f"पूल में मौजूद सभी {total_keys} API Keys का तात्कालिक कोटा पूरा हो गया है।\n"
+                                "कृपया 1 मिनट प्रतीक्षा करें या ⚙️ सेटिंग्स में एक और अकाउंट की मुफ़्त API Key जोड़ें।"
+                            )
+                        else:
+                            self.error_occurred.emit(
+                                f"⚠️ **API Key अमान्य या समाप्त (403):**\n"
+                                f"पूल में मौजूद सभी {total_keys} Keys जाँची गईं। कृपया ⚙️ सेटिंग्स में वैध API Key दर्ज करें।"
+                            )
+                        return
+
+                else:
+                    if total_keys > 1 and attempts < total_keys - 1:
+                        curr_idx = (curr_idx + 1) % total_keys
+                        attempts += 1
+                        set_active_key_index(curr_idx)
+                        self.key_switched.emit(curr_idx + 1, total_keys, f"API Error ({resp.status_code})")
+                        continue
+                    self.error_occurred.emit(f"⚠️ **API Error ({resp.status_code}):** {resp.text[:150]}")
+                    return
+
+            except requests.exceptions.Timeout:
+                if total_keys > 1 and attempts < total_keys - 1:
+                    curr_idx = (curr_idx + 1) % total_keys
+                    attempts += 1
+                    set_active_key_index(curr_idx)
+                    self.key_switched.emit(curr_idx + 1, total_keys, "टाइमआउट (Timeout)")
+                    continue
+                self.error_occurred.emit("⏱️ **रिक्वेस्ट टाइमआउट:** सर्वर से जवाब आने में 15 सेकंड से अधिक समय लग गया। कृपया इंटरनेट कनेक्शन जांचें।")
+                return
+            except requests.exceptions.ConnectionError:
+                self.error_occurred.emit("🌐 **इंटरनेट कनेक्शन नहीं मिला:** कृपया अपना इंटरनेट चालू करें।")
+                return
+            except Exception as e:
+                self.error_occurred.emit(f"⚠️ **अज्ञात त्रुटि:** {str(e)}")
+                return

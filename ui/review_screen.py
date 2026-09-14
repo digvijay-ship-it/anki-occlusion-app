@@ -5451,6 +5451,13 @@ class ReviewScreen(QWidget):
             e.accept()
             return
 
+        # Alt+K cycle active Gemini API key
+        if key == Qt.Key_K and (mods & Qt.AltModifier):
+            if getattr(self, "_ai_buddy_drawer", None) is not None:
+                self._ai_buddy_drawer.cycle_api_key()
+                e.accept()
+                return
+
         # Ctrl+? toggle to open shortcuts dialog
         clean_mods = mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
         is_ctrl_question = (
