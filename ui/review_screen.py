@@ -4200,9 +4200,12 @@ class ReviewScreen(QWidget):
 
     def _show_overlay(self, overlay):
         """Show a floating overlay and reposition it."""
-        self._reposition_overlays()
-        overlay.show()
-        overlay.raise_()
+        try:
+            self._reposition_overlays()
+            overlay.show()
+            overlay.raise_()
+        except RuntimeError:
+            pass
 
     def _populate_daily_completed_keys(self, today_iso: str):
         if not hasattr(self, "_daily_completed_card_keys"):
@@ -4706,22 +4709,25 @@ class ReviewScreen(QWidget):
         ref = getattr(self, "_canvas_stage", None)
         if ref is None or getattr(self, "_rating_frame", None) is None or getattr(self, "_reveal_bar", None) is None:
             return
-        w = ref.width()
-        h = ref.height()
+        try:
+            w = ref.width()
+            h = ref.height()
 
-        # Rating frame — flush to bottom
-        self._rating_frame.adjustSize()
-        sh = self._rating_frame.sizeHint()
-        rw = max(sh.width(), 10)
-        rh = max(sh.height(), 48)
-        self._rating_frame.setGeometry((w - rw) // 2, h - rh - 2, rw, rh)
+            # Rating frame — flush to bottom
+            self._rating_frame.adjustSize()
+            sh = self._rating_frame.sizeHint()
+            rw = max(sh.width(), 10)
+            rh = max(sh.height(), 48)
+            self._rating_frame.setGeometry((w - rw) // 2, h - rh - 2, rw, rh)
 
-        # Reveal bar — just above where rating would be
-        self._reveal_bar.adjustSize()
-        sh2 = self._reveal_bar.sizeHint()
-        bw = max(sh2.width(), 10)
-        bh = max(sh2.height(), 44)
-        self._reveal_bar.setGeometry((w - bw) // 2, h - bh - 2, bw, bh)
+            # Reveal bar — just above where rating would be
+            self._reveal_bar.adjustSize()
+            sh2 = self._reveal_bar.sizeHint()
+            bw = max(sh2.width(), 10)
+            bh = max(sh2.height(), 44)
+            self._reveal_bar.setGeometry((w - bw) // 2, h - bh - 2, bw, bh)
+        except RuntimeError:
+            return
 
     def _load_queue_locked(self) -> bool:
         raw = QSettings("AnkiOcclusion", "App").value("review/queue_locked", True)
