@@ -5451,6 +5451,15 @@ class ReviewScreen(QWidget):
             e.accept()
             return
 
+        # Alt+V voice input for AI Study Buddy
+        if key == Qt.Key_V and (mods & Qt.AltModifier):
+            if getattr(self, "_ai_buddy_drawer", None) is not None:
+                if not self._ai_buddy_drawer.isVisible():
+                    self._ai_buddy_drawer.open_drawer()
+                self._ai_buddy_drawer._toggle_voice_input()
+                e.accept()
+                return
+
         # Alt+K cycle active Gemini API key
         if key == Qt.Key_K and (mods & Qt.AltModifier):
             if getattr(self, "_ai_buddy_drawer", None) is not None:

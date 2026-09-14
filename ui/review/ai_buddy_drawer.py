@@ -374,7 +374,7 @@ class AIBuddyDrawer(QFrame):
 
         self.chip_recall = QPushButton("🎙️ Assess Recall")
         self.chip_recall.setObjectName("btn_chip")
-        self.chip_recall.setToolTip("माइक से बोलें और AI से अपने उत्तर का मूल्यांकन कराएं")
+        self.chip_recall.setToolTip("माइक से बोलें और AI से अपने उत्तर का मूल्यांकन कराएं (Alt+V)")
         self.chip_recall.clicked.connect(self._toggle_voice_input)
         chips_row.addWidget(self.chip_recall)
 
@@ -424,7 +424,7 @@ class AIBuddyDrawer(QFrame):
         self.btn_mic = QPushButton("🎙️")
         self.btn_mic.setObjectName("btn_mic")
         self.btn_mic.setFixedSize(38, 38)
-        self.btn_mic.setToolTip("माइक ऑन/ऑफ करें (Push to Talk)")
+        self.btn_mic.setToolTip("माइक ऑन/ऑफ करें (Push to Talk • Alt+V)")
         self.btn_mic.clicked.connect(self._toggle_voice_input)
         input_row.addWidget(self.btn_mic)
 
