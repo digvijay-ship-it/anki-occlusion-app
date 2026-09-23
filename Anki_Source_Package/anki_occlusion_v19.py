@@ -956,6 +956,20 @@ if __name__ == "__main__":
     app.setApplicationVersion("1.0")
     _icon = make_app_icon()
     app.setWindowIcon(_icon)
+
+    # 🔒 Multi-layer Exit Save Guarantee: aboutToQuit + Signals
+    app.aboutToQuit.connect(lambda: store.save_on_exit(reason="QApplication.aboutToQuit"))
+    import signal
+    def _sig_handler(sig, frame):
+        print(f"\n[APP-SHUTDOWN-SAVE] Signal {sig} received. Commencing safe exit save...")
+        store.save_on_exit(reason=f"Signal {sig}")
+        sys.exit(0)
+    try:
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
+    except Exception:
+        pass
+
     win = MainWindow()
     win.show()
     print(f"[PROFILE][app_startup] App loaded and ready in {(time.perf_counter() - APP_START_TIME) * 1000:.1f}ms")

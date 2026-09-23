@@ -16,13 +16,21 @@ try:
 except ImportError:
     storage_paths = None
 
-# Settings fallback
 SETTINGS_GROUP = "AnkiOcclusion"
 SETTINGS_SECTION = "AISettings"
 KEY_API_KEY = "gemini_api_key"
 
 SECRETS_FILENAME = "secrets.json"
 EXAMPLE_FILENAME = "secrets.example.json"
+
+
+def _settings():
+    if storage_paths and hasattr(storage_paths, "is_running_tests") and storage_paths.is_running_tests():
+        return QSettings(
+            os.path.join(storage_paths._get_test_temp_dir(), "test_secrets_settings.ini"),
+            QSettings.IniFormat
+        )
+    return QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
 
 
 def get_project_root() -> str:
@@ -82,7 +90,12 @@ def parse_api_keys(raw) -> list[str]:
             continue
         # Filter out common dummy / example placeholders
         upper = cleaned.upper()
-        if "YOUR_" in upper or "EXAMPLE" in upper or cleaned.startswith("AIzaSyYour"):
+        if (
+            "YOUR_" in upper
+            or "EXAMPLE" in upper
+            or "TEST_FAKE" in upper
+            or cleaned.startswith("AIzaSyYour")
+        ):
             continue
         if cleaned not in seen:
             seen.add(cleaned)
@@ -149,7 +162,7 @@ def get_gemini_api_keys() -> list[str]:
             return parsed
 
     # 3. Check QSettings
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _settings()
     raw = s.value(KEY_API_KEY, "", type=str)
     return parse_api_keys(raw)
 
@@ -162,7 +175,7 @@ def save_gemini_api_keys(keys: list[str] | str, sync_file: bool = True) -> bool:
     joined_str = "\n".join(parsed)
 
     # 1. Update QSettings
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _settings()
     s.setValue(KEY_API_KEY, joined_str)
 
     # 2. Update secrets.json if requested and not under test

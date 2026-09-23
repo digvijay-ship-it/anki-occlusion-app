@@ -19,9 +19,28 @@ KEY_ACTIVE_KEY_INDEX = "gemini_active_key_index"
 KEY_MODEL_NAME = "gemini_model_name"
 KEY_AUTO_LISTEN = "auto_listen_enabled"
 KEY_VOICE_LANG = "voice_language"
+KEY_AUTO_SPEAK = "auto_speak_enabled"
+KEY_CONTINUOUS_MODE = "continuous_voice_mode_enabled"
+KEY_TTS_VOICE = "tts_voice_name"
+KEY_TTS_SPEED = "tts_voice_speed"
+DEFAULT_TTS_VOICE = "hi-IN-MadhurNeural"
 
-DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 FALLBACK_MODEL = "gemini-2.5-flash"
+
+
+def _get_settings():
+    try:
+        import storage_paths
+        if hasattr(storage_paths, "is_running_tests") and storage_paths.is_running_tests():
+            import os
+            return QSettings(
+                os.path.join(storage_paths._get_test_temp_dir(), "test_ai_settings.ini"),
+                QSettings.IniFormat
+            )
+    except Exception:
+        pass
+    return QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
 
 
 def parse_api_keys(raw) -> list[str]:
@@ -39,7 +58,7 @@ def parse_api_keys(raw) -> list[str]:
         seen = set()
         for p in parts:
             cleaned = p.strip().strip("'\"")
-            if cleaned and cleaned not in seen:
+            if cleaned and "TEST_FAKE" not in cleaned.upper() and cleaned not in seen:
                 seen.add(cleaned)
                 keys.append(cleaned)
         return keys
@@ -50,13 +69,13 @@ def get_api_key_pool() -> list[str]:
         from services.secrets_manager import get_gemini_api_keys
         return get_gemini_api_keys()
     except Exception:
-        s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+        s = _get_settings()
         raw = s.value(KEY_API_KEY, "", type=str)
         return parse_api_keys(raw)
 
 
 def get_active_key_index() -> int:
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _get_settings()
     idx = s.value(KEY_ACTIVE_KEY_INDEX, 0, type=int)
     pool = get_api_key_pool()
     if not pool:
@@ -65,7 +84,7 @@ def get_active_key_index() -> int:
 
 
 def set_active_key_index(idx: int) -> int:
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _get_settings()
     pool = get_api_key_pool()
     if not pool:
         s.setValue(KEY_ACTIVE_KEY_INDEX, 0)
@@ -99,7 +118,7 @@ def cycle_next_key() -> tuple[int, int, str]:
 
 def get_ai_settings():
     pool = get_api_key_pool()
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _get_settings()
     raw_key = s.value(KEY_API_KEY, "", type=str)
     if not raw_key and pool:
         raw_key = "\n".join(pool)
@@ -108,6 +127,10 @@ def get_ai_settings():
     model_name = s.value(KEY_MODEL_NAME, DEFAULT_MODEL, type=str)
     auto_listen = s.value(KEY_AUTO_LISTEN, False, type=bool)
     voice_lang = s.value(KEY_VOICE_LANG, "hi-IN", type=str)
+    auto_speak = s.value(KEY_AUTO_SPEAK, True, type=bool)
+    continuous_mode = s.value(KEY_CONTINUOUS_MODE, True, type=bool)
+    tts_voice = s.value(KEY_TTS_VOICE, DEFAULT_TTS_VOICE, type=str)
+    tts_speed = s.value(KEY_TTS_SPEED, "+0%", type=str)
     return {
         "api_key": active_key,
         "api_key_raw": raw_key.strip() if raw_key else ("\n".join(pool) if pool else ""),
@@ -117,11 +140,25 @@ def get_ai_settings():
         "model_name": model_name.strip() if model_name else DEFAULT_MODEL,
         "auto_listen": auto_listen,
         "voice_lang": voice_lang or "hi-IN",
+        "auto_speak": auto_speak,
+        "continuous_mode": continuous_mode,
+        "tts_voice": tts_voice or DEFAULT_TTS_VOICE,
+        "tts_speed": tts_speed or "+0%",
     }
 
 
-def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: bool = None, voice_lang: str = None, active_key_index: int = None):
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+def save_ai_settings(
+    api_key: str = None,
+    model_name: str = None,
+    auto_listen: bool = None,
+    voice_lang: str = None,
+    active_key_index: int = None,
+    auto_speak: bool = None,
+    tts_voice: str = None,
+    tts_speed: str = None,
+    continuous_mode: bool = None
+):
+    s = _get_settings()
     if api_key is not None:
         cleaned_key = str(api_key).strip()
         s.setValue(KEY_API_KEY, cleaned_key)
@@ -138,12 +175,28 @@ def save_ai_settings(api_key: str = None, model_name: str = None, auto_listen: b
         s.setValue(KEY_VOICE_LANG, str(voice_lang).strip())
     if active_key_index is not None:
         s.setValue(KEY_ACTIVE_KEY_INDEX, int(active_key_index))
+    if auto_speak is not None:
+        s.setValue(KEY_AUTO_SPEAK, bool(auto_speak))
+    if continuous_mode is not None:
+        s.setValue(KEY_CONTINUOUS_MODE, bool(continuous_mode))
+    if tts_voice is not None:
+        s.setValue(KEY_TTS_VOICE, str(tts_voice).strip())
+    if tts_speed is not None:
+        s.setValue(KEY_TTS_SPEED, str(tts_speed).strip())
 
 
-def strip_html_tags(text: str) -> str:
-    """Strip HTML markup to pass clean text to the AI model."""
+def strip_html_tags(text) -> str:
+    """Strip HTML markup to pass clean text to the AI model. Safely handles lists, dicts, and non-string types."""
     if not text:
         return ""
+    if isinstance(text, (list, tuple, set)):
+        cleaned_items = [strip_html_tags(item) for item in text if item]
+        return "\n".join(item for item in cleaned_items if item)
+    if isinstance(text, dict):
+        cleaned_items = [f"{k}: {strip_html_tags(v)}" for k, v in text.items() if v]
+        return "\n".join(cleaned_items)
+    if not isinstance(text, str):
+        text = str(text)
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'</p>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
@@ -162,66 +215,87 @@ def build_card_context(card: dict, active_box=None, deck_name: str = "") -> dict
     if not card:
         return {"summary": "No active card context."}
 
-    card_type = card.get("card_type", "")
-    context_anchor = card.get("context_anchor", "")
-    tags = card.get("tags", [])
-    if isinstance(tags, str):
-        tags = [tags]
+    try:
+        card_type = card.get("card_type", "")
+        context_anchor = card.get("context_anchor", "")
+        tags = card.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
 
-    ctx = {
-        "deck_name": deck_name or card.get("deck_name", ""),
-        "card_type": card_type,
-        "topic_anchor": context_anchor,
-        "tags": tags,
-    }
+        ctx = {
+            "deck_name": deck_name or card.get("deck_name", ""),
+            "card_type": card_type,
+            "topic_anchor": context_anchor,
+            "tags": tags,
+        }
 
-    if card_type == "mcq":
-        ctx["question"] = strip_html_tags(card.get("question", ""))
-        options_raw = card.get("options", [])
-        opts_list = []
-        for opt in options_raw:
-            if isinstance(opt, dict):
-                lbl = opt.get("label", "")
-                txt = opt.get("text", "")
-                eng = opt.get("english_word", "")
-                hnd = opt.get("hindi", "")
-                opts_list.append(f"{lbl}: {txt} {f'({eng})' if eng else ''} {f'- {hnd}' if hnd else ''}".strip())
-            else:
-                opts_list.append(str(opt))
-        ctx["options"] = opts_list
-        ctx["correct_answer"] = card.get("correct_option", "")
-        sol_data = card.get("solution_data", {})
-        if isinstance(sol_data, dict):
-            ctx["solution_statement"] = strip_html_tags(sol_data.get("statement", ""))
-            ctx["key_points"] = strip_html_tags(sol_data.get("key_points", ""))
-            ctx["additional_info"] = strip_html_tags(sol_data.get("additional_information", ""))
-        ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
+        if card_type == "mcq":
+            ctx["question"] = strip_html_tags(card.get("question", ""))
+            options_raw = card.get("options", [])
+            opts_list = []
+            if isinstance(options_raw, dict):
+                for lbl, val in options_raw.items():
+                    if isinstance(val, dict):
+                        txt = val.get("text", "")
+                        eng = val.get("english_word", "")
+                        hnd = val.get("hindi", "")
+                        opts_list.append(f"{lbl}: {txt} {f'({eng})' if eng else ''} {f'- {hnd}' if hnd else ''}".strip())
+                    else:
+                        opts_list.append(f"{lbl}: {val}".strip())
+            elif isinstance(options_raw, (list, tuple)):
+                for opt in options_raw:
+                    if isinstance(opt, dict):
+                        lbl = opt.get("label", "")
+                        txt = opt.get("text", "")
+                        eng = opt.get("english_word", "")
+                        hnd = opt.get("hindi", "")
+                        opts_list.append(f"{lbl}: {txt} {f'({eng})' if eng else ''} {f'- {hnd}' if hnd else ''}".strip())
+                    else:
+                        opts_list.append(str(opt))
+            ctx["options"] = opts_list
+            ctx["correct_answer"] = card.get("correct_option", "")
+            sol_data = card.get("solution_data", {})
+            if isinstance(sol_data, dict):
+                ctx["solution_statement"] = strip_html_tags(sol_data.get("statement", ""))
+                ctx["key_points"] = strip_html_tags(sol_data.get("key_points", ""))
+                ctx["additional_info"] = strip_html_tags(sol_data.get("additional_information", ""))
+            elif isinstance(sol_data, (str, list, tuple)):
+                ctx["solution_statement"] = strip_html_tags(sol_data)
+            ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
 
-    elif card_type == "text":
-        ctx["question"] = strip_html_tags(card.get("question", ""))
-        ctx["answer"] = strip_html_tags(card.get("answer", ""))
-        ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
-        if card.get("mnemonics"):
-            ctx["mnemonic"] = strip_html_tags(card.get("mnemonics"))
-        if card.get("related_concepts"):
-            ctx["related_concepts"] = card.get("related_concepts")
+        elif card_type == "text":
+            ctx["question"] = strip_html_tags(card.get("question", ""))
+            ctx["answer"] = strip_html_tags(card.get("answer", ""))
+            ctx["notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
+            if card.get("mnemonics"):
+                ctx["mnemonic"] = strip_html_tags(card.get("mnemonics"))
+            if card.get("related_concepts"):
+                rel = card.get("related_concepts")
+                ctx["related_concepts"] = [str(r) for r in rel] if isinstance(rel, (list, tuple)) else str(rel)
 
-    else:
-        # Occlusion / Image / PDF
-        box_note = ""
-        box_label = ""
-        if active_box:
-            if isinstance(active_box, dict):
-                box_note = active_box.get("note", "") or active_box.get("notes", "")
-                box_label = active_box.get("label", "")
-            else:
-                box_note = getattr(active_box, "note", "") or getattr(active_box, "notes", "")
-                box_label = getattr(active_box, "label", "")
-        ctx["question"] = f"Masked Target Box: {box_label}" if box_label else "Image/PDF Occlusion Question"
-        ctx["answer"] = strip_html_tags(box_note) if box_note else "Check underlying image note."
-        ctx["card_notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
+        else:
+            # Occlusion / Image / PDF
+            box_note = ""
+            box_label = ""
+            if active_box:
+                if isinstance(active_box, dict):
+                    box_note = active_box.get("note", "") or active_box.get("notes", "")
+                    box_label = active_box.get("label", "")
+                else:
+                    box_note = getattr(active_box, "note", "") or getattr(active_box, "notes", "")
+                    box_label = getattr(active_box, "label", "")
+            ctx["question"] = f"Masked Target Box: {box_label}" if box_label else "Image/PDF Occlusion Question"
+            ctx["answer"] = strip_html_tags(box_note) if box_note else "Check underlying image note."
+            ctx["card_notes"] = strip_html_tags(card.get("notes", "") or card.get("note", ""))
 
-    return ctx
+        return ctx
+    except Exception as err:
+        return {
+            "summary": "Card context extraction error",
+            "error": str(err),
+            "deck_name": deck_name or (card.get("deck_name", "") if isinstance(card, dict) else ""),
+            "question": strip_html_tags(card.get("question", "")) if isinstance(card, dict) else ""
+        }
 
 
 SOCRATIC_SYSTEM_PROMPT = """You are "Study Buddy" (सहपाठी), an ultra-smart, encouraging, and witty peer study partner helping the student prepare for India's premier government exams (SSC CGL, CHSL, MTS, CPO, NTPC, Railways).
@@ -370,9 +444,9 @@ class AICoachWorker(QThread):
                         self.key_switched.emit(curr_idx + 1, total_keys, reason_name)
                         continue
                     else:
-                        # If 503 on model, try silent fallback to gemini-3.6-flash
-                        if resp.status_code == 503 and model_name != "gemini-3.6-flash":
-                            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={current_api_key}"
+                        # If 503 on model, try silent fallback to FALLBACK_MODEL
+                        if resp.status_code == 503 and model_name != FALLBACK_MODEL:
+                            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/{FALLBACK_MODEL}:generateContent?key={current_api_key}"
                             resp2 = requests.post(fallback_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
                             if resp2.status_code == 200:
                                 data2 = resp2.json()

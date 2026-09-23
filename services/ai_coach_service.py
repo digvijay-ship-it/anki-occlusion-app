@@ -20,12 +20,27 @@ KEY_MODEL_NAME = "gemini_model_name"
 KEY_AUTO_LISTEN = "auto_listen_enabled"
 KEY_VOICE_LANG = "voice_language"
 KEY_AUTO_SPEAK = "auto_speak_enabled"
+KEY_CONTINUOUS_MODE = "continuous_voice_mode_enabled"
 KEY_TTS_VOICE = "tts_voice_name"
 KEY_TTS_SPEED = "tts_voice_speed"
 DEFAULT_TTS_VOICE = "hi-IN-MadhurNeural"
 
-DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 FALLBACK_MODEL = "gemini-2.5-flash"
+
+
+def _get_settings():
+    try:
+        import storage_paths
+        if hasattr(storage_paths, "is_running_tests") and storage_paths.is_running_tests():
+            import os
+            return QSettings(
+                os.path.join(storage_paths._get_test_temp_dir(), "test_ai_settings.ini"),
+                QSettings.IniFormat
+            )
+    except Exception:
+        pass
+    return QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
 
 
 def parse_api_keys(raw) -> list[str]:
@@ -43,7 +58,7 @@ def parse_api_keys(raw) -> list[str]:
         seen = set()
         for p in parts:
             cleaned = p.strip().strip("'\"")
-            if cleaned and cleaned not in seen:
+            if cleaned and "TEST_FAKE" not in cleaned.upper() and cleaned not in seen:
                 seen.add(cleaned)
                 keys.append(cleaned)
         return keys
@@ -54,13 +69,13 @@ def get_api_key_pool() -> list[str]:
         from services.secrets_manager import get_gemini_api_keys
         return get_gemini_api_keys()
     except Exception:
-        s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+        s = _get_settings()
         raw = s.value(KEY_API_KEY, "", type=str)
         return parse_api_keys(raw)
 
 
 def get_active_key_index() -> int:
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _get_settings()
     idx = s.value(KEY_ACTIVE_KEY_INDEX, 0, type=int)
     pool = get_api_key_pool()
     if not pool:
@@ -69,7 +84,7 @@ def get_active_key_index() -> int:
 
 
 def set_active_key_index(idx: int) -> int:
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _get_settings()
     pool = get_api_key_pool()
     if not pool:
         s.setValue(KEY_ACTIVE_KEY_INDEX, 0)
@@ -103,7 +118,7 @@ def cycle_next_key() -> tuple[int, int, str]:
 
 def get_ai_settings():
     pool = get_api_key_pool()
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _get_settings()
     raw_key = s.value(KEY_API_KEY, "", type=str)
     if not raw_key and pool:
         raw_key = "\n".join(pool)
@@ -113,6 +128,7 @@ def get_ai_settings():
     auto_listen = s.value(KEY_AUTO_LISTEN, False, type=bool)
     voice_lang = s.value(KEY_VOICE_LANG, "hi-IN", type=str)
     auto_speak = s.value(KEY_AUTO_SPEAK, True, type=bool)
+    continuous_mode = s.value(KEY_CONTINUOUS_MODE, True, type=bool)
     tts_voice = s.value(KEY_TTS_VOICE, DEFAULT_TTS_VOICE, type=str)
     tts_speed = s.value(KEY_TTS_SPEED, "+0%", type=str)
     return {
@@ -125,6 +141,7 @@ def get_ai_settings():
         "auto_listen": auto_listen,
         "voice_lang": voice_lang or "hi-IN",
         "auto_speak": auto_speak,
+        "continuous_mode": continuous_mode,
         "tts_voice": tts_voice or DEFAULT_TTS_VOICE,
         "tts_speed": tts_speed or "+0%",
     }
@@ -138,9 +155,10 @@ def save_ai_settings(
     active_key_index: int = None,
     auto_speak: bool = None,
     tts_voice: str = None,
-    tts_speed: str = None
+    tts_speed: str = None,
+    continuous_mode: bool = None
 ):
-    s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+    s = _get_settings()
     if api_key is not None:
         cleaned_key = str(api_key).strip()
         s.setValue(KEY_API_KEY, cleaned_key)
@@ -159,6 +177,8 @@ def save_ai_settings(
         s.setValue(KEY_ACTIVE_KEY_INDEX, int(active_key_index))
     if auto_speak is not None:
         s.setValue(KEY_AUTO_SPEAK, bool(auto_speak))
+    if continuous_mode is not None:
+        s.setValue(KEY_CONTINUOUS_MODE, bool(continuous_mode))
     if tts_voice is not None:
         s.setValue(KEY_TTS_VOICE, str(tts_voice).strip())
     if tts_speed is not None:
@@ -424,9 +444,9 @@ class AICoachWorker(QThread):
                         self.key_switched.emit(curr_idx + 1, total_keys, reason_name)
                         continue
                     else:
-                        # If 503 on model, try silent fallback to gemini-3.6-flash
-                        if resp.status_code == 503 and model_name != "gemini-3.6-flash":
-                            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={current_api_key}"
+                        # If 503 on model, try silent fallback to FALLBACK_MODEL
+                        if resp.status_code == 503 and model_name != FALLBACK_MODEL:
+                            fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/{FALLBACK_MODEL}:generateContent?key={current_api_key}"
                             resp2 = requests.post(fallback_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
                             if resp2.status_code == 200:
                                 data2 = resp2.json()

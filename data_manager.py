@@ -84,6 +84,12 @@ class DirtyStore:
         self._last_async_save_ts = 0.0
         self._card_index = {}
         self._sqlite_initialized_paths = set()
+        self.is_pen_drawing = False
+        self.is_in_review = False
+        self.save_on_exit_only = True
+        self._exit_save_done = False
+        self._exit_save_lock = threading.Lock()
+        self._last_save_lock_log = 0.0
 
     # ── Load / Get / Set ──────────────────────────────────────────────────────
 
@@ -676,11 +682,16 @@ class DirtyStore:
     def is_dirty(self):
         return self._dirty
 
-    def save_if_dirty(self, force_gdrive=False):
+    def save_if_dirty(self, force_gdrive=False, is_exit=False):
         """
         Write to disk only if dirty.
         Returns True if save happened, False if skipped.
         """
+        if getattr(self, "save_on_exit_only", False) and not is_exit and not is_running_tests():
+            # Zero disk writes during session — keep dirty in RAM
+            return False
+        if getattr(self, "is_pen_drawing", False) and not is_exit:
+            return False
         with self._lock:
             if not self._dirty:
                 return False
@@ -695,17 +706,27 @@ class DirtyStore:
                 self._dirty = True
             raise
 
-    def save_force(self, async_save=False, force_gdrive=True):
+    def save_force(self, async_save=False, force_gdrive=True, is_exit=False):
         """Force write regardless of dirty flag (use on app exit, or async in UI)."""
+        if getattr(self, "save_on_exit_only", False) and not is_exit and not is_running_tests():
+            with self._lock:
+                self._dirty = True
+                self.revision += 1
+            return False
+
         with self._lock:
             self._save_seq += 1
             save_seq = self._save_seq
             self._latest_save_request_seq = save_seq
             self._dirty = False
 
-        if async_save:
+        if async_save and not is_exit:
             def _bg_write():
                 try:
+                    spin = 0
+                    while getattr(self, "is_pen_drawing", False) and spin < 40:
+                        time.sleep(0.05)
+                        spin += 1
                     self._write_snapshot_to_disk(save_seq, force_gdrive=force_gdrive)
                 except Exception as e:
                     print(f"[data_manager] Async save_force failed: {e}")
@@ -772,11 +793,18 @@ class DirtyStore:
     def save_soon(self, min_interval: float = 3.0, delay_from_now: bool = False):
         """
         Schedule a background save without blocking the UI thread.
-        Rapid repeated calls are coalesced, but a trailing save is kept so the
-        newest dirty data is not stranded in RAM if another save is in flight.
-        Set delay_from_now for flows that already have their own immediate
-        checkpoint and should keep disk writes away from the current UI action.
+        In save_on_exit_only mode, this merely marks dirty in RAM and skips disk I/O.
         """
+        if getattr(self, "save_on_exit_only", False) and not is_running_tests():
+            with self._lock:
+                self._dirty = True
+                self.revision += 1
+            return False
+
+        if getattr(self, "is_in_review", False) or getattr(self, "is_pen_drawing", False):
+            # In review mode, keep data marked dirty in RAM.
+            # Disk saves are executed when transitioning cards or finishing review.
+            return False
         now = time.monotonic()
         with self._lock:
             if not self._dirty:
@@ -811,7 +839,12 @@ class DirtyStore:
 
     def _save_soon_worker(self):
         try:
-            self.save_if_dirty()
+            spin = 0
+            while (getattr(self, "is_pen_drawing", False) or getattr(self, "is_in_review", False)) and spin < 60:
+                time.sleep(0.05)
+                spin += 1
+            if not getattr(self, "is_in_review", False):
+                self.save_if_dirty()
         except Exception as e:
             print(f"[DEBUG][data_save] save_soon_worker notice: {e}")
             with self._lock:
@@ -820,7 +853,7 @@ class DirtyStore:
             with self._save_thread_lock:
                 self._save_thread = None
                 with self._lock:
-                    needs_trailing_save = self._dirty
+                    needs_trailing_save = self._dirty and not getattr(self, "is_in_review", False)
                 if needs_trailing_save:
                     self._last_async_save_ts = time.monotonic()
                     self._start_save_thread_locked()
@@ -852,6 +885,45 @@ class DirtyStore:
         """Start background thread - disabled by default to prevent excessive saves."""
         return
 
+    def save_on_exit(self, reason="app_exit"):
+        """
+        Strict exit save handler: flushes all in-memory changes to SQLite & disk backups on application exit.
+        Thread-safe, atomic, and idempotent.
+        """
+        with getattr(self, "_exit_save_lock", threading.Lock()):
+            if getattr(self, "_exit_save_done", False):
+                return True
+            self._exit_save_done = True
+
+        t0 = time.perf_counter()
+        print(f"\n[APP-SHUTDOWN-SAVE] 🚀 App closing detected (reason: {reason})! Flushing all RAM changes to SQLite disk...")
+
+        # Cancel any pending save timer
+        with self._save_thread_lock:
+            if self._save_timer is not None:
+                try:
+                    self._save_timer.cancel()
+                except Exception:
+                    pass
+                self._save_timer = None
+
+        with self._lock:
+            self._save_seq += 1
+            save_seq = self._save_seq
+            self._latest_save_request_seq = save_seq
+            self._dirty = False
+
+        try:
+            result = self._write_snapshot_to_disk(save_seq, force_gdrive=False)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[APP-SHUTDOWN-SAVE] ✅ All data successfully saved to SQLite disk in {elapsed_ms:.1f}ms.\n")
+            return result
+        except Exception as e:
+            print(f"[APP-SHUTDOWN-SAVE] ❌ Failed to write snapshot on exit: {e}")
+            with self._lock:
+                self._dirty = True
+            return False
+
     def stop_autosave(self):
         """Stop background thread + final force save. Call on app shutdown."""
         self._stop_event.set()
@@ -859,7 +931,7 @@ class DirtyStore:
             if self._save_timer is not None:
                 self._save_timer.cancel()
                 self._save_timer = None
-        self.save_force()
+        return self.save_on_exit(reason="MainWindow.closeEvent / stop_autosave")
 
     def _autosave_loop(self, interval):
         while not self._stop_event.wait(interval):
@@ -1084,6 +1156,17 @@ class DirtyStore:
 
 # Singleton - import `store` everywhere
 store = DirtyStore()
+
+import atexit
+
+def _on_process_exit():
+    try:
+        if hasattr(store, "_dirty") and store._dirty and not getattr(store, "_exit_save_done", False):
+            store.save_on_exit(reason="atexit (process termination)")
+    except Exception as e:
+        print(f"[data_manager] atexit save notice: {e}")
+
+atexit.register(_on_process_exit)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

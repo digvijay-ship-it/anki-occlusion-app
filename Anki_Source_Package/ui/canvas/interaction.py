@@ -47,7 +47,6 @@ class StrokeList(list):
 
 
 class CanvasInteractionMixin:
-    _STYLUS_SUPPRESS_WINDOW_S = 0.35
     _INK_MASK_TAP_THRESHOLD_S = 0.22
     _INK_MASK_DRAG_THRESHOLD_PX = 8
 
@@ -62,11 +61,7 @@ class CanvasInteractionMixin:
         return super().event(e)
 
     def tabletEvent(self, e):
-        # Track recent tablet/stylus activity so review ink can ignore the
-        # synthesized mouse events that often follow a pen drag on Windows.
         self._last_tablet_event_time = time.monotonic()
-        if e.type() == QEvent.TabletMove:
-            self._last_tablet_move_time = time.monotonic()
         if not self._handle_review_tablet_ink(e):
             e.ignore()
 
@@ -98,6 +93,10 @@ class CanvasInteractionMixin:
         pressure = self._tablet_pressure(e)
 
         if et == QEvent.TabletPress:
+            self._last_tablet_event_time = time.monotonic()
+            self._tablet_stroke_pts = 1
+            self._tablet_stroke_start_time = self._last_tablet_event_time
+            self._last_tablet_move_time = self._tablet_stroke_start_time
             self._last_tablet_pressure = pressure
             hit = self._hit_box(ip)
             if hit >= 0 and bool(e.modifiers() & Qt.ControlModifier):
@@ -115,7 +114,11 @@ class CanvasInteractionMixin:
             return True
 
         if et == QEvent.TabletMove:
+            self._last_tablet_event_time = time.monotonic()
             self._last_tablet_pressure = pressure
+            self._last_tablet_move_time = self._last_tablet_event_time
+            self._tablet_stroke_pts = getattr(self, "_tablet_stroke_pts", 0) + 1
+
             if self._ink_pending_mask_idx >= 0:
                 if self._start_pending_mask_ink_if_needed(sp, ip, input_kind="tablet"):
                     e.accept()
@@ -129,6 +132,8 @@ class CanvasInteractionMixin:
             return True
 
         if et == QEvent.TabletRelease:
+            self._last_tablet_event_time = time.monotonic()
+            self._last_tablet_release_time = self._last_tablet_event_time
             if self._ink_pending_mask_idx >= 0:
                 elapsed = time.monotonic() - float(self._ink_pending_press_time or 0.0)
                 hit = self._ink_pending_mask_idx
@@ -148,27 +153,23 @@ class CanvasInteractionMixin:
 
         return False
 
-    def _is_recent_stylus_mouse_event(self, e) -> bool:
+    def _should_discard_mouse_event(self, e) -> bool:
         if getattr(self, "_mode", None) != "review":
             return False
-        last_event = float(getattr(self, "_last_tablet_event_time", 0.0) or 0.0)
-        last_move = float(getattr(self, "_last_tablet_move_time", 0.0) or 0.0)
-        now = time.monotonic()
 
-        # If tablet moves are actively firing (or just finished), suppress all mouse events
-        # within the window to avoid echo duplicate strokes.
-        if (now - last_move) < self._STYLUS_SUPPRESS_WINDOW_S:
+        # 1. If a tablet stroke is actively drawing, ignore any mouse events
+        if getattr(self, "_ink_current", None) and getattr(self, "_ink_input_kind", None) == "tablet":
             return True
 
-        # If a tablet event (like TabletPress) just occurred but no moves did,
-        # only suppress synthesized events briefly (within 0.1s) to allow fallback.
-        if (now - last_event) < 0.1:
-            try:
-                source = e.source()
-            except Exception:
-                source = None
-            if source != Qt.MouseEventNotSynthesized:
-                return True
+        now = time.monotonic()
+        last_event = float(getattr(self, "_last_tablet_event_time", 0.0) or 0.0)
+        last_move = float(getattr(self, "_last_tablet_move_time", 0.0) or 0.0)
+        last_rel = float(getattr(self, "_last_tablet_release_time", 0.0) or 0.0)
+
+        # 2. If tablet events are actively firing or just completed,
+        # suppress synthesized or echo mouse events within 0.25s
+        if (now - last_event) < 0.25 or (now - last_move) < 0.25 or (now - last_rel) < 0.25:
+            return True
 
         return False
 
@@ -479,6 +480,13 @@ class CanvasInteractionMixin:
         self._ink_current = [self._ink_pen_color, ip]
         self._ink_input_kind = input_kind
         
+        # Signal store to pause non-urgent background saves during active drawing
+        try:
+            from data_manager import store
+            store.is_pen_drawing = True
+        except Exception:
+            pass
+
         # Reset incremental path caches
         self._ink_current_stable_path = QPainterPath()
         self._ink_current_path = QPainterPath()
@@ -509,11 +517,13 @@ class CanvasInteractionMixin:
         calc_t0 = time.perf_counter()
         pressure = float(getattr(self, "_last_tablet_pressure", 1.0) or 1.0)
         
-        # Distance filter (ignore micro-jitter < 1.5px)
+        # Adaptive distance filter: for stylus/tablet, 0.25 sq px (0.5px) preserves small dots, accents & exponents
         last_ip = self._ink_current[-1]
         dx = ip.x() - last_ip.x()
         dy = ip.y() - last_ip.y()
-        if dx * dx + dy * dy < 2.25:  # 1.5 pixels threshold -> squared distance is 2.25
+        dist_sq = dx * dx + dy * dy
+        threshold_sq = 0.25 if getattr(self, "_ink_input_kind", "mouse") == "tablet" else 1.0
+        if dist_sq < threshold_sq:
             try:
                 from services.pen_profiler import pen_profiler
                 pen_profiler.record_move(ip.x(), ip.y(), pressure=pressure, accepted=False)
@@ -568,6 +578,18 @@ class CanvasInteractionMixin:
             p_curr = p_new
             mid = QPointF((p_prev.x() + p_curr.x()) / 2.0, (p_prev.y() + p_curr.y()) / 2.0)
             
+            # Sharp corner detection: keep vertex crisp if angle > ~75 deg
+            p_prev_prev = QPointF(self._ink_current[-3].x() * sc, self._ink_current[-3].y() * sc)
+            v1_x = p_prev.x() - p_prev_prev.x()
+            v1_y = p_prev.y() - p_prev_prev.y()
+            v2_x = p_curr.x() - p_prev.x()
+            v2_y = p_curr.y() - p_prev.y()
+            l1 = math.hypot(v1_x, v1_y)
+            l2 = math.hypot(v2_x, v2_y)
+            is_sharp = False
+            if l1 > 1e-4 and l2 > 1e-4 and ((v1_x * v2_x + v1_y * v2_y) / (l1 * l2)) < 0.25:
+                is_sharp = True
+
             seg = QPainterPath()
             seg.moveTo(mid)
             seg.lineTo(p_curr)
@@ -577,7 +599,11 @@ class CanvasInteractionMixin:
             ys = [self._ink_last_mid.y(), p_prev.y(), mid.y(), p_curr.y()]
             self._ink_last_mid = mid
             
-            self._ink_current_stable_path.quadTo(p_prev, mid)
+            if is_sharp:
+                self._ink_current_stable_path.lineTo(p_prev)
+                self._ink_current_stable_path.lineTo(mid)
+            else:
+                self._ink_current_stable_path.quadTo(p_prev, mid)
             self._ink_current_path = seg
             
             path_calc_ms = (time.perf_counter() - calc_t0) * 1000.0
@@ -599,6 +625,13 @@ class CanvasInteractionMixin:
         self.update()
 
     def _ink_release(self):
+        # Clear drawing guard
+        try:
+            from data_manager import store
+            store.is_pen_drawing = False
+        except Exception:
+            pass
+
         try:
             from services.pen_profiler import pen_profiler
             last_pt = self._ink_current[-1] if len(self._ink_current) >= 2 else QPointF(0, 0)
@@ -701,10 +734,10 @@ class CanvasInteractionMixin:
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
         mods = e.modifiers()
-        stylus_like = self._is_recent_stylus_mouse_event(e)
+        stylus_discard = self._should_discard_mouse_event(e)
 
         if self._mode == "review" and e.button() == Qt.LeftButton:
-            if self._ink_active and stylus_like:
+            if self._ink_active and stylus_discard:
                 e.accept()
                 return
             if self._ink_active:
@@ -721,7 +754,7 @@ class CanvasInteractionMixin:
                     self._ink_erasing = True
                     self._ink_erase_at(ip)
                 else:
-                    self._ink_press(ip)
+                    self._ink_press(ip, input_kind="mouse")
                 e.accept()
                 return
             hit = self._hit_box(ip)
@@ -792,8 +825,8 @@ class CanvasInteractionMixin:
     def mouseMoveEvent(self, e):
         sp = QPointF(e.pos())
         ip = self._ip(e.pos())
-        stylus_like = self._is_recent_stylus_mouse_event(e)
-        if self._mode == "review" and self._ink_active and stylus_like:
+        stylus_discard = self._should_discard_mouse_event(e)
+        if self._mode == "review" and self._ink_active and stylus_discard:
             e.accept()
             return
         if (
@@ -818,12 +851,6 @@ class CanvasInteractionMixin:
             and self._ink_active
             and self._ink_current
         ):
-            # Fallback to mouse drawing if we are in tablet mode but not receiving tablet moves
-            if getattr(self, "_ink_input_kind", None) == "tablet":
-                last_move = float(getattr(self, "_last_tablet_move_time", 0.0) or 0.0)
-                if (time.monotonic() - last_move) > 0.1:
-                    self._ink_input_kind = "mouse"
-
             if getattr(self, "_ink_input_kind", None) == "mouse":
                 self._ink_move(ip)
                 e.accept()
@@ -900,12 +927,12 @@ class CanvasInteractionMixin:
         self._update_cursor_for_position(e.pos())
 
     def mouseReleaseEvent(self, e):
-        stylus_like = self._is_recent_stylus_mouse_event(e)
+        stylus_discard = self._should_discard_mouse_event(e)
         if (
             self._mode == "review"
             and self._ink_active
             and e.button() == Qt.LeftButton
-            and stylus_like
+            and stylus_discard
         ):
             e.accept()
             return

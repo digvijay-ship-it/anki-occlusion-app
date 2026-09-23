@@ -150,6 +150,7 @@ class LRUPageCache:
         self._pending_images = {}
         self._write_tokens = {}
         self._state_lock = threading.RLock()
+        self._disk_writes_paused = False
         # ── Async disk write queue ────────────────────────────────────────────
         # put() enqueues here; daemon thread drains it — never blocks callers.
         self._disk_write_queue = []
@@ -160,12 +161,23 @@ class LRUPageCache:
         )
         self._disk_writer.start()
 
+    def pause_disk_writes(self):
+        """Pause background disk writing (e.g. during active review sessions)."""
+        self._disk_writes_paused = True
+
+    def resume_disk_writes(self):
+        """Resume background disk writing."""
+        self._disk_writes_paused = False
+        self._disk_write_event.set()
+
     def _disk_writer_loop(self):
         """Daemon thread: drains async disk write queue."""
         while True:
             self._disk_write_event.wait()
             self._disk_write_event.clear()
             while True:
+                if getattr(self, "_disk_writes_paused", False):
+                    break
                 with self._disk_write_lock:
                     if not self._disk_write_queue:
                         break

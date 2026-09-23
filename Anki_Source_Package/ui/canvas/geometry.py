@@ -61,10 +61,23 @@ def smooth_points_to_path(pts, scale=1.0, offset=None):
     path.lineTo(first_mid)
 
     for i in range(1, len(spts) - 1):
+        prev = spts[i - 1]
         curr = spts[i]
         nxt = spts[i + 1]
         mid = QPointF((curr.x() + nxt.x()) / 2.0, (curr.y() + nxt.y()) / 2.0)
-        path.quadTo(curr, mid)
+
+        # Detect sharp corner at curr (e.g. angle > ~75 deg)
+        v1_x = curr.x() - prev.x()
+        v1_y = curr.y() - prev.y()
+        v2_x = nxt.x() - curr.x()
+        v2_y = nxt.y() - curr.y()
+        l1 = math.hypot(v1_x, v1_y)
+        l2 = math.hypot(v2_x, v2_y)
+        if l1 > 1e-4 and l2 > 1e-4 and ((v1_x * v2_x + v1_y * v2_y) / (l1 * l2)) < 0.25:
+            path.lineTo(curr)
+            path.lineTo(mid)
+        else:
+            path.quadTo(curr, mid)
 
     path.lineTo(spts[-1])
     return path

@@ -99,10 +99,18 @@ class GDriveService:
         self._session = None
         import queue
         self._upload_queue = queue.Queue()
-        self._uploader_thread = threading.Thread(
-            target=self._uploader_worker_loop, daemon=True, name="GDrive-QueueUploader"
-        )
-        self._uploader_thread.start()
+        self._uploader_thread = None
+        if self.is_linked():
+            self._ensure_uploader_thread()
+
+    def _ensure_uploader_thread(self):
+        if not self.is_linked():
+            return
+        if self._uploader_thread is None or not self._uploader_thread.is_alive():
+            self._uploader_thread = threading.Thread(
+                target=self._uploader_worker_loop, daemon=True, name="GDrive-QueueUploader"
+            )
+            self._uploader_thread.start()
 
     def _get_session(self):
         if not hasattr(self, "_session") or self._session is None:
@@ -874,6 +882,7 @@ class GDriveService:
         """Asynchronously upload a newly added PDF or image in the background."""
         if not self.is_linked():
             return
+        self._ensure_uploader_thread()
         self._upload_queue.put((local_file_path, kind))
 
     def _uploader_worker_loop(self):

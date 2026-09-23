@@ -82,10 +82,10 @@ class TestAICoachService(unittest.TestCase):
         self.assertIn("Declared by the President.", ctx["key_points"])
 
     def test_save_and_get_ai_settings(self):
-        save_ai_settings(api_key="test_fake_key_123", model_name="gemini-2.0-flash", auto_listen=True, voice_lang="hi-IN")
+        save_ai_settings(api_key="AIzaSyMockKey1", model_name="gemini-3.8-flash", auto_listen=True, voice_lang="hi-IN")
         cfg = get_ai_settings()
-        self.assertEqual(cfg["api_key"], "test_fake_key_123")
-        self.assertEqual(cfg["model_name"], "gemini-2.0-flash")
+        self.assertEqual(cfg["api_key"], "AIzaSyMockKey1")
+        self.assertEqual(cfg["model_name"], "gemini-3.8-flash")
         self.assertTrue(cfg["auto_listen"])
         self.assertEqual(cfg["voice_lang"], "hi-IN")
 
@@ -104,7 +104,7 @@ class TestAICoachService(unittest.TestCase):
         }
         mock_post.return_value = mock_resp
 
-        save_ai_settings(api_key="valid_dummy_key")
+        save_ai_settings(api_key="AIzaSyMockKey2")
         ctx = {"question": "Test Question", "answer": "Test Answer"}
         worker = AICoachWorker(ctx, user_message="आर्टिकल 360", prompt_mode="recall")
 
@@ -213,6 +213,28 @@ class TestAICoachService(unittest.TestCase):
         self.assertTrue(drawer.isVisible())
         drawer.toggle_drawer()
         self.assertFalse(drawer.isVisible())
+
+    def test_continuous_mode_toggle_and_voice_config(self):
+        from services.voice_input_service import VoiceInputWorker
+        worker = VoiceInputWorker(language="hi-IN", phrase_limit=60, pause_threshold=2.0)
+        self.assertEqual(worker.pause_threshold, 2.0)
+        self.assertEqual(worker.phrase_limit, 60)
+        self.assertEqual(worker.language, "hi-IN")
+
+        parent_w = QWidget()
+        parent_w.resize(1000, 700)
+        drawer = AIBuddyDrawer(parent_w, parent=parent_w)
+        self.assertFalse(drawer._continuous_active)
+
+        # Test toggle continuous mode ON
+        drawer.toggle_continuous_mode(True)
+        self.assertTrue(drawer._continuous_active)
+        self.assertIn("ON", drawer.btn_live_mode.text())
+
+        # Test toggle continuous mode OFF
+        drawer.toggle_continuous_mode(False)
+        self.assertFalse(drawer._continuous_active)
+        self.assertIn("लाइव बातचीत", drawer.btn_live_mode.text())
 
 
 if __name__ == "__main__":

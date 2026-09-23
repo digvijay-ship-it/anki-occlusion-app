@@ -27,6 +27,21 @@ class TestAICoachService(unittest.TestCase):
         self.assertNotIn("<p>", res)
         self.assertNotIn("<b>", res)
 
+        # Test list input (the root cause of the previous TypeError)
+        list_input = ["<p>Point 1</p>", "<b>Point 2</b>", "Point 3"]
+        list_res = strip_html_tags(list_input)
+        self.assertIn("Point 1", list_res)
+        self.assertIn("Point 2", list_res)
+        self.assertIn("Point 3", list_res)
+        self.assertNotIn("<p>", list_res)
+
+        # Test dict and non-string inputs
+        dict_input = {"note1": "<b>Detail A</b>", "note2": "Detail B"}
+        dict_res = strip_html_tags(dict_input)
+        self.assertIn("note1: Detail A", dict_res)
+        self.assertEqual(strip_html_tags(12345), "12345")
+        self.assertEqual(strip_html_tags(None), "")
+
     def test_build_card_context_text_card(self):
         card = {
             "card_type": "text",
@@ -56,20 +71,21 @@ class TestAICoachService(unittest.TestCase):
             "correct_option": "C",
             "solution_data": {
                 "statement": "Article 360 deals with Financial Emergency in India.",
-                "key_points": "Never invoked so far in India."
+                "key_points": ["Never invoked so far in India.", "Declared by the President."]
             }
         }
         ctx = build_card_context(card, deck_name="Polity")
         self.assertEqual(ctx["card_type"], "mcq")
         self.assertEqual(ctx["correct_answer"], "C")
         self.assertEqual(len(ctx["options"]), 4)
-        self.assertIn("Never invoked", ctx["key_points"])
+        self.assertIn("Never invoked so far in India.", ctx["key_points"])
+        self.assertIn("Declared by the President.", ctx["key_points"])
 
     def test_save_and_get_ai_settings(self):
-        save_ai_settings(api_key="test_fake_key_123", model_name="gemini-2.0-flash", auto_listen=True, voice_lang="hi-IN")
+        save_ai_settings(api_key="AIzaSyMockKey1", model_name="gemini-3.8-flash", auto_listen=True, voice_lang="hi-IN")
         cfg = get_ai_settings()
-        self.assertEqual(cfg["api_key"], "test_fake_key_123")
-        self.assertEqual(cfg["model_name"], "gemini-2.0-flash")
+        self.assertEqual(cfg["api_key"], "AIzaSyMockKey1")
+        self.assertEqual(cfg["model_name"], "gemini-3.8-flash")
         self.assertTrue(cfg["auto_listen"])
         self.assertEqual(cfg["voice_lang"], "hi-IN")
 
@@ -88,7 +104,7 @@ class TestAICoachService(unittest.TestCase):
         }
         mock_post.return_value = mock_resp
 
-        save_ai_settings(api_key="valid_dummy_key")
+        save_ai_settings(api_key="AIzaSyMockKey2")
         ctx = {"question": "Test Question", "answer": "Test Answer"}
         worker = AICoachWorker(ctx, user_message="आर्टिकल 360", prompt_mode="recall")
 
@@ -197,6 +213,28 @@ class TestAICoachService(unittest.TestCase):
         self.assertTrue(drawer.isVisible())
         drawer.toggle_drawer()
         self.assertFalse(drawer.isVisible())
+
+    def test_continuous_mode_toggle_and_voice_config(self):
+        from services.voice_input_service import VoiceInputWorker
+        worker = VoiceInputWorker(language="hi-IN", phrase_limit=60, pause_threshold=2.0)
+        self.assertEqual(worker.pause_threshold, 2.0)
+        self.assertEqual(worker.phrase_limit, 60)
+        self.assertEqual(worker.language, "hi-IN")
+
+        parent_w = QWidget()
+        parent_w.resize(1000, 700)
+        drawer = AIBuddyDrawer(parent_w, parent=parent_w)
+        self.assertFalse(drawer._continuous_active)
+
+        # Test toggle continuous mode ON
+        drawer.toggle_continuous_mode(True)
+        self.assertTrue(drawer._continuous_active)
+        self.assertIn("ON", drawer.btn_live_mode.text())
+
+        # Test toggle continuous mode OFF
+        drawer.toggle_continuous_mode(False)
+        self.assertFalse(drawer._continuous_active)
+        self.assertIn("लाइव बातचीत", drawer.btn_live_mode.text())
 
 
 if __name__ == "__main__":

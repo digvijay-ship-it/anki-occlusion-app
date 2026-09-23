@@ -901,6 +901,16 @@ class OcclusionCanvasTests(unittest.TestCase):
         # Verify that insert_qimage was called with the clipboard's image
         editor.insert_qimage.assert_called_once_with(mock_image)
 
+    def test_rich_text_edit_can_insert_from_mimedata_image(self):
+        from editor_ui import RichTextEdit
+        from PyQt5.QtCore import QMimeData
+        from PyQt5.QtGui import QImage
+        
+        editor = RichTextEdit()
+        mimeData = QMimeData()
+        mimeData.setImageData(QImage(10, 10, QImage.Format_RGB32))
+        self.assertTrue(editor.canInsertFromMimeData(mimeData))
+
     def test_rich_text_edit_key_press_event_shortcuts(self):
         from editor_ui import RichTextEdit
         from PyQt5.QtGui import QKeyEvent, QKeySequence
@@ -919,6 +929,80 @@ class OcclusionCanvasTests(unittest.TestCase):
         event_cut = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_X, Qt.ControlModifier)
         editor.keyPressEvent(event_cut)
         editor.cut.assert_called_once()
+
+    def test_rich_text_edit_copy_image_no_obj_char_on_clipboard(self):
+        from editor_ui import RichTextEdit
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtGui import QImage, QPixmap
+        import tempfile, os
+
+        editor = RichTextEdit()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            temp_path = tf.name
+        try:
+            real_img = QImage(20, 20, QImage.Format_RGB32)
+            real_img.fill(0x00FF00)
+            real_img.save(temp_path, "PNG")
+
+            editor.setHtml(f'<p><img src="{temp_path}" /></p>')
+            c = editor.textCursor()
+            c.select(c.Document)
+            editor.setTextCursor(c)
+
+            editor.copy()
+
+            cb = QApplication.clipboard()
+            md = cb.mimeData()
+            self.assertTrue(md.hasImage())
+            self.assertFalse(md.hasText())
+            self.assertNotIn('\ufffc', md.text())
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+    def test_rich_text_edit_paste_raw_obj_char_filtered(self):
+        from editor_ui import RichTextEdit
+        from PyQt5.QtCore import QMimeData
+
+        editor = RichTextEdit()
+        mimeData = QMimeData()
+        mimeData.setText("\ufffc")
+
+        with patch("editor_ui.QTextEdit.insertFromMimeData") as mock_super_insert:
+            editor.insertFromMimeData(mimeData)
+            mock_super_insert.assert_not_called()
+
+    def test_rich_text_edit_paste_html_img(self):
+        from editor_ui import RichTextEdit
+        from PyQt5.QtCore import QMimeData
+        from PyQt5.QtGui import QImage
+        import tempfile, os
+
+        editor = RichTextEdit()
+        editor.insert_qimage = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            temp_path = tf.name
+        try:
+            real_img = QImage(20, 20, QImage.Format_RGB32)
+            real_img.fill(0x0000FF)
+            real_img.save(temp_path, "PNG")
+
+            mimeData = QMimeData()
+            mimeData.setHtml(f'<html><body><img src="{temp_path}" /></body></html>')
+
+            editor.insertFromMimeData(mimeData)
+            editor.insert_qimage.assert_called_once()
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
 
 
 class ZoomableScrollAreaTests(unittest.TestCase):

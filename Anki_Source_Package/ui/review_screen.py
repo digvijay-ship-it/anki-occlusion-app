@@ -2145,7 +2145,8 @@ class ReviewScreen(QWidget):
 
     def _active_queue_count(self):
         try:
-            if getattr(self, "is_practice", False):
+            d = getattr(self, "__dict__", {})
+            if d.get("is_practice", False) or d.get("is_new_only", False):
                 return max(0, len(self._items) - self._idx)
             due_c = sum(1 for _, _, sm2 in self._items[self._idx:] if is_due_today(sm2))
             if due_c > 0:
@@ -2668,6 +2669,19 @@ class ReviewScreen(QWidget):
         else:
             self._load_item()
         self._review_profile_log("init_complete", items=len(self._items))
+
+        # Zero Pen Lag: silence background store saves and pause disk caching during review
+        try:
+            from data_manager import store
+            store.is_in_review = True
+        except Exception:
+            pass
+
+        try:
+            from cache_manager import PAGE_CACHE
+            PAGE_CACHE.pause_disk_writes()
+        except Exception:
+            pass
 
     def _on_ink_active_changed(self):
         if not hasattr(self, "canvas") or self.canvas is None:
@@ -3260,6 +3274,38 @@ class ReviewScreen(QWidget):
             pass
         return None
 
+    def _get_current_card_timer_str(self) -> str:
+        secs = 0
+        try:
+            st = getattr(self, "_stimer", None)
+            if st is not None:
+                if hasattr(st, "get_current_mask_seconds"):
+                    secs = st.get_current_mask_seconds()
+                if not secs and hasattr(st, "_card_visit_elapsed"):
+                    secs = getattr(st, "_card_visit_elapsed", 0)
+        except Exception:
+            pass
+
+        h, rem = divmod(max(0, int(secs)), 3600)
+        m, s = divmod(rem, 60)
+        if h > 0:
+            return f"⏱ {h}:{m:02d}:{s:02d}"
+        return f"⏱ {m:02d}:{s:02d}"
+
+    def _get_current_deck_name(self) -> str:
+        try:
+            if hasattr(self, "_items") and hasattr(self, "_idx") and 0 <= self._idx < len(self._items):
+                card = self._items[self._idx][0]
+                if hasattr(self, "_find_card_deck"):
+                    deck = self._find_card_deck(card)
+                    if isinstance(deck, dict) and deck.get("name"):
+                        return deck.get("name")
+            if hasattr(self, "deck") and isinstance(self.deck, dict) and self.deck.get("name"):
+                return self.deck.get("name")
+        except Exception:
+            pass
+        return ""
+
     def _save_review_ink_to_note(self, clear_ink=True):
         from PyQt5.QtCore import QSize
         from PyQt5.QtWidgets import QDialog, QApplication
@@ -3343,7 +3389,14 @@ class ReviewScreen(QWidget):
             px = render_cropped_strokes(ink_strokes, crop_rect, ink_width)
             question_px = self._get_current_question_pixmap()
             if question_px is not None and isinstance(question_px, QPixmap) and not question_px.isNull():
-                px = combine_question_and_ink_pixmaps(question_px, px)
+                timer_str = self._get_current_card_timer_str()
+                deck_name = self._get_current_deck_name()
+                px = combine_question_and_ink_pixmaps(
+                    question_px,
+                    px,
+                    timer_text=timer_str,
+                    title_text=deck_name
+                )
                 has_combined = True
         else:
             dialog = CropInkDialog(
@@ -4107,6 +4160,26 @@ class ReviewScreen(QWidget):
             except Exception:
                 pass
             self._target_toast_banner = None
+
+        # Reset review mode flags and resume background disk writes
+        try:
+            from data_manager import store
+            store.is_in_review = False
+            store.save_force(async_save=True)
+        except Exception:
+            pass
+
+        try:
+            from cache_manager import PAGE_CACHE
+            PAGE_CACHE.resume_disk_writes()
+        except Exception:
+            pass
+
+        try:
+            from perf_utils import flush_process_memory
+            flush_process_memory("ReviewScreen Closed")
+        except Exception:
+            pass
 
         super().closeEvent(e)
 
@@ -5451,10 +5524,35 @@ class ReviewScreen(QWidget):
             e.accept()
             return
 
+        # Alt+L toggle Live Continuous Conversation for AI Study Buddy
+        if key == Qt.Key_L and (mods & Qt.AltModifier):
+            if getattr(self, "_ai_buddy_drawer", None) is not None:
+                if not self._ai_buddy_drawer.isVisible():
+                    self._ai_buddy_drawer.open_drawer()
+                self._ai_buddy_drawer.toggle_continuous_mode()
+                e.accept()
+                return
+
+        # Alt+V voice input for AI Study Buddy
+        if key == Qt.Key_V and (mods & Qt.AltModifier):
+            if getattr(self, "_ai_buddy_drawer", None) is not None:
+                if not self._ai_buddy_drawer.isVisible():
+                    self._ai_buddy_drawer.open_drawer()
+                self._ai_buddy_drawer._toggle_voice_input()
+                e.accept()
+                return
+
         # Alt+K cycle active Gemini API key
         if key == Qt.Key_K and (mods & Qt.AltModifier):
             if getattr(self, "_ai_buddy_drawer", None) is not None:
                 self._ai_buddy_drawer.cycle_api_key()
+                e.accept()
+                return
+
+        # Alt+S toggle AI voice speech / stop speech
+        if key == Qt.Key_S and (mods & Qt.AltModifier):
+            if getattr(self, "_ai_buddy_drawer", None) is not None:
+                self._ai_buddy_drawer._toggle_auto_speak()
                 e.accept()
                 return
 
@@ -9471,63 +9569,37 @@ class ReviewScreen(QWidget):
                 self.setFocus()
                 return
 
-            # ── 2b. Review always stays queue-first lazy, even if the disk cache
-            #        already has every page. We do not hydrate the whole PDF into
-            #        the review canvas upfront anymore.
-            total_pages = get_pdf_page_count(path)
+            # ── 2b. Eager Full-Document Loading (No Lazy Pop-in, Zero Writing Stutter) ──
+            total_pages = get_pdf_page_count(path) or 1
             self._pdf_render_zoom = choose_pdf_render_zoom(total_pages)
-            previous_zoom = PAGE_CACHE.get_render_zoom(path)
-            profile_t0 = time.perf_counter()
-            cached_before = (
-                PAGE_CACHE.cached_page_count(path, total_pages)
-                if hasattr(PAGE_CACHE, "cached_page_count")
-                else "?"
-            )
-            profile_reset = ensure_pdf_cache_profile(path, self._pdf_render_zoom)
-            cached_after = (
-                PAGE_CACHE.cached_page_count(path, total_pages)
-                if hasattr(PAGE_CACHE, "cached_page_count")
-                else "?"
-            )
-            profile_ms = (time.perf_counter() - profile_t0) * 1000.0
-            self._review_profile_log(
-                "pdf_profile",
-                file=fname,
-                pages=total_pages,
-                zoom=self._pdf_render_zoom,
-                cached_before=f"{cached_before}/{total_pages}",
-                cached_after=f"{cached_after}/{total_pages}",
-                reset=profile_reset,
-                elapsed=f"{(time.perf_counter() - reload_t0) * 1000:.1f}ms",
-            )
-            perf_log(
-                "review_pdf_profile",
-                file=fname,
-                pages=total_pages,
-                zoom=self._pdf_render_zoom,
-                previous_zoom=previous_zoom,
-                reset_cache=profile_reset,
-                cached_before=cached_before,
-                cached_after=cached_after,
-                profile_ms=round(profile_ms, 3),
-                load_item_ms=round((time.perf_counter() - reload_t0) * 1000.0, 3),
-            )
-            self._pdf_quality_debug(
-                "profile",
-                pages=total_pages,
-                zoom=self._pdf_render_zoom,
-                reset_cache=profile_reset,
-            )
+            ensure_pdf_cache_profile(path, self._pdf_render_zoom)
 
-            # ── 2c. NEW LAZY PATH — skeleton first ────────────────────────────
-            self._pending_skeleton_result = {
-                "card": card,
-                "box_idx": box_idx,
-                "clean_pages": {},
-                "path": path,
-                "t_start": t_start,
-            }
-            self._start_review_skeleton_thread(path)
+            # Fast path: If all pages are already in RAM cache, load instantly (0ms)
+            cached_pages = []
+            all_cached = True
+            for pn in range(total_pages):
+                pg = PAGE_CACHE.get(path, pn, ram_only=True)
+                if pg is None or pg.isNull():
+                    all_cached = False
+                    break
+                cached_pages.append(pg)
+
+            if all_cached and cached_pages:
+                self._canvas_pdf_path = path
+                self.canvas._current_pdf_path = path
+                self._apply_canvas_pages(card, box_idx, cached_pages)
+                self._review_canvas_real_pages = set(range(len(cached_pages)))
+                self._review_render_inflight_pages.clear()
+                self._update_review_page_nav_ui()
+                self.canvas._show_toast(f"✅ PDF ready — {len(cached_pages)} pages")
+                self._show_overlay(self._reveal_bar)
+                self._rating_frame.hide()
+                self.setFocus()
+                return
+
+            # Eagerly load all document pages upfront into RAM so the user has
+            # zero background interruptions, zero lazy skeleton pops, and zero writing lag.
+            self._start_review_pdf_thread(card, box_idx)
             return
 
         # ── 3. FALLBACK — no image, no pdf ────────────────────────────────────
@@ -11053,6 +11125,20 @@ class ReviewScreen(QWidget):
             from ui.review.summary_dialog import ReviewSessionSummaryDialog
             dialog = ReviewSessionSummaryDialog(self)
             dialog.exec_()
+        # Reset review mode flags and resume background disk writes
+        try:
+            from data_manager import store
+            store.is_in_review = False
+            store.save_force(async_save=True)
+        except Exception:
+            pass
+
+        try:
+            from cache_manager import PAGE_CACHE
+            PAGE_CACHE.resume_disk_writes()
+        except Exception:
+            pass
+
         self.finished.emit()
 
     def _show_waiting_state(self, wait_ms: int, pending_count: int):

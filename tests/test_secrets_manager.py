@@ -14,7 +14,7 @@ import storage_paths
 from services.secrets_manager import (
     parse_api_keys, get_secrets_file_path, load_secrets, save_secrets,
     get_gemini_api_keys, save_gemini_api_keys, get_gdrive_secrets, save_gdrive_secrets,
-    SETTINGS_GROUP, SETTINGS_SECTION, KEY_API_KEY
+    SETTINGS_GROUP, SETTINGS_SECTION, KEY_API_KEY, _settings
 )
 
 
@@ -29,7 +29,7 @@ class TestSecretsManager(unittest.TestCase):
             except Exception:
                 pass
         # Clean test QSettings
-        s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+        s = _settings()
         s.remove(KEY_API_KEY)
 
     def tearDown(self):
@@ -39,7 +39,7 @@ class TestSecretsManager(unittest.TestCase):
                 os.remove(path)
             except Exception:
                 pass
-        s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+        s = _settings()
         s.remove(KEY_API_KEY)
 
     def test_parse_api_keys(self):
@@ -82,7 +82,7 @@ class TestSecretsManager(unittest.TestCase):
 
     def test_get_gemini_api_keys_fallback_to_qsettings(self):
         # With empty secrets.json, falls back to QSettings
-        s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+        s = _settings()
         s.setValue(KEY_API_KEY, "KEY_FROM_SETTINGS")
         keys = get_gemini_api_keys()
         self.assertEqual(keys, ["KEY_FROM_SETTINGS"])
@@ -99,7 +99,7 @@ class TestSecretsManager(unittest.TestCase):
         loaded = load_secrets()
         self.assertEqual(loaded["gemini_api_keys"], ["SYNC_KEY_1", "SYNC_KEY_2"])
         # Check QSettings
-        s = QSettings(SETTINGS_GROUP, SETTINGS_SECTION)
+        s = _settings()
         self.assertIn("SYNC_KEY_1", s.value(KEY_API_KEY, "", type=str))
 
     def test_gdrive_secrets_load_and_save(self):

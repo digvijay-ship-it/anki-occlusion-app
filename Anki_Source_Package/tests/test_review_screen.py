@@ -361,6 +361,7 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
         screen._stop_skeleton_thread = MagicMock()
         screen._pdf_watcher = MagicMock()
         screen._start_review_skeleton_thread = MagicMock()
+        screen._start_review_pdf_thread = MagicMock()
 
         card = {
             "card_type": "occlusion",
@@ -375,6 +376,7 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
 
             screen._reload_current_canvas()
             screen._pdf_watcher.watch_pdf.assert_called_once_with("test_pdf.pdf")
+            screen._start_review_pdf_thread.assert_called_once_with(card, 0)
 
     def test_queue_drawer_locked_keeps_queue_visible(self):
         screen = ReviewScreen.__new__(ReviewScreen)
@@ -3019,6 +3021,53 @@ class UniqueCardProgressTrackingTests(unittest.TestCase):
         self.assertEqual(combine_question_and_ink_pixmaps(q_px, None), q_px)
         self.assertTrue(combine_question_and_ink_pixmaps(None, None).isNull())
 
+        # Timer and Title Header tests
+        combined_with_timer = combine_question_and_ink_pixmaps(
+            q_px, ink_px,
+            timer_text="01:24",
+            title_text="Mathematics CHSL"
+        )
+        self.assertFalse(combined_with_timer.isNull())
+        self.assertEqual(combined_with_timer.width(), 762)
+        # Height: base 232 + 42px header = 274
+        self.assertEqual(combined_with_timer.height(), 274)
+
+        # Vertical layout with timer
+        combined_v_timer = combine_question_and_ink_pixmaps(
+            q_px, ink_px,
+            orientation="vertical",
+            timer_text="⏱ 00:45"
+        )
+        self.assertFalse(combined_v_timer.isNull())
+        self.assertEqual(combined_v_timer.width(), 432)
+        # Height: base 412 + 42px header = 454
+        self.assertEqual(combined_v_timer.height(), 454)
+
+    def test_get_current_card_timer_str(self):
+        from unittest.mock import MagicMock
+        from ui.review_screen import ReviewScreen
+
+        screen = ReviewScreen.__new__(ReviewScreen)
+
+        # 1. No timer attached -> default 00:00
+        screen._stimer = None
+        self.assertEqual(screen._get_current_card_timer_str(), "⏱ 00:00")
+
+        # 2. Timer with mask seconds
+        mock_stimer = MagicMock()
+        mock_stimer.get_current_mask_seconds.return_value = 84
+        screen._stimer = mock_stimer
+        self.assertEqual(screen._get_current_card_timer_str(), "⏱ 01:24")
+
+        # 3. Timer with hours
+        mock_stimer.get_current_mask_seconds.return_value = 3665
+        self.assertEqual(screen._get_current_card_timer_str(), "⏱ 1:01:05")
+
+        # 4. Fallback to _card_visit_elapsed when get_current_mask_seconds returns 0
+        mock_stimer.get_current_mask_seconds.return_value = 0
+        mock_stimer._card_visit_elapsed = 42
+        self.assertEqual(screen._get_current_card_timer_str(), "⏱ 00:42")
+
     def test_get_target_question_pixmap_canvas(self):
         from PyQt5.QtGui import QPixmap, QColor
         from PyQt5.QtCore import QRectF
@@ -3066,6 +3115,7 @@ class UniqueCardProgressTrackingTests(unittest.TestCase):
             screen.canvas._ink_strokes = [
                 ["#FF0000", QPointF(10, 20), QPointF(30, 40)]
             ]
+            from PyQt5.QtCore import QRectF
             screen.canvas._boxes = [{"rect": QRectF(50, 50, 200, 100), "group_id": ""}]
             screen.canvas.set_target_box(0)
 

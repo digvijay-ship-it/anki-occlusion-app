@@ -693,9 +693,16 @@ def render_cropped_strokes(strokes, crop_rect, ink_width):
     return px
 
 
-def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None, orientation="horizontal"):
-    from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
-    from PyQt5.QtCore import Qt
+def combine_question_and_ink_pixmaps(
+    question_px,
+    ink_px,
+    bg_color=None,
+    orientation="horizontal",
+    timer_text=None,
+    title_text=None
+):
+    from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QFontMetrics, QBrush
+    from PyQt5.QtCore import Qt, QRectF
 
     if (not question_px or question_px.isNull()) and (not ink_px or ink_px.isNull()):
         return QPixmap()
@@ -711,10 +718,21 @@ def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None, orienta
     qw, qh = question_px.width(), question_px.height()
     iw, ih = ink_px.width(), ink_px.height()
 
+    # Format timer badge if timer_text is supplied
+    formatted_timer = ""
+    if timer_text:
+        timer_str = str(timer_text).strip()
+        if timer_str:
+            formatted_timer = timer_str if timer_str.startswith("⏱") else f"⏱ {timer_str}"
+
+    clean_title = str(title_text).strip() if title_text else ""
+    has_header = bool(formatted_timer or clean_title)
+    header_h = 42 if has_header else 0
+
     if orientation == "vertical":
         max_content_w = max(qw, iw)
         total_w = max_content_w + (padding * 2)
-        total_h = padding + qh + divider_gap + divider_thickness + divider_gap + ih + padding
+        total_h = header_h + padding + qh + divider_gap + divider_thickness + divider_gap + ih + padding
 
         combined = QPixmap(total_w, total_h)
         bg = QColor(bg_color) if bg_color else QColor("#181825")
@@ -722,11 +740,42 @@ def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None, orienta
 
         p = QPainter(combined)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        # Draw Top Header Bar (if present)
+        if has_header:
+            p.setPen(QPen(QColor("#313244"), 1))
+            p.drawLine(padding, header_h, total_w - padding, header_h)
+
+            if clean_title:
+                font_title = QFont("Segoe UI", 11, QFont.Bold)
+                p.setFont(font_title)
+                p.setPen(QColor("#A6ADC8"))
+                title_rect = QRectF(padding + 4, 0, max(100, total_w - 180), header_h)
+                p.drawText(title_rect, Qt.AlignVCenter | Qt.AlignLeft, clean_title)
+
+            if formatted_timer:
+                font_timer = QFont("Segoe UI", 12, QFont.Bold)
+                p.setFont(font_timer)
+                fm = QFontMetrics(font_timer)
+                tw = fm.horizontalAdvance(formatted_timer)
+                badge_w = tw + 24
+                badge_h = 28
+                badge_x = total_w - padding - badge_w
+                badge_y = (header_h - badge_h) // 2
+                badge_rect = QRectF(badge_x, badge_y, badge_w, badge_h)
+
+                p.setBrush(QBrush(QColor("#1E1E2E")))
+                p.setPen(QPen(QColor("#89B4FA"), 1.5))
+                p.drawRoundedRect(badge_rect, badge_h / 2.0, badge_h / 2.0)
+
+                p.setPen(QColor("#89B4FA"))
+                p.drawText(badge_rect, Qt.AlignCenter, formatted_timer)
 
         # 1. Draw Question (centered horizontally)
         qx = padding + (max_content_w - qw) // 2
-        qy = padding
+        qy = header_h + padding
         p.drawPixmap(qx, qy, question_px)
 
         # 2. Draw Divider
@@ -745,7 +794,7 @@ def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None, orienta
         # Horizontal layout: Question on Left, Ink Solution on Right
         max_content_h = max(qh, ih)
         total_w = padding + qw + divider_gap + divider_thickness + divider_gap + iw + padding
-        total_h = max_content_h + (padding * 2)
+        total_h = header_h + max_content_h + (padding * 2)
 
         combined = QPixmap(total_w, total_h)
         bg = QColor(bg_color) if bg_color else QColor("#181825")
@@ -753,21 +802,52 @@ def combine_question_and_ink_pixmaps(question_px, ink_px, bg_color=None, orienta
 
         p = QPainter(combined)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        # Draw Top Header Bar (if present)
+        if has_header:
+            p.setPen(QPen(QColor("#313244"), 1))
+            p.drawLine(padding, header_h, total_w - padding, header_h)
+
+            if clean_title:
+                font_title = QFont("Segoe UI", 11, QFont.Bold)
+                p.setFont(font_title)
+                p.setPen(QColor("#A6ADC8"))
+                title_rect = QRectF(padding + 4, 0, max(100, total_w - 180), header_h)
+                p.drawText(title_rect, Qt.AlignVCenter | Qt.AlignLeft, clean_title)
+
+            if formatted_timer:
+                font_timer = QFont("Segoe UI", 12, QFont.Bold)
+                p.setFont(font_timer)
+                fm = QFontMetrics(font_timer)
+                tw = fm.horizontalAdvance(formatted_timer)
+                badge_w = tw + 24
+                badge_h = 28
+                badge_x = total_w - padding - badge_w
+                badge_y = (header_h - badge_h) // 2
+                badge_rect = QRectF(badge_x, badge_y, badge_w, badge_h)
+
+                p.setBrush(QBrush(QColor("#1E1E2E")))
+                p.setPen(QPen(QColor("#89B4FA"), 1.5))
+                p.drawRoundedRect(badge_rect, badge_h / 2.0, badge_h / 2.0)
+
+                p.setPen(QColor("#89B4FA"))
+                p.drawText(badge_rect, Qt.AlignCenter, formatted_timer)
 
         # 1. Draw Question on Left (vertically centered)
         qx = padding
-        qy = padding + (max_content_h - qh) // 2
+        qy = header_h + padding + (max_content_h - qh) // 2
         p.drawPixmap(qx, qy, question_px)
 
         # 2. Draw Vertical Divider
         div_x = qx + qw + divider_gap
         p.setPen(QPen(QColor("#45475A"), divider_thickness))
-        p.drawLine(div_x, padding, div_x, total_h - padding)
+        p.drawLine(div_x, header_h + padding, div_x, total_h - padding)
 
         # 3. Draw Ink Solution on Right (vertically centered)
         ix = div_x + divider_thickness + divider_gap
-        iy = padding + (max_content_h - ih) // 2
+        iy = header_h + padding + (max_content_h - ih) // 2
         p.drawPixmap(ix, iy, ink_px)
 
         p.end()

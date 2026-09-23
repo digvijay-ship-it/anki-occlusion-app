@@ -718,7 +718,8 @@ class ReviewSessionManager:
             peek_idx = getattr(self.rs, "__dict__", {}).get("_peek_idx")
 
         if hasattr(self.rs, "_update_queue_label"):
-            if getattr(self, "is_practice", False) or getattr(self.rs, "is_practice", False):
+            rs_d = getattr(self.rs, "__dict__", {})
+            if getattr(self, "is_practice", False) or rs_d.get("is_practice", False) or rs_d.get("is_new_only", False):
                 active_count = max(0, len(self._items) - self._idx)
             else:
                 due_c = sum(1 for _, _, sm2 in self._items[self._idx:] if is_due_today(sm2))
@@ -752,7 +753,8 @@ class ReviewSessionManager:
         """Rebuild the right-side queue list — reflects current order + states."""
         self.rs._queue_list.clear()
         if hasattr(self.rs, "_update_queue_label"):
-            if getattr(self, "is_practice", False) or getattr(self.rs, "is_practice", False):
+            rs_d = getattr(self.rs, "__dict__", {})
+            if getattr(self, "is_practice", False) or rs_d.get("is_practice", False) or rs_d.get("is_new_only", False):
                 active_count = max(0, len(self._items) - self._idx)
             else:
                 due_c = sum(1 for _, _, sm2 in self._items[self._idx:] if is_due_today(sm2))

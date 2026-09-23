@@ -48,12 +48,14 @@ class OptionButton(QPushButton):
     badge_clicked = pyqtSignal(str)
     option_clicked = pyqtSignal(object)
 
-    def __init__(self, label: str, text: str, index: int = 0, english_word: str = "", pronunciation: str = "", parent=None):
+    def __init__(self, label: str, text: str, index: int = 0, english_word: str = "", pronunciation: str = "", english_definition: str = "", pos: str = "", parent=None):
         super().__init__(parent)
         self.option_label = label  # e.g., 'A', 'B', 'C', 'D'
         self.option_index = index
         self.english_word = (english_word or "").strip()
         self.pronunciation = (pronunciation or "").strip()
+        self.english_definition = (english_definition or "").strip()
+        self.pos = (pos or "").strip()
         self.hindi_text = ""
         self._show_hindi = False
         self.is_correct = False
@@ -100,12 +102,20 @@ class OptionButton(QPushButton):
         else:
             self.setToolTip(f"Click to select Option {self.option_label}")
 
+    def set_english_definition(self, text: str):
+        self.english_definition = (text or "").strip()
+        self._update_text_display()
+
+    def set_pos(self, text: str):
+        self.pos = (text or "").strip()
+        self._update_text_display()
+
     def show_hindi(self, show: bool = True):
         self._show_hindi = bool(show)
         self._update_text_display()
 
     def toggle_hindi(self):
-        if getattr(self, "hindi_text", "") or getattr(self, "pronunciation", ""):
+        if getattr(self, "hindi_text", "") or getattr(self, "pronunciation", "") or getattr(self, "english_definition", ""):
             new_state = not getattr(self, "_show_hindi", False)
             self._show_hindi = new_state
             if not new_state:
@@ -119,20 +129,32 @@ class OptionButton(QPushButton):
             star_badge = " ⭐" if "⭐" in self.option_text else ""
             clean_eng = self.english_word.replace("⭐", "").strip() if getattr(self, "english_word", "") else self.option_text.replace("⭐", "").strip()
 
-            parts = []
-            if getattr(self, "pronunciation", ""):
-                parts.append(self.pronunciation)
-            if getattr(self, "hindi_text", ""):
-                parts.append(f'<span style="color: #67E8F9; font-weight: bold;">{html.escape(self.hindi_text)}</span>')
+            has_back_info = bool(getattr(self, "hindi_text", "") or getattr(self, "pronunciation", "") or getattr(self, "english_definition", ""))
 
-            deva_hindi = " • ".join(parts) if parts else ""
-            sub_fs = max(13, int(self._font_size * 0.88))
-            h_sub = f'&nbsp;&nbsp;<span style="color: #94A3B8; font-size: {sub_fs}px;">({deva_hindi})</span>' if deva_hindi else ""
+            if has_back_info:
+                sub_fs = max(12, int(self._font_size * 0.88))
+                hindi_fs = max(13, int(self._font_size * 0.94))
+                eng_fs = max(12, int(self._font_size * 0.90))
 
-            self.lbl_text.setText(
-                f'<span style="color: #FF79C6; font-weight: bold; font-size: {self._font_size + 1}px;">{html.escape(clean_eng)}{star_badge}</span>{h_sub}'
-            )
-            return
+                # Section 1: English Word (Pink badge) + Star + POS + Pronunciation (in SAME line)
+                pos_str = f' <span style="color: #94A3B8; font-size: {sub_fs}px; font-weight: normal;">({html.escape(self.pos)})</span>' if getattr(self, "pos", "") else ""
+                pron_str = f'&nbsp;&nbsp;<span style="color: #CBD5E1; font-size: {sub_fs}px; font-weight: normal; letter-spacing: 0.2px;">({html.escape(self.pronunciation)})</span>' if getattr(self, "pronunciation", "") else ""
+
+                line1 = f'<div style="line-height: 1.4;"><span style="color: #FF79C6; font-weight: bold; font-size: {self._font_size + 1}px; background: rgba(255, 121, 198, 0.18); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255, 121, 198, 0.45);">{html.escape(clean_eng)}</span>{star_badge}{pos_str}{pron_str}</div>'
+
+                # Section 2: Contextual Hindi Meaning (on separate line below)
+                line2 = f'<div style="margin-top: 5px; color: #67E8F9; font-weight: bold; font-size: {hindi_fs}px; line-height: 1.4;">{html.escape(self.hindi_text)}</div>' if getattr(self, "hindi_text", "") else ""
+
+                # Section 3: Detailed English Definition (on separate line below)
+                line3 = f'<div style="margin-top: 4px; color: #F1FA8C; font-size: {eng_fs}px; line-height: 1.4;">{html.escape(self.english_definition)}</div>' if getattr(self, "english_definition", "") else ""
+
+                self.lbl_text.setText(f'<div>{line1}{line2}{line3}</div>')
+                return
+            else:
+                self.lbl_text.setText(
+                    f'<span style="color: #FF79C6; font-weight: bold; font-size: {self._font_size + 1}px;">{html.escape(clean_eng)}{star_badge}</span>'
+                )
+                return
 
         self.lbl_text.setText(self.option_text)
 
@@ -140,7 +162,9 @@ class OptionButton(QPushButton):
         """
         Called when card is revealed (Spacebar pressed or option chosen).
         Transforms the option to show:
-        Original English Word (pink bold) + Devanagari sound + Full Hindi Meaning (cyan bold)!
+        Line 1: Word + Pronunciation
+        Line 2: Contextual Hindi meaning
+        Line 3: Detailed English definition
         """
         self._revealed = True
         self._show_hindi = True
@@ -154,7 +178,7 @@ class OptionButton(QPushButton):
 
     def _setup_ui(self):
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(16, 8, 16, 8)
+        self.layout.setContentsMargins(16, 10, 16, 10)
         self.layout.setSpacing(14)
 
         # 1. Option Letter Badge (e.g. [ A ])
@@ -162,7 +186,7 @@ class OptionButton(QPushButton):
         self.lbl_badge.setAlignment(Qt.AlignCenter)
         self.lbl_badge.setFixedSize(self._badge_size, self._badge_size)
         self.lbl_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.layout.addWidget(self.lbl_badge)
+        self.layout.addWidget(self.lbl_badge, 0, Qt.AlignTop)
 
         # 2. Option Text (English word, full width!)
         self.lbl_text = QLabel(self.option_text)
@@ -170,7 +194,7 @@ class OptionButton(QPushButton):
         self.lbl_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.lbl_text.setTextInteractionFlags(Qt.NoTextInteraction)
         self.lbl_text.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.layout.addWidget(self.lbl_text, stretch=1)
+        self.layout.addWidget(self.lbl_text, 1)
 
         # 3. Status Pill / Icon (Hidden initially, shown after selection/reveal)
         self.lbl_status = QLabel("")
@@ -178,7 +202,7 @@ class OptionButton(QPushButton):
         self.lbl_status.setFixedHeight(26)
         self.lbl_status.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.lbl_status.hide()
-        self.layout.addWidget(self.lbl_status)
+        self.layout.addWidget(self.lbl_status, 0, Qt.AlignTop)
         self.apply_idle_style()
 
     def mousePressEvent(self, e):
@@ -589,6 +613,29 @@ class MCQReviewWidget(QWidget):
         self.btn_mindmap.clicked.connect(lambda: self._on_open_mindmap())
         self.hdr_layout.addWidget(self.btn_mindmap)
 
+        # 🔄 Sync Deck Button (F5)
+        self.btn_sync_deck = QPushButton("🔄 Sync (F5)")
+        self.btn_sync_deck.setCursor(Qt.PointingHandCursor)
+        self.btn_sync_deck.setToolTip("Sync and reload current deck from source file (F5 / Alt+R)")
+        self.btn_sync_deck.setStyleSheet("""
+            QPushButton {
+                color: #2ECC71;
+                background: rgba(46, 204, 113, 0.15);
+                border: 1px solid #2ECC71;
+                border-radius: 4px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(46, 204, 113, 0.35);
+                border: 1px solid #2ECC71;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_sync_deck.clicked.connect(lambda: self._on_sync_deck())
+        self.hdr_layout.addWidget(self.btn_sync_deck)
+
         # Font Size Controls Toolbar (A- / 100% / A+)
         self.font_controls = QWidget()
         self.font_controls.setFixedHeight(24)
@@ -937,28 +984,22 @@ class MCQReviewWidget(QWidget):
         # Scroll to top
         self.scroll_area.verticalScrollBar().setValue(0)
 
-    def _extract_options_hindi(self, card: dict) -> dict:
+    def _extract_options_details(self, card: dict) -> tuple:
         """
-        Extracts a dictionary mapping option label ('A', 'B', 'C', 'D') -> Hindi meaning.
+        Extracts dictionaries mapping option label ('A', 'B', 'C', 'D') -> (hindi_map, def_map, pos_map).
         Sources inspected in order:
-        1. card['options'] dicts with 'hindi' / 'meaning' / 'hindi_meaning'
+        1. card['options'] dicts with 'hindi', 'english_definition' / 'definition', 'pos'
         2. card['solution_data']['key_points']
         3. card['notes'] (Options Breakdown)
         4. card['solution_data']['statement'] / card['answer']
         """
         hindi_map = {}
+        def_map = {}
+        pos_map = {}
         if not isinstance(card, dict):
-            return hindi_map
+            return hindi_map, def_map, pos_map
 
-        # 1. From options list if already present
-        for opt in card.get("options", []) or []:
-            if isinstance(opt, dict):
-                lbl = (opt.get("label") or "").strip().upper()
-                h = opt.get("hindi") or opt.get("meaning") or opt.get("hindi_meaning")
-                if h and lbl:
-                    hindi_map[lbl] = str(h).strip()
-
-        # 2. From solution_data.key_points
+        # 1. From solution_data.key_points (authoritative full BlackBook contextual definitions)
         kp = card.get("solution_data", {})
         if isinstance(kp, dict):
             kp_pts = kp.get("key_points") or []
@@ -973,23 +1014,82 @@ class MCQReviewWidget(QWidget):
         for item in kp_pts:
             if not isinstance(item, str):
                 continue
-            # Pattern: 🅰️ **(A) <span ...>Word</span> (POS)**: <span ...>हिंदी अर्थ</span>
-            m = re.search(r'\(([A-Da-d])\)\s*(?:<[^>]+>)*\s*([^*<]+?)\s*(?:<[^>]+>)*(?:\s*\([^)]+\))?\s*\*\*:\s*(?:<span[^>]*>)?([^<—–\n]+)', item)
-            if m:
-                lbl = m.group(1).upper()
-                h_text = re.sub(r'<[^>]+>', '', m.group(3)).strip()
-                if lbl not in hindi_map and h_text:
-                    hindi_map[lbl] = h_text
+            # Pattern: 🅰️ **(A) <span ...>Word</span> (POS)**: <span ...>हिंदी अर्थ</span> — <span ...>English def</span>
+            m_lbl = re.search(r'\(([A-Da-d])\)', item)
+            if not m_lbl:
+                continue
+            lbl = m_lbl.group(1).upper()
+
+            m_pos = re.search(r'\(([A-Za-z\.\s\/]+)\)\*\*:', item)
+            if m_pos and lbl not in pos_map:
+                pos_map[lbl] = m_pos.group(1).strip()
+
+            parts_colon = item.split('**:', 1)
+            if len(parts_colon) >= 2:
+                body = parts_colon[1].strip()
+                h_raw, e_raw = "", ""
+                if ' — ' in body:
+                    h_raw, e_raw = body.split(' — ', 1)
+                elif ' – ' in body:
+                    h_raw, e_raw = body.split(' – ', 1)
+                elif ' - ' in body:
+                    h_raw, e_raw = body.split(' - ', 1)
+                else:
+                    m_dash = re.search(r'[\—\–]', body)
+                    if m_dash:
+                        h_raw = body[:m_dash.start()]
+                        e_raw = body[m_dash.end():]
+                    else:
+                        h_raw = body
+
+                if h_raw and lbl not in hindi_map:
+                    h_clean = re.sub(r'<[^>]+>', '', h_raw).strip()
+                    if h_clean:
+                        hindi_map[lbl] = h_clean
+                if e_raw and lbl not in def_map:
+                    e_clean = re.sub(r'<[^>]+>', '', e_raw).strip()
+                    if e_clean:
+                        def_map[lbl] = e_clean
+
+        # 2. From options list (fallback / supplement)
+        for opt in card.get("options", []) or []:
+            if isinstance(opt, dict):
+                lbl = (opt.get("label") or "").strip().upper()
+                if not lbl:
+                    continue
+                h = opt.get("hindi") or opt.get("meaning") or opt.get("hindi_meaning")
+                if h and lbl not in hindi_map:
+                    hindi_map[lbl] = str(h).strip()
+                d = opt.get("english_definition") or opt.get("definition") or opt.get("english")
+                if d and lbl not in def_map:
+                    def_map[lbl] = str(d).strip()
+                p = opt.get("pos") or opt.get("part_of_speech")
+                if p and lbl not in pos_map:
+                    pos_map[lbl] = str(p).strip()
 
         # 3. From notes (Options Breakdown)
         notes = card.get("notes", "")
         if isinstance(notes, str) and notes:
-            matches = re.finditer(r'(?:•|-|\*)\s*\*\*\(([A-Da-d])\)[^:]*\*\*:\s*(?:<span[^>]*>)?([^<—–\n]+)', notes)
+            matches = re.finditer(r'(?:•|-|\*)\s*\*\*\(([A-Da-d])\)[^:]*\*\*:\s*(.+)', notes)
             for m in matches:
                 lbl = m.group(1).upper()
-                h_text = re.sub(r'<[^>]+>', '', m.group(2)).strip()
-                if lbl not in hindi_map and h_text:
-                    hindi_map[lbl] = h_text
+                line_body = m.group(2).strip()
+                h_raw, e_raw = "", ""
+                if ' — ' in line_body:
+                    h_raw, e_raw = line_body.split(' — ', 1)
+                elif ' – ' in line_body:
+                    h_raw, e_raw = line_body.split(' – ', 1)
+                elif ' - ' in line_body:
+                    h_raw, e_raw = line_body.split(' - ', 1)
+
+                if h_raw and lbl not in hindi_map:
+                    h_clean = re.sub(r'<[^>]+>', '', h_raw).strip()
+                    if h_clean:
+                        hindi_map[lbl] = h_clean
+                if e_raw and lbl not in def_map:
+                    e_clean = re.sub(r'<[^>]+>', '', e_raw).strip()
+                    if e_clean:
+                        def_map[lbl] = e_clean
 
         # 4. Fallback for correct option from solution_data.statement
         c_lbl = None
@@ -999,16 +1099,23 @@ class MCQReviewWidget(QWidget):
         elif isinstance(c_opt, str):
             c_lbl = c_opt.strip().upper()
 
-        if c_lbl and c_lbl not in hindi_map:
+        if c_lbl and (c_lbl not in hindi_map or c_lbl not in def_map):
             stmt = card.get("solution_data", {}).get("statement", "") if isinstance(card.get("solution_data"), dict) else ""
             if isinstance(stmt, str) and stmt:
-                m_stmt = re.search(r'\(([^)]+)\s*—', stmt)
+                m_stmt = re.search(r'\(([^)]+?)\s*[\—\–\-]\s*([^)]+?)\)', stmt)
                 if m_stmt:
                     h_text = re.sub(r'<[^>]+>', '', m_stmt.group(1)).strip()
-                    if h_text:
+                    e_text = re.sub(r'<[^>]+>', '', m_stmt.group(2)).strip()
+                    if h_text and c_lbl not in hindi_map:
                         hindi_map[c_lbl] = h_text
+                    if e_text and c_lbl not in def_map:
+                        def_map[c_lbl] = e_text
 
-        return hindi_map
+        return hindi_map, def_map, pos_map
+
+    def _extract_options_hindi(self, card: dict) -> dict:
+        """Backward-compatible helper returning label -> hindi string dict."""
+        return self._extract_options_details(card)[0]
 
     def _build_options(self, card: dict):
         # Clear existing buttons
@@ -1030,16 +1137,20 @@ class MCQReviewWidget(QWidget):
         elif isinstance(c_opt, str):
             correct_lbl = c_opt.strip()
 
-        hindi_map = self._extract_options_hindi(card)
+        hindi_map, def_map, pos_map = self._extract_options_details(card)
 
         for idx, opt in enumerate(options):
             english_word = ""
             pronunciation = ""
+            english_definition = ""
+            pos = ""
             if isinstance(opt, dict):
                 label = opt.get("label") or chr(65 + idx)
                 text = opt.get("text") or ""
                 english_word = opt.get("english_word") or ""
                 pronunciation = opt.get("pronunciation") or ""
+                english_definition = opt.get("english_definition") or opt.get("definition") or ""
+                pos = opt.get("pos") or ""
                 is_correct = bool(opt.get("is_correct"))
                 if not is_correct and correct_lbl and label.upper() == correct_lbl.upper():
                     is_correct = True
@@ -1048,7 +1159,20 @@ class MCQReviewWidget(QWidget):
                 text = str(opt)
                 is_correct = (correct_lbl and label.upper() == correct_lbl.upper())
 
-            btn = OptionButton(label, text, idx, english_word=english_word, pronunciation=pronunciation, parent=self.options_container)
+            # Fallbacks from extracted maps
+            if not english_definition:
+                english_definition = def_map.get(label.upper(), "")
+            if not pos:
+                pos = pos_map.get(label.upper(), "")
+
+            btn = OptionButton(
+                label, text, idx,
+                english_word=english_word,
+                pronunciation=pronunciation,
+                english_definition=english_definition,
+                pos=pos,
+                parent=self.options_container
+            )
             btn.is_correct = is_correct
             btn.stat_text = card.get("percent_answered_correctly", "")
 
@@ -1073,11 +1197,11 @@ class MCQReviewWidget(QWidget):
     def _on_option_clicked(self, btn: OptionButton):
         """
         Handle user clicking on an option row/text.
-        - Disclose / toggle the back side (pronunciation & Hindi meaning) of ONLY this clicked option.
+        - Disclose / toggle the back side (pronunciation, Hindi meaning & English definition) of ONLY this clicked option.
         - Does NOT select the option as the answer, and does NOT reveal the entire card.
         - If the option has NO back side (standard GK/Math question), directly selects option as answer.
         """
-        if getattr(btn, "hindi_text", "") or getattr(btn, "pronunciation", ""):
+        if getattr(btn, "hindi_text", "") or getattr(btn, "pronunciation", "") or getattr(btn, "english_definition", ""):
             btn.toggle_hindi()
         elif not self.is_revealed:
             self.select_option(btn.option_label)
@@ -1166,7 +1290,20 @@ class MCQReviewWidget(QWidget):
         if p and hasattr(p, "_open_concept_hub"):
             p._open_concept_hub(tag=tag if isinstance(tag, str) else None)
 
+    def _on_sync_deck(self):
+        p = self.parent()
+        while p and not hasattr(p, "_sync_current_deck_from_source"):
+            p = p.parent()
+        if p and hasattr(p, "_sync_current_deck_from_source"):
+            p._sync_current_deck_from_source()
+
     def keyPressEvent(self, e):
+        # 0. Sync Deck shortcut: F5 or Alt+R
+        if (e.key() == Qt.Key_F5 and not (e.modifiers() & Qt.ShiftModifier)) or ((e.modifiers() & Qt.AltModifier) and e.key() == Qt.Key_R):
+            self._on_sync_deck()
+            e.accept()
+            return
+
         # 1. Font Zoom shortcuts: Ctrl + Plus, Ctrl + Minus, Ctrl + 0
         if e.modifiers() & Qt.ControlModifier:
             if e.key() in (Qt.Key_Plus, Qt.Key_Equal):
@@ -1440,7 +1577,20 @@ class MCQReviewWidget(QWidget):
 
         # 4. Additional Information Section
         if additional_info:
-            ai_items = "".join([f"<li style='margin-bottom: 5px; line-height: 1.4; color: {subtext_color};'>{str(info) if ('<span' in str(info) or '<b' in str(info)) else html.escape(str(info))}</li>" for info in additional_info])
+            formatted_ai = []
+            for info in additional_info:
+                s_info = str(info)
+                if "<span" in s_info or "<b" in s_info or "<code" in s_info:
+                    formatted_ai.append(f"<li style='margin-bottom: 6px; line-height: 1.5; color: {subtext_color};'>{s_info}</li>")
+                else:
+                    if "**" in s_info:
+                        s_info = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', s_info)
+                    if "`" in s_info:
+                        s_info = re.sub(r'`([^`]+)`', r'<code style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px;">\1</code>', s_info)
+                    if "\n" in s_info:
+                        s_info = s_info.replace("\n", "<br>")
+                    formatted_ai.append(f"<li style='margin-bottom: 6px; line-height: 1.5; color: {subtext_color};'>{s_info}</li>")
+            ai_items = "".join(formatted_ai)
             html_blocks.append(f"""
                 <div style="background-color: rgba(139, 233, 253, 0.08); border-left: 4px solid #8BE9FD; border-radius: 6px; padding: 12px 16px; margin-bottom: 10px;">
                     <div style="color: #8BE9FD !important; font-size: {sol_font_size}px; font-weight: bold; margin-bottom: 6px;">

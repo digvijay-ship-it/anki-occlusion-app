@@ -270,7 +270,7 @@ class PracticeModeTests(unittest.TestCase):
             ]
         }
         with patch.object(ReviewScreen, "_setup_ui"), patch.object(ReviewScreen, "_load_item"):
-            def make_screen(is_prac):
+            def make_screen(is_prac, is_new=False):
                 s = ReviewScreen.__new__(ReviewScreen)
                 s.canvas = MagicMock()
                 s._canvas_scroll = MagicMock()
@@ -279,13 +279,18 @@ class PracticeModeTests(unittest.TestCase):
                 s._queue_edge_button = MagicMock()
                 s._queue_lock_button = MagicMock()
                 s._queue_hide_button = MagicMock()
-                s.__init__([card], is_practice=is_prac)
+                s.__init__([card], is_practice=is_prac, is_new_only=is_new)
                 return s
 
             # Practice mode: all 3 items (2 single boxes + 1 group) must be queued!
             screen_practice = make_screen(True)
             self.assertEqual(len(screen_practice._items), 3)
             self.assertEqual(screen_practice._active_queue_count(), 3)
+
+            # is_new_only mode: all 3 items queued and active count matches 3 even if due dates are future!
+            screen_new = make_screen(False, is_new=True)
+            self.assertEqual(len(screen_new._items), 3)
+            self.assertEqual(screen_new._active_queue_count(), 3)
 
             # Normal due mode: 0 items queued because all are future due
             screen_normal = make_screen(False)

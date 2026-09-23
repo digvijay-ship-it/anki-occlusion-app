@@ -8,7 +8,7 @@ and memory anchoring via Google Gemini with dynamic font scaling.
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTextBrowser, QScrollArea, QDialog, QComboBox, QCheckBox,
-    QApplication, QGraphicsDropShadowEffect
+    QPlainTextEdit, QApplication, QGraphicsDropShadowEffect
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QSettings, QTimer, QUrl, QEvent
 from PyQt5.QtGui import QColor, QFont, QCursor, QDesktopServices
@@ -32,36 +32,63 @@ class AISettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("AI Study Buddy — सेटिंग्स")
-        self.setFixedSize(520, 560)
+        self.setFixedSize(620, 780)
         self.setStyleSheet("""
             QDialog {
                 background-color: #181825;
                 color: #CDD6F4;
-                font-family: 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', -apple-system, sans-serif;
             }
             QLabel {
                 color: #CDD6F4;
-                font-size: 13px;
             }
             QLineEdit, QComboBox, QPlainTextEdit {
                 background: #1E1E2E;
                 color: #CDD6F4;
-                border: 1px solid #45475A;
-                border-radius: 6px;
-                padding: 8px 12px;
-                font-size: 13px;
+                border: 1.5px solid #45475A;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 14px;
             }
             QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {
-                border: 1px solid #CBA6F7;
+                border: 1.5px solid #CBA6F7;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 30px;
+            }
+            QComboBox QAbstractItemView {
+                background: #1E1E2E;
+                color: #CDD6F4;
+                selection-background-color: #CBA6F7;
+                selection-color: #11111B;
+                padding: 6px;
+                font-size: 14px;
+            }
+            QCheckBox {
+                color: #CDD6F4;
+                spacing: 12px;
+                padding: 5px 0;
+            }
+            QCheckBox::indicator {
+                width: 22px;
+                height: 22px;
+                border-radius: 5px;
+                border: 1.5px solid #45475A;
+                background: #1E1E2E;
+            }
+            QCheckBox::indicator:checked {
+                background: #CBA6F7;
+                border-color: #CBA6F7;
             }
             QPushButton#btn_save {
                 background: #CBA6F7;
                 color: #11111B;
                 border: none;
-                border-radius: 6px;
-                padding: 10px 24px;
+                border-radius: 8px;
+                padding: 12px 36px;
                 font-weight: bold;
-                font-size: 13px;
+                font-size: 16px;
             }
             QPushButton#btn_save:hover {
                 background: #B4BEFE;
@@ -69,36 +96,49 @@ class AISettingsDialog(QDialog):
             QPushButton#btn_cancel {
                 background: #313244;
                 color: #CDD6F4;
-                border: none;
-                border-radius: 6px;
-                padding: 10px 20px;
-                font-size: 13px;
+                border: 1.5px solid #45475A;
+                border-radius: 8px;
+                padding: 12px 28px;
+                font-weight: 600;
+                font-size: 15px;
+            }
+            QPushButton#btn_cancel:hover {
+                background: #45475A;
             }
         """)
         self._init_ui()
 
     def _init_ui(self):
         L = QVBoxLayout(self)
-        L.setContentsMargins(24, 18, 24, 18)
-        L.setSpacing(10)
+        L.setContentsMargins(30, 24, 30, 24)
+        L.setSpacing(12)
 
+        # 1. Title (H1 - Level 1)
         title = QLabel("⚙️ AI Study Buddy सेटिंग्स")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #CBA6F7;")
+        title.setFont(QFont("Segoe UI", 20, QFont.Bold))
+        title.setStyleSheet("color: #CBA6F7; margin-bottom: 2px;")
         L.addWidget(title)
 
+        # Description (Level 5 - Supporting)
         desc = QLabel(
             "Google Gemini की मुफ़्त API Key दर्ज करें।\n"
-            "💡 आप 2-3 अलग-अलग Google अकाउंट्स की Keys डाल सकते हैं। एक Key की सीमा पूरी होने पर ऐप बिना रुके अपने आप अगली Key पर स्विच हो जाएगा!"
+            "💡 आप 2-3 अलग-अलग Google खातों की Keys डाल सकते हैं। एक Key की सीमा पूरी होने पर ऐप बिना रुके अपने आप अगली Key पर स्विच हो जाएगा!"
         )
+        desc.setFont(QFont("Segoe UI", 13, QFont.Normal))
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #A6ADC8; font-size: 11px; line-height: 1.4;")
+        desc.setStyleSheet("color: #BAC2DE; line-height: 1.5;")
         L.addWidget(desc)
 
         cfg = get_ai_settings()
 
-        # Multi-Key input
-        L.addWidget(QLabel("🔑 Google Gemini API Keys (मल्टीपल अकाउंट्स सपोर्ट):"))
+        # 2. Multi-Key input (Level 2 Label + Level 3 Input)
+        lbl_keys = QLabel("🔑 Google Gemini API Keys (मल्टीपल अकाउंट्स सपोर्ट):")
+        lbl_keys.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        lbl_keys.setStyleSheet("color: #CDD6F4; margin-top: 4px;")
+        L.addWidget(lbl_keys)
+
         self.edit_keys = QPlainTextEdit()
+        self.edit_keys.setFont(QFont("Consolas", 13))
         self.edit_keys.setPlainText(cfg.get("api_key_raw", ""))
         self.edit_keys.setPlaceholderText(
             "AIzaSy... (Account 1)\n"
@@ -106,38 +146,59 @@ class AISettingsDialog(QDialog):
             "AIzaSy... (Account 3)\n\n"
             "(अलग-अलग Google खातों की Keys नई लाइन या अल्पविराम से दर्ज करें)"
         )
-        self.edit_keys.setFixedHeight(65)
-        self.edit_keys.setStyleSheet("font-family: monospace; font-size: 12px; line-height: 1.3;")
+        self.edit_keys.setFixedHeight(80)
         L.addWidget(self.edit_keys)
 
         self.lbl_key_count = QLabel("")
+        self.lbl_key_count.setFont(QFont("Segoe UI", 13, QFont.DemiBold))
         L.addWidget(self.lbl_key_count)
         self.edit_keys.textChanged.connect(self._update_key_count_label)
         self._update_key_count_label()
 
         # Key link info
-        link_lbl = QLabel("<a href='https://aistudio.google.com' style='color: #89B4FA;'>👉 मुफ़्त API Key प्राप्त करें (Google AI Studio)</a>")
+        link_lbl = QLabel("<a href='https://aistudio.google.com/app/apikey' style='color: #89B4FA; font-weight: bold;'>👉 मुफ़्त API Key प्राप्त करें (Google AI Studio)</a>")
+        link_lbl.setFont(QFont("Segoe UI", 13, QFont.DemiBold))
         link_lbl.setOpenExternalLinks(True)
         L.addWidget(link_lbl)
 
-        # Model Selector
-        L.addWidget(QLabel("🧠 AI मॉडल इंजन:"))
+        # 3. Model Selector (Level 2 Label + Level 3 Input)
+        lbl_model = QLabel("🧠 AI मॉडल इंजन:")
+        lbl_model.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        lbl_model.setStyleSheet("color: #CDD6F4; margin-top: 4px;")
+        L.addWidget(lbl_model)
+
         self.combo_model = QComboBox()
+        self.combo_model.setFont(QFont("Segoe UI", 14))
+        self.combo_model.setFixedHeight(44)
         self.combo_model.addItem("Gemini 3.8 Flash (ब्लीडिंग-एज • सबसे लेटेस्ट)", "gemini-3.8-flash")
-        self.combo_model.addItem("Gemini 3.6 Flash (सुपरफ़ास्ट, 100% स्टेबल • अनुशंसित)", "gemini-3.6-flash")
-        self.combo_model.addItem("Gemini 2.5 Flash (क्लासिक)", "gemini-2.5-flash")
-        self.combo_model.addItem("Gemini 1.5 Flash (क्लासिक स्टेबल)", "gemini-1.5-flash")
-        idx = self.combo_model.findData(cfg["model_name"])
+        self.combo_model.addItem("Gemini 3.7 Flash (उन्नत रीजनिंग व मल्टीमॉडल)", "gemini-3.7-flash")
+        self.combo_model.addItem("Gemini 3.5 Flash (एजेंटिक वर्कफ़्लो • सुपरफ़ास्ट)", "gemini-3.5-flash")
+        self.combo_model.addItem("Gemini 3.0 Flash (स्टेबल फ्लैश 3.0)", "gemini-3.0-flash")
+        self.combo_model.addItem("Gemini 2.5 Flash (क्लासिक 2.5)", "gemini-2.5-flash")
+        self.combo_model.addItem("Gemini 2.0 Flash (क्लासिक स्टेबल 2.0)", "gemini-2.0-flash")
+        self.combo_model.addItem("Gemini 1.5 Flash (विरासत स्टेबल 1.5)", "gemini-1.5-flash")
+        self.combo_model.addItem("Gemini 1.5 Pro (उच्च क्षमता • डीप रीजनिंग)", "gemini-1.5-pro")
+        current_m = cfg.get("model_name", "gemini-3.8-flash")
+        idx = self.combo_model.findData(current_m)
         if idx >= 0:
             self.combo_model.setCurrentIndex(idx)
+        else:
+            self.combo_model.addItem(f"{current_m} (कस्टम)", current_m)
+            self.combo_model.setCurrentIndex(self.combo_model.count() - 1)
         L.addWidget(self.combo_model)
 
-        # TTS & Voice Row
-        L.addWidget(QLabel("🔊 AI स्पीच (बोलकर सुनाने की आवाज़):"))
+        # 4. TTS & Voice Row (Level 2 Label + Level 3 Input)
+        lbl_tts = QLabel("🔊 AI स्पीच (बोलकर सुनाने की आवाज़):")
+        lbl_tts.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        lbl_tts.setStyleSheet("color: #CDD6F4; margin-top: 4px;")
+        L.addWidget(lbl_tts)
+
         tts_row = QHBoxLayout()
-        tts_row.setSpacing(8)
+        tts_row.setSpacing(10)
 
         self.combo_tts_voice = QComboBox()
+        self.combo_tts_voice.setFont(QFont("Segoe UI", 14))
+        self.combo_tts_voice.setFixedHeight(44)
         for v_label, v_val in AVAILABLE_VOICES:
             self.combo_tts_voice.addItem(v_label, v_val)
         v_idx = self.combo_tts_voice.findData(cfg.get("tts_voice", DEFAULT_TTS_VOICE))
@@ -146,6 +207,8 @@ class AISettingsDialog(QDialog):
         tts_row.addWidget(self.combo_tts_voice, stretch=2)
 
         self.combo_tts_speed = QComboBox()
+        self.combo_tts_speed.setFont(QFont("Segoe UI", 14))
+        self.combo_tts_speed.setFixedHeight(44)
         self.combo_tts_speed.addItem("सामान्य (1.0x)", "+0%")
         self.combo_tts_speed.addItem("थोड़ा तेज़ (1.15x)", "+15%")
         self.combo_tts_speed.addItem("काफ़ी तेज़ (1.3x)", "+30%")
@@ -155,9 +218,15 @@ class AISettingsDialog(QDialog):
         tts_row.addWidget(self.combo_tts_speed, stretch=1)
         L.addLayout(tts_row)
 
-        # Mic Language
-        L.addWidget(QLabel("🎙️ माइक वॉइस भाषा (सुनने हेतु):"))
+        # 5. Mic Language
+        lbl_mic = QLabel("🎙️ माइक वॉइस भाषा (सुनने हेतु):")
+        lbl_mic.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        lbl_mic.setStyleSheet("color: #CDD6F4; margin-top: 4px;")
+        L.addWidget(lbl_mic)
+
         self.combo_lang = QComboBox()
+        self.combo_lang.setFont(QFont("Segoe UI", 14))
+        self.combo_lang.setFixedHeight(44)
         self.combo_lang.addItem("हिंदी व हिंग्लिश (hi-IN • डिफ़ॉल्ट)", "hi-IN")
         self.combo_lang.addItem("English (en-IN)", "en-IN")
         l_idx = self.combo_lang.findData(cfg["voice_lang"])
@@ -165,29 +234,45 @@ class AISettingsDialog(QDialog):
             self.combo_lang.setCurrentIndex(l_idx)
         L.addWidget(self.combo_lang)
 
-        # Auto-Speak checkbox
+        # 6. Checkboxes (Level 4)
         self.chk_auto_speak = QCheckBox("🔊 AI उत्तर बोलकर सुनाए (Auto Speak / Voice Discussion)")
+        self.chk_auto_speak.setFont(QFont("Segoe UI", 14, QFont.Bold))
         self.chk_auto_speak.setChecked(cfg.get("auto_speak", True))
-        self.chk_auto_speak.setStyleSheet("color: #A6E3A1; font-weight: bold; font-size: 12px; margin-top: 2px;")
+        self.chk_auto_speak.setStyleSheet("color: #A6E3A1; margin-top: 4px;")
         L.addWidget(self.chk_auto_speak)
 
-        # Auto-Listen checkbox
+        self.chk_continuous = QCheckBox("🔄 सतत बातचीत मोड (Continuous Live Mode • उत्तर के बाद अपने आप फिर से सुनें)")
+        self.chk_continuous.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        self.chk_continuous.setChecked(cfg.get("continuous_mode", True))
+        self.chk_continuous.setStyleSheet("color: #89B4FA; margin-top: 2px;")
+        L.addWidget(self.chk_continuous)
+
         self.chk_auto = QCheckBox("कार्ड बदलते ही अपने आप सुनना शुरू करें (Auto Push-to-Talk)")
+        self.chk_auto.setFont(QFont("Segoe UI", 14, QFont.DemiBold))
         self.chk_auto.setChecked(cfg["auto_listen"])
-        self.chk_auto.setStyleSheet("color: #CDD6F4; font-size: 12px;")
+        self.chk_auto.setStyleSheet("color: #CDD6F4; margin-top: 2px;")
         L.addWidget(self.chk_auto)
 
         L.addStretch()
 
+        # 7. Action Buttons (Importance-Based Button Hierarchy)
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
         btn_row.addStretch()
+
         btn_cancel = QPushButton("रद्द करें")
         btn_cancel.setObjectName("btn_cancel")
+        btn_cancel.setFont(QFont("Segoe UI", 15, QFont.DemiBold))
+        btn_cancel.setFixedHeight(46)
+        btn_cancel.setCursor(QCursor(Qt.PointingHandCursor))
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
 
         btn_save = QPushButton("सहेजें (Save)")
         btn_save.setObjectName("btn_save")
+        btn_save.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        btn_save.setFixedHeight(46)
+        btn_save.setCursor(QCursor(Qt.PointingHandCursor))
         btn_save.clicked.connect(self._save)
         btn_row.addWidget(btn_save)
         L.addLayout(btn_row)
@@ -198,15 +283,15 @@ class AISettingsDialog(QDialog):
         count = len(keys)
         if count == 0:
             self.lbl_key_count.setText("⚠️ कोई API Key नहीं डाली गई है।")
-            self.lbl_key_count.setStyleSheet("font-size: 11px; color: #F38BA8;")
+            self.lbl_key_count.setStyleSheet("font-size: 13px; color: #F38BA8; font-weight: bold;")
         elif count == 1:
             self.lbl_key_count.setText("✅ 1 API Key सक्रिय (दैनिक कोटा: ~1,500 फ्री रिक्वेस्ट्स)")
-            self.lbl_key_count.setStyleSheet("font-size: 11px; color: #A6E3A1;")
+            self.lbl_key_count.setStyleSheet("font-size: 13px; color: #A6E3A1; font-weight: bold;")
         else:
             self.lbl_key_count.setText(
-                f"🚀 {count} API Keys पहचानी गईं! (दैनिक कोटा: ~{count * 1500:,} रिक्वेस्ट्स • ऑटो-फ़ेलओवर व लोड-बैलेंसिंग सक्रिय)"
+                f"🚀 {count} API Keys पहचानी गईं! (दैनिक कोटा: ~{count * 1500:,} रिक्वेस्ट्स • ऑटो-फ़ेलओवर सक्रिय)"
             )
-            self.lbl_key_count.setStyleSheet("font-size: 11px; color: #CBA6F7; font-weight: bold;")
+            self.lbl_key_count.setStyleSheet("font-size: 13.5px; color: #CBA6F7; font-weight: bold;")
 
     def _save(self):
         raw_keys = self.edit_keys.toPlainText().strip()
@@ -214,6 +299,7 @@ class AISettingsDialog(QDialog):
         lang = self.combo_lang.currentData()
         auto_l = self.chk_auto.isChecked()
         auto_sp = self.chk_auto_speak.isChecked()
+        cont_mode = self.chk_continuous.isChecked()
         tts_v = self.combo_tts_voice.currentData()
         tts_sp = self.combo_tts_speed.currentData()
         save_ai_settings(
@@ -222,6 +308,7 @@ class AISettingsDialog(QDialog):
             auto_listen=auto_l,
             voice_lang=lang,
             auto_speak=auto_sp,
+            continuous_mode=cont_mode,
             tts_voice=tts_v,
             tts_speed=tts_sp
         )
@@ -258,6 +345,7 @@ class AIBuddyDrawer(QFrame):
         self._worker = None
         self._voice_worker = None
         self._is_listening = False
+        self._continuous_active = False
 
         self._resizing = False
         self._drag_start_x = 0
@@ -390,6 +478,29 @@ class AIBuddyDrawer(QFrame):
 
         hdr.addStretch()
 
+        # Continuous Live Mode Toggle Button
+        self.btn_live_mode = QPushButton("🔁 लाइव बातचीत")
+        self.btn_live_mode.setObjectName("btn_live_mode")
+        self.btn_live_mode.setFixedHeight(28)
+        self.btn_live_mode.setToolTip("सतत बातचीत मोड (Continuous Live Mode • Alt+L)\nहाथों से मुक्त: आप बोलें ➔ AI बोलकर उत्तर देगा ➔ फिर बिना बटन दबाए अपने आप सुनेगा!")
+        self.btn_live_mode.setStyleSheet("""
+            QPushButton#btn_live_mode {
+                background: rgba(137, 180, 250, 0.12);
+                color: #89B4FA;
+                border: 1px solid rgba(137, 180, 250, 0.35);
+                border-radius: 14px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton#btn_live_mode:hover {
+                background: rgba(137, 180, 250, 0.25);
+                border-color: #89B4FA;
+            }
+        """)
+        self.btn_live_mode.clicked.connect(self.toggle_continuous_mode)
+        hdr.addWidget(self.btn_live_mode)
+
         # Audio Mute/Unmute Toggle
         cfg = get_ai_settings()
         self.btn_audio_toggle = QPushButton("🔊" if cfg.get("auto_speak", True) else "🔇")
@@ -490,17 +601,46 @@ class AIBuddyDrawer(QFrame):
 
         # Settings Button
         self.btn_settings = QPushButton("⚙️")
+        self.btn_settings.setObjectName("btn_settings")
         self.btn_settings.setFixedSize(28, 28)
+        self.btn_settings.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_settings.setToolTip("AI सेटिंग्स व API Key")
-        self.btn_settings.setStyleSheet("background:#313244;color:#CDD6F4;border:none;border-radius:4px;font-size:14px;")
+        self.btn_settings.setStyleSheet("""
+            QPushButton#btn_settings {
+                background: #313244;
+                color: #CDD6F4;
+                border: 1px solid #45475A;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            QPushButton#btn_settings:hover {
+                background: #45475A;
+                border-color: #89B4FA;
+            }
+        """)
         self.btn_settings.clicked.connect(self._open_settings)
         hdr.addWidget(self.btn_settings)
 
         # Close Button
         self.btn_close = QPushButton("✕")
+        self.btn_close.setObjectName("btn_close")
         self.btn_close.setFixedSize(28, 28)
+        self.btn_close.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_close.setToolTip("ड्रॉअर बंद करें (Alt+D या Esc)")
-        self.btn_close.setStyleSheet("background:#313244;color:#CDD6F4;border:none;border-radius:4px;font-size:14px;font-weight:bold;")
+        self.btn_close.setStyleSheet("""
+            QPushButton#btn_close {
+                background: #313244;
+                color: #CDD6F4;
+                border: 1px solid #45475A;
+                border-radius: 4px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton#btn_close:hover {
+                background: #F38BA8;
+                color: #11111B;
+            }
+        """)
         self.btn_close.clicked.connect(self.close_drawer)
         hdr.addWidget(self.btn_close)
         L.addLayout(hdr)
@@ -788,7 +928,16 @@ class AIBuddyDrawer(QFrame):
 
     def _on_speech_finished(self):
         self.btn_audio_stop.hide()
-        self._refresh_status_label()
+        if self._continuous_active and self.isVisible():
+            self.lbl_status.setText("🎙️ आपकी बारी • बोलिए (लाइव बातचीत)...")
+            self.lbl_status.setStyleSheet("font-size: 11px; color: #A6E3A1; font-weight: bold;")
+            QTimer.singleShot(400, self._auto_restart_voice_if_live)
+        else:
+            self._refresh_status_label()
+
+    def _auto_restart_voice_if_live(self):
+        if self._continuous_active and self.isVisible() and not self._is_listening and not self.tts_engine.is_speaking():
+            self._start_voice_input()
 
     def _on_speech_stopped(self):
         self.btn_audio_stop.hide()
@@ -804,6 +953,8 @@ class AIBuddyDrawer(QFrame):
         self._current_card = card
         self._active_box = active_box
         self._stop_speech()
+        if self._voice_worker and self._voice_worker.isRunning():
+            self._voice_worker.cancel()
 
         try:
             deck_name = getattr(self.rs, "deck_name", "") or (card.get("deck_name", "") if card else "")
@@ -823,7 +974,7 @@ class AIBuddyDrawer(QFrame):
 
         welcome_text = f"""
             📌 <b>सक्रिय प्रश्न:</b> {html.escape(q_text)}<br>
-            <i>माइक का बटन 🎙️ (या <b>Alt+V</b>) दबाकर अपना जवाब बोलें, या नीचे सवाल पूछें।</i>
+            <i>माइक का बटन 🎙️ (या <b>Alt+V</b> / <b>Alt+L</b>) दबाकर अपना जवाब बोलें, या नीचे सवाल पूछें।</i>
         """
         self._msg_counter += 1
         self._messages.append({
@@ -835,13 +986,17 @@ class AIBuddyDrawer(QFrame):
         self._render_chat()
 
         cfg = get_ai_settings()
-        if cfg["auto_listen"] and self.isVisible():
-            QTimer.singleShot(400, self._start_voice_input)
+        if (self._continuous_active or cfg["auto_listen"]) and self.isVisible():
+            QTimer.singleShot(400, self._auto_restart_voice_if_live if self._continuous_active else self._start_voice_input)
 
     def _open_settings(self):
-        dlg = AISettingsDialog(self)
-        dlg.settings_saved.connect(self._on_settings_saved)
-        dlg.exec_()
+        try:
+            dlg = AISettingsDialog(self)
+            dlg.settings_saved.connect(self._on_settings_saved)
+            dlg.exec_()
+        except Exception as e:
+            print(f"[AISettings] Error opening settings dialog: {e}")
+            self._show_toast(f"⚠️ सेटिंग्स खोलने में समस्या: {e}")
 
     def _on_settings_saved(self):
         cfg = get_ai_settings()
@@ -862,6 +1017,8 @@ class AIBuddyDrawer(QFrame):
         self.edit_input.setFocus()
 
     def close_drawer(self):
+        self._continuous_active = False
+        self._update_live_mode_ui()
         self._stop_speech()
         if self._voice_worker and self._voice_worker.isRunning():
             self._voice_worker.cancel()
@@ -877,8 +1034,15 @@ class AIBuddyDrawer(QFrame):
     # ── VOICE INPUT HANDLING ──────────────────────────────────────────────────
     def _toggle_voice_input(self):
         if self._is_listening:
+            if self._continuous_active:
+                self._continuous_active = False
+                self._update_live_mode_ui()
             self._stop_voice_input()
         else:
+            cfg = get_ai_settings()
+            if cfg.get("continuous_mode", False):
+                self._continuous_active = True
+                self._update_live_mode_ui()
             self._start_voice_input()
 
     def _start_voice_input(self):
@@ -890,16 +1054,38 @@ class AIBuddyDrawer(QFrame):
         self.btn_mic.setObjectName("btn_mic_active")
         self.btn_mic.setText("🔴")
         self.btn_mic.setStyleSheet("background: #F38BA8; color: #11111B; font-weight: bold;")
-        self.lbl_status.setText("🎙️ सुन रहा हूँ... (बोलिए)")
+
+        status_prefix = "🟢 [लाइव] " if self._continuous_active else "🎙️ "
+        self.lbl_status.setText(f"{status_prefix}सुन रहा हूँ... (बोलिए)")
         self.lbl_status.setStyleSheet("font-size: 11px; color: #F38BA8; font-weight: bold;")
 
-        self._voice_worker = VoiceInputWorker(language=cfg["voice_lang"], phrase_limit=20, parent=self)
-        self._voice_worker.listening_audio.connect(lambda: self.lbl_status.setText("🎙️ सुन रहा हूँ... (बोलिए)"))
+        self._voice_worker = VoiceInputWorker(
+            language=cfg["voice_lang"],
+            phrase_limit=60,
+            pause_threshold=2.0,
+            timeout=12,
+            parent=self
+        )
+        self._voice_worker.listening_audio.connect(self._on_voice_listening)
         self._voice_worker.transcribing_audio.connect(lambda: self.lbl_status.setText("⏳ ट्रांसक्राइब कर रहा हूँ..."))
         self._voice_worker.text_ready.connect(self._on_voice_text_ready)
+        self._voice_worker.timed_out.connect(self._on_voice_timed_out)
         self._voice_worker.error_occurred.connect(self._on_voice_error)
         self._voice_worker.finished.connect(self._on_voice_finished)
         self._voice_worker.start()
+
+    def _on_voice_listening(self):
+        status_prefix = "🟢 [लाइव] " if self._continuous_active else "🎙️ "
+        self.lbl_status.setText(f"{status_prefix}सुन रहा हूँ... (बोलिए)")
+        self.lbl_status.setStyleSheet("font-size: 11px; color: #F38BA8; font-weight: bold;")
+
+    def _on_voice_timed_out(self):
+        if self._continuous_active and self.isVisible():
+            self.lbl_status.setText("🟢 लाइव मोड सक्रिय • मैं सुन रहा हूँ...")
+            self.lbl_status.setStyleSheet("font-size: 11px; color: #A6E3A1;")
+            QTimer.singleShot(300, self._auto_restart_voice_if_live)
+        else:
+            self._refresh_status_label()
 
     def _stop_voice_input(self):
         if self._voice_worker and self._voice_worker.isRunning():
@@ -918,7 +1104,12 @@ class AIBuddyDrawer(QFrame):
         self._on_send_clicked()
 
     def _on_voice_error(self, err_msg: str):
-        self._append_system_bubble(err_msg)
+        if self._continuous_active and "साफ़ सुनाई नहीं दी" in err_msg:
+            self.lbl_status.setText("⚠️ आवाज़ स्पष्ट नहीं थी • कृपया दोबारा बोलें...")
+            self.lbl_status.setStyleSheet("font-size: 11px; color: #F9E2AF;")
+            QTimer.singleShot(800, self._auto_restart_voice_if_live)
+        else:
+            self._append_system_bubble(err_msg)
 
     # ── QUERY & CHAT HANDLING ─────────────────────────────────────────────────
     def _send_quick_prompt(self, mode: str):
@@ -961,6 +1152,9 @@ class AIBuddyDrawer(QFrame):
         cfg = get_ai_settings()
         if cfg.get("auto_speak", True):
             self.tts_engine.speak(reply_text, voice=cfg["tts_voice"], rate=cfg["tts_speed"])
+        elif self._continuous_active and self.isVisible():
+            # Auto-speak is OFF, wait 2.5s for user to read text, then resume listening
+            QTimer.singleShot(2500, self._auto_restart_voice_if_live)
 
     def _on_ai_error(self, err_msg: str):
         self._refresh_status_label()
@@ -1000,6 +1194,9 @@ class AIBuddyDrawer(QFrame):
     def cycle_api_key(self):
         """Manually cycle to the next API key in the pool and show toast/status."""
         new_idx, total, new_key = cycle_next_key()
+        if total == 0:
+            self._open_settings()
+            return
         if total <= 1:
             self._show_toast("🔑 केवल 1 Key उपलब्ध है (⚙️ सेटिंग्स में अन्य अकाउंट्स की Keys जोड़ें)")
             return
@@ -1023,11 +1220,11 @@ class AIBuddyDrawer(QFrame):
             self.lbl_status.setText(f"🟢 {cfg['model_name']} • तैयार")
             self.lbl_status.setStyleSheet("font-size: 11px; color: #A6ADC8;")
         else:
-            self.btn_key_toggle.setText("🔑 0 Keys")
+            self.btn_key_toggle.setText("🔑 Key जोड़ें")
             self.btn_key_toggle.show()
-            self.btn_key_toggle.setToolTip("कोई API Key नहीं है (⚙️ में जोड़ें)")
-            self.lbl_status.setText("🔴 API Key नहीं है")
-            self.lbl_status.setStyleSheet("font-size: 11px; color: #F38BA8;")
+            self.btn_key_toggle.setToolTip("कोई API Key नहीं है — क्लिक करके अपनी Google Gemini API Key जोड़ें")
+            self.lbl_status.setText("🔴 कोई Key नहीं (⚙️ दबाएँ)")
+            self.lbl_status.setStyleSheet("font-size: 11px; color: #F38BA8; font-weight: bold;")
 
     def _refresh_status_label(self):
         if self.tts_engine.is_speaking():
@@ -1054,9 +1251,74 @@ class AIBuddyDrawer(QFrame):
         else:
             self._append_system_bubble(message)
 
+    # ── CONTINUOUS LIVE CONVERSATION MODE ─────────────────────────────────────
+    def toggle_continuous_mode(self, force_state: bool = None):
+        if force_state is not None:
+            self._continuous_active = force_state
+        else:
+            self._continuous_active = not self._continuous_active
+
+        self._update_live_mode_ui()
+
+        if self._continuous_active:
+            self._show_toast("🟢 सतत बातचीत मोड चालू — अब बिना Alt+V दबाए लगातार बात करें!")
+            if not self._is_listening and not self.tts_engine.is_speaking():
+                self._start_voice_input()
+        else:
+            self._show_toast("⚪ सतत बातचीत मोड बंद")
+            if self._is_listening:
+                self._stop_voice_input()
+
+    def _update_live_mode_ui(self):
+        if not hasattr(self, "btn_live_mode"):
+            return
+        if self._continuous_active:
+            self.btn_live_mode.setText("🟢 लाइव मोड ON")
+            self.btn_live_mode.setStyleSheet("""
+                QPushButton#btn_live_mode {
+                    background: #A6E3A1;
+                    color: #11111B;
+                    border: 1.5px solid #A6E3A1;
+                    border-radius: 14px;
+                    padding: 2px 10px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                QPushButton#btn_live_mode:hover {
+                    background: #94E2D5;
+                }
+            """)
+        else:
+            self.btn_live_mode.setText("🔁 लाइव बातचीत")
+            self.btn_live_mode.setStyleSheet("""
+                QPushButton#btn_live_mode {
+                    background: rgba(137, 180, 250, 0.12);
+                    color: #89B4FA;
+                    border: 1px solid rgba(137, 180, 250, 0.35);
+                    border-radius: 14px;
+                    padding: 2px 10px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                QPushButton#btn_live_mode:hover {
+                    background: rgba(137, 180, 250, 0.25);
+                    border-color: #89B4FA;
+                }
+            """)
+
     def keyPressEvent(self, e):
         mods = e.modifiers()
         key = e.key()
+
+        if mods == Qt.AltModifier and key == Qt.Key_L:
+            self.toggle_continuous_mode()
+            e.accept()
+            return
+
+        if mods == Qt.AltModifier and key == Qt.Key_V:
+            self._toggle_voice_input()
+            e.accept()
+            return
 
         if mods == Qt.AltModifier and key == Qt.Key_K:
             self.cycle_api_key()

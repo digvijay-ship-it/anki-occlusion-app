@@ -240,10 +240,191 @@ class RichTextEdit(QTextEdit):
             return
         super().keyPressEvent(event)
 
+    def _extract_pixmap(self, image_name):
+        if not image_name:
+            return None
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QTextDocument
+        
+        # 1. Document in-memory resource cache
+        res = self.document().resource(QTextDocument.ImageResource, QUrl(image_name))
+        if res is not None:
+            if isinstance(res, QPixmap) and not res.isNull():
+                return res
+            if isinstance(res, QImage) and not res.isNull():
+                return QPixmap.fromImage(res)
+            if hasattr(res, "canConvert") and res.canConvert(QImage):
+                img = res.value()
+                if isinstance(img, QImage) and not img.isNull():
+                    return QPixmap.fromImage(img)
+
+        # 2. Clean URL / path
+        import urllib.parse
+        clean = urllib.parse.unquote(str(image_name)).strip()
+        if clean.startswith("file:///"):
+            clean = clean[8:]
+            if clean and clean[0] == '/' and len(clean) > 2 and clean[2] == ':':
+                clean = clean[1:]
+        elif clean.startswith("file://"):
+            clean = clean[7:]
+
+        # 3. Resolve through storage_paths
+        import os
+        from storage_paths import resolve_asset_path, archive_image_dir
+        abs_path = resolve_asset_path(clean)
+        if abs_path and os.path.exists(abs_path):
+            px = QPixmap(abs_path)
+            try:
+                is_null = bool(px.isNull())
+            except Exception:
+                is_null = False
+            if not is_null:
+                return px
+
+        # 4. Check archive image directory by filename
+        img_dir = archive_image_dir()
+        if img_dir:
+            cand = os.path.join(img_dir, os.path.basename(clean))
+            if os.path.exists(cand):
+                px = QPixmap(cand)
+                try:
+                    is_null = bool(px.isNull())
+                except Exception:
+                    is_null = False
+                if not is_null:
+                    return px
+
+        return None
+
+    def _set_clipboard_image(self, pixmap):
+        if pixmap is None or pixmap.isNull():
+            return False
+        from PyQt5.QtCore import QMimeData, QByteArray, QBuffer, QIODevice
+        from PyQt5.QtWidgets import QApplication
+
+        mime_data = QMimeData()
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.WriteOnly)
+        pixmap.toImage().save(buffer, "PNG")
+        png_bytes = bytes(data)
+
+        mime_data.setData("image/png", QByteArray(png_bytes))
+        mime_data.setImageData(pixmap.toImage())
+
+        clipboard = QApplication.clipboard()
+        clipboard.setMimeData(mime_data)
+        clipboard.setPixmap(pixmap)
+        return True
+
+    def _try_copy_image(self, cursor=None):
+        if cursor is None:
+            cursor = self.textCursor()
+
+        char_format = cursor.charFormat()
+        doc = self.document()
+        try:
+            pos = int(cursor.position())
+        except (TypeError, ValueError):
+            pos = 0
+        try:
+            char_count = int(doc.characterCount())
+        except (TypeError, ValueError):
+            char_count = 0
+
+        # 1. Direct charFormat
+        if hasattr(char_format, "isImageFormat") and char_format.isImageFormat():
+            px = self._extract_pixmap(char_format.toImageFormat().name())
+            if px:
+                return self._set_clipboard_image(px)
+
+        # 2. Check position immediately under / before / after cursor
+        for check_pos in [pos, pos - 1, pos + 1]:
+            if 0 <= check_pos < char_count:
+                temp = self.textCursor()
+                temp.setPosition(check_pos)
+                fmt = temp.charFormat()
+                if hasattr(fmt, "isImageFormat") and fmt.isImageFormat():
+                    px = self._extract_pixmap(fmt.toImageFormat().name())
+                    if px:
+                        return self._set_clipboard_image(px)
+
+        # 3. Check selection range
+        try:
+            has_sel = bool(cursor.hasSelection())
+        except Exception:
+            has_sel = False
+
+        if has_sel:
+            try:
+                start_pos = int(cursor.selectionStart())
+                end_pos = int(cursor.selectionEnd())
+            except (TypeError, ValueError):
+                start_pos, end_pos = 0, 0
+            temp = self.textCursor()
+            for p in range(start_pos, end_pos + 1):
+                if 0 <= p < char_count:
+                    temp.setPosition(p)
+                    fmt = temp.charFormat()
+                    if hasattr(fmt, "isImageFormat") and fmt.isImageFormat():
+                        px = self._extract_pixmap(fmt.toImageFormat().name())
+                        if px:
+                            return self._set_clipboard_image(px)
+
+        # 4. Check layout position under mouse cursor
+        try:
+            from PyQt5.QtGui import QCursor
+            from PyQt5.QtCore import QPointF
+            mouse_pos = self.mapFromGlobal(QCursor.pos())
+            if self.rect().contains(mouse_pos):
+                layout_pos = QPointF(
+                    mouse_pos.x() + self.horizontalScrollBar().value(),
+                    mouse_pos.y() + self.verticalScrollBar().value()
+                )
+                img_name = doc.documentLayout().imageAt(layout_pos)
+                if img_name:
+                    px = self._extract_pixmap(img_name)
+                    if px:
+                        return self._set_clipboard_image(px)
+        except Exception:
+            pass
+
+        # 5. If selection contains \ufffc or document has image
+        try:
+            sel_txt = str(cursor.selectedText() or "") if has_sel else ""
+        except Exception:
+            sel_txt = ""
+
+        if has_sel and '\ufffc' in sel_txt:
+            temp = self.textCursor()
+            for p in range(char_count):
+                temp.setPosition(p)
+                fmt = temp.charFormat()
+                if hasattr(fmt, "isImageFormat") and fmt.isImageFormat():
+                    px = self._extract_pixmap(fmt.toImageFormat().name())
+                    if px:
+                        return self._set_clipboard_image(px)
+
+        return False
+
     def copy(self):
         cursor = self.textCursor()
         if self._try_copy_image(cursor):
             return
+        try:
+            has_sel = bool(cursor.hasSelection())
+        except Exception:
+            has_sel = False
+        if has_sel:
+            try:
+                plain_text = str(cursor.selectedText() or "").replace('\u2029', '\n')
+                clean_text = plain_text.replace('\ufffc', '').strip()
+                if not clean_text:
+                    if self._try_copy_image(cursor):
+                        return
+                    return
+            except Exception:
+                pass
         super().copy()
 
     def cut(self):
@@ -251,60 +432,23 @@ class RichTextEdit(QTextEdit):
         if self._try_copy_image(cursor):
             cursor.removeSelectedText()
             return
-        super().cut()
-
-    def _try_copy_image(self, cursor):
-        char_format = cursor.charFormat()
-        # 2. Try character format after cursor (if not at end of document)
         try:
-            pos = cursor.position()
-            char_count = self.document().characterCount()
-            is_before_end = int(pos) < int(char_count)
-        except (TypeError, ValueError):
-            is_before_end = False
-        if not char_format.isImageFormat() and is_before_end:
-            temp = self.textCursor()
-            temp.setPosition(int(pos) + 1)
-            char_format = temp.charFormat()
-            
-        # 3. If there is a selection, check within the selection range
-        if not char_format.isImageFormat() and cursor.hasSelection():
-            start_pos = cursor.selectionStart()
-            end_pos = cursor.selectionEnd()
-            temp = self.textCursor()
-            for pos in range(start_pos + 1, end_pos + 1):
-                temp.setPosition(pos)
-                fmt = temp.charFormat()
-                if fmt.isImageFormat():
-                    char_format = fmt
-                    break
-            
-        if char_format.isImageFormat():
-            image_format = char_format.toImageFormat()
-            image_name = image_format.name()
-            
-            from storage_paths import resolve_asset_path
-            abs_path = resolve_asset_path(image_name)
-            import os
-            if abs_path and os.path.exists(abs_path):
-                pixmap = QPixmap(abs_path)
-                if not pixmap.isNull():
-                    from PyQt5.QtCore import QMimeData, QByteArray, QBuffer, QIODevice
-                    mime_data = QMimeData()
-                    
-                    data = QByteArray()
-                    buffer = QBuffer(data)
-                    buffer.open(QIODevice.WriteOnly)
-                    pixmap.toImage().save(buffer, "PNG")
-                    png_bytes = bytes(data)
-                    
-                    mime_data.setData("image/png", QByteArray(png_bytes))
-                    mime_data.setImageData(pixmap.toImage())
-                    
-                    clipboard = QApplication.clipboard()
-                    clipboard.setMimeData(mime_data)
-                    return True
-        return False
+            has_sel = bool(cursor.hasSelection())
+        except Exception:
+            has_sel = False
+        if has_sel:
+            try:
+                plain_text = str(cursor.selectedText() or "").replace('\u2029', '\n')
+                clean_text = plain_text.replace('\ufffc', '').strip()
+                if not clean_text:
+                    if self._try_copy_image(cursor):
+                        cursor.removeSelectedText()
+                        return
+                    cursor.removeSelectedText()
+                    return
+            except Exception:
+                pass
+        super().cut()
 
     def contextMenuEvent(self, event):
         cursor = self.cursorForPosition(event.pos())
@@ -439,9 +583,18 @@ class RichTextEdit(QTextEdit):
                 else:
                     QMessageBox.warning(self, "Error", "Could not save edited sketch.")
 
+    def canInsertFromMimeData(self, source):
+        if source.hasImage() or source.hasUrls() or source.hasText() or source.hasHtml():
+            return True
+        return super().canInsertFromMimeData(source)
+
     def insertFromMimeData(self, mimeData):
-        from PyQt5.QtGui import QImage
+        from PyQt5.QtGui import QImage, QPixmap
+        from PyQt5.QtWidgets import QApplication
+
         image = QImage()
+
+        # 1. Check direct image data
         if mimeData.hasImage():
             val = mimeData.imageData()
             if val is not None:
@@ -449,9 +602,23 @@ class RichTextEdit(QTextEdit):
             if not isinstance(image, QImage) or image.isNull():
                 image = QApplication.clipboard().image()
 
-        if not image.isNull():
+        # 2. Check raw format 'image/png'
+        if (image.isNull() or not isinstance(image, QImage)) and mimeData.hasFormat("image/png"):
+            image = QImage()
+            image.loadFromData(mimeData.data("image/png"))
+
+        # 3. Check clipboard pixmap
+        if image.isNull() or not isinstance(image, QImage):
+            px = QApplication.clipboard().pixmap()
+            if px and not px.isNull():
+                image = px.toImage()
+
+        # 4. If valid image found, insert it!
+        if isinstance(image, QImage) and not image.isNull():
             self.insert_qimage(image)
             return
+
+        # 5. Check local file URLs
         if mimeData.hasUrls():
             for url in mimeData.urls():
                 file_path = url.toLocalFile()
@@ -459,7 +626,26 @@ class RichTextEdit(QTextEdit):
                     ext = os.path.splitext(file_path.lower())[1]
                     if ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
                         self.insert_image_file(file_path)
-            return
+                        return
+
+        # 6. Check HTML containing <img src="...">
+        if mimeData.hasHtml():
+            html = mimeData.html()
+            import re
+            m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if m:
+                src = m.group(1)
+                px = self._extract_pixmap(src)
+                if px and not px.isNull():
+                    self.insert_qimage(px.toImage())
+                    return
+
+        # 7. Discard stray \ufffc character so [OBJ] is never pasted as text
+        if mimeData.hasText():
+            text = mimeData.text()
+            if text.replace('\ufffc', '').strip() == "" and '\ufffc' in text:
+                return
+
         super().insertFromMimeData(mimeData)
 
     def crop_image_borders(self, img_path):

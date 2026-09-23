@@ -349,7 +349,9 @@ class TestMCQCards(unittest.TestCase):
         for btn in widget._option_buttons:
             self.assertTrue(btn._show_hindi)
         self.assertIn('अनुप्रास अलंकार', widget._option_buttons[0].lbl_text.text())
+        self.assertIn('Repetition', widget._option_buttons[0].lbl_text.text())
         self.assertIn('पंचांग', widget._option_buttons[3].lbl_text.text())
+        self.assertIn('Calendar', widget._option_buttons[3].lbl_text.text())
 
         # Hide answer (Spacebar toggle back)
         widget.hide_answer()
