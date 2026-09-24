@@ -1555,11 +1555,12 @@ class ReviewScreen(QWidget):
     finished = pyqtSignal()
     cancelled = pyqtSignal()
     undo_requested_when_empty = pyqtSignal()
+    flow_tile_completed = pyqtSignal(object, int)  # (tile, cards_done)
     QUEUE_AUTO_HIDE_MS = 2000
     PRIORITY_PAGE_LIMIT = 16
-    FLOATING_TIMER_MASK_FONT_PX = 36
-    FLOATING_TIMER_SESSION_FONT_PX = 36
-    FLOATING_TIMER_TODAY_FONT_PX = 30
+    FLOATING_TIMER_MASK_FONT_PX = 33
+    FLOATING_TIMER_SESSION_FONT_PX = 33
+    FLOATING_TIMER_TODAY_FONT_PX = 27
 
     RATINGS = [
         ("1  🔁 Again", "danger", 1),
@@ -1865,6 +1866,12 @@ class ReviewScreen(QWidget):
         if self._session_target_goal > 0 and self._session_target_done >= self._session_target_goal:
             if not getattr(self, "_session_break_prompted", False):
                 self._session_break_prompted = True
+                if self.__dict__.get("_study_flow_context", None):
+                    if getattr(self, "mgr", None) is not None:
+                        self.mgr._rate(quality)
+                    tile = self.__dict__.get("_study_flow_context", {}).get("tile")
+                    self.flow_tile_completed.emit(tile, self._session_target_done)
+                    return
                 if getattr(self, "_auto_exit_on_session_target", True):
                     if getattr(self, "mgr", None) is not None:
                         self.mgr._rate(quality)
@@ -2158,17 +2165,69 @@ class ReviewScreen(QWidget):
 
     def _sync_floating_queue_count(self, total=None):
         queue_label = self.__dict__.get("_floating_timer_queue")
-        if queue_label is None:
-            return
-        count = self._active_queue_count() if total is None else int(total)
-        queue_label.setText(f"QUEUE ({max(0, count)})")
+        if queue_label is not None:
+            count = self._active_queue_count() if total is None else int(total)
+            queue_label.setText(f"QUEUE ({max(0, count)})")
+
+        target_label = self.__dict__.get("_floating_timer_target")
+        if target_label is not None:
+            goal = int(self.__dict__.get("_session_target_goal", 0) or 0)
+            done = int(self.__dict__.get("_session_target_done", 0) or 0)
+            if goal > 0:
+                rem = max(0, goal - done)
+                font_fam = self.__dict__.get("_floating_timer_font_family")
+                if not font_fam:
+                    is_dojo = bool(self.__dict__.get("is_dojo", False)) or (_is_dojo() if "_is_dojo" in globals() else False)
+                    from theme_manager import get_palette
+                    theme = str(self.__dict__.get("_theme", "classic") or "classic")
+                    p = get_palette(theme)
+                    hdr_font = p.get("header_font", "'Segoe UI'").split(",")[0].strip("'")
+                    font_fam = hdr_font if is_dojo else "'Segoe UI Mono','Courier New',monospace"
+                font_sz = "10px" if (bool(self.__dict__.get("is_dojo", False)) or (_is_dojo() if "_is_dojo" in globals() else False)) else "11px"
+                ctx = self.__dict__.get("_study_flow_context", None)
+                if ctx:
+                    tile_num = ctx.get("tile_index", 0) + 1
+                    total_t = ctx.get("total_tiles", 1)
+                    prefix = f"🎯 Tile {tile_num}/{total_t}"
+                else:
+                    prefix = "🎯"
+                if done >= goal:
+                    target_label.setText(f"{prefix} {done}/{goal} (GOAL MET! 🎉)")
+                    target_label.setStyleSheet(
+                        f"color:#50fa7b;background:transparent;border:none;"
+                        f"font-size:{font_sz};font-weight:bold;"
+                        f"font-family:{font_fam};margin-top:2px;"
+                    )
+                else:
+                    target_label.setText(f"{prefix} {done}/{goal} ({rem} left)")
+                    target_label.setStyleSheet(
+                        f"color:#00f0ff;background:transparent;border:none;"
+                        f"font-size:{font_sz};font-weight:bold;"
+                        f"font-family:{font_fam};margin-top:2px;"
+                    )
+                target_label.setVisible(True)
+                frame = self.__dict__.get("_floating_timer_frame")
+                if frame is not None:
+                    frame.adjustSize()
+            else:
+                target_label.setText("")
+                target_label.setVisible(False)
 
     def _sync_queue_timer_count(self, total=None):
         queue_label = self.__dict__.get("_queue_timer_count")
         if queue_label is None:
             return
         count = self._active_queue_count() if total is None else int(total)
-        queue_label.setText(f"TO REVIEW: {max(0, count)}")
+        goal = int(self.__dict__.get("_session_target_goal", 0) or 0)
+        done = int(self.__dict__.get("_session_target_done", 0) or 0)
+        if goal > 0:
+            rem = max(0, goal - done)
+            if done >= goal:
+                queue_label.setText(f"TO REVIEW: {max(0, count)} • 🎯 {done}/{goal} (DONE 🎉)")
+            else:
+                queue_label.setText(f"TO REVIEW: {max(0, count)} • 🎯 {done}/{goal} ({rem} left)")
+        else:
+            queue_label.setText(f"TO REVIEW: {max(0, count)}")
 
     def _init_review_profile(self, cards):
         from ui.review.profiler import init_review_profile
@@ -2215,8 +2274,10 @@ class ReviewScreen(QWidget):
         target_card_id=None,
         target_box_idx=None,
         target_box_id=None,
+        study_flow_context: dict = None,
     ):
         super().__init__(parent)
+        self._study_flow_context = study_flow_context
         self._init_review_profile(cards)
         from services.review_manager import ReviewSessionManager
 
@@ -4503,18 +4564,18 @@ class ReviewScreen(QWidget):
                 self._lbl_target_progress.setText(f"({self._session_target_done}/{self._session_target_goal})")
                 if self._session_target_done >= self._session_target_goal:
                     self._lbl_target_progress.setStyleSheet(
-                        "color: #50fa7b; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                        "color: #50fa7b; font-weight: bold; font-size: 12px; padding: 0 4px; background: transparent; border: none;"
                     )
                 else:
                     self._lbl_target_progress.setStyleSheet(
-                        "color: #bd93f9; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                        "color: #bd93f9; font-weight: bold; font-size: 12px; padding: 0 4px; background: transparent; border: none;"
                     )
                 self._lbl_target_progress.setVisible(True)
             else:
                 if self._session_target_done > 0:
                     self._lbl_target_progress.setText(f"({self._session_target_done})")
                     self._lbl_target_progress.setStyleSheet(
-                        "color: #6272a4; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                        "color: #6272a4; font-weight: bold; font-size: 12px; padding: 0 4px; background: transparent; border: none;"
                     )
                     self._lbl_target_progress.setVisible(True)
                 else:
@@ -4527,18 +4588,18 @@ class ReviewScreen(QWidget):
                 self._lbl_daily_target_progress.setText(f"({self._daily_reviews_done}/{self._daily_target_goal})")
                 if self._daily_reviews_done >= self._daily_target_goal:
                     self._lbl_daily_target_progress.setStyleSheet(
-                        "color: #ffb86c; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                        "color: #ffb86c; font-weight: bold; font-size: 12px; padding: 0 4px; background: transparent; border: none;"
                     )
                 else:
                     self._lbl_daily_target_progress.setStyleSheet(
-                        "color: #f1fa8c; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                        "color: #f1fa8c; font-weight: bold; font-size: 12px; padding: 0 4px; background: transparent; border: none;"
                     )
                 self._lbl_daily_target_progress.setVisible(True)
             else:
                 if self._daily_reviews_done > 0:
                     self._lbl_daily_target_progress.setText(f"({self._daily_reviews_done})")
                     self._lbl_daily_target_progress.setStyleSheet(
-                        "color: #6272a4; font-weight: bold; font-size: 11px; padding: 0 4px;"
+                        "color: #6272a4; font-weight: bold; font-size: 12px; padding: 0 4px; background: transparent; border: none;"
                     )
                     self._lbl_daily_target_progress.setVisible(True)
                 else:
@@ -4546,6 +4607,9 @@ class ReviewScreen(QWidget):
                     self._lbl_daily_target_progress.setVisible(False)
 
         self._update_silence_button_ui()
+        self._sync_floating_queue_count()
+        self._sync_queue_timer_count()
+        self._reposition_floating_timer()
 
     def _toggle_alerts_silenced(self):
         new_state = not getattr(self, "_session_alerts_silenced", False)
@@ -6399,6 +6463,11 @@ class ReviewScreen(QWidget):
         theme = getattr(app, "_active_theme", "classic")
         self._theme = theme
         p = get_palette(theme)
+        try:
+            from PyQt5.QtWidgets import QToolTip
+            QToolTip.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
+        except Exception:
+            pass
 
         is_cyan_theme = theme in ("manhattan", "tmnt")
         hover_bg_raw = "0, 240, 255" if is_cyan_theme else "114, 255, 79"
@@ -6801,95 +6870,148 @@ class ReviewScreen(QWidget):
                 f"QProgressBar{{background:{card};border-radius:4px;}}"
                 f"QProgressBar::chunk{{background:{accent};border-radius:4px;}}"
             )
+        self.prog.setMinimumWidth(50)
         row2.addWidget(self.prog, stretch=1)
 
         # ── Group: Session Target Setter ──────────────────────────────────
-        _lbl_target_icon = QLabel("🎯 SESS")
-        _lbl_target_icon.setToolTip("Set card target for this session (e.g. 25, 30)")
+        _pill_sess = QFrame()
+        _pill_sess.setObjectName("pill_sess")
+        _pill_sess.setStyleSheet(
+            f"QFrame#pill_sess {{"
+            f"  background: rgba(80, 250, 123, 0.08);"
+            f"  border: 1px solid rgba(80, 250, 123, 0.35);"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+        _pill_sess_l = QHBoxLayout(_pill_sess)
+        _pill_sess_l.setContentsMargins(6, 2, 6, 2)
+        _pill_sess_l.setSpacing(5)
+
+        ctx = getattr(self, "_study_flow_context", None)
+        if ctx:
+            tile_num = ctx.get("tile_index", 0) + 1
+            total_t = ctx.get("total_tiles", 1)
+            t_obj = ctx.get("tile", None)
+            t_name = getattr(t_obj, "deck_name", "") if t_obj else ""
+            _lbl_target_icon = QLabel(f"🎯 Tile {tile_num}/{total_t}: {t_name}")
+        else:
+            _lbl_target_icon = QLabel("🎯 Session Limit:")
+        _lbl_target_icon.setToolTip(
+            "🎯 Session Limit\n"
+            "• Set how many cards to study in this session (e.g. 25).\n"
+            "• Enter 0 or leave empty to disable.\n"
+            "• Live progress updates in the top bar and Study Timer."
+        )
         _lbl_target_icon.setStyleSheet(
-            f"color:#50fa7b;background:transparent;"
-            f"font-size:{'7px' if dojo else '9px'};"
-            f"font-weight:bold;letter-spacing:1px;margin-left:3px;"
+            f"color:#50fa7b;background:transparent;border:none;"
+            f"font-size:12px;font-weight:bold;letter-spacing:0.5px;"
             + (f"font-family:{font};" if dojo else "")
         )
-        row2.addWidget(_lbl_target_icon)
+        _pill_sess_l.addWidget(_lbl_target_icon)
 
         self._inp_target = QLineEdit()
-        self._inp_target.setPlaceholderText("Sess")
-        self._inp_target.setToolTip("Set card target for this session (e.g. 25). Enter 0 or leave empty to disable.")
-        self._inp_target.setFixedWidth(46)
-        self._inp_target.setFixedHeight(24 if dojo else 26)
+        self._inp_target.setPlaceholderText("25")
+        self._inp_target.setToolTip(
+            "🎯 Session Limit\n"
+            "• Set how many cards to study in this session (e.g. 25).\n"
+            "• Enter 0 or leave empty to disable."
+        )
+        self._inp_target.setFixedWidth(48)
+        self._inp_target.setFixedHeight(26)
         self._inp_target.setAlignment(Qt.AlignCenter)
         self._inp_target.setValidator(QIntValidator(0, 9999, self))
         if dojo:
             self._inp_target.setStyleSheet(
                 f"QLineEdit{{background:{card};color:#50fa7b;font-weight:bold;"
                 f"border:1.5px solid #50fa7b;border-radius:3px;"
-                f"font-size:11px;font-family:{font};padding:0 2px;}}"
+                f"font-size:13px;font-family:{font};padding:0 2px;}}"
                 f"QLineEdit:focus{{border:2px solid #50fa7b;background:#1e1f29;}}"
             )
         else:
             self._inp_target.setStyleSheet(
                 f"QLineEdit{{background:{card};color:#50fa7b;font-weight:bold;"
                 f"border:1.5px solid #50fa7b;border-radius:4px;"
-                f"font-size:11px;padding:0 2px;}}"
+                f"font-size:13px;padding:0 2px;}}"
                 f"QLineEdit:focus{{border:2px solid #50fa7b;background:#1e1f29;}}"
             )
         self._inp_target.textChanged.connect(self._on_target_input_changed)
-        row2.addWidget(self._inp_target)
+        _pill_sess_l.addWidget(self._inp_target)
 
         self._lbl_target_progress = QLabel("")
         self._lbl_target_progress.setStyleSheet(
-            f"color:#50fa7b;font-size:{'9px' if dojo else '11px'};font-weight:bold;padding:0 2px;"
+            f"color:#50fa7b;font-size:12px;font-weight:bold;padding:0 3px;background:transparent;border:none;"
             + (f"font-family:{font};" if dojo else "")
         )
         self._lbl_target_progress.setVisible(False)
-        row2.addWidget(self._lbl_target_progress)
+        _pill_sess_l.addWidget(self._lbl_target_progress)
+        row2.addWidget(_pill_sess)
 
         # ── Group: Daily Target Setter ────────────────────────────────────
-        _lbl_daily_icon = QLabel("📅 DAILY")
-        _lbl_daily_icon.setToolTip("Set total daily card limit for today across all decks (e.g. 100)")
+        _pill_daily = QFrame()
+        _pill_daily.setObjectName("pill_daily")
+        _pill_daily.setStyleSheet(
+            f"QFrame#pill_daily {{"
+            f"  background: rgba(255, 184, 108, 0.08);"
+            f"  border: 1px solid rgba(255, 184, 108, 0.35);"
+            f"  border-radius: 6px;"
+            f"}}"
+        )
+        _pill_daily_l = QHBoxLayout(_pill_daily)
+        _pill_daily_l.setContentsMargins(6, 2, 6, 2)
+        _pill_daily_l.setSpacing(5)
+
+        _lbl_daily_icon = QLabel("📅 Daily Limit:")
+        _lbl_daily_icon.setToolTip(
+            "📅 Daily Limit\n"
+            "• Set total daily card limit for today across all decks (e.g. 100).\n"
+            "• Enter 0 or leave empty to disable."
+        )
         _lbl_daily_icon.setStyleSheet(
-            f"color:#ffb86c;background:transparent;"
-            f"font-size:{'7px' if dojo else '9px'};"
-            f"font-weight:bold;letter-spacing:1px;margin-left:4px;"
+            f"color:#ffb86c;background:transparent;border:none;"
+            f"font-size:12px;font-weight:bold;letter-spacing:0.5px;"
             + (f"font-family:{font};" if dojo else "")
         )
-        row2.addWidget(_lbl_daily_icon)
+        _pill_daily_l.addWidget(_lbl_daily_icon)
 
         self._inp_daily_target = QLineEdit()
-        self._inp_daily_target.setPlaceholderText("Daily")
-        self._inp_daily_target.setToolTip("Set total daily card limit for today (e.g. 100). Enter 0 or leave empty to disable.")
-        self._inp_daily_target.setFixedWidth(50)
-        self._inp_daily_target.setFixedHeight(24 if dojo else 26)
+        self._inp_daily_target.setPlaceholderText("100")
+        self._inp_daily_target.setToolTip(
+            "📅 Daily Limit\n"
+            "• Set total daily card limit for today (e.g. 100).\n"
+            "• Enter 0 or leave empty to disable."
+        )
+        self._inp_daily_target.setFixedWidth(52)
+        self._inp_daily_target.setFixedHeight(26)
         self._inp_daily_target.setAlignment(Qt.AlignCenter)
         self._inp_daily_target.setValidator(QIntValidator(0, 9999, self))
         if dojo:
             self._inp_daily_target.setStyleSheet(
                 f"QLineEdit{{background:{card};color:#ffb86c;font-weight:bold;"
                 f"border:1.5px solid #ffb86c;border-radius:3px;"
-                f"font-size:11px;font-family:{font};padding:0 2px;}}"
+                f"font-size:13px;font-family:{font};padding:0 2px;}}"
                 f"QLineEdit:focus{{border:2px solid #ffb86c;background:#1e1f29;}}"
             )
         else:
             self._inp_daily_target.setStyleSheet(
                 f"QLineEdit{{background:{card};color:#ffb86c;font-weight:bold;"
                 f"border:1.5px solid #ffb86c;border-radius:4px;"
-                f"font-size:11px;padding:0 2px;}}"
+                f"font-size:13px;padding:0 2px;}}"
                 f"QLineEdit:focus{{border:2px solid #ffb86c;background:#1e1f29;}}"
             )
         self._inp_daily_target.textChanged.connect(self._on_daily_target_input_changed)
-        row2.addWidget(self._inp_daily_target)
+        _pill_daily_l.addWidget(self._inp_daily_target)
 
         self._lbl_daily_target_progress = QLabel("")
         self._lbl_daily_target_progress.setStyleSheet(
-            f"color:#ffb86c;font-size:{'9px' if dojo else '11px'};font-weight:bold;padding:0 2px;"
+            f"color:#ffb86c;font-size:12px;font-weight:bold;padding:0 3px;background:transparent;border:none;"
             + (f"font-family:{font};" if dojo else "")
         )
         self._lbl_daily_target_progress.setVisible(False)
-        row2.addWidget(self._lbl_daily_target_progress)
+        _pill_daily_l.addWidget(self._lbl_daily_target_progress)
+        row2.addWidget(_pill_daily)
 
         self._btn_silence_alerts = QPushButton("🔔")
+        self._btn_silence_alerts.setToolTip("Toggle target achievement notification sound & alerts")
         self._btn_silence_alerts.setFixedHeight(24 if dojo else 26)
         self._btn_silence_alerts.setFixedWidth(28)
         self._btn_silence_alerts.setCursor(Qt.PointingHandCursor)
@@ -7465,6 +7587,7 @@ class ReviewScreen(QWidget):
         self._floating_timer_session = None
         self._floating_timer_today = None
         self._floating_timer_queue = None
+        self._floating_timer_target = None
         if self._stimer:
             floating_timer = DraggableFrame(
                 self._canvas_stage,
@@ -7490,6 +7613,8 @@ class ReviewScreen(QWidget):
             self._floating_timer_queue = QLabel(
                 f"QUEUE ({self._active_queue_count()})"
             )
+            self._floating_timer_target = QLabel("")
+            self._floating_timer_target.setVisible(False)
             self._floating_timer_mask.setToolTip("Time spent on current question")
             self._floating_timer_session.setToolTip("Current review session time")
             self._floating_timer_today.setToolTip("Total focus time today")
@@ -7497,53 +7622,67 @@ class ReviewScreen(QWidget):
                 is_ps = (font == "Press Start 2P")
                 fw = "normal" if is_ps else "bold"
                 q_sz = "8px" if is_ps else "10px"
+                timer_font_fam = font
+                self._floating_timer_font_family = timer_font_fam
                 self._floating_timer_mask.setStyleSheet(
                     f"color:{orange};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_MASK_FONT_PX}px;"
-                    f"font-weight:{fw};font-family:{font};"
+                    f"font-weight:{fw};font-family:{timer_font_fam};"
                 )
                 self._floating_timer_session.setStyleSheet(
                     f"color:{accent};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_SESSION_FONT_PX}px;"
-                    f"font-weight:{fw};font-family:{font};"
+                    f"font-weight:{fw};font-family:{timer_font_fam};"
                 )
                 self._floating_timer_today.setStyleSheet(
                     f"color:{accent2};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_TODAY_FONT_PX}px;"
-                    f"font-weight:{fw};font-family:{font};"
+                    f"font-weight:{fw};font-family:{timer_font_fam};"
                 )
                 self._floating_timer_queue.setStyleSheet(
                     f"color:{subtext};background:transparent;border:none;"
                     f"font-size:{q_sz};font-weight:{fw};font-family:{font};"
                 )
+                self._floating_timer_target.setStyleSheet(
+                    f"color:#50fa7b;background:transparent;border:none;"
+                    f"font-size:{q_sz};font-weight:{fw};font-family:{timer_font_fam};margin-top:2px;"
+                )
             else:
+                timer_font_fam = "'Segoe UI Mono','Courier New',monospace"
+                self._floating_timer_font_family = timer_font_fam
                 self._floating_timer_mask.setStyleSheet(
                     f"color:{orange};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_MASK_FONT_PX}px;"
                     "font-weight:bold;"
-                    "font-family:'Segoe UI Mono','Courier New',monospace;"
+                    f"font-family:{timer_font_fam};"
                 )
                 self._floating_timer_session.setStyleSheet(
                     "color:#CDD6F4;background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_SESSION_FONT_PX}px;"
                     "font-weight:bold;"
-                    "font-family:'Segoe UI Mono','Courier New',monospace;"
+                    f"font-family:{timer_font_fam};"
                 )
                 self._floating_timer_today.setStyleSheet(
                     f"color:{subtext};background:transparent;border:none;"
                     f"font-size:{self.FLOATING_TIMER_TODAY_FONT_PX}px;"
                     "font-weight:bold;"
-                    "font-family:'Segoe UI Mono','Courier New',monospace;"
+                    f"font-family:{timer_font_fam};"
                 )
                 self._floating_timer_queue.setStyleSheet(
                     f"color:{subtext};background:transparent;border:none;"
                     "font-size:11px;font-weight:bold;"
-                    "font-family:'Segoe UI Mono','Courier New',monospace;"
+                    f"font-family:{timer_font_fam};"
+                )
+                self._floating_timer_target.setStyleSheet(
+                    "color:#50fa7b;background:transparent;border:none;"
+                    "font-size:11px;font-weight:bold;"
+                    f"font-family:{timer_font_fam};margin-top:2px;"
                 )
             ft_l.addWidget(self._floating_timer_mask)
             ft_l.addWidget(self._floating_timer_session)
             ft_l.addWidget(self._floating_timer_today)
             ft_l.addWidget(self._floating_timer_queue)
+            ft_l.addWidget(self._floating_timer_target)
             floating_timer.hide()
             self._floating_timer_frame = floating_timer
             self._floating_timer_sync_timer = QTimer(self)
@@ -11138,6 +11277,11 @@ class ReviewScreen(QWidget):
             PAGE_CACHE.resume_disk_writes()
         except Exception:
             pass
+
+        if self.__dict__.get("_study_flow_context", None):
+            tile = self.__dict__.get("_study_flow_context", {}).get("tile")
+            self.flow_tile_completed.emit(tile, int(self.__dict__.get("_session_target_done", 0) or 0))
+            return
 
         self.finished.emit()
 

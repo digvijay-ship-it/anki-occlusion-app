@@ -322,6 +322,18 @@ QMainWindow, QDialog {{ background: {p['C_BG']}; color: {p['C_TEXT']}; }}
 QWidget {{ background: {p['C_BG']}; color: {p['C_TEXT']}; font-family: {bf}; font-size: {font_size}px; }}
 QFrame {{ background: {p['C_SURFACE']}; border: none; border-radius: {btn_radius}; }}
 
+/* Universal Anti-Squint Dark-Mode Tooltip */
+QToolTip {{
+    background-color: {p['C_SURFACE'] if mode != 'classic' else '#1e1f29'};
+    color: #ffffff;
+    border: 1.5px solid {p['C_ACCENT']};
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-family: {bf};
+    font-size: 14px;
+    font-weight: 600;
+}}
+
 /* Top Bar and Panels */
 QFrame#top_bar {{
     background: {p['C_SURFACE']};

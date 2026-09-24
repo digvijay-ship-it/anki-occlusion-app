@@ -3448,6 +3448,31 @@ class TMNTTopBar(QFrame):
             )
         )
         btn_fsrs.clicked.connect(self._open_fsrs_center)
+        btn_flow = self._make_nav_button("🎯 STUDY FLOW", "Daily Study Playlist & Auto-Flow Planner")
+        btn_flow.setStyleSheet(
+            _scale_ss(
+                f"""
+                QPushButton {{
+                    background: rgba(57, 255, 20, 0.12);
+                    color: {T_GREEN};
+                    border: 1px solid rgba(57, 255, 20, 0.45);
+                    border-radius: 4px;
+                    font-family: 'Segoe UI Emoji', 'Segoe UI Symbol', {T_MONO};
+                    font-size: 11px;
+                    font-weight: bold;
+                    padding: 5px 12px;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(57, 255, 20, 0.28);
+                    border: 1px solid {T_GREEN};
+                    color: #FFFFFF;
+                }}
+            """,
+                self._scale,
+            )
+        )
+        btn_flow.clicked.connect(self._open_study_flow_center)
         btn_report.setStyleSheet(
             _scale_ss(
                 f"""
@@ -3486,7 +3511,7 @@ class TMNTTopBar(QFrame):
         center_l.setContentsMargins(0, 0, 0, 0)
         center_l.setSpacing(_px(10, self._scale))
         center_l.addStretch()
-        for b in (btn_math, btn_fsrs, btn_journal, btn_report, self._more_btn):
+        for b in (btn_flow, btn_math, btn_fsrs, btn_journal, btn_report, self._more_btn):
             b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             center_l.addWidget(b, 0, Qt.AlignCenter)
         center_l.addStretch()
@@ -5152,6 +5177,21 @@ class TMNTTopBar(QFrame):
             import logging
             logging.getLogger(__name__).error("Failed to open FSRSCenterDialog: %s", e, exc_info=True)
 
+    def _open_study_flow_center(self):
+        try:
+            from ui.study_flow_dialog import StudyFlowDialog
+            dlg = StudyFlowDialog(parent=self.window())
+            dlg.flow_started.connect(self._start_study_flow_from_dialog)
+            dlg.exec_()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Failed to open StudyFlowDialog: %s", e, exc_info=True)
+
+    def _start_study_flow_from_dialog(self, plan):
+        home = self._find_home()
+        if home and hasattr(home, "start_study_flow"):
+            home.start_study_flow(plan)
+
     def _advance_brand_glitch(self):
         strengths = [7, 5, 8, 4, 6, 7]
         import random
@@ -5442,6 +5482,19 @@ class TMNTHomeLayout(QWidget):
             QTimer.singleShot(500, self._hover_timer.start)
 
     def _check_sidebar_hover(self):
+        # 1. Do not process hover if any modal dialog (e.g. StudyFlowDialog, FSRSCenterDialog) is open
+        if QApplication.activeModalWidget() is not None:
+            if getattr(self, "_sidebar_expanded", False):
+                self._collapse_sidebar()
+            return
+
+        # 2. Do not process hover if the window is inactive/in background
+        win = self.window()
+        if win and not win.isActiveWindow():
+            if getattr(self, "_sidebar_expanded", False):
+                self._collapse_sidebar()
+            return
+
         if not hasattr(self, "sidebar") or not self.sidebar.isVisible():
             return
         body = getattr(self, "_body_w", None)
@@ -5514,6 +5567,11 @@ class TMNTHomeLayout(QWidget):
             pass
 
     def _expand_sidebar(self):
+        if QApplication.activeModalWidget() is not None:
+            return
+        win = self.window()
+        if win and not win.isActiveWindow():
+            return
         if self._sidebar_expanded:
             return
         self._sidebar_expanded = True

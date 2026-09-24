@@ -1611,6 +1611,7 @@ class HomeScreen(QWidget):
         target_card_id=None,
         target_box_idx=None,
         target_box_id=None,
+        study_flow_context=None,
     ):
         """Replace the DeckView panel with ReviewScreen inline."""
         _save_done = [False]
@@ -1639,6 +1640,7 @@ class HomeScreen(QWidget):
             target_card_id=target_card_id,
             target_box_idx=target_box_idx,
             target_box_id=target_box_id,
+            study_flow_context=study_flow_context,
         )
         self._active_review = rev
 
@@ -1650,6 +1652,12 @@ class HomeScreen(QWidget):
             if not _save_done[0]:
                 _save_done[0] = True
                 _schedule_review_save()
+
+            if getattr(self, "_study_flow_plan", None) and getattr(rev, "_study_flow_context", None):
+                tile = rev._study_flow_context.get("tile")
+                count = getattr(rev, "_session_target_done", 0)
+                self._handle_study_flow_tile_completed(tile, count)
+                return
 
             # Preserve sequential session target progress and silence status
             self._sequential_session_done = getattr(rev, "_session_target_done", 0)
@@ -1689,11 +1697,21 @@ class HomeScreen(QWidget):
             self._sequential_alerts_silenced = False
             self._sequential_deck_id = None
             self._sequential_deck_name = None
+            if getattr(self, "_study_flow_plan", None):
+                curr_tile = self._study_flow_plan.get_current_tile()
+                if curr_tile:
+                    curr_tile.completed_cards = max(curr_tile.completed_cards, getattr(rev, "_session_target_done", 0))
+                    from services.study_flow_service import StudyFlowService
+                    StudyFlowService.save_today_plan(self._study_flow_plan)
+                self._study_flow_plan = None
+                self._study_flow_excluded_ids = set()
             self.hide_review()
 
         rev.finished.connect(_on_finished)
         rev.cancelled.connect(_on_cancelled)
         rev.undo_requested_when_empty.connect(self._handle_sequential_undo)
+        if getattr(rev, "flow_tile_completed", None) is not None:
+            rev.flow_tile_completed.connect(self._handle_study_flow_tile_completed)
 
         if is_retro_theme(self._current_theme) and self._ensure_tmnt_layout():
             # TMNT: push review into body stack slot 2
@@ -1882,6 +1900,139 @@ class HomeScreen(QWidget):
             deck_id=getattr(self, "_sequential_deck_id", None),
             deck_name=getattr(self, "_sequential_deck_name", None),
         )
+
+    # ── Study Flow Orchestration ─────────────────────────────────────────────
+
+    def start_study_flow(self, plan=None):
+        """Begin continuous multi-subject study flow with automated tile transitions."""
+        from services.study_flow_service import StudyFlowService
+        if plan is None:
+            plan = StudyFlowService.get_or_create_today_plan()
+        if not plan.tiles:
+            self.open_study_flow_dialog()
+            return
+
+        self._study_flow_plan = plan
+        self._study_flow_excluded_ids = set()
+        self._study_flow_in_transition = False
+        self._launch_study_flow_tile()
+
+    def open_study_flow_dialog(self):
+        """Open the Daily Study Flow & Playlist Planner modal."""
+        from ui.study_flow_dialog import StudyFlowDialog
+        dlg = StudyFlowDialog(parent=self.window())
+        dlg.flow_started.connect(self.start_study_flow)
+        dlg.exec_()
+
+    def _launch_study_flow_tile(self):
+        """Load and launch the current study flow tile directly into ReviewScreen."""
+        if not getattr(self, "_study_flow_plan", None):
+            return
+
+        current_tile = self._study_flow_plan.get_current_tile()
+        if not current_tile or self._study_flow_plan.is_all_completed:
+            from ui.study_flow_transition_dialog import FlowTransitionDialog
+            dlg = FlowTransitionDialog(parent=self.window(), is_grand_finish=True)
+            dlg.exec_()
+            self._study_flow_plan = None
+            self._study_flow_excluded_ids = set()
+            return
+
+        from services.study_flow_service import StudyFlowService
+        if not hasattr(self, "_study_flow_excluded_ids") or self._study_flow_excluded_ids is None:
+            self._study_flow_excluded_ids = set()
+
+        cards = StudyFlowService.get_cards_for_tile(
+            current_tile,
+            self._data,
+            excluded_card_ids=self._study_flow_excluded_ids,
+        )
+
+        if not cards:
+            # If no eligible cards found (e.g. deck already completed today), advance to next tile
+            is_all_done, _, next_tile = StudyFlowService.advance_tile_progress(current_tile.id, 0)
+            if not is_all_done and next_tile:
+                self._launch_study_flow_tile()
+            else:
+                from ui.study_flow_transition_dialog import FlowTransitionDialog
+                dlg = FlowTransitionDialog(parent=self.window(), is_grand_finish=True)
+                dlg.exec_()
+                self._study_flow_plan = None
+            return
+
+        ctx = {
+            "tile": current_tile,
+            "tile_index": self._study_flow_plan.current_tile_idx,
+            "total_tiles": len(self._study_flow_plan.tiles),
+        }
+
+        is_practice = (current_tile.mode == "all")
+        is_new_only = (current_tile.mode == "new")
+
+        self.show_review(
+            cards,
+            self._data,
+            is_practice=is_practice,
+            is_new_only=is_new_only,
+            default_session_target=current_tile.target_cards,
+            auto_exit_session=True,
+            deck_id=current_tile.deck_id,
+            deck_name=current_tile.deck_name,
+            study_flow_context=ctx,
+        )
+
+    def _handle_study_flow_tile_completed(self, tile, reviewed_count):
+        """Handle completion of a tile: flush memory and display transition interstitial."""
+        if not getattr(self, "_study_flow_plan", None) or getattr(self, "_study_flow_in_transition", False):
+            return
+        self._study_flow_in_transition = True
+
+        from services.study_flow_service import StudyFlowService
+        from ui.study_flow_transition_dialog import FlowTransitionDialog
+
+        # Advance progress in service
+        is_all_done, completed_tile, next_tile = StudyFlowService.advance_tile_progress(tile.id, reviewed_count)
+
+        # Clear process RAM and PyMuPDF caches
+        from cache_manager import PAGE_CACHE, PIXMAP_REGISTRY
+        PAGE_CACHE.clear_ram_only()
+        for label in list(PIXMAP_REGISTRY._entries.keys()):
+            PIXMAP_REGISTRY.unregister(label)
+        try:
+            import fitz
+            fitz.TOOLS.store_shrink(100)
+        except Exception:
+            pass
+        from PyQt5.QtGui import QPixmapCache
+        QPixmapCache.clear()
+
+        # Hide current review
+        self.hide_review()
+
+        # Show transition dialog
+        dlg = FlowTransitionDialog(
+            parent=self.window(),
+            completed_tile=completed_tile or tile,
+            next_tile=next_tile,
+            current_idx=self._study_flow_plan.current_tile_idx,
+            total_tiles=len(self._study_flow_plan.tiles),
+            is_grand_finish=is_all_done or (next_tile is None),
+        )
+
+        def _proceed_to_next():
+            self._study_flow_in_transition = False
+            if not is_all_done and next_tile is not None:
+                QTimer.singleShot(50, self._launch_study_flow_tile)
+            else:
+                self._study_flow_plan = None
+                self._study_flow_excluded_ids = set()
+
+        def _pause_flow():
+            self._study_flow_in_transition = False
+
+        dlg.next_tile_accepted.connect(_proceed_to_next)
+        dlg.flow_paused.connect(_pause_flow)
+        dlg.exec_()
 
     def hide_review(self):
         """Restore layout after review ends."""

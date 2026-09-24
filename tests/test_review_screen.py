@@ -703,9 +703,60 @@ class ReviewScreenRatingButtonTests(unittest.TestCase):
         self.assertEqual(screen._floating_timer_mask.text(), "0:00:15")
         self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (5)")
 
+    def test_floating_timer_session_target_in_progress(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._floating_timer_queue = QLabel()
+        screen._floating_timer_target = QLabel()
+        screen._queue_timer_count = QLabel()
+        screen._session_target_goal = 25
+        screen._session_target_done = 8
+        screen._active_queue_count = MagicMock(return_value=5)
+
+        screen._sync_floating_queue_count()
+        screen._sync_queue_timer_count()
+
+        self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (5)")
+        self.assertEqual(screen._floating_timer_target.text(), "🎯 8/25 (17 left)")
+        self.assertTrue(screen._floating_timer_target.isVisible())
+        self.assertEqual(screen._queue_timer_count.text(), "TO REVIEW: 5 • 🎯 8/25 (17 left)")
+
+    def test_floating_timer_session_target_goal_met(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._floating_timer_queue = QLabel()
+        screen._floating_timer_target = QLabel()
+        screen._queue_timer_count = QLabel()
+        screen._session_target_goal = 25
+        screen._session_target_done = 25
+        screen._active_queue_count = MagicMock(return_value=2)
+
+        screen._sync_floating_queue_count()
+        screen._sync_queue_timer_count()
+
+        self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (2)")
+        self.assertEqual(screen._floating_timer_target.text(), "🎯 25/25 (GOAL MET! 🎉)")
+        self.assertTrue(screen._floating_timer_target.isVisible())
+        self.assertEqual(screen._queue_timer_count.text(), "TO REVIEW: 2 • 🎯 25/25 (DONE 🎉)")
+
+    def test_floating_timer_session_target_hidden_when_disabled(self):
+        screen = ReviewScreen.__new__(ReviewScreen)
+        screen._floating_timer_queue = QLabel()
+        screen._floating_timer_target = QLabel()
+        screen._queue_timer_count = QLabel()
+        screen._session_target_goal = 0
+        screen._session_target_done = 5
+        screen._active_queue_count = MagicMock(return_value=10)
+
+        screen._sync_floating_queue_count()
+        screen._sync_queue_timer_count()
+
+        self.assertEqual(screen._floating_timer_queue.text(), "QUEUE (10)")
+        self.assertEqual(screen._floating_timer_target.text(), "")
+        self.assertFalse(screen._floating_timer_target.isVisible())
+        self.assertEqual(screen._queue_timer_count.text(), "TO REVIEW: 10")
+
     def test_floating_timer_uses_large_readable_font(self):
-        self.assertEqual(ReviewScreen.FLOATING_TIMER_SESSION_FONT_PX, 36)
-        self.assertEqual(ReviewScreen.FLOATING_TIMER_TODAY_FONT_PX, 30)
+        self.assertEqual(ReviewScreen.FLOATING_TIMER_SESSION_FONT_PX, 33)
+        self.assertEqual(ReviewScreen.FLOATING_TIMER_TODAY_FONT_PX, 27)
 
     def test_floating_timer_is_raised_again_after_page_scroll(self):
         screen = ReviewScreen.__new__(ReviewScreen)
