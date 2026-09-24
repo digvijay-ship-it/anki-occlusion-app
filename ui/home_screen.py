@@ -1966,8 +1966,10 @@ class HomeScreen(QWidget):
             "total_tiles": len(self._study_flow_plan.tiles),
         }
 
-        is_practice = (current_tile.mode == "all")
-        is_new_only = (current_tile.mode == "new")
+        # Daily Study Flow is an active spaced repetition session.
+        # Every card must be scheduled with FSRS/SM-2, so is_practice is strictly False.
+        is_practice = False
+        is_new_only = False
 
         self.show_review(
             cards,

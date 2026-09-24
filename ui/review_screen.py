@@ -2559,7 +2559,7 @@ class ReviewScreen(QWidget):
                             if is_new:
                                 continue
                         _due_result = is_due_today(card)
-                        if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False):
+                        if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False) or bool(getattr(self, "_study_flow_context", None)):
                             self._items.append((card, None, card))
                     continue
 
@@ -2587,7 +2587,7 @@ class ReviewScreen(QWidget):
                                     if is_new:
                                         continue
                                 _due_result = is_due_today(box)
-                                if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False):
+                                if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False) or bool(getattr(self, "_study_flow_context", None)):
                                     self._items.append((card, ("group", gid), box))
                                     self._queued_ids.add(gid)  # O(1) track
                     else:
@@ -2607,7 +2607,7 @@ class ReviewScreen(QWidget):
                                 if is_new:
                                     continue
                             _due_result = is_due_today(box)
-                            if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False):
+                            if _due_result or getattr(self, "is_practice", False) or getattr(self, "is_new_only", False) or bool(getattr(self, "_study_flow_context", None)):
                                 self._items.append((card, i, box))
                                 self._queued_ids.add(box_id)  # O(1) track
 

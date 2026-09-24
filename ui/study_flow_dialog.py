@@ -573,7 +573,7 @@ class StudyFlowDialog(QDialog):
         self._combo_mode.setFont(QFont("Segoe UI", 18, QFont.DemiBold))
         self._combo_mode.addItem("📖 Due Cards First (Spaced Repetition)", "due")
         self._combo_mode.addItem("✨ New Cards Only (Learn First Time)", "new")
-        self._combo_mode.addItem("🎯 Practice All Cards (No Reschedule)", "all")
+        self._combo_mode.addItem("🔀 Mixed Due & New Cards (Spaced Repetition)", "all")
         self._combo_mode.currentIndexChanged.connect(self._on_mode_changed)
         left_layout.addWidget(self._combo_mode)
 
@@ -1801,7 +1801,7 @@ class StudyFlowDialog(QDialog):
             elif tile.mode == "new" or tile.target_new > 0:
                 mode_str = f"✨ New Cards ({tile.target_cards} Cards)"
             else:
-                mode_str = f"🎯 Practice ({tile.target_cards} Cards)"
+                mode_str = f"🔀 Mixed ({tile.target_cards} Cards)"
 
             sub_layout = QHBoxLayout()
             sub_layout.setSpacing(8)
@@ -2086,11 +2086,11 @@ class StudyFlowDialog(QDialog):
 
         act_due = menu.addAction(f"📖 Set This Tile as Due Reviews ({tile.target_cards} Cards)")
         act_new = menu.addAction(f"✨ Set This Tile as New Cards ({tile.target_cards} Cards)")
-        act_all = menu.addAction(f"🎯 Set This Tile as Practice All Cards ({tile.target_cards} Cards)")
+        act_all = menu.addAction(f"🔀 Set This Tile as Mixed Due & New ({tile.target_cards} Cards)")
         menu.addSeparator()
         act_root_due = menu.addAction(f"🔄 Change ALL '{root_name}' Tiles to Due Reviews")
         act_root_new = menu.addAction(f"🔄 Change ALL '{root_name}' Tiles to New Cards")
-        act_root_all = menu.addAction(f"🔄 Change ALL '{root_name}' Tiles to Practice All Cards")
+        act_root_all = menu.addAction(f"🔄 Change ALL '{root_name}' Tiles to Mixed Due & New")
 
         action = menu.exec_(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
         if not action:

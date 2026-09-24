@@ -478,6 +478,44 @@ class TestStudyFlowService(unittest.TestCase):
 
         dlg.close()
 
+    def test_study_flow_tile_launch_shows_interval_times(self):
+        """Verify that cards reviewed in Study Flow have active FSRS/SM-2 intervals on rating buttons."""
+        from ui.review_screen import ReviewScreen
+        card = {
+            "id": "c_flow_1",
+            "title": "ECI Question",
+            "sm2_state": "review",
+            "interval": 4,
+            "reps": 2,
+            "ease": 2.5,
+            "sm2_due": "2026-09-24",
+            "boxes": []
+        }
+        tile = FlowTile(deck_id=1, deck_name="GK", target_cards=1, mode="all", target_due=1)
+        ctx = {"tile": tile, "tile_index": 0, "total_tiles": 1}
+
+        # Study flow launches with is_practice=False
+        rs = ReviewScreen([card], {}, is_practice=False, is_new_only=False, study_flow_context=ctx)
+        self.assertFalse(rs.is_practice)
+        self.assertFalse(getattr(rs.mgr, "is_practice", False))
+
+        # Check button texts: must contain interval preview values like '1m', '5m', '10m', '4d', etc.
+        btn_texts = [btn.text() for btn, q in rs._prev_lbls]
+        self.assertEqual(len(btn_texts), 5)
+        for txt in btn_texts:
+            # Format: '{num} {icon} {interval_val} {label}'
+            parts = txt.split()
+            # Must have at least 4 tokens: number, icon, interval time, and label (e.g. "1 🔁 1m AGAIN")
+            self.assertGreaterEqual(len(parts), 4, f"Button text '{txt}' is missing interval time preview!")
+            # Label must be one of AGAIN, HARD, GOOD, EASY, PERFECT
+            self.assertIn(parts[-1].upper(), ["AGAIN", "HARD", "GOOD", "EASY", "PERFECT"])
+            # The interval time preview must be non-empty and not '?'
+            interval_str = parts[2]
+            self.assertNotEqual(interval_str, "?")
+            self.assertTrue(any(c in interval_str for c in ("m", "d", "y")), f"Interval '{interval_str}' not formatted as time")
+
+        rs.close()
+
 
 if __name__ == "__main__":
     unittest.main()
